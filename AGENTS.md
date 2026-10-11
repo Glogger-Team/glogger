@@ -78,7 +78,7 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 | `src/components/Dashboard/dashboardWidgets.ts` | Widget registry |
 | `src-tauri/tauri.conf.json` | Version source of truth + updater + window config |
 | `vite.config.ts` | Two HTML inputs (`index.html`, `dev-panel.html`), port 1420 strict |
-| `.github/workflows/release.yml` | Tag-triggered release pipeline: test gate → signed Windows build → GitHub release → updater-latest manifest |
+| `.github/workflows/release.yml` | Tag-triggered release pipeline: test gate → signed Windows/macOS(aarch64)/Linux builds → GitHub release → updater-latest manifest (`workflow_dispatch` with `publish=false` = dry run, no release) |
 | `HANDOFF.md` | Session log with durable gotchas — read before nontrivial work |
 
 ## Runtime/Tooling Preferences

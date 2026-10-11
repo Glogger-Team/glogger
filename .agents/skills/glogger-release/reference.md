@@ -70,11 +70,36 @@ Must be run on `main` with a clean tree. It runs `scripts/bump-version.sh`
 (sets the version in `tauri.conf.json`, `package.json`, `Cargo.toml`, and the
 release/experimental window titles), commits `release: v<version>`, tags it,
 and pushes both the branch and the tag to `origin`. CI
-(`.github/workflows/release.yml`) then builds the **signed** Windows NSIS
-`glogger.Release` installer and publishes it to
+(`.github/workflows/release.yml`) then builds the **signed** `glogger.Release`
+bundles on three runners — Windows NSIS, macOS aarch64 (`dmg` + `app.tar.gz`),
+Linux (`deb` + `AppImage`) — and publishes them to
 `https://github.com/cprivitere/glogger-twinkleoftoes/releases/tag/v<version>`
-as `glogger-<version>-windows-setup.exe` (+ `.sig`), and refreshes the update
-channel (next section).
+as `glogger-<version>-{windows-setup.exe,macos.dmg,macos.app.tar.gz,linux.deb,linux.AppImage}`
+(each updater artifact with a `.sig`), then refreshes the update channel (next
+section). A dry run of the same matrix without publishing:
+
+```bash
+gh workflow run release.yml --repo cprivitere/glogger-twinkleoftoes \
+  -f ref=v<version> -f publish=false
+```
+
+The pipeline refuses to publish when the tag != the committed
+`tauri.conf.json` version, when any platform's `.sig` is missing, or (for a
+dispatched publish) when the tag doesn't exist on `origin`.
+
+### Platform coverage
+
+| Platform | Shipped artifact | Notes |
+|---|---|---|
+| Windows x86_64 | `windows-setup.exe` (NSIS) | the daily driver; updater key `windows-x86_64` |
+| macOS aarch64 | `macos.dmg` + `macos.app.tar.gz` | unsigned (no Apple cert) → right-click → Open; updater key `darwin-aarch64`; Intel Macs unsupported (upstream parity) |
+| Linux x86_64 | `linux.deb` + `linux.AppImage` | AppImage is the self-updating one; updater key `linux-x86_64`; needs WebKitGTK 4.1 + `WEBKIT_DISABLE_DMABUF_RENDERER` (set automatically, see `lib.rs`) |
+| Linux Flatpak | — | **not shipped here**; upstream builds it via `flatpak.yml` + `flatpak/` manifests |
+| Windows ARM64 / other arches | — | not built |
+
+Local `npm run tauri:build` still produces only the Windows NSIS bundle
+(`src-tauri/target/release/bundle/nsis/`); this machine has no macOS/Linux
+cross toolchain, so the other installers exist only as CI artifacts.
 
 ## Auto-update & signing
 

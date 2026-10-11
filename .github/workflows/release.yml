@@ -1,14 +1,31 @@
 name: Release
 
-# Tag push v<semver> from main -> test gate, signed Windows NSIS build, GitHub
-# Release on this fork, then refresh latest.json on the `updater-latest` pointer
-# release (that tag URL is the updater endpoint compiled into the app, so it
-# stays stable while the asset behind it is replaced on every release).
+# Tag push v<semver> from main -> test gate, signed Windows / macOS / Linux
+# builds, GitHub Release on this fork, then refresh latest.json on the
+# `updater-latest` pointer release (that tag URL is the updater endpoint
+# compiled into the app, so it stays stable while the asset behind it is
+# replaced on every release).
+#
+# workflow_dispatch rebuilds the identical matrix for an existing ref with
+# `publish` left false, so the pipeline can be smoke-tested (all three
+# platforms, no release created) before cutting a real tag.
 
 on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Existing tag or branch to build (e.g. v1.1.0, main)"
+        required: true
+        default: main
+        type: string
+      publish:
+        description: "Create the GitHub Release + refresh the update channel"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -18,11 +35,80 @@ env:
   CHANNEL_TAG: updater-latest
 
 jobs:
-  build:
-    runs-on: windows-latest
+  # ── Resolve the version + frontend type gate ──
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Frontend type-check and build
+        run: npm run build
+
+      - name: Resolve version (must match the pushed tag)
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(sed -n 's/.*"version"\s*:\s*"\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p' src-tauri/tauri.conf.json | head -1)
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: could not read the version from src-tauri/tauri.conf.json"
+            exit 1
+          fi
+          # A tag-triggered release must match the committed version: the asset
+          # names, release tag and latest.json all derive from it.
+          if [ "${{ github.event_name }}" = "push" ] && [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
+            echo "ERROR: tag ${GITHUB_REF_NAME} != tauri.conf.json version v${VERSION} — was the bump committed before tagging?"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "building v$VERSION from ${{ inputs.ref || github.ref }}"
+
+  # ── Build every platform we ship, each gated by its own test run ──
+  build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            label: windows
+            target: ""
+            args: ""
+          - platform: macos-latest
+            label: macos
+            target: aarch64-apple-darwin
+            args: "--target aarch64-apple-darwin"
+          - platform: ubuntu-latest
+            label: linux
+            target: ""
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -32,6 +118,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -40,9 +128,6 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
-
-      - name: Frontend type-check and build
-        run: npm run build
 
       - name: Rust tests
         working-directory: src-tauri
@@ -56,71 +141,126 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tauriScript: npx tauri
-          args: --config src-tauri/tauri.release.conf.json
+          args: ${{ matrix.args }} --config src-tauri/tauri.release.conf.json
           updaterJsonPreferNsis: true
 
       - name: Collect installer
         shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          LABEL: ${{ matrix.label }}
         run: |
           mkdir -p release-artifacts
-          VERSION="$(echo "${GITHUB_REF_NAME}" | sed 's/^v//')"
+          # macOS cross-compiles into target/<triple>/release/bundle, native
+          # builds land in target/release/bundle.
           BUNDLE_DIR=$(find src-tauri/target -path "*/release/bundle" -type d 2>/dev/null | head -1)
           if [ -z "$BUNDLE_DIR" ]; then
-            echo "ERROR: no bundle dir"; find src-tauri/target -name bundle -type d; exit 1
-          fi
-          NAME="glogger-${VERSION}-windows-setup.exe"
-          cp "$BUNDLE_DIR"/nsis/*.exe "release-artifacts/$NAME"
-          SIG=$(ls "$BUNDLE_DIR"/nsis/*.exe.sig 2>/dev/null | head -1)
-          if [ -z "$SIG" ]; then
-            echo "ERROR: no .sig — the build was not signed (missing TAURI_SIGNING_PRIVATE_KEY secret?)"
-            find "$BUNDLE_DIR" -type f
+            echo "ERROR: no bundle dir"
+            find src-tauri/target -name bundle -type d
             exit 1
           fi
-          cp "$SIG" "release-artifacts/$NAME.sig"
+          echo "bundle dir: $BUNDLE_DIR"
+          find "$BUNDLE_DIR" -type f | head -40
+
+          case "$LABEL" in
+            windows)
+              REQUIRED=("glogger-${VERSION}-windows-setup.exe" "glogger-${VERSION}-windows-setup.exe.sig")
+              cp "$BUNDLE_DIR"/nsis/*.exe "release-artifacts/glogger-${VERSION}-windows-setup.exe"
+              cp "$BUNDLE_DIR"/nsis/*.exe.sig "release-artifacts/glogger-${VERSION}-windows-setup.exe.sig"
+              ;;
+            macos)
+              REQUIRED=("glogger-${VERSION}-macos.dmg" "glogger-${VERSION}-macos.app.tar.gz" "glogger-${VERSION}-macos.app.tar.gz.sig")
+              cp "$BUNDLE_DIR"/dmg/*.dmg "release-artifacts/glogger-${VERSION}-macos.dmg"
+              cp "$BUNDLE_DIR"/macos/*.tar.gz "release-artifacts/glogger-${VERSION}-macos.app.tar.gz"
+              cp "$BUNDLE_DIR"/macos/*.tar.gz.sig "release-artifacts/glogger-${VERSION}-macos.app.tar.gz.sig"
+              ;;
+            linux)
+              REQUIRED=("glogger-${VERSION}-linux.deb" "glogger-${VERSION}-linux.AppImage" "glogger-${VERSION}-linux.AppImage.sig")
+              cp "$BUNDLE_DIR"/deb/*.deb "release-artifacts/glogger-${VERSION}-linux.deb"
+              cp "$BUNDLE_DIR"/appimage/*.AppImage "release-artifacts/glogger-${VERSION}-linux.AppImage"
+              cp "$BUNDLE_DIR"/appimage/*.AppImage.sig "release-artifacts/glogger-${VERSION}-linux.AppImage.sig"
+              ;;
+          esac
+
+          # Missing .sig means the build was not signed (TAURI_SIGNING_PRIVATE_KEY
+          # secret absent) — never publish an artifact users cannot verify.
+          MISSING=0
+          for f in "${REQUIRED[@]}"; do
+            if [ ! -f "release-artifacts/$f" ]; then
+              echo "ERROR: missing $f"
+              MISSING=1
+            fi
+          done
+          [ "$MISSING" = 0 ] || exit 1
           ls -la release-artifacts/
 
-      - name: Upload artifact
+      - name: Upload platform artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: release-nsis
+          name: artifacts-${{ matrix.label }}
           path: release-artifacts/*
 
+  # ── Publish the release + refresh the update channel ──
   publish:
-    needs: build
+    needs: [validate, build]
+    if: github.event_name == 'push' || inputs.publish == true
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      TAG: ${{ needs.validate.outputs.tag }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
       - name: Download artifact
         uses: actions/download-artifact@v8
         with:
-          name: release-nsis
+          pattern: artifacts-*
           path: all-artifacts
+          merge-multiple: true
 
       - name: Generate latest.json updater manifest
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          VERSION="$(echo "$TAG" | sed 's/^v//')"
-          NAME="glogger-${VERSION}-windows-setup.exe"
           BASE_URL="https://github.com/$REPO/releases/download/$TAG"
-          if [ ! -f "all-artifacts/$NAME.sig" ]; then
-            echo "ERROR: missing signature all-artifacts/$NAME.sig"; ls -la all-artifacts; exit 1
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Creating the release for a dispatch run would tag the default
+            # branch HEAD; require the real tag to exist first.
+            gh api "repos/$REPO/git/ref/tags/$TAG" --silent || {
+              echo "ERROR: tag $TAG does not exist on origin — cut it with npm run release"; exit 1; }
           fi
-          SIG="$(cat "all-artifacts/$NAME.sig")"
-          PUB_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-          cat > all-artifacts/latest.json <<ENDJSON
-          {
-            "version": "${VERSION}",
-            "notes": "glogger ${TAG}",
-            "pub_date": "${PUB_DATE}",
-            "platforms": {
-              "windows-x86_64": {
-                "url": "${BASE_URL}/${NAME}",
-                "signature": "${SIG}"
-              }
-            }
-          }
-          ENDJSON
-          python3 -m json.tool all-artifacts/latest.json
+          ls -la all-artifacts/
+          mkdir -p channel
+
+          WIN_ASSET="glogger-${VERSION}-windows-setup.exe"
+          MAC_ASSET="glogger-${VERSION}-macos.app.tar.gz"
+          LINUX_ASSET="glogger-${VERSION}-linux.AppImage"
+          MISSING=0
+          for f in "all-artifacts/$WIN_ASSET.sig" "all-artifacts/$MAC_ASSET.sig" "all-artifacts/$LINUX_ASSET.sig"; do
+            [ -f "$f" ] || { echo "ERROR: missing signature $f"; MISSING=1; }
+          done
+          [ "$MISSING" = 0 ] || exit 1
+
+          jq -n \
+            --arg version "$VERSION" \
+            --arg pub_date "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            --arg win_url "$BASE_URL/$WIN_ASSET" --arg win_sig "$(cat "all-artifacts/$WIN_ASSET.sig")" \
+            --arg mac_url "$BASE_URL/$MAC_ASSET" --arg mac_sig "$(cat "all-artifacts/$MAC_ASSET.sig")" \
+            --arg linux_url "$BASE_URL/$LINUX_ASSET" --arg linux_sig "$(cat "all-artifacts/$LINUX_ASSET.sig")" \
+            '{
+               version: $version,
+               notes: ("glogger v" + $version),
+               pub_date: $pub_date,
+               platforms: {
+                 "windows-x86_64": { url: $win_url, signature: $win_sig },
+                 "darwin-aarch64": { url: $mac_url, signature: $mac_sig },
+                 "linux-x86_64": { url: $linux_url, signature: $linux_sig }
+               }
+             }' > channel/latest.json
+
+          python3 -m json.tool channel/latest.json
           echo "verified: latest.json parses"
 
       - name: Create release
@@ -128,16 +268,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          VERSION="$(echo "$TAG" | sed 's/^v//')"
-          NAME="glogger-${VERSION}-windows-setup.exe"
           BASE_URL="https://github.com/$REPO/releases/download/$TAG"
+          WIN="glogger-${VERSION}-windows-setup.exe"
+          MAC="glogger-${VERSION}-macos.dmg"
+          DEB="glogger-${VERSION}-linux.deb"
+          APPIMAGE="glogger-${VERSION}-linux.AppImage"
           {
             echo "## Downloads"
             echo
             echo "| Platform | Installer |"
             echo "|----------|-----------|"
-            echo "| **Windows** | [$NAME]($BASE_URL/$NAME) |"
+            echo "| **Windows** | [$WIN]($BASE_URL/$WIN) |"
+            echo "| **macOS** (Apple silicon) | [$MAC]($BASE_URL/$MAC) |"
+            echo "| **Linux** (Debian/Ubuntu) | [$DEB]($BASE_URL/$DEB) |"
+            echo "| **Linux** (AppImage) | [$APPIMAGE]($BASE_URL/$APPIMAGE) |"
+            echo
+            echo "The macOS build is unsigned (no Apple Developer certificate): on first launch use"
+            echo "right-click → Open, or clear the quarantine flag with"
+            echo "\`xattr -d com.apple.quarantine /Applications/glogger.app\`."
             echo
             echo "---"
             echo
@@ -146,7 +294,7 @@ jobs:
             echo "Original app by Daniel Auchenpaugh ([danielout/glogger](https://github.com/danielout/glogger)); build pipeline inherited from the [oddio fork](https://github.com/crisp-oddio/glogger-oddio). This fork is maintained by [cprivitere (TwinkleofToes)](https://github.com/cprivitere)."
           } > RELEASE_NOTES.md
           gh release create "$TAG" --repo "$REPO" --title "glogger $TAG" --notes-file RELEASE_NOTES.md --latest
-          gh release upload "$TAG" all-artifacts/*.exe all-artifacts/*.sig --repo "$REPO"
+          gh release upload "$TAG" all-artifacts/* --repo "$REPO"
 
       - name: Update the update-channel pointer release
         shell: bash
@@ -157,5 +305,5 @@ jobs:
             gh release create "$CHANNEL_TAG" --repo "$REPO" \
               --title 'Update channel' --latest=false \
               --notes 'Pointer release: holds latest.json for the app updater endpoint. Replaced on every v* release — do not delete.'
-          gh release upload "$CHANNEL_TAG" all-artifacts/latest.json --repo "$REPO" --clobber
+          gh release upload "$CHANNEL_TAG" channel/latest.json --repo "$REPO" --clobber
           echo "channel updated: https://github.com/$REPO/releases/download/$CHANNEL_TAG/latest.json"

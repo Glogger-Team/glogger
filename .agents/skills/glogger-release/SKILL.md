@@ -15,8 +15,9 @@ This repo (`cprivitere/glogger-twinkleoftoes`) is a standalone fork of `crisp-od
 | Integrate tested work | `git checkout main` → `git merge <branch-or-commit>` (or commit logical chunks) |
 | Verify before build | `cd src-tauri && cargo test --lib`; `npm run build` if frontend touched |
 | Build daily driver | `npm run tauri:build` (from repo root; unsigned locally unless a key is set — see *Auto-update*) |
-| Installer output | `src-tauri/target/release/bundle/nsis/*.exe` |
-| Publish a release | `npm run release <patch\|minor\|major\|x.y.z>` (bumps, commits, tags `v<version>`, pushes; CI builds + signs + publishes the Release and refreshes the update channel) |
+| Installer output | Local Windows build: `src-tauri/target/release/bundle/nsis/*.exe` (macOS/Linux installers only come from CI — this box has no cross toolchain) |
+| Publish a release | `npm run release <patch\|minor\|major\|x.y.z>` (bumps, commits, tags `v<version>`, pushes; CI builds + signs + publishes Windows/macOS(aarch64)/Linux and refreshes the update channel) |
+| Dry-run the release pipeline | `gh workflow run release.yml --repo cprivitere/glogger-twinkleoftoes -f ref=<tag\|main> -f publish=false` — builds all three platforms, creates no release |
 | Install/update | Run the NSIS setup — appdata `%APPDATA%\glogger.Release` is preserved on reinstall. Once a signed build is installed, the app updates itself (banner in the header / Help → Changelog) |
 | Signing key material | `~/.tauri/glogger.key` + `.password` (outside the repo) ↔ repo secrets `TAURI_SIGNING_PRIVATE_KEY[_PASSWORD]`; pubkey in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`, key ID `E39F2150244B82CA`) |
 | Fresh data copy | Close glogger → copy `%APPDATA%\glogger.Release\{glogger.db,glogger.db-wal,glogger.db-shm,settings.json}` |
@@ -37,6 +38,22 @@ This repo (`cprivitere/glogger-twinkleoftoes`) is a standalone fork of `crisp-od
 4. Install: run the setup exe (installs to `%LOCALAPPDATA%\glogger\`, does not touch the data dir).
 5. Smoke: launch → title `glogger v<ver>` → confirm recent events (log positions advance).
 
+### Platforms shipped (CI matrix in `.github/workflows/release.yml`)
+
+| Runner | Target | Artifacts |
+|---|---|---|
+| `windows-latest` | `x86_64-pc-windows-msvc` | `glogger-<v>-windows-setup.exe` (+`.sig`) |
+| `macos-latest` | `aarch64-apple-darwin` (`--target`) | `glogger-<v>-macos.dmg`, `glogger-<v>-macos.app.tar.gz` (+`.sig`) |
+| `ubuntu-latest` | `x86_64-unknown-linux-gnu` | `glogger-<v>-linux.deb`, `glogger-<v>-linux.AppImage` (+`.sig`) |
+
+Each matrix job runs `cargo test --lib` on its own OS before building, so a release also proves the
+crate compiles and tests on macOS/Linux. `latest.json` carries `windows-x86_64`, `darwin-aarch64` and
+`linux-x86_64`. Not shipped (upstream ships it): the Flatpak bundle — upstream's build lives in
+`.github/workflows/flatpak.yml` + `flatpak/` manifests in `crisp-oddio/glogger-oddio`; port it if wanted.
+macOS builds are unsigned (no Apple certificate) → users right-click → Open. Intel Macs are not covered
+(aarch64 only, same as upstream). The `validate` job fails a tag release whose tag != `tauri.conf.json`
+version.
+
 ## Data recovery / resync
 
 If the Release DB drifts stale: close ALL gloggers, copy the four files into `%APPDATA%\glogger.Release\` (overwrite), relaunch. Migrations run on the copy at launch (upward-only).
@@ -48,7 +65,7 @@ If the Release DB drifts stale: close ALL gloggers, copy the four files into `%A
 - npm only (Node 24). No bun/yarn/pnpm.
 - Do not run two glogger instances against the same data dir simultaneously.
 - `version:bump` does NOT wipe the daily-driver data; it DOES wipe Experimental data — that's by design.
-- Updater signing (`bundle.createUpdaterArtifacts: true` in `tauri.conf.json`): a build **fails** without `TAURI_SIGNING_PRIVATE_KEY`, but `npm run tauri:build` runs `scripts/release-build.sh`, which injects a `createUpdaterArtifacts:false` override when the variable is unset — so local builds stay unsigned and working. Never publish an unsigned build: CI's *Collect installer* step hard-fails when the NSIS `.exe.sig` is missing.
+- Updater signing (`bundle.createUpdaterArtifacts: true` in `tauri.conf.json`): a build **fails** without `TAURI_SIGNING_PRIVATE_KEY`, but `npm run tauri:build` runs `scripts/release-build.sh`, which injects a `createUpdaterArtifacts:false` override when the variable is unset — so local builds stay unsigned and working. Never publish an unsigned build: each matrix job's *Collect installer* step hard-fails when a platform's `.sig` is missing.
 - **Auto-update correctness:** the `pubkey` in `src-tauri/tauri.conf.json` must be the public half of the repo's `TAURI_SIGNING_PRIVATE_KEY` secret, and the endpoint must stay the `updater-latest` channel tag. If either drifts, every update is silently rejected (`check()` succeeds, install fails verification) — see *Auto-update & signing* in `reference.md`.
 
 ## Deep reference
