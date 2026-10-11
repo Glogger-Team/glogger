@@ -55,24 +55,17 @@ jobs:
         with:
           ref: ${{ env.TARGET_TAG }}
 
-      # actions/checkout checks a tag out as a detached commit without creating a
-      # local refs/tags entry, so compare HEAD against the remote tag instead.
-      - name: Verify the checkout is the requested tag
+      # The release workflows always pass a vetted tag; a dispatch can pass junk
+      # (e.g. `main`), so reject anything that is not v<semver> here. `git` cannot
+      # reach `origin` from inside the builder container, so this is shape-only:
+      # the actual tag is a checkout ref (a bad one fails the checkout above).
+      - name: Check the tag looks like a release tag
         shell: bash
         run: |
-          test -n "$TARGET_TAG" || { echo "ERROR: no tag given"; exit 1; }
-          # Lightweight tags resolve directly; annotated ones need the peeled ref.
-          PEELED=$(git ls-remote --tags origin "refs/tags/${TARGET_TAG}^{}" | awk 'NR==1{print $1}')
-          PLAIN=$(git ls-remote --tags origin "refs/tags/${TARGET_TAG}" | awk 'NR==1{print $1}')
-          REMOTE_SHA=${PEELED:-$PLAIN}
-          HEAD_SHA=$(git rev-parse HEAD)
-          if [ -z "$REMOTE_SHA" ]; then
-            echo "ERROR: tag ${TARGET_TAG} does not exist on origin"; exit 1
-          fi
-          if [ "$REMOTE_SHA" != "$HEAD_SHA" ]; then
-            echo "ERROR: checkout is at $HEAD_SHA but tag ${TARGET_TAG} is $REMOTE_SHA"; exit 1
-          fi
-          echo "building Flatpak for ${TARGET_TAG} at ${HEAD_SHA}"
+          case "$TARGET_TAG" in
+            v[0-9]*.[0-9]*.[0-9]*) echo "building Flatpak for ${TARGET_TAG}" ;;
+            *) echo "ERROR: '${TARGET_TAG}' is not a v<semver> release tag"; exit 1 ;;
+          esac
 
       # ── Generate offline source manifests ───────────────────────────────
       # Flatpak build environments have no internet access, so all Cargo and npm
@@ -145,14 +138,20 @@ jobs:
         run: |
           TAG="${TARGET_TAG}"
           echo "Waiting for release $TAG to exist..."
+          FOUND=0
           for i in $(seq 1 30); do
             if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
               echo "Release $TAG found."
+              FOUND=1
               break
             fi
             echo "  attempt $i/30 — not yet, retrying in 60s"
             sleep 60
           done
+          if [ "$FOUND" != 1 ]; then
+            echo "ERROR: release $TAG never appeared — nothing to attach the Flatpak to"
+            exit 1
+          fi
           gh release upload "$TAG" glogger.flatpak \
             --repo "${{ github.repository }}" \
             --clobber
