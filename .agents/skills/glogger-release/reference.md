@@ -94,7 +94,7 @@ dispatched publish) when the tag doesn't exist on `origin`.
 | Windows x86_64 | `windows-setup.exe` (NSIS) | the daily driver; updater key `windows-x86_64` |
 | macOS aarch64 | `macos.dmg` + `macos.app.tar.gz` | unsigned (no Apple cert) → right-click → Open; updater key `darwin-aarch64`; Intel Macs unsupported (upstream parity) |
 | Linux x86_64 | `linux.deb` + `linux.AppImage` | AppImage is the self-updating one; updater key `linux-x86_64`; needs WebKitGTK 4.1 + `WEBKIT_DISABLE_DMABUF_RENDERER` (set automatically, see `lib.rs`) |
-| Linux Flatpak | — | **not shipped here**; upstream builds it via `flatpak.yml` + `flatpak/` manifests |
+| Linux Flatpak | `glogger.flatpak` | built by `.github/workflows/flatpak.yml` (gnome-50 builder image) and attached by the same release run; no updater entry |
 | Windows ARM64 / other arches | — | not built |
 
 Local `npm run tauri:build` still produces only the Windows NSIS bundle

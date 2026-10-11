@@ -45,14 +45,15 @@ This repo (`cprivitere/glogger-twinkleoftoes`) is a standalone fork of `crisp-od
 | `windows-latest` | `x86_64-pc-windows-msvc` | `glogger-<v>-windows-setup.exe` (+`.sig`) |
 | `macos-latest` | `aarch64-apple-darwin` (`--target`) | `glogger-<v>-macos.dmg`, `glogger-<v>-macos.app.tar.gz` (+`.sig`) |
 | `ubuntu-latest` | `x86_64-unknown-linux-gnu` | `glogger-<v>-linux.deb`, `glogger-<v>-linux.AppImage` (+`.sig`) |
+| `ubuntu-latest` + gnome-50 container (`.github/workflows/flatpak.yml`) | flatpak-builder | `glogger.flatpak`, attached by the same release run via `workflow_call` |
 
 Each matrix job runs `cargo test --lib` on its own OS before building, so a release also proves the
 crate compiles and tests on macOS/Linux. `latest.json` carries `windows-x86_64`, `darwin-aarch64` and
-`linux-x86_64`. Not shipped (upstream ships it): the Flatpak bundle — upstream's build lives in
-`.github/workflows/flatpak.yml` + `flatpak/` manifests in `crisp-oddio/glogger-oddio`; port it if wanted.
+`linux-x86_64` (the Flatpak has no updater entry — it is a separate, unmanaged install).
 macOS builds are unsigned (no Apple certificate) → users right-click → Open. Intel Macs are not covered
 (aarch64 only, same as upstream). The `validate` job fails a tag release whose tag != `tauri.conf.json`
-version.
+version; the Flatpak Workflow can be smoke-tested with
+`gh workflow run flatpak.yml -f tag=<tag> -f publish=false`.
 
 ## Data recovery / resync
 

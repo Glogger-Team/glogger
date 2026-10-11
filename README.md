@@ -109,8 +109,8 @@ Grab the latest release for your platform:
 | Platform | Installer |
 |----------|-----------|
 | Windows  | `.exe` (NSIS installer) |
-| macOS    | `.dmg` |
-| Linux    | `.deb`, `.AppImage` |
+| macOS    | `.dmg` (Apple silicon; unsigned — right-click → Open on first launch) |
+| Linux    | `.deb`, `.AppImage`, `.flatpak` |
 
 Release builds include automatic update checking — glogger will notify you when a new version is available.
 

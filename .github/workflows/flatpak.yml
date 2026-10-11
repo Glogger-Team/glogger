@@ -55,12 +55,24 @@ jobs:
         with:
           ref: ${{ env.TARGET_TAG }}
 
-      - name: Verify the tag exists
+      # actions/checkout checks a tag out as a detached commit without creating a
+      # local refs/tags entry, so compare HEAD against the remote tag instead.
+      - name: Verify the checkout is the requested tag
         shell: bash
         run: |
           test -n "$TARGET_TAG" || { echo "ERROR: no tag given"; exit 1; }
-          git rev-parse --verify "refs/tags/${TARGET_TAG}" >/dev/null 2>&1 || {
-            echo "ERROR: tag ${TARGET_TAG} not found in this checkout"; exit 1; }
+          # Lightweight tags resolve directly; annotated ones need the peeled ref.
+          PEELED=$(git ls-remote --tags origin "refs/tags/${TARGET_TAG}^{}" | awk 'NR==1{print $1}')
+          PLAIN=$(git ls-remote --tags origin "refs/tags/${TARGET_TAG}" | awk 'NR==1{print $1}')
+          REMOTE_SHA=${PEELED:-$PLAIN}
+          HEAD_SHA=$(git rev-parse HEAD)
+          if [ -z "$REMOTE_SHA" ]; then
+            echo "ERROR: tag ${TARGET_TAG} does not exist on origin"; exit 1
+          fi
+          if [ "$REMOTE_SHA" != "$HEAD_SHA" ]; then
+            echo "ERROR: checkout is at $HEAD_SHA but tag ${TARGET_TAG} is $REMOTE_SHA"; exit 1
+          fi
+          echo "building Flatpak for ${TARGET_TAG} at ${HEAD_SHA}"
 
       # ── Generate offline source manifests ───────────────────────────────
       # Flatpak build environments have no internet access, so all Cargo and npm
