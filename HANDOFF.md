@@ -1,5 +1,67 @@
 # glogger — Session Handoff
 
+**Date:** 2026-10-11 (Session 37 — release pipeline: Windows + macOS + Linux + Flatpak)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `main` — committed + pushed (`924f609`, `be03489`, `520271e`, `0424340`, `cf776c5`, `44cbc0d`, `26ab6f3`, `d8cee16` + docs). No Rust/frontend behavior change.
+**Status:** ✅ Two real CI runs: **Release dry run 38180252724** — `validate` + all three platform jobs green, artifacts `artifacts-windows` 8.3 MB / `artifacts-macos` 25.0 MB / `artifacts-linux` 98.8 MB, `publish` skipped as designed; **Flatpak 38181296027** — `glogger.flatpak` 8.90 MB built and uploaded. Locally: both workflows parse, every `run:` block `bash -n` clean, and the collect / version-probe / latest.json / release-notes blocks were executed against fake bundle trees under `set -euo pipefail`. `npm run build` clean after the npm dep bump.
+
+## TL;DR — Session 37
+
+**User question:** "can we make at least all the ones upstream glogger ships?" — Answer: we weren't. The fork's
+workflow shipped **one** artifact (Windows NSIS `.exe`), a regression against upstream (`danielout/glogger`
+v0.8.7 and `crisp-oddio/glogger-oddio` v0.12.18 both ship Windows + macOS `dmg`/`app.tar.gz` + Linux
+`deb`/`AppImage` + `glogger.flatpak`, with `latest.json` carrying three platform keys). Now we ship the same set.
+
+### Blockers found on the way (all fixed)
+
+1. **`v1.1.0` was never released.** Run 38178378091 died in *Build release installer*: tauri-cli's version gate
+   refuses to build when the npm packages and the Rust crates differ in major.minor (`tauri` 2.12.1 vs
+   `@tauri-apps/api` 2.11.1, updater 2.13.1 vs 2.10.1, …) — a side effect of `16697fe` bumping the cargo side only.
+   `gh release list` still shows v1.0.3 as latest. Fixed by aligning the six npm packages (`be03489`);
+   `npx tauri info` now reports no mismatch. **The v1.1.0 tag cannot be rebuilt** — its tree predates the fix.
+2. **Runner `pipefail`.** `find … | head -40` SIGPIPEs under the runner's `bash -eo pipefail` and killed the linux
+   collect step (38178973878). Replaced with `find -print -quit` / `|| true`; the `sed | head -1` version probe
+   became an exiting `awk` (`520271e`).
+3. **Flatpak, three iterations:** actions/checkout leaves a tag as a detached commit with **no local `refs/tags`
+   entry**, and `git` inside the gnome-50 builder container cannot reach `origin` at all ("origin does not appear
+   to be a git repository") → the tag check became a shape check, with the `v<semver>` rule enforced only on the
+   publishing path so a `publish=false` dispatch can build any ref (`cf776c5`, `26ab6f3`). Then the real failure:
+   the GNOME SDK exports `CFLAGS` containing `-O2`, which cc-rs appends **after** aws-lc-sys's own `-O0`, so
+   `jitterentropy-base.c` hard-`#error`s ("must not be compiled with optimizations") — cleared
+   `CFLAGS`/`CXXFLAGS` for the flatpak module (`d8cee16`).
+
+### What the pipeline does now (`.github/workflows/release.yml`)
+
+- `validate` (ubuntu): `npm ci` → `npm run build` → resolve version and **fail when a pushed tag ≠
+  `tauri.conf.json` version**.
+- `build` matrix, each job running `cargo test --lib` on its own OS before bundling:
+  `windows-latest` (nsis) · `macos-latest --target aarch64-apple-darwin` (dmg + app.tar.gz) ·
+  `ubuntu-latest` (deb + AppImage). Per-platform collect asserts every `.sig` exists (an unsigned/partial
+  release cannot be published).
+- `publish` (skipped on a dry run): jq-generated `latest.json` with `windows-x86_64` + `darwin-aarch64` +
+  `linux-x86_64`, GitHub Release with a download table, then the `updater-latest` pointer refresh.
+- `flatpak`: `workflow_call` into `.github/workflows/flatpak.yml` after publish (no `push: tags` trigger, so the
+  tag pushed by `npm run release` cannot race the release workflow); the bundle is attached to the release.
+- Dry run: `gh workflow run release.yml -f ref=<tag|main> -f publish=false`.
+
+### Not touched / known limits
+
+- macOS builds are **unsigned** (no Apple certificate, same as upstream) → right-click → Open; **Apple silicon
+  only** (Intel Macs have no artifact, upstream parity). Flatpak has no updater entry. Windows ARM64 unsupported.
+- No Rust or frontend behavior changed, so the `cargo test --lib` gate on this box was not re-run for code reasons —
+  the three CI jobs ran it on all three OSes and passed.
+- `%APPDATA%\glogger.Release` untouched; the local Windows installer path (`npm run tauri:build`) is unchanged.
+
+### Next action
+
+Cut the release that actually publishes these artifacts: `npm run release patch` → `v1.1.1` (v1.1.0's tag is
+unbuildable). Users on ≤v1.1.0 then get Windows/macOS/Linux installers plus the Flatpak, and the update channel
+gains the three-platform manifest.
+
+---
+
+# glogger — Session Handoff
+
 **Date:** 2026-10-11 (Session 36 — Gourmand instant-snacks invisible: CDN category-token drift)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `main` — local change, not committed (backend parser + migration v70 + tests + Gourmand unknown-category bucket + docs).
