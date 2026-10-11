@@ -30,6 +30,14 @@ build-options:
     # flatpak-node-generator unpacks the offline npm cache to flatpak-node/npm-cache,
     # so npm_config_cache must point there (not a bare npm-cache dir) or `npm ci` misses it.
     npm_config_cache: /run/build/glogger/flatpak-node/npm-cache
+    # The SDK exports hardening CFLAGS that include -O2. aws-lc-sys (pulled in by
+    # rustls) must compile its bundled jitterentropy with -O0 and hard-#errors
+    # otherwise; env CFLAGS land after the crate's own -O0 and win. Clearing them
+    # leaves cargo's OPT_LEVEL (3 for --release) to drive cc-rs for everything
+    # else. See "The CPU Jitter random number generator must not be compiled with
+    # optimizations" in the build log.
+    CFLAGS: ""
+    CXXFLAGS: ""
     # - identifier: app data goes to glogger.Release, not glogger.Dev
     # - devUrl:null: force Tauri to embed frontendDist (tauri://localhost) instead of
     #   baking in the dev server URL, which would leave a blank window in production.
