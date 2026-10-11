@@ -308,3 +308,14 @@ jobs:
               --notes 'Pointer release: holds latest.json for the app updater endpoint. Replaced on every v* release — do not delete.'
           gh release upload "$CHANNEL_TAG" channel/latest.json --repo "$REPO" --clobber
           echo "channel updated: https://github.com/$REPO/releases/download/$CHANNEL_TAG/latest.json"
+
+  # ── Flatpak bundle, built from the published tag (Linux extra, upstream parity) ──
+  flatpak:
+    needs: [validate, publish]
+    if: ${{ github.event_name == 'push' || inputs.publish == true }}
+    uses: ./.github/workflows/flatpak.yml
+    with:
+      tag: ${{ needs.validate.outputs.tag }}
+      publish: true
+    permissions:
+      contents: write

@@ -1,0 +1,146 @@
+name: Flatpak
+
+# Builds the Linux Flatpak bundle for a release tag and attaches it to that
+# release. Ported from the oddio fork's flatpak.yml (same GNOME builder image +
+# offline-source generators); the app id is this fork's.
+#
+# This fork's `npm run release` pushes the tag from the dev machine, so a
+# `push: tags` trigger would race the Release workflow's own call. Instead the
+# Release workflow invokes this as `workflow_call` once the release is published,
+# and `workflow_dispatch` builds a bundle on its own for smoke-testing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build for (e.g. v1.1.0)"
+        required: true
+        type: string
+      publish:
+        description: "Attach the bundle to that GitHub Release"
+        required: true
+        default: false
+        type: boolean
+  workflow_call:
+    inputs:
+      tag:
+        description: "Release tag to build & attach the Flatpak to"
+        required: true
+        type: string
+      publish:
+        description: "Attach the bundle to that GitHub Release"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  TARGET_TAG: ${{ inputs.tag }}
+
+jobs:
+  flatpak:
+    name: Build Flatpak bundle
+    runs-on: ubuntu-latest
+    # flatpak-builder + the GNOME SDK only exist inside the official Flatpak
+    # builder image, not on the bare runner.
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      options: --privileged
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TARGET_TAG }}
+
+      - name: Verify the tag exists
+        shell: bash
+        run: |
+          test -n "$TARGET_TAG" || { echo "ERROR: no tag given"; exit 1; }
+          git rev-parse --verify "refs/tags/${TARGET_TAG}" >/dev/null 2>&1 || {
+            echo "ERROR: tag ${TARGET_TAG} not found in this checkout"; exit 1; }
+
+      # ── Generate offline source manifests ───────────────────────────────
+      # Flatpak build environments have no internet access, so all Cargo and npm
+      # dependencies must be pre-fetched into source lists flatpak-builder can
+      # cache-populate before the build runs.
+
+      # The cargo generator is still a standalone script (needs aiohttp + tomlkit).
+      # The node generator lives in a Python package — install it from the git
+      # subdirectory, which also handles newer nested node_modules layouts
+      # (e.g. Tailwind's oxide-wasi). Use a venv so pip works regardless of the
+      # container's PEP 668 policy. No --quiet: on the gnome-50 image the install
+      # "succeeded" silently while the console script never appeared, so keep pip
+      # output visible.
+      - name: Install offline-source generators
+        run: |
+          python3 -m venv /tmp/gen
+          /tmp/gen/bin/pip install aiohttp tomlkit
+          /tmp/gen/bin/pip install "git+https://github.com/flatpak/flatpak-builder-tools.git#subdirectory=node"
+          # Sanity check: run as a module — where pip places console scripts
+          # varies across builder images (bin/ vs local/bin), the module doesn't.
+          /tmp/gen/bin/python -m flatpak_node_generator --help >/dev/null
+
+      - name: Download flatpak-cargo-generator
+        run: |
+          curl -sSL -o /tmp/flatpak-cargo-generator.py \
+            https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/master/cargo/flatpak-cargo-generator.py
+
+      - name: Generate Cargo offline sources
+        run: |
+          /tmp/gen/bin/python /tmp/flatpak-cargo-generator.py \
+            src-tauri/Cargo.lock \
+            -o flatpak/generated-cargo-sources.json
+
+      - name: Generate npm offline sources
+        run: |
+          /tmp/gen/bin/python -m flatpak_node_generator npm package-lock.json \
+            -o flatpak/generated-node-sources.json
+
+      # ── Build Flatpak ───────────────────────────────────────────────────
+
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: glogger.flatpak
+          manifest-path: flatpak/io.github.cprivitere.glogger.yml
+          cache: true
+          cache-key: flatpak-${{ hashFiles('src-tauri/Cargo.lock', 'package-lock.json') }}
+
+      - name: Upload bundle as workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: glogger-flatpak
+          path: glogger.flatpak
+
+  # Attaching runs on a bare runner because the builder container has no gh CLI.
+  attach:
+    name: Attach bundle to release
+    needs: flatpak
+    runs-on: ubuntu-latest
+    if: ${{ inputs.publish == true && inputs.tag != '' }}
+    steps:
+      - name: Download built bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: glogger-flatpak
+
+      - name: Attach bundle to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${TARGET_TAG}"
+          echo "Waiting for release $TAG to exist..."
+          for i in $(seq 1 30); do
+            if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+              echo "Release $TAG found."
+              break
+            fi
+            echo "  attempt $i/30 — not yet, retrying in 60s"
+            sleep 60
+          done
+          gh release upload "$TAG" glogger.flatpak \
+            --repo "${{ github.repository }}" \
+            --clobber

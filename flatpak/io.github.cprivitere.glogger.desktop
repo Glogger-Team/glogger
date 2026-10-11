@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Glogger
+GenericName=MMO Companion
+Comment=Project: Gorgon log watcher and game data tracker
+Exec=glogger
+Icon=io.github.cprivitere.glogger
+Type=Application
+Categories=Game;Utility;
+Keywords=gorgon;mmo;gaming;log;tracker;
+StartupNotify=true
