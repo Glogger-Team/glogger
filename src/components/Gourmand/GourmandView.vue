@@ -279,6 +279,27 @@
               :selected-food="null"
               @toggle="handleToggle"
             />
+
+            <!-- Foods the CDN filed under a category with no section: rendered, not
+                 dropped, so a spelling drift or new game category gets noticed. -->
+            <FoodCategorySection
+              v-if="store.unknownCategoryFoods.length > 0"
+              title="Unknown Categories"
+              :hint="unknownCategoryHint"
+              :foods="store.unknownCategoryFoods"
+              :eaten-foods="store.eatenFoods"
+              :manually-marked-foods="store.manuallyMarkedFoods"
+              :hide-eaten="store.hideEaten"
+              :hide-unusable="store.hideUnusable"
+              :source-filter="store.sourceFilter"
+              :sort-mode="store.sortMode"
+              :sort-asc="store.sortAsc"
+              :view-mode="store.viewMode"
+              :selectable="false"
+              :gourmand-level="store.gourmandLevel"
+              :selected-food="null"
+              @toggle="handleToggle"
+            />
           </div>
         </div>
       </template>
@@ -338,6 +359,19 @@ const sourceFilterOptions = computed<{ value: FoodSourceFilter; label: string; c
 
   return options
 })
+
+// The Unknown Categories bucket exists so a CDN spelling drift or a brand-new
+// game category stays visible instead of silently losing its section. Name the
+// offending tokens and where ingestion has to learn about them.
+const unknownCategories = computed(() =>
+  [...new Set(store.unknownCategoryFoods.map(f => f.food_category))].sort(),
+)
+
+const unknownCategoryHint = computed(
+  () =>
+    `Unrecognised CDN category ${unknownCategories.value.map(c => `"${c}"`).join(', ')} — teach ` +
+    'canonical_food_category() about it (cdn_persistence.rs) or these foods stay unsectioned.',
+)
 
 const unmatchedCount = computed(() => {
   if (!store.reportLoaded || allFoods.value.length === 0) return 0

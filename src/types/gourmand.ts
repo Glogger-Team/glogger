@@ -1,6 +1,19 @@
 export type FoodCategory = 'Meal' | 'Snack' | 'Instant-Snack'
 
 /**
+ * The categories the Gourmand screen has a section for. Ingestion canonicalises
+ * these tokens (`canonical_food_category` in `cdn_persistence.rs`), so anything
+ * else is either a brand-new game category or a spelling drift that needs that
+ * function updated — the view buckets such foods under "Unknown Categories"
+ * rather than dropping them.
+ */
+export const KNOWN_FOOD_CATEGORIES: readonly FoodCategory[] = ['Meal', 'Snack', 'Instant-Snack']
+
+export function isKnownFoodCategory(category: string): category is FoodCategory {
+  return (KNOWN_FOOD_CATEGORIES as readonly string[]).includes(category)
+}
+
+/**
  * Where a food comes from. Derived during CDN ingestion by
  * `game_data::food_sources` — keep in sync with the `KIND_*` constants there.
  */
@@ -20,7 +33,11 @@ export interface FoodItem {
   item_id: number
   name: string
   icon_id: number | null
-  food_category: FoodCategory
+  /**
+   * Category token stored at ingest: `Meal`, `Snack`, or `Instant-Snack` when
+   * recognised, otherwise the raw CDN token (see `isKnownFoodCategory`).
+   */
+  food_category: string
   food_level: number
   gourmand_req: number | null
   effect_descs: string[]

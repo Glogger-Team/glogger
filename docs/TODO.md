@@ -31,8 +31,10 @@ These are investigated items kept for reference — the research is done but the
 
 These items are investigated but can't be resolved without new runtime captures or log samples.
 
-- [x] ~~Bug: instant-snack foods missing from gourmand report~~ — **RESOLVED 2026-10-03 (live test session)**
-  - CDN parse is NOT the problem: the `foods` table contains 57 Instant Snack rows (606 foods total), and all 422 eaten entries join cleanly (36 eaten instant snacks). The "0/0" bars were a **stale-import state**: dev DB last imported a report on 2026-06-28 while a newer `SkillReport` sat unimported — the Books-dir watcher (four-PR plan PR1) fixes this class of staleness. Verify a report import happened before debugging completeness math.
+- [x] ~~Bug: instant-snack foods missing from gourmand report~~ — **RESOLVED 2026-10-11 (real cause: category-token drift; fixed in migration v70)**
+  - The 2026-10-03 "stale import" diagnosis was wrong, and the same session's evidence pointed at the answer: the `foods` table holds 57 **`'Instant Snack'`** rows (CDN 486 builds the token from the `Food_Effect_Level_InstantSnack` string — `"Level {0} Instant Snack"`) while `gourmandStore` matches **`'Instant-Snack'`**. The Instant-Snacks section and its progress bar were therefore permanently empty — 57 of 606 foods invisible to the UI, no import or watcher could change that.
+  - **Fixed:** `parse_food_desc` canonicalises the category via `canonical_food_category` (case- and separator-insensitive; unknown categories pass through) and migration v70 backfills rows already on disk in place — no CDN re-download. Verified on a copy of the dev DB: 606/606 foods match the UI's three category literals, idempotent, eaten joins intact.
+  - Lesson: name-based joins (every eaten entry resolves to a `foods` row) cannot detect this class of bug — compare the *token* the UI filters on against what ingestion stored.
   - Note: `Flesh Lump` report lines carry race variants (`Flesh Lump (Elf)` etc.) — the tag stripper only removes `(HAS MEAT)`-class tags, so variant names match the CDN exactly. No fix needed (an earlier "variant matching gap" suspicion was a bug in the test script, not the app).
 
 - [x] ~~Bug: rez counter not working~~ — **ROOT CAUSE FOUND 2026-10-03; FIX IMPLEMENTED**

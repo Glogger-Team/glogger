@@ -1,5 +1,49 @@
 # glogger — Session Handoff
 
+**Date:** 2026-10-11 (Session 36 — Gourmand instant-snacks invisible: CDN category-token drift)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `main` — local change, not committed (backend parser + migration v70 + tests + Gourmand unknown-category bucket + docs).
+**Status:** ✅ `cargo test --lib` **647 passed** (5 ignored); `npm run build` (vue-tsc + vite) clean. Legacy upgrade smoke-tested through the real `run_migrations` on a copy of the dev DB (schema 69 → 70; 57 `'Instant Snack'` rows → `'Instant-Snack'`; 606/606 foods match the UI's categories). Unknown-category bucket proven by a throwaway SSR render of `FoodCategorySection` (header, hint naming both tokens, raw token per card) — no live GUI session.
+
+## TL;DR — Session 36
+
+**User question:** are foods present in the CDN but missing from glogger's display?
+
+**Answer — yes, 57 of 606.** CDN 486 builds the food category from the
+`Food_Effect_Level_InstantSnack` string (`"Level {0} Instant Snack"`, **space**), while
+`gourmandStore.ts` filters on the hyphenated `'Instant-Snack'`. So the Instant-Snacks section,
+its progress bar, and its favourites were permanently empty — no import or watcher could change
+that. The `foods` table itself was complete: all 606 live `food_desc` items insert, 0 unparseable.
+
+### What shipped
+- `src-tauri/src/db/cdn_persistence.rs` — `parse_food_desc` routes the category through the new
+  `canonical_food_category`: case- and `-`/`_`/space-insensitive, mapping to `Meal` / `Snack` /
+  `Instant-Snack`; unknown categories pass through verbatim.
+- `src-tauri/src/db/migrations.rs` — **migration v70** rewrites stored instant-snack rows in place
+  (deliberately does *not* clear `cdn_version`, unlike v67 — no CDN re-download needed). Idempotent.
+- Tests — `cdn_persistence` parse cases (both spellings, unknown passthrough, malformed input, known-set
+  round-trip); `migrations` v70 case (space/case variants → `Instant-Snack`, `Meal` + unknown untouched, re-run no-op).
+- **Unknown-category bucket** (follow-up to the same class of bug) — `isKnownFoodCategory` +
+  `KNOWN_FOOD_CATEGORIES` in `src/types/gourmand.ts`; `unknownCategoryFoods` computed in
+  `gourmandStore.ts`; a hidden-when-empty "Unknown Categories" section in `GourmandView.vue` whose hint
+  names the offending token(s) (`FoodCategorySection` gained an optional `hint` prop). Ingestion logs
+  `foods: unrecognised food category …` for the same signal. `insert_foods`'s known-set check is
+  covered by `canonicalisation_covers_every_known_category`.
+- Docs — `character-gourmand.md` data flow + schema row + "Unknown-category bucket" UI bullet; `docs/TODO.md` entry corrected; `AGENTS.md` migration head v67 → v70 (was already stale at 69); `run_migrations_is_idempotent_and_atomic` head assertion 69 → 70.
+
+### Gotcha (durable)
+- CDN `FoodDesc` category tokens are **not stable across versions** — normalise separators/case
+  before comparing, never match a literal, and backfill the DB when the game changes one.
+  Name-based joins can't catch this class of bug: every eaten entry still resolves to a `foods`
+  row (0 orphans), so only the UI's *filter literal* goes dead. The 2026-10-03 TODO diagnosis
+  ("stale import") was wrong for the same reason.
+- Deliberately *not* foods: 8 items carry `Edible`/`Food`/`Snack` + `PreparedFood=` + `UseVerb: Eat`
+  but no `FoodDesc` — the `_Iocaine` poison variants (ids 5409, 6401–6407, crafted by Mycology
+  "Poisoned X" recipes). They give no Gourmand XP so they stay out of `foods`, and their names
+  collide with the real dishes, so e.g. an eaten-report line "Glazed Beets" is the normal food.
+
+---
+
 **Date:** 2026-07-11 (Session 35 — leveling planner multi-yield materials fix)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `dev` — fix `7b665b7` + merge `c6bf73e` (origin/main v0.11.32 baseline), pushed.

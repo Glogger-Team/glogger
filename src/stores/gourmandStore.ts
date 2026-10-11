@@ -12,7 +12,7 @@ import type {
   GourmandFoodEntry,
   GourmandImportResult,
 } from '../types/gourmand'
-import { foodSourceLabel, foodSourceRank, isAttainable } from '../types/gourmand'
+import { foodSourceLabel, foodSourceRank, isAttainable, isKnownFoodCategory } from '../types/gourmand'
 
 /**
  * `all` shows everything; `not-crafted` is the complement of `crafted` (handy
@@ -92,6 +92,16 @@ export const useGourmandStore = defineStore('gourmand', () => {
   const meals = computed(() => allFoods.value.filter(f => f.food_category === 'Meal'))
   const snacks = computed(() => allFoods.value.filter(f => f.food_category === 'Snack'))
   const instantSnacks = computed(() => allFoods.value.filter(f => f.food_category === 'Instant-Snack'))
+
+  /**
+   * Foods filed under a category with no section on this screen — a CDN
+   * spelling drift or a new game category. Surfaced as their own bucket so they
+   * get noticed and fixed, never silently dropped (see the v70 Instant Snack
+   * regression).
+   */
+  const unknownCategoryFoods = computed(() =>
+    allFoods.value.filter(f => !isKnownFoodCategory(f.food_category)),
+  )
 
   // ── Computed: Progress stats ───────────────────────────────────────────────
 
@@ -353,6 +363,7 @@ export const useGourmandStore = defineStore('gourmand', () => {
     meals,
     snacks,
     instantSnacks,
+    unknownCategoryFoods,
     progressFoods,
     progressMeals,
     progressSnacks,

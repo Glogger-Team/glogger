@@ -59,7 +59,7 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 - **Commands**: snake_case, verb-first (`get_*`, `save_*`, `scan_*`, `backfill_*`). Adding one: define `#[tauri::command]` fn + **register in `lib.rs`'s `generate_handler!`** (single giant list, easy to forget).
 - **Errors**: uniformly `Result<T, String>` with human-readable messages (`map_err(|e| format!(...))`); no custom error enums across the IPC boundary.
 - **Async**: sync commands by default; `async fn` only for CDN/IO-heavy work. Background work: `tauri::async_runtime::spawn`; ingestion runs on threads with batched emits and yield guards.
-- **Migrations**: append-only in `src-tauri/src/db/migrations.rs` (currently v67). Add `migration_vN_*` + `if current_version < N` block + `record_migration`. **Never edit a shipped migration.**
+- **Migrations**: append-only in `src-tauri/src/db/migrations.rs` (currently v70). Add `migration_vN_*` + `if current_version < N` block + `record_migration`. **Never edit a shipped migration.**
 - **State management**: `defineStore` + composables for shared logic; no vue-router (views toggled via provide/inject navigation; `App.vue` hand-rolls keep-alive with `v-if="visited.has(view)"` + `v-show`). Every Pinia store **must** have an `acceptHMRUpdate` block (see gotchas) — most stores do; some already persist through settings instead.
 - **Dashboard widget**: create `src/components/Dashboard/widgets/<Name>Widget.vue` (+ optional `<Name>Config.vue`), then append to `DASHBOARD_WIDGETS` in `dashboardWidgets.ts`. Widgets are dumb consumers of Pinia stores, refreshed by `game-state-updated` domain payloads.
 - **Tailwind v4**: CSS-first via `@tailwindcss/vite`; **no** `tailwind.config.js`/`postcss.config.js`. Classes applied directly in templates.

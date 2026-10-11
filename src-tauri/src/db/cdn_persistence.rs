@@ -546,6 +546,15 @@ fn insert_foods(tx: &Transaction, data: &GameData) -> Result<()> {
             }
         };
 
+        if !KNOWN_FOOD_CATEGORIES.contains(&food_category.as_str()) {
+            eprintln!(
+                "foods: unrecognised food category {food_category:?} on {} — the Gourmand screen \
+                 buckets it under Unknown Categories; teach canonical_food_category about it if the \
+                 CDN re-spelled a known category",
+                item.name
+            );
+        }
+
         // Extract Gourmand skill requirement from SkillReqs
         let gourmand_req = item
             .skill_reqs
@@ -588,13 +597,48 @@ fn insert_foods(tx: &Transaction, data: &GameData) -> Result<()> {
     Ok(())
 }
 
-/// Parse a food_desc string like "Level 20 Meal" into (level, category)
+/// Parse a food_desc string like "Level 20 Meal" into (level, category).
+///
+/// The category token is canonicalised by `canonical_food_category` — CDN 486
+/// spells instant snacks `"Level 10 Instant Snack"` (built from the
+/// `Food_Effect_Level_InstantSnack` string) where earlier data used
+/// `"Level 10 Instant-Snack"`. `gourmandStore` splits the menu on the
+/// hyphenated spelling, so storing the raw token silently hides every instant
+/// snack from the Gourmand screen.
 fn parse_food_desc(food_desc: &str) -> Option<(i64, String)> {
     let rest = food_desc.strip_prefix("Level ")?;
     let space_idx = rest.find(' ')?;
     let level: i64 = rest[..space_idx].parse().ok()?;
-    let category = rest[space_idx + 1..].to_string();
+    let category = canonical_food_category(&rest[space_idx + 1..]);
     Some((level, category))
+}
+
+/// The categories the Gourmand screen has a section for — keep in sync with
+/// `KNOWN_FOOD_CATEGORIES` in `src/types/gourmand.ts`. Anything outside this set
+/// is surfaced in the screen's "Unknown Categories" bucket and logged by
+/// `insert_foods`, so a CDN re-spelling gets noticed instead of silently
+/// unsectioned.
+const KNOWN_FOOD_CATEGORIES: [&str; 3] = ["Meal", "Snack", "Instant-Snack"];
+
+/// Map a CDN food category to the token glogger stores and the frontend matches
+/// on: `Meal`, `Snack`, or `Instant-Snack`.
+///
+/// Comparison ignores case and `-`/`_`/space separators, so separator drift
+/// between CDN versions is absorbed here rather than at every consumer.
+/// Unknown categories pass through unchanged — the Gourmand screen shows them
+/// as-is instead of guessing.
+fn canonical_food_category(raw: &str) -> String {
+    let key: String = raw
+        .chars()
+        .filter(|c| !matches!(c, '-' | '_' | ' '))
+        .collect::<String>()
+        .to_lowercase();
+    match key.as_str() {
+        "meal" => "Meal".to_string(),
+        "snack" => "Snack".to_string(),
+        "instantsnack" => "Instant-Snack".to_string(),
+        _ => raw.to_string(),
+    }
 }
 
 /// Insert pre-parsed survey types derived from items with MineralSurvey or MiningSurvey keywords.
@@ -798,5 +842,51 @@ pub fn load_cdn_data(conn: &Connection) -> Result<(u32, bool)> {
         Ok((v, count > 0))
     } else {
         Ok((0, false))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Both CDN spellings of the instant-snack category must land on the single
+    /// token `gourmandStore` matches on, or the Instant-Snacks section renders
+    /// empty (see migration v70).
+    #[test]
+    fn food_desc_parses_level_and_canonical_category() {
+        assert_eq!(
+            parse_food_desc("Level 10 Instant Snack"),
+            Some((10, "Instant-Snack".to_string()))
+        );
+        assert_eq!(
+            parse_food_desc("Level 0 Instant-Snack"),
+            Some((0, "Instant-Snack".to_string()))
+        );
+        assert_eq!(parse_food_desc("Level 20 Meal"), Some((20, "Meal".to_string())));
+        assert_eq!(parse_food_desc("Level 5 Snack"), Some((5, "Snack".to_string())));
+    }
+
+    #[test]
+    fn unknown_food_categories_survive_verbatim() {
+        assert_eq!(
+            parse_food_desc("Level 3 Second Breakfast"),
+            Some((3, "Second Breakfast".to_string()))
+        );
+    }
+
+    /// Every known category round-trips unchanged, so the unknown-category
+    /// warning in `insert_foods` can't fire for a food the screen does render.
+    #[test]
+    fn canonicalisation_covers_every_known_category() {
+        for known in KNOWN_FOOD_CATEGORIES {
+            assert_eq!(canonical_food_category(known), known);
+        }
+        assert!(!KNOWN_FOOD_CATEGORIES.contains(&canonical_food_category("Brunch").as_str()));
+    }
+
+    #[test]
+    fn malformed_food_descs_are_rejected() {
+        assert_eq!(parse_food_desc("Instant Snack"), None);
+        assert_eq!(parse_food_desc("Level X Meal"), None);
     }
 }

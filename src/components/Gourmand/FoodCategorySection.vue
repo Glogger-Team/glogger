@@ -1,10 +1,13 @@
 <template>
   <div class="mb-6">
-    <div class="flex items-center justify-between mb-3">
-      <h3 class="text-text-primary font-bold uppercase tracking-wide text-sm">
-        {{ title }}
-        <span class="text-text-muted font-normal ml-2">{{ eatenCount }} / {{ scopedFoods.length }} eaten</span>
-      </h3>
+    <div class="mb-3">
+      <div class="flex items-center justify-between">
+        <h3 class="text-text-primary font-bold uppercase tracking-wide text-sm">
+          {{ title }}
+          <span class="text-text-muted font-normal ml-2">{{ eatenCount }} / {{ scopedFoods.length }} eaten</span>
+        </h3>
+      </div>
+      <p v-if="hint" class="text-accent-warning text-xs mt-1">{{ hint }}</p>
     </div>
 
     <!-- Card view -->
@@ -60,6 +63,8 @@ import FoodListRow from './FoodListRow.vue'
 
 const props = defineProps<{
   title: string
+  /** Optional attention note under the header — used by the Unknown Categories bucket. */
+  hint?: string
   foods: FoodItem[]
   eatenFoods: Map<string, number>
   manuallyMarkedFoods: Set<string>

@@ -380,6 +380,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 69)?;
     }
 
+    if current_version < 70 {
+        migration_v70_canonical_food_categories(conn)?;
+        super::record_migration(conn, 70)?;
+    }
+
     tx.commit()?;
     Ok(())
 }
@@ -393,6 +398,27 @@ fn migration_v69_chat_channel_timestamp_index(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_chat_messages_channel_timestamp
             ON chat_messages(channel, timestamp);",
+    )?;
+    Ok(())
+}
+
+/// Migration V70: canonicalise the food category tokens already on disk.
+///
+/// CDN 486 spells instant snacks `"Instant Snack"` (built from the
+/// `Food_Effect_Level_InstantSnack` string) where earlier CDN data used
+/// `"Instant-Snack"`. `insert_foods` canonicalises the token itself now, but the
+/// `foods` table is only rebuilt on a CDN persist, so rewrite the stored rows —
+/// `gourmandStore` matches the hyphenated spelling and silently drops every row
+/// that carries a space (57 foods, including the whole Instant-Snacks section).
+///
+/// `cdn_version` is deliberately left alone: the backfill repairs the existing
+/// data in place, and the next persist writes canonical tokens anyway.
+fn migration_v70_canonical_food_categories(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "UPDATE foods
+            SET food_category = 'Instant-Snack'
+          WHERE food_category <> 'Instant-Snack'
+            AND REPLACE(REPLACE(REPLACE(LOWER(food_category), '-', ''), ' ', ''), '_', '') = 'instantsnack';",
     )?;
     Ok(())
 }
@@ -3237,6 +3263,60 @@ mod tests {
         assert_eq!(versions, 0, "cdn_version must be cleared to force a repersist");
     }
 
+    /// v70 repairs the token drift where CDN 486 writes `'Instant Snack'` but
+    /// the Gourmand screen matches `'Instant-Snack'`. Untouched categories — the
+    /// already-canonical ones and anything unknown — must survive verbatim.
+    #[test]
+    fn v70_canonicalises_instant_snack_categories() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE foods (
+                 item_id     INTEGER PRIMARY KEY,
+                 name        TEXT NOT NULL,
+                 icon_id     INTEGER,
+                 food_category TEXT NOT NULL,
+                 food_level  INTEGER NOT NULL,
+                 gourmand_req INTEGER,
+                 effect_descs TEXT NOT NULL,
+                 keywords    TEXT NOT NULL,
+                 value       REAL
+             );
+             INSERT INTO foods VALUES (1,'Honey',1,'Instant Snack',5,NULL,'[]','[]',10);
+             INSERT INTO foods VALUES (2,'Large Strawberry',2,'instant snack',5,NULL,'[]','[]',10);
+             INSERT INTO foods VALUES (3,'Cleaned Shrimp',3,'Instant-Snack',5,NULL,'[]','[]',10);
+             INSERT INTO foods VALUES (4,'Basic Pumpkin Pie',4,'Meal',50,15,'[]','[]',180);
+             INSERT INTO foods VALUES (5,'Mystery Brunch',5,'Brunch',1,NULL,'[]','[]',5);",
+        )
+        .unwrap();
+
+        migration_v70_canonical_food_categories(&c).unwrap();
+
+        let category = |id: i64| -> String {
+            c.query_row(
+                "SELECT food_category FROM foods WHERE item_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(category(1), "Instant-Snack");
+        assert_eq!(category(2), "Instant-Snack", "case-insensitive, separator-agnostic");
+        assert_eq!(category(3), "Instant-Snack");
+        assert_eq!(category(4), "Meal");
+        assert_eq!(category(5), "Brunch", "unknown categories stay as-is");
+
+        // Idempotent: a second run changes nothing.
+        migration_v70_canonical_food_categories(&c).unwrap();
+        let changed: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM foods WHERE food_category = 'Instant-Snack'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(changed, 3);
+    }
+
     fn setup_legacy_milking_timers() -> Connection {
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(
@@ -3324,13 +3404,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            69,
+            70,
             "fresh DB migrates to the head version"
         );
         // Second run: every `if current_version < N` block is skipped. If the
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 69);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 70);
     }
 }

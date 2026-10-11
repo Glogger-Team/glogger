@@ -30,10 +30,11 @@ CDN items (food_desc != null) → foods table (built during CDN ingestion)
 Game Gourmand report (.txt)   → gourmand_eaten_foods table → Vue frontend
 ```
 
-1. During CDN refresh, items with non-null `food_desc` are parsed into a `foods` table (~569 items)
-2. Player uses the Gourmand skill's "Request Skill Report" ability in-game, producing `SkillReport_*.txt`
-3. On view mount, the app auto-imports the latest gourmand report from Books folder, or user imports manually
-4. Eaten foods are persisted in `gourmand_eaten_foods` so data survives across sessions
+1. During CDN refresh, items with a non-null `food_desc` are parsed into a `foods` table (606 rows at CDN 486, every one an item the game marks as giving Gourmand XP)
+2. The category token is canonicalised by `canonical_food_category` (`Instant Snack` and `Instant-Snack` are the same category — CDN versions disagree on the separator, migration v70 repairs rows already stored)
+3. Player uses the Gourmand skill's "Request Skill Report" ability in-game, producing `SkillReport_*.txt`
+4. On view mount, the app auto-imports the latest gourmand report from Books folder, or user imports manually
+5. Eaten foods are persisted in `gourmand_eaten_foods` so data survives across sessions
 
 ## Report Parsing
 
@@ -111,6 +112,7 @@ Uses `PaneLayout` (screen-key `char-gourmand`) with left + conditional right pan
 - **Click to select** — click meals/snacks to populate the food buff comparison panel
 - **Export uneaten** — save remaining uneaten foods to a text file. Respects the source filter and "attainable only", tags each line with its source, and names the active filters in the header so a narrowed export isn't mistaken for the full list.
 - **Unmatched detection** — warns when report foods don't match CDN data (renamed/removed items)
+- **Unknown-category bucket** — foods whose CDN category token isn't one of the three known ones (a spelling drift such as CDN 486's `Instant Snack`, or a genuinely new game category) render in their own "Unknown Categories" section instead of silently losing their section. The section header names the offending token(s) and points at `canonical_food_category()` (see migration v70); each card shows the raw token as stored.
 - **Manual eaten marking** — click any food to toggle its eaten/uneaten status without importing a report. Manual marks are preserved during report imports (report data won't overwrite manual marks).
 - **Color coding** — green (report-imported eaten), blue (manually marked eaten), red (uneaten), dimmed (can't eat), gold border (selected)
 
@@ -123,7 +125,7 @@ Uses `PaneLayout` (screen-key `char-gourmand`) with left + conditional right pan
 | item_id | INTEGER PK | FK to items.id |
 | name | TEXT | Food item name |
 | icon_id | INTEGER | Icon reference |
-| food_category | TEXT | `'Meal'`, `'Snack'`, or `'Instant-Snack'` |
+| food_category | TEXT | `'Meal'`, `'Snack'`, or `'Instant-Snack'` — canonicalised on ingest (migration v70); unknown categories pass through verbatim |
 | food_level | INTEGER | Parsed from `food_desc` |
 | gourmand_req | INTEGER | From `raw_json.SkillReqs.Gourmand` (nullable) |
 | effect_descs | TEXT | JSON array of effect strings |
