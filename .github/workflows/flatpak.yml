@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to build for (e.g. v1.1.0)"
+        description: "Release tag (vX.Y.Z) — or any ref when publish=false (smoke test)"
         required: true
         type: string
       publish:
@@ -55,17 +55,21 @@ jobs:
         with:
           ref: ${{ env.TARGET_TAG }}
 
-      # The release workflows always pass a vetted tag; a dispatch can pass junk
-      # (e.g. `main`), so reject anything that is not v<semver> here. `git` cannot
+      # The release workflow always passes the vetted release tag; a dispatched
+      # smoke test may pass any ref (e.g. `main`) as long as it does not publish,
+      # so only enforce the v<semver> shape on the publishing path. `git` cannot
       # reach `origin` from inside the builder container, so this is shape-only:
-      # the actual tag is a checkout ref (a bad one fails the checkout above).
-      - name: Check the tag looks like a release tag
+      # the ref itself is a checkout ref (a bad one fails the checkout above).
+      - name: Check the ref is sane for this mode
         shell: bash
         run: |
-          case "$TARGET_TAG" in
-            v[0-9]*.[0-9]*.[0-9]*) echo "building Flatpak for ${TARGET_TAG}" ;;
-            *) echo "ERROR: '${TARGET_TAG}' is not a v<semver> release tag"; exit 1 ;;
-          esac
+          if [ "${{ inputs.publish }}" = "true" ]; then
+            case "$TARGET_TAG" in
+              v[0-9]*.[0-9]*.[0-9]*) ;;
+              *) echo "ERROR: '${TARGET_TAG}' is not a v<semver> release tag"; exit 1 ;;
+            esac
+          fi
+          echo "building Flatpak from ${TARGET_TAG} (publish=${{ inputs.publish }})"
 
       # ── Generate offline source manifests ───────────────────────────────
       # Flatpak build environments have no internet access, so all Cargo and npm
