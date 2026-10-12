@@ -5,6 +5,10 @@
 # (exit 1) when any prohibited artifact or API appears in the repo.
 #
 # Scope: src-tauri/*.rs (runtime code), docs/, scripts/, and the repo tree.
+# Runs in two places, so a skipped local hook can never let a violation ship:
+#   - .githooks/pre-push (local, PowerShell 5.1; GLOGGER_SKIP_CONSTRAINTS=1
+#     skips it for emergencies, loudly)
+#   - .github/workflows/release.yml -> validate job (pwsh, before any build)
 # If a legitimate false positive appears, reword the code/comment rather than
 # weakening this list. Changes to prohibited patterns require a TOS-doc
 # change-control note in the same commit.
@@ -17,6 +21,11 @@ $violations = @()
 function Add-Violation([string]$kind, [string]$path, [int]$line, [string]$text) {
     $script:violations += "${kind} at ${path}:${line}: ${text}"
 }
+
+# Path filters must work on Windows and on Linux (CI runs this on
+# ubuntu-latest): a backslash-only pattern would not exclude `…/target/…`
+# there, and would scan build output / node_modules.
+$excludedDirPattern = '[/\\](\.git|node_modules|target|dist)[/\\]'
 
 # ── 1. Game-process access / injection / memory APIs (ACTk + TOS §5) ────────
 $forbiddenPatterns = @(
@@ -49,7 +58,7 @@ $forbiddenPatterns = @(
 )
 foreach ($pat in $forbiddenPatterns) {
     $hits = Get-ChildItem -Path $src -Recurse -Filter '*.rs' |
-        Where-Object { $_.FullName -notmatch '\\target\\' } |
+        Where-Object { $_.FullName -notmatch $excludedDirPattern } |
         Select-String -Pattern $pat
     foreach ($hit in $hits) {
         Add-Violation "FORBIDDEN-API '$pat'" $hit.Path $hit.LineNumber $hit.Line.Trim()
@@ -73,7 +82,7 @@ $packetPatterns = @(
 )
 foreach ($pat in $packetPatterns) {
     $hits = Get-ChildItem -Path $src -Recurse -Filter '*.rs' |
-        Where-Object { $_.FullName -notmatch '\\target\\' } |
+        Where-Object { $_.FullName -notmatch $excludedDirPattern } |
         Select-String -Pattern $pat
     foreach ($hit in $hits) {
         Add-Violation "PACKET-TOOLING '$pat'" $hit.Path $hit.LineNumber $hit.Line.Trim()
@@ -82,7 +91,7 @@ foreach ($pat in $packetPatterns) {
 # Any socket touching the game's port — even reads. Excludes target/ build
 # output (generated crate code contains unrelated constants).
 $gameSock = Get-ChildItem -Path $src -Recurse -Filter '*.rs' |
-    Where-Object { $_.FullName -notmatch '\\target\\' } |
+    Where-Object { $_.FullName -notmatch $excludedDirPattern } |
     Select-String -Pattern '9002'
 foreach ($hit in $gameSock) {
     Add-Violation 'GAME-PORT-SOCKET' $hit.Path $hit.LineNumber $hit.Line.Trim()
@@ -93,12 +102,12 @@ foreach ($hit in $gameSock) {
 #     repo — even in docs. NOTE: this script names the forbidden patterns, so
 #     it (and the limits doc, which quotes the TOS) are excluded from their own
 #     scan via the allowlist below.
-$allowlist = @($PSCommandPath, (Join-Path $root 'docs\research\glogger-game-interaction-limits.md'))
+$allowlist = @($PSCommandPath, [IO.Path]::Combine($root, 'docs', 'research', 'glogger-game-interaction-limits.md'))
 
 function Get-RepoFiles {
     Get-ChildItem -Path $root -Recurse -File -ErrorAction SilentlyContinue |
         Where-Object {
-            $_.FullName -notmatch '\\(\.git|node_modules|target|dist)\\' -and
+            $_.FullName -notmatch $excludedDirPattern -and
             $allowlist -notcontains $_.FullName
         }
 }

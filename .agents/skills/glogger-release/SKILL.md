@@ -61,6 +61,8 @@ If the Release DB drifts stale: close ALL gloggers, copy the four files into `%A
 
 ## Known hazards (this machine, Windows)
 
+- Hooks are **opt-in per clone**: `scripts/setup-hooks.sh` sets `core.hooksPath=.githooks`. `pre-push` runs the TOS/CoC hard-line scanner (`scripts/check-glogger-constraints.ps1`) and blocks the push on a violation; the release workflow's `validate` job re-runs it, so an uninstalled hook cannot ship a violation.
+
 - PowerShell 5.1 mangles `git commit -m` here-strings with double quotes → `git commit -F <file>`.
 - `src-tauri/Cargo.toml` phantom CRLF diff in `git status` — leave uncommitted.
 - npm only (Node 24). No bun/yarn/pnpm.

@@ -6,6 +6,11 @@ name: Release
 # compiled into the app, so it stays stable while the asset behind it is
 # replaced on every release).
 #
+# The validate job also runs the game-interaction hard-line scanner
+# (scripts/check-glogger-constraints.ps1, the same gate as the local pre-push
+# hook — see docs/research/glogger-game-interaction-limits.md), so a skipped or
+# uninstalled local hook cannot let a TOS/CoC violation reach a release.
+#
 # Release notes come from RELEASE_NOTES.md, committed by scripts/release.sh
 # (generated from the commits since the previous release tag, or hand-written
 # via `--notes <file>`): the validate job fails a tag push whose notes are
@@ -86,6 +91,10 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "building v$VERSION from ${{ inputs.ref || github.ref }}"
+
+      - name: Game-interaction hard lines (TOS/CoC)
+        shell: pwsh
+        run: ./scripts/check-glogger-constraints.ps1
 
       - name: Verify release notes
         shell: bash

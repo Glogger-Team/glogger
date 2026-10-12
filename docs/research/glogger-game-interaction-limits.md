@@ -115,8 +115,16 @@ the client, any automation of gameplay.
 
 ## 6. Enforcement: `scripts/check-glogger-constraints.ps1`
 
-Runs on every push (`.githooks/pre-push`, active since
-`core.hooksPath=.githooks`). In full-compliance mode the scanner checks:
+Runs in two places, so skipping one cannot ship a violation:
+
+- **Every push** from a clone with the hooks installed —
+  `core.hooksPath=.githooks` (`.githooks/pre-push`; `scripts/setup-hooks.sh`
+  sets it). Opt-in per clone, so check it after a fresh clone.
+- **Every release**: the `validate` job of `.github/workflows/release.yml`
+  runs the scanner with `pwsh` before any platform builds, so a tag push that
+  violates a hard line fails the release.
+
+In full-compliance mode the scanner checks:
 
 - §2's forbidden APIs (`src-tauri/*.rs`),
 - **capture-tooling identifiers** in `src-tauri/*.rs` (driver and packet-tool

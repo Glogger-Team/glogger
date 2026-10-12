@@ -48,7 +48,8 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 | Dev server | `npm run tauri dev` | Vite HMR on :1420, auto-rebuilds Rust |
 | Frontend build + typecheck | `npm run build` | `vue-tsc --noEmit && vite build` |
 | Rust check | `cd src-tauri && cargo check` | Faster feedback |
-| Rust tests | `cd src-tauri && cargo test --lib` | 569 tests, 46 files |
+| Rust tests | `cd src-tauri && cargo test --lib`|569 tests, 46 files|
+| TOS/CoC hard lines | `pwsh scripts/check-glogger-constraints.ps1` | Game-interaction limits gate: local pre-push hook (install per clone: `scripts/setup-hooks.sh`) + the release workflow's `validate` job |
 | Full Rust tests | `cd src-tauri && cargo test` | No `src-tauri/tests/` dir exists; everything is in-lib |
 | Survey replay | `npm run survey-test` | `--ignored` accuracy report, minutes-scale, needs `test_data/` + `docs/CDN-full-examples/` |
 | Version bump | `npm run version:bump patch\|minor\|major\|x.y.z`|See version section|
@@ -117,4 +118,5 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 - `scripts/bump-version.sh` rewrites the release window title with a version-agnostic sed.
 - **Avoid force-pushes to shared branches** — an accidental force-push once wiped `main` (restored via PR). `main` is the release branch; cut a release with `npm run release <patch|minor|major|x.y.z>`, which bumps, generates `RELEASE_NOTES.md` from the commits since the previous tag, tags `v<semver>` and pushes. Avoid force-pushes to `main`.
 - Commit prefixes: `feat:`, `fix:`, `impv:`, `docs:`, `test:`, `build:` (hooks warn; install via `git config core.hooksPath .githooks` or `scripts/setup-hooks.sh`).
+- Hooks are **opt-in per clone** (`core.hooksPath`) — a fresh clone has none until `scripts/setup-hooks.sh` runs, and `pre-push` is where the TOS/CoC hard-line scanner (`scripts/check-glogger-constraints.ps1`) blocks a violating push (`GLOGGER_SKIP_CONSTRAINTS=1` skips it, loudly). The release workflow re-runs the same scanner in `validate`, so an uninstalled hook cannot ship a violation.
 - `db/price_helper_commands.rs` and `db/survey_commands.rs` are `#[allow(dead_code)]` placeholders kept intentionally.

@@ -90,7 +90,14 @@ gh workflow run release.yml --repo cprivitere/glogger-twinkleoftoes \
 
 The pipeline refuses to publish when the tag != the committed
 `tauri.conf.json` version, when any platform's `.sig` is missing, or (for a
-dispatched publish) when the tag doesn't exist on `origin`. A tag push also
+dispatched publish) when the tag doesn't exist on `origin`. The `validate` job
+also runs the game-interaction hard-line scanner
+(`scripts/check-glogger-constraints.ps1`, `pwsh`), so a TOS/CoC violation fails
+the release — the same scanner runs from `.githooks/pre-push`, which is
+**opt-in per clone**: install it with `scripts/setup-hooks.sh` (verify:
+`git config --get core.hooksPath` → `.githooks`; it blocks a push carrying a
+probe violation, and `GLOGGER_SKIP_CONSTRAINTS=1` bypasses it loudly — never do
+that to get a release out, CI re-checks anyway). A tag push also
 fails `validate` when `RELEASE_NOTES.md` is missing or doesn't cover the range
 since the previous tag (a warning only on `workflow_dispatch`, where historical
 tags are smoke-tested). Commit prefixes drive the notes: `feat:`/`impv:`/`fix:`
