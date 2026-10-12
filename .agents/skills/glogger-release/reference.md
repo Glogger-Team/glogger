@@ -205,3 +205,17 @@ Absorb fixes with `git fetch upstream && git merge upstream/<branch>`; expect
 conflicts in the config/CI files this fork owns. Never open a PR against
 upstream. The local pre-push constraint scanner
 (`scripts/check-glogger-constraints.ps1`) runs automatically on push.
+
+## Credit lines (release bodies + README)
+
+- Original app: **Daniel Auchenpaugh** (`danielout/glogger`).
+- Upstream fork: credit the handle **oddio** (`crisp-oddio/glogger-oddio`) —
+  that is their own public self-credit ("oddio of arisetsu"), and their GitHub
+  profile carries no display name. The git author identity behind their 277
+  commits (`git log --author=crisp-oddio`) does carry a personal name, which
+  they publish nowhere; default to the handle unless they ask for the name.
+- Credit the **work**, not just the pipeline: 277 of their commits are
+  ancestors of our releases (103 of them feat/fix/impv), so the release
+  boilerplate reads "Features, fixes and the release pipeline inherited from
+  the oddio fork by oddio". Keep the wording in `release.yml` (template) and
+  `README.md` (footer) in sync when it changes.
