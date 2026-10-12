@@ -350,10 +350,6 @@ jobs:
             echo "| **Linux** (AppImage) | [$APPIMAGE]($BASE_URL/$APPIMAGE) |"
             echo "| **Linux** (Flatpak) | [glogger.flatpak]($BASE_URL/glogger.flatpak) — attached by a follow-up job; not self-updating |"
             echo
-            echo "The macOS build is unsigned (no Apple Developer certificate): on first launch use"
-            echo "right-click → Open, or clear the quarantine flag with"
-            echo "\`xattr -d com.apple.quarantine /Applications/glogger.app\`."
-            echo
             echo "---"
             echo
             # RELEASE_NOTES.md is checked out at the release tag (generated and
@@ -370,6 +366,12 @@ jobs:
             echo "Installed builds auto-update from the \`$CHANNEL_TAG\` channel."
             echo
             echo "Original app by Daniel Auchenpaugh ([danielout/glogger](https://github.com/danielout/glogger)). Features, fixes and the release pipeline inherited from the [oddio fork](https://github.com/crisp-oddio/glogger-oddio) by oddio — this fork builds on that work. Maintained by [cprivitere (TwinkleofToes)](https://github.com/cprivitere)."
+            echo
+            echo "---"
+            echo
+            # Static per-platform footnote: kept at the bottom so the notes stay
+            # at the top of the release page.
+            echo "<sub>**macOS:** the \`.dmg\` is unsigned (no Apple Developer certificate) — on first launch use right-click → Open, or clear the quarantine flag with \`xattr -d com.apple.quarantine /Applications/glogger.app\`.</sub>"
           } > FULL_RELEASE_NOTES.md
           gh release create "$TAG" --repo "$REPO" --title "glogger $TAG" --notes-file FULL_RELEASE_NOTES.md --latest
           gh release upload "$TAG" all-artifacts/* --repo "$REPO"

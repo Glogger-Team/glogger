@@ -109,7 +109,7 @@ Grab the latest release for your platform:
 | Platform | Installer |
 |----------|-----------|
 | Windows  | `.exe` (NSIS installer) |
-| macOS    | `.dmg` (Apple silicon; unsigned — right-click → Open on first launch) |
+| macOS    | `.dmg` (Apple silicon; **unsigned** — right-click → Open on first launch, or clear the quarantine flag: `xattr -d com.apple.quarantine /Applications/glogger.app`) |
 | Linux    | `.deb`, `.AppImage`, `.flatpak` |
 
 Release builds include automatic update checking — glogger will notify you when a new version is available.
