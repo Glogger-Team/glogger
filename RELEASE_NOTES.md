@@ -1,7 +1,7 @@
-## What's Changed since v1.0.3
+## What's Changed since v1.1.0
 
-### Fixes
-- fix(gourmand): show every Gourmand-XP food and bucket unknown categories (`80302d5`)
+### Improvements
+- impv(market): label stall price capture as experimental (`04e1a4a`)
 
 ---
-*11 commits since v1.0.3*
+*6 commits since v1.1.0*
