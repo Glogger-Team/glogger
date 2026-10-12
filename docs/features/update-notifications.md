@@ -11,8 +11,8 @@ Glogger has two update systems:
 
 ### How It Works
 
-- **Source:** GitHub Releases on [danielout/glogger](https://github.com/danielout/glogger)
-- Uses the [Tauri updater plugin](https://v2.tauri.app/plugin/updater/) (`tauri-plugin-updater`) which checks a `latest.json` manifest attached to the latest release.
+- **Source:** GitHub Releases on [cprivitere/glogger-twinkleoftoes](https://github.com/cprivitere/glogger-twinkleoftoes) — the endpoint compiled into the app is the `updater-latest` channel tag (`releases/download/updater-latest/latest.json`).
+- Uses the [Tauri updater plugin](https://v2.tauri.app/plugin/updater/) (`tauri-plugin-updater`), which checks that `latest.json` manifest and verifies the per-platform signatures before installing.
 - The manifest includes download URLs and cryptographic signatures for each platform. Signatures are verified before installation.
 - Failures (no network, rate-limited, GitHub down) are silently ignored.
 
@@ -34,7 +34,7 @@ The user can dismiss the indicator via the X button. It resurfaces after 5 hours
 
 ### Signing
 
-Release builds are signed with a keypair. The public key is in `tauri.conf.json` under `plugins.updater.pubkey`. The private key is a GitHub Actions secret (`TAURI_SIGNING_PRIVATE_KEY`). The CI workflow uses `tauri-apps/tauri-action` which auto-generates `latest.json` and `.sig` files for each platform artifact.
+- Release builds are signed with a keypair. The public key is in `tauri.conf.json` under `plugins.updater.pubkey`. The private key is a GitHub Actions secret (`TAURI_SIGNING_PRIVATE_KEY`). `tauri-apps/tauri-action` produces the `.sig` files; the release workflow's *Generate latest.json updater manifest* step builds `latest.json` (version, per-platform URL + signature, `pub_date`) and its `notes` field is the release's `RELEASE_NOTES.md`.
 
 ## CDN Game Data Monitoring
 
@@ -70,4 +70,4 @@ The modal is intentionally blocking (no backdrop-click-to-dismiss) to ensure use
 | Rust | `src-tauri/src/cdn_commands.rs` | `check_cdn_version` command |
 | UI | `src/App.vue` | Bottom bar update indicator, CDN modal wiring |
 | UI | `src/components/Shared/CdnUpdateModal.vue` | Blocking CDN update modal |
-| CI | `.github/workflows/release.yml` | Build + sign + publish with `tauri-apps/tauri-action` |
+| CI | `.github/workflows/release.yml` | Build + sign + publish; generates `latest.json` (notes from the tagged `RELEASE_NOTES.md`) and refreshes the `updater-latest` channel |

@@ -51,8 +51,9 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 | Rust tests | `cd src-tauri && cargo test --lib` | 569 tests, 46 files |
 | Full Rust tests | `cd src-tauri && cargo test` | No `src-tauri/tests/` dir exists; everything is in-lib |
 | Survey replay | `npm run survey-test` | `--ignored` accuracy report, minutes-scale, needs `test_data/` + `docs/CDN-full-examples/` |
-| Version bump | `npm run version:bump patch\|minor\|major\|x.y.z` | See version section |
-| Changelog | `npm run changelog` | From git log since last tag |
+| Version bump | `npm run version:bump patch\|minor\|major\|x.y.z`|See version section|
+| Release | `npm run release patch\|minor\|major\|x.y.z`|On `main`, clean tree: bumps, writes `RELEASE_NOTES.md`, commits, tags `v<semver>`, pushes; CI publishes the release with those notes|
+| Changelog | `npm run changelog` | Git-log notes since the last tag; `npm run release` writes them to `RELEASE_NOTES.md` (publishable to the GitHub Release + `latest.json`). `--notes <file>` overrides |
 
 ## Code Conventions & Common Patterns
 
@@ -80,7 +81,8 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 | `vite.config.ts` | Two HTML inputs (`index.html`, `dev-panel.html`), port 1420 strict |
 | `.github/workflows/release.yml` | Tag-triggered release pipeline: test gate → signed Windows/macOS(aarch64)/Linux builds → GitHub release → updater-latest manifest (`workflow_dispatch` with `publish=false` = dry run, no release); calls `flatpak.yml` to attach `glogger.flatpak` |
 | `.github/workflows/flatpak.yml` | Flatpak bundle build (gnome-50 builder container + offline cargo/npm source lists) driven from `flatpak/io.github.cprivitere.glogger.yml` |
-| `HANDOFF.md` | Session log with durable gotchas — read before nontrivial work |
+|`HANDOFF.md`|Session log with durable gotchas — read before nontrivial work|
+|`RELEASE_NOTES.md`|Written by `npm run release` from the commits since the previous tag (or `--notes <file>`); committed with the bump and published as the GitHub Release body + `latest.json.notes`. The `validate` job fails a tag push whose notes don't cover its range|
 
 ## Runtime/Tooling Preferences
 
@@ -113,6 +115,6 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 - **Two Vite entrypoints**: new root-level pages must be added to `vite.config.ts` inputs; dev panel is a separate app, not a route.
 - `game-state-updated` payloads are domain lists — refresh only named domains.
 - `scripts/bump-version.sh` rewrites the release window title with a version-agnostic sed.
-- **Avoid force-pushes to shared branches** — an accidental force-push once wiped `main` (restored via PR). `main` is the release branch; cut a release with `npm run release <patch|minor|major|x.y.z>`, which bumps, tags `v<semver>` and pushes. Avoid force-pushes to `main`.
+- **Avoid force-pushes to shared branches** — an accidental force-push once wiped `main` (restored via PR). `main` is the release branch; cut a release with `npm run release <patch|minor|major|x.y.z>`, which bumps, generates `RELEASE_NOTES.md` from the commits since the previous tag, tags `v<semver>` and pushes. Avoid force-pushes to `main`.
 - Commit prefixes: `feat:`, `fix:`, `impv:`, `docs:`, `test:`, `build:` (hooks warn; install via `git config core.hooksPath .githooks` or `scripts/setup-hooks.sh`).
 - `db/price_helper_commands.rs` and `db/survey_commands.rs` are `#[allow(dead_code)]` placeholders kept intentionally.

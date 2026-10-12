@@ -16,7 +16,7 @@ This repo (`cprivitere/glogger-twinkleoftoes`) is a standalone fork of `crisp-od
 | Verify before build | `cd src-tauri && cargo test --lib`; `npm run build` if frontend touched |
 | Build daily driver | `npm run tauri:build` (from repo root; unsigned locally unless a key is set — see *Auto-update*) |
 | Installer output | Local Windows build: `src-tauri/target/release/bundle/nsis/*.exe` (macOS/Linux installers only come from CI — this box has no cross toolchain) |
-| Publish a release | `npm run release <patch\|minor\|major\|x.y.z>` (bumps, commits, tags `v<version>`, pushes; CI builds + signs + publishes Windows/macOS(aarch64)/Linux and refreshes the update channel) |
+| Publish a release | `npm run release <patch\|minor\|major\|x.y.z>` (bumps, writes `RELEASE_NOTES.md`, commits, tags `v<version>`, pushes; CI builds + signs + publishes Windows/macOS(aarch64)/Linux with those notes and refreshes the update channel) |
 | Dry-run the release pipeline | `gh workflow run release.yml --repo cprivitere/glogger-twinkleoftoes -f ref=<tag\|main> -f publish=false` — builds all three platforms, creates no release |
 | Install/update | Run the NSIS setup — appdata `%APPDATA%\glogger.Release` is preserved on reinstall. Once a signed build is installed, the app updates itself (banner in the header / Help → Changelog) |
 | Signing key material | `~/.tauri/glogger.key` + `.password` (outside the repo) ↔ repo secrets `TAURI_SIGNING_PRIVATE_KEY[_PASSWORD]`; pubkey in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`, key ID `E39F2150244B82CA`) |
