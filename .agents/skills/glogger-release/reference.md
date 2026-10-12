@@ -87,6 +87,22 @@ The pipeline refuses to publish when the tag != the committed
 `tauri.conf.json` version, when any platform's `.sig` is missing, or (for a
 dispatched publish) when the tag doesn't exist on `origin`.
 
+### When a tag's build fails
+
+CI cannot rebuild a tag in place: a tag-triggered run executes the workflow file
+*at that tag*, and the `validate` job only compares the tag name against
+`tauri.conf.json` — so a failed build leaves the tag pointing at a tree that may
+itself be broken. Two options, both needing a deliberate call:
+
+- **Re-point the tag** at a fixed commit (what v1.1.0 needed):
+  `git tag -d v<ver> && git tag v<ver> && git push origin :refs/tags/v<ver> && git push origin refs/tags/v<ver>`.
+  Keep the version unchanged so the `validate` gate still passes; the old failed
+  run stays in history against the stale commit.
+- **Bump** (`npm run release patch`) and leave the broken tag behind.
+
+Whichever you pick, dry-run the matrix first (command above), and prefer a
+version whose `tauri.conf.json` matches the tag you are about to push.
+
 ### Platform coverage
 
 | Platform | Shipped artifact | Notes |

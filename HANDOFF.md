@@ -3,7 +3,7 @@
 **Date:** 2026-10-11 (Session 37 — release pipeline: Windows + macOS + Linux + Flatpak)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `main` — committed + pushed (`924f609`, `be03489`, `520271e`, `0424340`, `cf776c5`, `44cbc0d`, `26ab6f3`, `d8cee16` + docs). No Rust/frontend behavior change.
-**Status:** ✅ Two real CI runs: **Release dry run 38180252724** — `validate` + all three platform jobs green, artifacts `artifacts-windows` 8.3 MB / `artifacts-macos` 25.0 MB / `artifacts-linux` 98.8 MB, `publish` skipped as designed; **Flatpak 38181296027** — `glogger.flatpak` 8.90 MB built and uploaded. Locally: both workflows parse, every `run:` block `bash -n` clean, and the collect / version-probe / latest.json / release-notes blocks were executed against fake bundle trees under `set -euo pipefail`. `npm run build` clean after the npm dep bump.
+**Status:** ✅ Published. Run **38186878765** (tag `v1.1.0` re-pointed at the fixed `main`) went fully green: validate → 3 platform builds → publish → flatpak attach; release v1.1.0 is Live/`Latest` with 9 assets and the channel manifest lists all three platforms. Earlier dry runs: **38180252724** (Release, `publish=false` — `artifacts-windows` 8.3 MB / `artifacts-macos` 25.0 MB / `artifacts-linux` 98.8 MB) and **38181296027** (Flatpak, `glogger.flatpak` 8.90 MB). Locally: both workflows parse, every `run:` block `bash -n` clean, and the collect / version-probe / latest.json / release-notes blocks were executed against fake bundle trees under `set -euo pipefail`. `npm run build` clean after the npm dep bump.
 
 ## TL;DR — Session 37
 
@@ -18,7 +18,8 @@ v0.8.7 and `crisp-oddio/glogger-oddio` v0.12.18 both ship Windows + macOS `dmg`/
    refuses to build when the npm packages and the Rust crates differ in major.minor (`tauri` 2.12.1 vs
    `@tauri-apps/api` 2.11.1, updater 2.13.1 vs 2.10.1, …) — a side effect of `16697fe` bumping the cargo side only.
    `gh release list` still shows v1.0.3 as latest. Fixed by aligning the six npm packages (`be03489`);
-   `npx tauri info` now reports no mismatch. **The v1.1.0 tag cannot be rebuilt** — its tree predates the fix.
+   `npx tauri info` now reports no mismatch. **That tag's tree could not be rebuilt** — it predates the fix —
+   so the tag itself was re-pointed at the fixed commit (see *Outcome* below).
 2. **Runner `pipefail`.** `find … | head -40` SIGPIPEs under the runner's `bash -eo pipefail` and killed the linux
    collect step (38178973878). Replaced with `find -print -quit` / `|| true`; the `sed | head -1` version probe
    became an exiting `awk` (`520271e`).
@@ -52,11 +53,23 @@ v0.8.7 and `crisp-oddio/glogger-oddio` v0.12.18 both ship Windows + macOS `dmg`/
   the three CI jobs ran it on all three OSes and passed.
 - `%APPDATA%\glogger.Release` untouched; the local Windows installer path (`npm run tauri:build`) is unchanged.
 
-### Next action
+### Outcome — v1.1.0 published (2026-10-12)
 
-Cut the release that actually publishes these artifacts: `npm run release patch` → `v1.1.1` (v1.1.0's tag is
-unbuildable). Users on ≤v1.1.0 then get Windows/macOS/Linux installers plus the Flatpak, and the update channel
-gains the three-platform manifest.
+Per the user's call, the **v1.1.0 tag was re-pointed** from `36d0117` (unbuildable: predates the npm/crate
+alignment) to the fixed `main` (`13998ed`) via `git push origin :refs/tags/v1.1.0` + `git push origin
+refs/tags/v1.1.0` — no version bump, so `tag == tauri.conf.json` still passes the `validate` gate. The tag push
+triggered run **38186878765**, which went fully green (validate → 3 platform builds → publish → flatpak
+`workflow_call`).
+
+Release <https://github.com/cprivitere/glogger-twinkleoftoes/releases/tag/v1.1.0> (marked Latest) now carries
+upstream's full asset set: `windows-setup.exe`(+`.sig`) 8.28 MB · `macos.dmg` 13.1 MB · `macos.app.tar.gz`
+(+`.sig`) 12.1 MB · `linux.deb` 12.5 MB · `linux.AppImage`(+`.sig`) 87.1 MB · `glogger.flatpak` 8.89 MB. The
+`updater-latest` channel's `latest.json` reports version `1.1.0` with `windows-x86_64`, `darwin-aarch64` and
+`linux-x86_64` entries (real 404/416/420-byte signatures), so installed builds auto-update to the new release.
+
+A rebuilt tag is not covered by CI's `validate` job (it only compares the tag name to the config version), so
+re-pointing a tag whose build failed should be done deliberately — the old run 38178378091 stays in history
+against the stale commit.
 
 ---
 
