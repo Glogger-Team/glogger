@@ -1,7 +1,7 @@
-## What's Changed since v0.12.17
+## What's Changed since v1.0.3
 
 ### Fixes
-- fix(build-planner): parse indirect-damage mod prose the CDN actually stores (`1a06113`)
+- fix(gourmand): show every Gourmand-XP food and bucket unknown categories (`80302d5`)
 
 ---
-*2 commits since v0.12.17*
+*11 commits since v1.0.3*

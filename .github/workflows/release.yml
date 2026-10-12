@@ -6,6 +6,12 @@ name: Release
 # compiled into the app, so it stays stable while the asset behind it is
 # replaced on every release).
 #
+# Release notes come from RELEASE_NOTES.md, committed by scripts/release.sh
+# (generated from the commits since the previous release tag, or hand-written
+# via `--notes <file>`): the validate job fails a tag push whose notes are
+# missing or cover the wrong range, and the publish job puts them in the
+# GitHub Release body and in latest.json's `notes`.
+#
 # workflow_dispatch rebuilds the identical matrix for an existing ref with
 # `publish` left false, so the pipeline can be smoke-tested (all three
 # platforms, no release created) before cutting a real tag.
@@ -46,6 +52,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.ref }}
+          # full history + tags: the release-notes check needs the previous
+          # release tag to know which range RELEASE_NOTES.md must cover.
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@v6
@@ -77,6 +86,37 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
           echo "building v$VERSION from ${{ inputs.ref || github.ref }}"
+
+      - name: Verify release notes
+        shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # RELEASE_NOTES.md is generated and committed by scripts/release.sh,
+          # so a tag push always carries notes for its own range. This is a
+          # tripwire for tags cut some other way — a warning (not an error) on
+          # workflow_dispatch, where historical tags are smoke-tested.
+          PREV_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${TAG}^" 2>/dev/null || echo "")
+          PROBLEM=""
+          if [ ! -s RELEASE_NOTES.md ]; then
+            PROBLEM="RELEASE_NOTES.md is missing or empty"
+          elif ! grep -q "What's Changed since" RELEASE_NOTES.md; then
+            PROBLEM="RELEASE_NOTES.md has no 'What's Changed since …' section"
+          elif [ -n "$PREV_TAG" ] && ! grep -qE "since ${PREV_TAG}([^0-9]|$)" RELEASE_NOTES.md; then
+            PROBLEM="RELEASE_NOTES.md does not cover the changes since ${PREV_TAG}"
+          fi
+
+          if [ -z "$PROBLEM" ]; then
+            echo "release notes OK (since ${PREV_TAG:-the initial release})"
+            cat RELEASE_NOTES.md
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "ERROR: $PROBLEM."
+            echo "Cut releases with 'npm run release <patch|minor|major|x.y.z>', which generates RELEASE_NOTES.md and commits it with the bump."
+            exit 1
+          fi
+          echo "::warning title=Release notes::$PROBLEM (a tag push would fail here)"
 
   # ── Build every platform we ship, each gated by its own test run ──
   build:
@@ -210,8 +250,21 @@ jobs:
       VERSION: ${{ needs.validate.outputs.version }}
       TAG: ${{ needs.validate.outputs.tag }}
     steps:
-      - name: Checkout
+      - name: Verify the release tag exists
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Creating the release for a dispatch run would tag the default
+          # branch HEAD; require the real tag to exist first.
+          gh api "repos/$REPO/git/ref/tags/$TAG" --silent || {
+            echo "ERROR: tag $TAG does not exist on origin — cut it with npm run release"; exit 1; }
+
+      - name: Checkout (at the release tag, for RELEASE_NOTES.md)
         uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate.outputs.tag }}
 
       - name: Download artifact
         uses: actions/download-artifact@v8
@@ -226,12 +279,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           BASE_URL="https://github.com/$REPO/releases/download/$TAG"
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            # Creating the release for a dispatch run would tag the default
-            # branch HEAD; require the real tag to exist first.
-            gh api "repos/$REPO/git/ref/tags/$TAG" --silent || {
-              echo "ERROR: tag $TAG does not exist on origin — cut it with npm run release"; exit 1; }
-          fi
           ls -la all-artifacts/
           mkdir -p channel
 
@@ -244,15 +291,24 @@ jobs:
           done
           [ "$MISSING" = 0 ] || exit 1
 
+          # The updater manifest carries the same notes the GitHub Release
+          # shows; RELEASE_NOTES.md is checked out at the release tag.
+          if [ -s RELEASE_NOTES.md ]; then
+            cp RELEASE_NOTES.md updater-notes.md
+          else
+            printf 'glogger v%s\n' "$VERSION" > updater-notes.md
+          fi
+
           jq -n \
             --arg version "$VERSION" \
+            --rawfile notes updater-notes.md \
             --arg pub_date "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
             --arg win_url "$BASE_URL/$WIN_ASSET" --arg win_sig "$(cat "all-artifacts/$WIN_ASSET.sig")" \
             --arg mac_url "$BASE_URL/$MAC_ASSET" --arg mac_sig "$(cat "all-artifacts/$MAC_ASSET.sig")" \
             --arg linux_url "$BASE_URL/$LINUX_ASSET" --arg linux_sig "$(cat "all-artifacts/$LINUX_ASSET.sig")" \
             '{
                version: $version,
-               notes: ("glogger v" + $version),
+               notes: $notes,
                pub_date: $pub_date,
                platforms: {
                  "windows-x86_64": { url: $win_url, signature: $win_sig },
@@ -283,6 +339,7 @@ jobs:
             echo "| **macOS** (Apple silicon) | [$MAC]($BASE_URL/$MAC) |"
             echo "| **Linux** (Debian/Ubuntu) | [$DEB]($BASE_URL/$DEB) |"
             echo "| **Linux** (AppImage) | [$APPIMAGE]($BASE_URL/$APPIMAGE) |"
+            echo "| **Linux** (Flatpak) | [glogger.flatpak]($BASE_URL/glogger.flatpak) — attached by a follow-up job; not self-updating |"
             echo
             echo "The macOS build is unsigned (no Apple Developer certificate): on first launch use"
             echo "right-click → Open, or clear the quarantine flag with"
@@ -290,11 +347,22 @@ jobs:
             echo
             echo "---"
             echo
+            # RELEASE_NOTES.md is checked out at the release tag (generated and
+            # committed by scripts/release.sh) — it opens with
+            # "## What's Changed since v<previous>".
+            if [ -s RELEASE_NOTES.md ]; then
+              cat RELEASE_NOTES.md
+            else
+              echo "_No release notes were recorded for this release._"
+            fi
+            echo
+            echo "---"
+            echo
             echo "Installed builds auto-update from the \`$CHANNEL_TAG\` channel."
             echo
             echo "Original app by Daniel Auchenpaugh ([danielout/glogger](https://github.com/danielout/glogger)); build pipeline inherited from the [oddio fork](https://github.com/crisp-oddio/glogger-oddio). This fork is maintained by [cprivitere (TwinkleofToes)](https://github.com/cprivitere)."
-          } > RELEASE_NOTES.md
-          gh release create "$TAG" --repo "$REPO" --title "glogger $TAG" --notes-file RELEASE_NOTES.md --latest
+          } > FULL_RELEASE_NOTES.md
+          gh release create "$TAG" --repo "$REPO" --title "glogger $TAG" --notes-file FULL_RELEASE_NOTES.md --latest
           gh release upload "$TAG" all-artifacts/* --repo "$REPO"
 
       - name: Update the update-channel pointer release
