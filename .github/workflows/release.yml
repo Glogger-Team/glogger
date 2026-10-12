@@ -369,7 +369,7 @@ jobs:
             echo
             echo "Installed builds auto-update from the \`$CHANNEL_TAG\` channel."
             echo
-            echo "Original app by Daniel Auchenpaugh ([danielout/glogger](https://github.com/danielout/glogger)); build pipeline inherited from the [oddio fork](https://github.com/crisp-oddio/glogger-oddio). This fork is maintained by [cprivitere (TwinkleofToes)](https://github.com/cprivitere)."
+            echo "Original app by Daniel Auchenpaugh ([danielout/glogger](https://github.com/danielout/glogger)). Features, fixes and the release pipeline inherited from the [oddio fork](https://github.com/crisp-oddio/glogger-oddio) by oddio — this fork builds on that work. Maintained by [cprivitere (TwinkleofToes)](https://github.com/cprivitere)."
           } > FULL_RELEASE_NOTES.md
           gh release create "$TAG" --repo "$REPO" --title "glogger $TAG" --notes-file FULL_RELEASE_NOTES.md --latest
           gh release upload "$TAG" all-artifacts/* --repo "$REPO"

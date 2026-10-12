@@ -22,7 +22,7 @@ https://www.youtube.com/watch?v=wXSaIyMzuuA
 
 I apologize for bad UI/UX/programming - I'm a game designer by trade, not a software engineer. I'm more at home with excel and scripts than app development, so I'm learning as I go.
 
-Maintained by [cprivitere (TwinkleofToes)](https://github.com/cprivitere). Built on [crisp-oddio/glogger-oddio](https://github.com/crisp-oddio/glogger-oddio), originally [danielout/glogger](https://github.com/danielout/glogger).
+Maintained by [cprivitere (TwinkleofToes)](https://github.com/cprivitere). Built on [crisp-oddio/glogger-oddio](https://github.com/crisp-oddio/glogger-oddio) by oddio — its features, fixes and release pipeline carry over here — originally [danielout/glogger](https://github.com/danielout/glogger) by Daniel Auchenpaugh.
 
 ## Why beta?
 
