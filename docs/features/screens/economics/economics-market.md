@@ -48,7 +48,13 @@ Six options controlling how item values are calculated app-wide:
 - `export_market_values() → String` (JSON)
 - `import_market_values(json_data, strategy) → ImportResult`
 
-## Stall Price Observations (Other Players' Stalls)
+## Stall Price Observations (Other Players' Stalls) — experimental
+
+> **Experimental.** The capture flow is a work in progress and has not been
+> verified against live stalls end to end. The capture panel appears on browse
+> events; rows are entered manually (typed lines, or bought-item sentinels you
+> price yourself). Observations are a separate table and never overwrite your
+> curated `market_values`.
 
 The Market Prices tab also lists **stall price observations** — prices seen at
 other players' stalls, distinct from your curated `market_values` (which are

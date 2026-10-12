@@ -5,7 +5,10 @@
       class="fixed bottom-4 right-4 z-50 w-96 max-w-[calc(100vw-2rem)] max-h-[70vh] overflow-y-auto bg-surface-card border border-accent-gold/40 rounded-lg shadow-2xl p-3">
       <!-- Header -->
       <div class="flex items-center justify-between mb-2">
-        <h3 class="text-accent-gold text-sm font-semibold m-0">Capture stall prices</h3>
+        <h3 class="text-accent-gold text-sm font-semibold m-0">
+          Capture stall prices
+          <span class="text-status-warning text-[10px] font-semibold uppercase tracking-wide ml-1">experimental</span>
+        </h3>
         <button
           class="text-text-muted hover:text-text-primary bg-transparent border-none cursor-pointer text-base leading-none"
           title="Dismiss"
@@ -13,6 +16,11 @@
           &times;
         </button>
       </div>
+
+      <!-- Experimental caveat -->
+      <p class="text-text-dim text-[10px] mt-0 mb-2">
+        Work in progress, not verified against live stalls. Nothing here overwrites your Market values.
+      </p>
 
       <!-- Stall identity -->
       <div class="flex gap-2 mb-2">

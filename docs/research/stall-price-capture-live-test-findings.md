@@ -1,5 +1,13 @@
 # Stall Price Capture — live-test findings (2026-10-03, PAUSED/DROPPED)
 
+> **Status note (2026-10-11):** the code shipped in v1.0.0+ anyway (the shelved
+> fixes were committed as `3376d46`, and the capture panel + OCR commands are in
+> the release tree). It is therefore labelled **experimental** in the UI
+> (`StallPriceCapturePanel`, the Market tab's *Stall Price Observations*
+> section) and in `docs/features/screens/economics/economics-market.md`, and the
+> release notes for the versions that carried it no longer list it as a shipped
+> feature. Everything below still describes unverified work.
+
 **Status:** feature branch state committed to working tree but uncommitted to git.
 User shelved the live testing of this method ("drop this entire method of price
 updates for the moment"). Everything below is filed for a future session.

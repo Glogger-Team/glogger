@@ -165,9 +165,13 @@
       </div>
     </AccordionSection>
 
-    <!-- Stall price observations (other players' stalls) -->
+    <!-- Stall price observations (other players' stalls) — experimental -->
     <AccordionSection :default-open="false" class="shrink-0">
-      <template #title>Stall Price Observations</template>
+      <template #title>Stall Price Observations (experimental)</template>
+      <div class="shrink-0 mt-2 mb-2 p-2 rounded bg-status-warning/10 border border-status-warning/30 flex items-center gap-2 text-xs">
+        <span class="text-status-warning font-semibold">Experimental</span>
+        <span class="text-text-secondary">Capturing prices from other players' stalls is a work in progress and has not been verified against live stalls. Entries are manual (or bought-item sentinels you price yourself) and never overwrite your Market values.</span>
+      </div>
       <p class="text-text-dim text-xs mt-2 mb-2">
         Prices seen at other players' stalls — typed in from the live capture panel
         (opens automatically when you browse a stall) or auto-detected purchases.
