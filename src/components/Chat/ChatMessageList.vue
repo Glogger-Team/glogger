@@ -75,7 +75,10 @@
     >
         <!-- Jump to present / newer-above status. The "newer" affordance is
              pinned to the top edge (not left in the flow at the top of the
-             loaded window) so it is visible exactly while rows exist above. -->
+             loaded window) so it is visible exactly while rows exist above.
+             "Jump to Present" is hidden in that case: the window's top is not
+             the present, so scrolling there means "load the rows above", which
+             is what the pill does (and what reaching the top edge triggers). -->
         <div class="sticky top-0 z-10 flex justify-between items-center gap-2 pb-2 pointer-events-none">
           <button
             v-if="hasNewer"
@@ -92,7 +95,7 @@
           </button>
           <span v-else />
           <button
-            v-if="showJumpToPresent"
+            v-if="showJumpToPresent && !hasNewer"
             @click="jumpToPresent"
             class="pointer-events-auto px-4 py-1 bg-accent-gold/90 text-surface-base text-xs font-semibold rounded-full shadow-lg cursor-pointer hover:bg-accent-gold transition-all"
           >
