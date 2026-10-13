@@ -16,6 +16,7 @@
  */
 
 import { useSettingsStore } from '../stores/settingsStore'
+import { displayOffsetSeconds } from '../utils/displayDay'
 
 export type TimestampDisplayMode = 'local' | 'server' | 'utc'
 
@@ -160,6 +161,16 @@ export function getTimezoneSuffix(): string {
   if (mode === 'utc') return ' UTC'
   if (mode === 'server') return ' Server'
   return ''
+}
+
+/**
+ * Seconds east of UTC for the current display mode — the shift applied to
+ * stored UTC timestamps when rendering. Day bucketing (day picker, day
+ * windows, day headers) uses the same value so a day matches the clock times
+ * inside it.
+ */
+export function getDisplayOffsetSeconds(): number {
+  return displayOffsetSeconds(getDisplayMode(), getServerOffsetSeconds())
 }
 
 // ─── Granularity Formatters ──────────────────────────────────────

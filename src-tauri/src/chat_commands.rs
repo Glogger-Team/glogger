@@ -520,56 +520,16 @@ pub async fn get_chat_messages(
 }
 
 #[tauri::command(rename_all = "camelCase")]
-pub async fn get_chat_messages_around(
-    message_id: i64,
-    context_count: Option<i64>,
+pub async fn get_chat_days(
+    offset_seconds: Option<i64>,
     db_pool: State<'_, DbPool>,
-) -> Result<Vec<chat_commands::ChatMessageRow>, String> {
-    let conn = db_pool.get().map_err(|e| format!("Database error: {e}"))?;
-    let count = context_count.unwrap_or(25).clamp(1, 250);
-
-    chat_commands::get_messages_around(&conn, message_id, count)
-        .map_err(|e| format!("Failed to get messages around: {e}"))
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_chat_days(db_pool: State<'_, DbPool>) -> Result<Vec<chat_commands::ChatDayRow>, String> {
+) -> Result<Vec<chat_commands::ChatDayRow>, String> {
     let conn = db_pool.get().map_err(|e| format!("Database error: {e}"))?;
 
-    chat_commands::get_chat_days(&conn).map_err(|e| format!("Failed to get chat days: {e}"))
-}
-
-#[tauri::command(rename_all = "camelCase")]
-pub async fn get_chat_messages_around_time(
-    anchor_time: String,
-    channel: Option<String>,
-    sender: Option<String>,
-    search_text: Option<String>,
-    has_item_links: Option<bool>,
-    item_name: Option<String>,
-    tell_partner: Option<String>,
-    sort_order: Option<String>,
-    context_count: Option<i64>,
-    db_pool: State<'_, DbPool>,
-) -> Result<Vec<chat_commands::ChatMessageRow>, String> {
-    let conn = db_pool.get().map_err(|e| format!("Database error: {e}"))?;
-    let count = context_count.unwrap_or(25).clamp(1, 250);
-
-    // Same filter semantics as get_chat_messages (the anchor split and day
-    // bounds are handled inside get_messages_around_time).
-    let filter = chat_commands::ChatMessageFilter {
-        channel,
-        sender,
-        search_text,
-        has_item_links,
-        item_name,
-        tell_partner,
-        sort_order: sort_order.unwrap_or_else(|| "desc".to_string()),
-        ..Default::default()
-    };
-
-    chat_commands::get_messages_around_time(&conn, &anchor_time, &filter, count)
-        .map_err(|e| format!("Failed to get messages around time: {e}"))
+    // `offsetSeconds` = viewer's display timezone (seconds east of UTC), so the
+    // day list matches the times the UI renders.
+    chat_commands::get_chat_days(&conn, offset_seconds.unwrap_or(0))
+        .map_err(|e| format!("Failed to get chat days: {e}"))
 }
 
 #[tauri::command(rename_all = "camelCase")]

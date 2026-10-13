@@ -1,24 +1,22 @@
-import { ref, computed, type Ref, type ComputedRef } from 'vue'
+import { ref, computed, watch, type Ref, type ComputedRef } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import type { ChatMessage, ChatDay, ChatFilter } from '../types/database'
+import type { ChatDay } from '../types/database'
+import { getDisplayOffsetSeconds } from './useTimestamp'
+import { displayDayBounds, displayDayOf } from '../utils/displayDay'
 
 /**
- * Shared chat date navigation: play-day list, active day filter, and
- * around-time context loading. Used by every Chat view that renders a
+ * Shared chat date navigation: play-day list, active day filter and the day
+ * windows opened from it. Used by every Chat view that renders a
  * ChatMessageList backed by `get_chat_messages`.
  *
- * Day filtering maps the selected day onto `startTime`/`endTime` bounds
- * (`day 00:00:00` … `day 23:59:59`), so the existing offset pagination
- * pipeline works unchanged inside a day.
+ * Days and their windows are bucketed in the viewer's DISPLAY timezone (see
+ * `utils/displayDay`), not UTC, so a selected day matches the clock times
+ * rendered inside it. A day window narrows `startTime`/`endTime` to that
+ * day's UTC bounds, so ordinary offset pagination keeps working inside it.
  */
 
-/** `YYYY-MM-DD` slice of a stored `YYYY-MM-DD HH:MM:SS` timestamp */
-export function chatDayOf(timestamp: string): string {
-  return timestamp.length >= 10 ? timestamp.slice(0, 10) : timestamp
-}
-
 export interface ChatDateNav {
-  /** Play days (UTC `YYYY-MM-DD`) with message counts, newest first */
+  /** Play days (display-timezone `YYYY-MM-DD`) with message counts, newest first */
   days: Ref<ChatDay[]>
   /** Currently selected day, or null for live/unfiltered browsing */
   activeDay: Ref<string | null>
@@ -26,10 +24,14 @@ export interface ChatDateNav {
   isPastView: ComputedRef<boolean>
   /** `startTime`/`endTime` derived from activeDay */
   dayFilter: ComputedRef<{ startTime: string, endTime: string } | null>
+  /** Display-timezone offset (seconds east of UTC) the buckets are built from */
+  offsetSeconds: ComputedRef<number>
   loadDays: () => Promise<void>
   jumpToDay: (day: string | null) => void
-  /** `YYYY-MM-DD` of a message timestamp */
+  /** Display-timezone `YYYY-MM-DD` of a message timestamp */
   dayOf: (timestamp: string) => string
+  /** UTC bounds covering a display day, selected or not */
+  boundsForDay: (day: string) => { startTime: string, endTime: string }
   /** dir 1 = older day, dir -1 = newer day */
   stepDay: (dir: 1 | -1) => void
   canStepDay: (dir: 1 | -1) => boolean
@@ -40,10 +42,14 @@ export interface ChatDateNav {
 export function useChatDateNav(): ChatDateNav {
   const days = ref<ChatDay[]>([])
   const activeDay = ref<string | null>(null)
+  // Display shift for the current Local/Server/UTC mode. Switching the mode
+  // or the timezone override re-fetches the day list (already-open windows
+  // refresh on the view's next load).
+  const offsetSeconds = computed(() => getDisplayOffsetSeconds())
 
   async function loadDays() {
     try {
-      days.value = await invoke<ChatDay[]>('get_chat_days')
+      days.value = await invoke<ChatDay[]>('get_chat_days', { offsetSeconds: offsetSeconds.value })
       // Drop the active day if it vanished (e.g. admin purge)
       if (activeDay.value && !days.value.some(d => d.day === activeDay.value)) {
         activeDay.value = null
@@ -53,18 +59,20 @@ export function useChatDateNav(): ChatDateNav {
     }
   }
 
+  watch(offsetSeconds, () => { void loadDays() })
+
   const isPastView = computed(() => activeDay.value !== null)
 
-  const dayFilter = computed(() => {
-    if (!activeDay.value) return null
-    return {
-      startTime: `${activeDay.value} 00:00:00`,
-      endTime: `${activeDay.value} 23:59:59`,
-    }
-  })
+  const dayFilter = computed(() =>
+    activeDay.value ? displayDayBounds(activeDay.value, offsetSeconds.value) : null
+  )
 
   function filterParams(): { startTime?: string, endTime?: string } {
     return dayFilter.value ?? {}
+  }
+
+  function boundsForDay(day: string) {
+    return displayDayBounds(day, offsetSeconds.value)
   }
 
   function stepDay(dir: 1 | -1) {
@@ -92,36 +100,13 @@ export function useChatDateNav(): ChatDateNav {
     activeDay,
     isPastView,
     dayFilter,
+    offsetSeconds,
     loadDays,
     jumpToDay,
-    dayOf: chatDayOf,
+    dayOf: (timestamp: string) => displayDayOf(timestamp, offsetSeconds.value),
+    boundsForDay,
     stepDay,
     canStepDay,
     filterParams,
   }
 }
-
-/** Load a day's messages (day jump / prev-day navigation). The anchor is a
- *  `YYYY-MM-DD` day; the window is that day's rows in the requested sort
- *  order. Accepts the view's complete filter (search, sender, item
- *  filters, tell partner, sort order) so the window matches the normal
- *  query path. */
-export async function fetchMessagesAroundTime(
-  anchorTime: string,
-  filter: ChatFilter = {},
-  contextCount = 60,
-): Promise<ChatMessage[]> {
-  return invoke<ChatMessage[]>('get_chat_messages_around_time', {
-    anchorTime,
-    channel: filter.channel ?? undefined,
-    sender: filter.sender ?? undefined,
-    searchText: filter.searchText ?? undefined,
-    hasItemLinks: filter.hasItemLinks ?? undefined,
-    itemName: filter.itemName ?? undefined,
-    tellPartner: filter.tellPartner ?? undefined,
-    sortOrder: filter.sortOrder ?? undefined,
-    contextCount,
-  })
-}
-
-export type { ChatFilter }

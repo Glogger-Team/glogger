@@ -363,72 +363,6 @@ fn get_item_links_for_message<C: DbRead + ?Sized>(
     Ok(links)
 }
 
-/// Get messages around a specific message for context viewing.
-/// Returns `context_count` messages before and after the target message
-/// in the same channel, ordered chronologically.
-pub fn get_messages_around<C: DbRead + ?Sized>(
-    conn: &C,
-    message_id: i64,
-    context_count: i64,
-) -> Result<Vec<ChatMessageRow>> {
-    // `before`/`after` are evaluated ONCE each (they only reference `target`,
-    // never the outer `cm`), so this is O(log n + context) per branch rather
-    // than the O(n² log n) the previous `cm.id IN (<correlated subquery>)`
-    // form produced — that form re-ran both neighbour scans for every one of
-    // the channel's rows and hung for tens of seconds on busy channels.
-    // `IS` is NULL-safe equality, so NULL-channel (zone/system) targets work.
-    let query = "
-        WITH target AS (
-            SELECT timestamp AS ts, channel AS ch FROM chat_messages WHERE id = ?1
-        ),
-        before AS (
-            SELECT id FROM chat_messages, target
-            WHERE chat_messages.channel IS target.ch
-              AND chat_messages.id != ?1
-              AND chat_messages.timestamp <= target.ts
-            ORDER BY chat_messages.timestamp DESC
-            LIMIT ?2
-        ),
-        after AS (
-            SELECT id FROM chat_messages, target
-            WHERE chat_messages.channel IS target.ch
-              AND chat_messages.id != ?1
-              AND chat_messages.timestamp >= target.ts
-            ORDER BY chat_messages.timestamp ASC
-            LIMIT ?2
-        )
-        SELECT cm.id, cm.timestamp, cm.channel, cm.sender, cm.message, cm.is_system, cm.from_player
-        FROM chat_messages cm
-        WHERE cm.id = ?1
-           OR cm.id IN (SELECT id FROM before)
-           OR cm.id IN (SELECT id FROM after)
-        ORDER BY cm.timestamp ASC
-    ";
-
-    let mut stmt = conn.prepare(query)?;
-    let rows = stmt.query_map(rusqlite::params![message_id, context_count], |row| {
-        Ok(ChatMessageRow {
-            id: row.get(0)?,
-            timestamp: row.get(1)?,
-            channel: row.get(2)?,
-            sender: row.get(3)?,
-            message: row.get(4)?,
-            is_system: row.get(5)?,
-            from_player: row.get(6)?,
-            item_links: Vec::new(),
-        })
-    })?;
-
-    let mut messages = Vec::new();
-    for row in rows {
-        let mut msg = row?;
-        msg.item_links = get_item_links_for_message(conn, msg.id)?;
-        messages.push(msg);
-    }
-
-    Ok(messages)
-}
-
 /// Build an FTS5 MATCH expression from a user search string.
 ///
 /// Plain words become quoted tokens joined implicitly with AND. Phrases in
@@ -538,16 +472,25 @@ pub fn build_fts_match_expr(search_text: &str) -> Option<String> {
     }
 }
 
-/// Days (UTC, from stored timestamps) that contain chat messages, newest first.
-pub fn get_chat_days<C: DbRead + ?Sized>(conn: &C) -> Result<Vec<ChatDayRow>> {
+/// Days that contain chat messages, newest first.
+///
+/// Stored timestamps are UTC; `offset_seconds` is the viewer's display
+/// timezone offset (seconds east of UTC) so the bucketing matches the clock
+/// times the UI renders. Without it a non-UTC viewer's day list disagrees
+/// with the displayed times near midnight (the day's window shows the
+/// previous/next day's timestamps).
+pub fn get_chat_days<C: DbRead + ?Sized>(
+    conn: &C,
+    offset_seconds: i64,
+) -> Result<Vec<ChatDayRow>> {
     let mut stmt = conn.prepare(
-        "SELECT substr(timestamp, 1, 10) AS day, COUNT(*) AS count
+        "SELECT date(timestamp, printf('%d seconds', ?1)) AS day, COUNT(*) AS count
          FROM chat_messages
          GROUP BY day
          ORDER BY day DESC",
     )?;
 
-    let rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map(rusqlite::params![offset_seconds], |row| {
         Ok(ChatDayRow {
             day: row.get(0)?,
             count: row.get(1)?,
@@ -564,75 +507,9 @@ pub fn get_chat_days<C: DbRead + ?Sized>(conn: &C) -> Result<Vec<ChatDayRow>> {
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ChatDayRow {
-    /// UTC day as `YYYY-MM-DD`
+    /// Day (`YYYY-MM-DD`) in the viewer's display timezone
     pub day: String,
     pub count: i64,
-}
-
-/// Get a day's messages in the requested sort order. Every caller passes a
-/// `YYYY-MM-DD` day anchor (day jump / prev-day navigation); the window is
-/// exactly that day's rows — never leaks adjacent days, and the ordering
-/// matches the sort toggle so continuation pagination composes cleanly.
-/// Caller filters (channel, sender, search, item filters) always apply.
-/// No offset math — uses the timestamp index for O(log n) boundary seeks.
-pub fn get_messages_around_time<C: DbRead + ?Sized>(
-    conn: &C,
-    anchor_time: &str,
-    filter: &ChatMessageFilter,
-    context_count: i64,
-) -> Result<Vec<ChatMessageRow>> {
-    // The anchor is a bare `YYYY-MM-DD` day (day-jump case).
-    let day = anchor_time.get(..10).unwrap_or(anchor_time).to_string();
-
-    // Bounds and caller filters build in ONE filter so parameter indexes
-    // stay contiguous.
-    let desc = filter.sort_order != "asc";
-    let mut combined = filter.clone();
-    combined.start_time = Some(format!("{} 00:00:00", day));
-    combined.end_time = Some(format!("{} 23:59:59", day));
-    combined.limit = context_count;
-    combined.offset = 0;
-    let (conditions, params) = build_chat_where(&combined);
-
-    let order = if desc {
-        "ORDER BY cm.timestamp DESC, cm.id DESC"
-    } else {
-        "ORDER BY cm.timestamp ASC, cm.id ASC"
-    };
-
-    let sql = format!(
-        "SELECT cm.id, cm.timestamp, cm.channel, cm.sender, cm.message, cm.is_system, cm.from_player \
-         FROM chat_messages cm WHERE {} {} LIMIT {}",
-        conditions.join(" AND "),
-        order,
-        context_count,
-    );
-
-    let params_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_refs.as_slice(), map_chat_row)?;
-    let mut messages = Vec::new();
-    for row in rows {
-        let mut msg = row?;
-        msg.item_links = get_item_links_for_message(conn, msg.id)?;
-        messages.push(msg);
-    }
-    // The window's order matches the requested sort, so the label and
-    // continuation offsets agree with get_chat_messages.
-    Ok(messages)
-}
-
-fn map_chat_row(row: &rusqlite::Row<'_>) -> Result<ChatMessageRow> {
-    Ok(ChatMessageRow {
-        id: row.get(0)?,
-        timestamp: row.get(1)?,
-        channel: row.get(2)?,
-        sender: row.get(3)?,
-        message: row.get(4)?,
-        is_system: row.get(5)?,
-        from_player: row.get(6)?,
-        item_links: Vec::new(),
-    })
 }
 
 /// Force a full rebuild of the chat FTS index (call after bulk backfills so
@@ -950,13 +827,6 @@ mod tests {
         }
     }
 
-    fn filter_sort(sort_order: &str) -> ChatMessageFilter {
-        ChatMessageFilter {
-            sort_order: sort_order.to_string(),
-            ..Default::default()
-        }
-    }
-
     #[test]
     fn test_build_fts_match_expr_plain_words() {
         let expr = build_fts_match_expr("hello world").unwrap();
@@ -1222,7 +1092,7 @@ mod tests {
         msg_with(&*conn, "2026-07-01 15:30:00", "General", "B", "two");
         msg_with(&*conn, "2026-07-03 09:00:00", "General", "C", "three");
 
-        let days = get_chat_days(&*conn).unwrap();
+        let days = get_chat_days(&*conn, 0).unwrap();
         assert_eq!(days.len(), 2);
         assert_eq!(days[0].day, "2026-07-03");
         assert_eq!(days[0].count, 1);
@@ -1231,146 +1101,96 @@ mod tests {
     }
 
     #[test]
-    fn test_get_messages_around_time_day_anchor() {
+    fn test_get_chat_days_buckets_in_display_timezone() {
         let conn = setup();
-        // Day before, day of, day after
+        msg_with(&*conn, "2026-07-01 00:30:00", "General", "A", "late night");
+        msg_with(&*conn, "2026-07-01 12:00:00", "General", "B", "midday");
+
+        let utc = get_chat_days(&*conn, 0).unwrap();
+        assert_eq!(utc.len(), 1);
+        assert_eq!(utc[0].day, "2026-07-01");
+        assert_eq!(utc[0].count, 2);
+
+        // UTC-7 viewer: 00:30Z renders as 2026-06-30 17:30, a day of its own
+        let west = get_chat_days(&*conn, -7 * 3600).unwrap();
+        assert_eq!(west.len(), 2);
+        assert_eq!(west[0].day, "2026-07-01");
+        assert_eq!(west[0].count, 1);
+        assert_eq!(west[1].day, "2026-06-30");
+        assert_eq!(west[1].count, 1);
+
+        // UTC+2 viewer: 00:30Z is 02:30 the same day — bucketing matches UTC
+        let east = get_chat_days(&*conn, 2 * 3600).unwrap();
+        assert_eq!(east.len(), 1);
+        assert_eq!(east[0].day, "2026-07-01");
+        assert_eq!(east[0].count, 2);
+    }
+
+    #[test]
+    fn test_get_chat_messages_day_window_excludes_adjacent_days() {
+        let conn = setup();
+        // Day before, day of, day after (same channel throughout)
         msg_with(&*conn, "2026-06-30 22:00:00", "General", "A", "before day");
         msg_with(&*conn, "2026-07-01 09:00:00", "General", "B", "morning");
         msg_with(&*conn, "2026-07-01 18:00:00", "General", "C", "evening");
         msg_with(&*conn, "2026-07-02 09:00:00", "General", "D", "next day");
 
-        // Day-window semantics: the day's rows in the requested sort order,
-        // never leaking adjacent days (A, D excluded). Desc with context 2:
-        // newest two rows of the day.
-        let messages =
-            get_messages_around_time(&*conn, "2026-07-01", &filter_sort("desc"), 2).unwrap();
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].sender.as_deref().unwrap(), "C");
-        assert_eq!(messages[1].sender.as_deref().unwrap(), "B");
-        // Context covering the whole day
-        let messages =
-            get_messages_around_time(&*conn, "2026-07-01", &filter_sort("desc"), 5).unwrap();
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].sender.as_deref().unwrap(), "C");
-        assert_eq!(messages[1].sender.as_deref().unwrap(), "B");
-        // Oldest-first ordering honors sort_order
-        let messages =
-            get_messages_around_time(&*conn, "2026-07-01", &filter_sort("asc"), 5).unwrap();
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].sender.as_deref().unwrap(), "B");
-        assert_eq!(messages[1].sender.as_deref().unwrap(), "C");
-    }
-
-    #[test]
-    fn test_get_messages_around_time_channel_filter() {
-        let conn = setup();
-        msg_with(&*conn, "2026-06-30 22:00:00", "General", "A", "gen before");
-        msg_with(&*conn, "2026-07-01 09:00:00", "Trade", "B", "trade one");
-        msg_with(&*conn, "2026-07-01 12:00:00", "General", "C", "gen mid");
-        msg_with(&*conn, "2026-07-01 15:00:00", "Trade", "D", "trade two");
-        msg_with(&*conn, "2026-07-01 18:00:00", "Trade", "E", "trade three");
-
-        let filter = ChatMessageFilter {
-            channel: Some("Trade".to_string()),
+        // The window a chat day pick opens: that day's bounds only.
+        let day_bounds = |sort: &str| ChatMessageFilter {
+            start_time: Some("2026-07-01 00:00:00".to_string()),
+            end_time: Some("2026-07-01 23:59:59".to_string()),
+            sort_order: sort.to_string(),
             ..Default::default()
         };
-        let messages = get_messages_around_time(&*conn, "2026-07-01", &filter, 25).unwrap();
-        // Trade only, day-bounded, newest-first: E, D, B
-        assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0].sender.as_deref().unwrap(), "E");
-        assert_eq!(messages[1].sender.as_deref().unwrap(), "D");
-        assert_eq!(messages[2].sender.as_deref().unwrap(), "B");
+
+        let desc = get_chat_messages(&*conn, &day_bounds("desc")).unwrap();
+        assert_eq!(desc.len(), 2, "adjacent days never leak into the window");
+        assert_eq!(desc[0].sender.as_deref().unwrap(), "C");
+        assert_eq!(desc[1].sender.as_deref().unwrap(), "B");
+
+        let asc = get_chat_messages(&*conn, &day_bounds("asc")).unwrap();
+        assert_eq!(asc[0].sender.as_deref().unwrap(), "B");
+        assert_eq!(asc[1].sender.as_deref().unwrap(), "C");
+
+        // Pagination continues inside the window (the seek the search jump does)
+        let page = ChatMessageFilter { limit: 1, offset: 1, ..day_bounds("desc") };
+        let rows = get_chat_messages(&*conn, &page).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].sender.as_deref().unwrap(), "B");
     }
 
     #[test]
-    fn test_get_messages_around_time_search_filter() {
+    fn test_get_chat_messages_day_window_keeps_search_and_channel_filters() {
         let conn = setup();
         msg_with(&*conn, "2026-07-01 09:00:00", "General", "A", "gorgon sighting");
         msg_with(&*conn, "2026-07-01 11:00:00", "General", "B", "unrelated chat");
-        msg_with(&*conn, "2026-07-01 18:00:00", "General", "C", "another gorgon");
+        msg_with(&*conn, "2026-07-01 15:00:00", "Trade", "C", "trade gorgon");
+        msg_with(&*conn, "2026-07-02 09:00:00", "General", "D", "gorgon another day");
 
         let filter = ChatMessageFilter {
             search_text: Some("gorgon".to_string()),
+            channel: Some("General".to_string()),
+            start_time: Some("2026-07-01 00:00:00".to_string()),
+            end_time: Some("2026-07-01 23:59:59".to_string()),
             ..Default::default()
         };
-        let messages = get_messages_around_time(&*conn, "2026-07-01", &filter, 25).unwrap();
-        // Search filter applies to the day window: A and C only, newest-first
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].sender.as_deref().unwrap(), "C");
-        assert_eq!(messages[1].sender.as_deref().unwrap(), "A");
+        let messages = get_chat_messages(&*conn, &filter).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].sender.as_deref().unwrap(), "A");
     }
 
     #[test]
-    fn test_get_messages_around_time_empty_day_is_empty() {
+    fn test_get_chat_messages_empty_day_window_is_empty() {
         let conn = setup();
         msg_with(&*conn, "2026-07-01 10:00:00", "General", "A", "only day");
-        msg_with(&*conn, "2026-07-05 10:00:00", "General", "B", "later day");
 
-        // Anchor on a day with no messages: empty — a day jump never
-        // fabricates rows from other days.
-        let messages =
-            get_messages_around_time(&*conn, "2026-06-15", &ChatMessageFilter::default(), 25)
-                .unwrap();
-        assert_eq!(messages.len(), 0);
-    }
-
-    #[test]
-    fn test_get_messages_around_time_before_first_row() {
-        let conn = setup();
-        msg_with(&*conn, "2026-07-01 10:00:00", "General", "A", "first");
-        msg_with(&*conn, "2026-07-01 11:00:00", "General", "B", "second");
-
-        // Oldest-first window from the day start
-        let messages =
-            get_messages_around_time(&*conn, "2026-07-01", &filter_sort("asc"), 25).unwrap();
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].sender.as_deref().unwrap(), "A");
-        assert_eq!(messages[1].sender.as_deref().unwrap(), "B");
-    }
-
-    #[test]
-    fn test_get_messages_around_null_channel_returns_target_and_neighbors() {
-        let conn = setup();
-        let ins = |ts: &str, msg: &str| -> i64 {
-            conn.execute(
-                "INSERT INTO chat_messages (timestamp, channel, sender, message, is_system, log_file, from_player)
-                 VALUES (?1, NULL, NULL, ?2, 1, 'Chat-test.log', NULL)",
-                rusqlite::params![ts, msg],
-            )
-            .unwrap();
-            conn.last_insert_rowid()
+        // A day with no messages never fabricates rows from other days
+        let filter = ChatMessageFilter {
+            start_time: Some("2026-06-15 00:00:00".to_string()),
+            end_time: Some("2026-06-15 23:59:59".to_string()),
+            ..Default::default()
         };
-        ins("2026-07-01 10:00:00", "you have entered Eltibule");
-        let target = ins("2026-07-01 10:01:00", "you have entered Gazluk");
-        ins("2026-07-01 10:02:00", "you have entered Sun Vale");
-
-        let messages = get_messages_around(&*conn, target, 25).unwrap();
-        assert_eq!(messages.len(), 3, "NULL-channel context must return target + neighbors");
-        assert!(messages.iter().any(|m| m.id == target));
-    }
-
-    #[test]
-    fn test_get_messages_around_ties_no_duplicates_and_bounded() {
-        // 60 rows sharing ONE timestamp exercise the before(`<=`)/after(`>=`)
-        // overlap: the outer query must still return each row at most once.
-        let conn = setup();
-        let ins = |msg: &str| -> i64 {
-            conn.execute(
-                "INSERT INTO chat_messages (timestamp, channel, sender, message, is_system, log_file, from_player)
-                 VALUES ('2026-07-01 10:00:00', 'General', 'A', ?1, 0, 'Chat-test.log', 0)",
-                rusqlite::params![msg],
-            )
-            .unwrap();
-            conn.last_insert_rowid()
-        };
-        let ids: Vec<i64> = (0..60).map(|i| ins(&format!("msg {i}"))).collect();
-        let target = ids[30];
-
-        let around = get_messages_around(&*conn, target, 25).unwrap();
-        let unique: std::collections::HashSet<i64> = around.iter().map(|m| m.id).collect();
-        assert_eq!(unique.len(), around.len(), "no duplicate rows");
-        assert!(around.iter().any(|m| m.id == target));
-        assert!(around.len() <= 51, "target + at most 25 each side");
+        assert!(get_chat_messages(&*conn, &filter).unwrap().is_empty());
     }
 
     #[test]
