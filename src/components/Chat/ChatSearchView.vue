@@ -91,6 +91,8 @@
       :highlight-id="jumpTargetId ?? undefined"
       :highlight-terms="parsed.termKinds"
       :date-nav="dateNav"
+      :window-start="offset"
+      :window-total="dayLogMode ? dayLogCount : (resultCount ?? undefined)"
       @load-more="loadMore"
       @load-newer="loadNewer"
       @toggle-sort="toggleSort"

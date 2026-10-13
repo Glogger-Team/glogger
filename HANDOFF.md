@@ -51,6 +51,19 @@ bottom of a day; and no discoverable sort-order switch.
 - `messages = []` before a jump briefly shows the spinner (and destroys the scroll container, which is why the new window
   starts at `scrollTop 0`) — harmless, but it is what makes the jump's initial position predictable.
 
+### Follow-up (same session): paging had no visible feedback
+
+User: *"no indication that there's still content available if you just wait for it to load."* Measured live on a 4,656-row day:
+the trailing "Load More Messages" button sat **3,477 px below the fold** at the top and still 1,745 px below it after a wheel burst
+(the loader had chained two pages 100→300 during the burst) — so the only cue lived at the very end of the content, which is a
+whole page away from where the user is. Fixed in `impv(chat)`: continuation affordances are now **pinned to the list edges** —
+top pill "Load newer|older messages · N above" (arrow → spinner in flight, label switches to "Loading …"), bottom pill
+"More messages below · N of M" → "Loading more messages…" → "End of the loaded window · M of M". Callers that know the query
+size pass `windowStart`/`windowTotal` (ChatSearchView does, for both results and day-log mode); the in-flight pill is chosen by
+a `lastRequest` ref so a *newer* load never reads as "loading more" at the bottom. Verified live: pill stays on screen at
+scrollTop 0 with the real end 12,734 px below, click/PageUp/PageDown all stream, and a `MutationObserver` (no CDP round
+trips — the load finishes in a few ms) caught both transient labels "Loading more messages…" and "Loading newer messages".
+
 ### Verification
 
 - `cargo test --lib` **661 passed** (new: display-timezone bucketing; day-window bounds / no adjacent-day leak / in-window

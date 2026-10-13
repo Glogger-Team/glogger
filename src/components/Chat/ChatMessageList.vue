@@ -73,8 +73,24 @@
       @scroll="onScroll"
       @keydown="onKeydown"
     >
-        <!-- Jump to present -->
-        <div class="sticky top-0 z-10 flex justify-end items-center pb-2">
+        <!-- Jump to present / newer-above status. The "newer" affordance is
+             pinned to the top edge (not left in the flow at the top of the
+             loaded window) so it is visible exactly while rows exist above. -->
+        <div class="sticky top-0 z-10 flex justify-between items-center gap-2 pb-2">
+          <button
+            v-if="hasNewer"
+            @click="requestLoadNewer"
+            class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-elevated/95 border border-border-light text-xs text-text-secondary cursor-pointer hover:bg-surface-hover hover:text-text-primary transition-all shadow-lg"
+            :title="`Rows above the loaded window — click, keep scrolling up, or hold PageUp`"
+          >
+            <span
+              v-if="loading && lastRequest === 'newer'"
+              class="w-3.5 h-3.5 border-2 border-border-default border-t-accent-gold rounded-full animate-spin"
+            ></span>
+            <span v-else>&#9650;</span>
+            {{ newerLabel }}<template v-if="newerAbove > 0"> · {{ newerAbove.toLocaleString() }} above</template>
+          </button>
+          <span v-else />
           <button
             v-if="showJumpToPresent"
             @click="jumpToPresent"
@@ -82,21 +98,6 @@
           >
             &#8593; Jump to Present
           </button>
-        </div>
-        <!-- Newer/older rows exist above the loaded window (day-log jumps land
-             mid-day): streaming them in keeps the scroll from dead-ending -->
-        <div v-if="hasNewer" class="py-2 text-center">
-          <button
-            v-if="!loading"
-            @click="requestLoadNewer"
-            class="px-6 py-2 bg-surface-elevated border border-border-light text-text-primary rounded cursor-pointer transition-all hover:bg-border-default hover:border-border-hover text-sm"
-          >
-            &#9650; Load {{ upDirection }} messages
-          </button>
-          <span v-else class="inline-flex items-center text-text-muted text-sm">
-            <span class="w-5 h-5 border-2 border-border-default border-t-accent-gold rounded-full animate-spin mr-2"></span>
-            Loading {{ upDirection }} messages...
-          </span>
         </div>
         <!-- Tell conversation layout -->
         <template v-if="isTellView">
@@ -171,19 +172,31 @@
             </div>
           </template>
         </template>
-        <!-- Inline loading indicator for pagination -->
-        <div v-if="loading && messages.length > 0" class="flex items-center justify-center py-4 text-text-muted">
-          <div class="w-6 h-6 border-2 border-border-default border-t-accent-gold rounded-full animate-spin mr-3"></div>
-          <span class="text-sm">Loading more messages...</span>
-        </div>
-        <!-- Manual load more fallback (in case scroll detection misses) -->
-        <div v-else-if="hasMore && !loading" class="py-4 text-center">
-          <button
-            @click="requestLoadMore"
-            class="px-6 py-2 bg-surface-elevated border border-border-light text-text-primary rounded cursor-pointer transition-all hover:bg-border-default hover:border-border-hover text-sm"
+        <!-- Pinned bottom status: the trailing affordance used to sit a whole
+             page below the fold (the loader fires 200px from the bottom), so
+             there was no sign that another page was coming or available -->
+        <div v-if="hasMore || showEnd" class="sticky bottom-0 z-10 flex justify-center pt-2">
+          <span
+            v-if="loading && lastRequest === 'more'"
+            class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-elevated/95 border border-border-light text-xs text-text-muted shadow-lg"
           >
-            Load More Messages
+            <span class="w-3.5 h-3.5 border-2 border-border-default border-t-accent-gold rounded-full animate-spin"></span>
+            Loading more messages&#8230;{{ progress }}
+          </span>
+          <button
+            v-else-if="hasMore"
+            @click="requestLoadMore"
+            class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-elevated/95 border border-border-light text-xs text-text-secondary cursor-pointer hover:bg-surface-hover hover:text-text-primary transition-all shadow-lg"
+            title="More rows below — click, keep scrolling, or hold PageDown"
+          >
+            &#9660; More messages below{{ progress }}
           </button>
+          <span
+            v-else
+            class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-elevated/95 border border-border-light text-xs text-text-dim"
+          >
+            &#9632; End of the loaded window{{ progress }}
+          </span>
         </div>
       </div>
   </div>
@@ -213,6 +226,11 @@ const props = defineProps<{
   highlightTerms?: HighlightTerm[]
   /** Date navigation state; omit to hide the date toolbar entirely */
   dateNav?: ChatDateNav
+  /** Index, within the current query, of the FIRST loaded row (0 when the
+   *  window starts at the beginning). Used for the pinned "N of M" progress. */
+  windowStart?: number
+  /** Total rows the current query can load, when the caller knows it */
+  windowTotal?: number
 }>()
 
 const isTellView = computed(() => {
@@ -272,20 +290,44 @@ const showJumpToPresent = ref(false)
 
 let loadMoreEmitted = false
 let loadNewerEmitted = false
+/** Which edge the in-flight request came from, so the right pinned pill shows
+ *  a spinner (a "newer" load must not read as "loading more" at the bottom) */
+const lastRequest = ref<'more' | 'newer' | null>(null)
 
 /** Top of the list holds newer rows when sorting newest-first, older when
  *  sorting oldest-first. */
 const upDirection = computed(() => (props.sortOrder === 'asc' ? 'older' : 'newer'))
+/** Top-pill label: the action it performs, or the in-flight state */
+const newerLabel = computed(() =>
+  `${props.loading && lastRequest.value === 'newer' ? 'Loading' : 'Load'} ${upDirection.value} messages`
+)
+/** Index just past the last loaded row, within the current query */
+const loadedEnd = computed(() => (props.windowStart ?? 0) + props.messages.length)
+/** " · 300 of 4,656" when the caller knows the query's total */
+const progress = computed(() =>
+  props.windowTotal === undefined
+    ? ''
+    : ` · ${loadedEnd.value.toLocaleString()} of ${props.windowTotal.toLocaleString()}`
+)
+/** Rows known to exist above the loaded window */
+const newerAbove = computed(() => props.windowStart ?? 0)
+/** Whole window loaded — say so instead of leaving the bottom silent */
+const showEnd = computed(() =>
+  !props.loading && !props.hasMore && props.windowTotal !== undefined
+    && props.messages.length > 0 && loadedEnd.value >= props.windowTotal
+)
 
 function requestLoadMore() {
   if (props.loading || !props.hasMore) return
   loadMoreEmitted = true
+  lastRequest.value = 'more'
   emit('load-more')
 }
 
 function requestLoadNewer() {
   if (props.loading || !props.hasNewer) return
   loadNewerEmitted = true
+  lastRequest.value = 'newer'
   emit('load-newer')
 }
 
@@ -302,8 +344,7 @@ function onScroll() {
 
   // Trigger load when within 200px of either edge
   if (props.hasMore && !loadMoreEmitted && distanceFromBottom < 200) {
-    loadMoreEmitted = true
-    emit('load-more')
+    requestLoadMore()
   }
   if (props.hasNewer && !loadNewerEmitted && el.scrollTop < 200) {
     requestLoadNewer()
@@ -315,6 +356,7 @@ watch(() => props.loading, (isLoading) => {
   if (!isLoading) {
     loadMoreEmitted = false
     loadNewerEmitted = false
+    lastRequest.value = null
   }
 })
 
