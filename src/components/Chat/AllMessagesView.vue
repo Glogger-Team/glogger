@@ -27,7 +27,7 @@
           Item links only
         </label>
         <button
-          @click="refresh"
+          @click="reset"
           :disabled="loading"
           class="w-9 h-9 p-0 bg-surface-elevated border border-border-light rounded text-text-primary text-xl cursor-pointer transition-all flex items-center justify-center hover:bg-border-default hover:border-border-hover disabled:opacity-50 disabled:cursor-not-allowed"
           title="Refresh"
@@ -54,7 +54,7 @@ import { ref, onMounted, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import type { ChatMessage, ChatFilter } from '../../types/database'
 import ChatMessageList from './ChatMessageList.vue'
-import { useChatDateNav, fetchMessagesAroundTime } from '../../composables/useChatDateNav'
+import { useChatDateNav } from '../../composables/useChatDateNav'
 import { useChatRequestGuard } from '../../composables/useChatRequestGuard'
 
 const dateNav = useChatDateNav()
@@ -109,99 +109,33 @@ function loadMore() {
   loadMessages()
 }
 
-function refresh() {
-  // With a day filter active, refresh re-centers on that day (the plain
-  // day-bounds query can legitimately be empty; around-time keeps context).
-  if (dateNav.activeDay.value) {
-    loadAroundDay(dateNav.activeDay.value)
-  } else {
-    offset.value = 0
-    hasMore.value = true
-    loadMessages()
-  }
+/** Restart the window at the top (manual reload / search / filter / day / sort changes) */
+function reset() {
+  offset.value = 0
+  hasMore.value = true
+  loadMessages()
 }
 
 function onSearchInput() {
   if (searchTimeout) clearTimeout(searchTimeout)
   searchTimeout = window.setTimeout(() => {
-    if (dateNav.activeDay.value) {
-      loadAroundDay(dateNav.activeDay.value)
-    } else {
-      offset.value = 0
-      hasMore.value = true
-      loadMessages()
-    }
+    reset()
   }, 300)
 }
 
 function onFilterChange() {
-  // Item-link filters must respect the day filter like every other trigger.
-  if (dateNav.activeDay.value) {
-    loadAroundDay(dateNav.activeDay.value)
-  } else {
-    offset.value = 0
-    hasMore.value = true
-    loadMessages()
-  }
+  reset()
 }
 
 function toggleSort() {
   sortOrder.value = sortOrder.value === 'desc' ? 'asc' : 'desc'
-  if (dateNav.activeDay.value) {
-    loadAroundDay(dateNav.activeDay.value)
-  } else {
-    offset.value = 0
-    hasMore.value = true
-    loadMessages()
-  }
+  reset()
 }
 
-// Day filter changes reload from the day boundary
-watch(() => dateNav.activeDay.value, (day) => {
-  if (day) {
-    loadAroundDay(day)
-  } else {
-    offset.value = 0
-    hasMore.value = true
-    loadMessages()
-  }
+// Day filter changes restart the window at the top
+watch(() => dateNav.activeDay.value, () => {
+  reset()
 })
-
-async function loadAroundDay(day: string) {
-  loading.value = true
-  const generation = reqGuard.begin()
-  try {
-    // Day window in the current sort order with the active search/item
-    // filters preserved — same filter semantics as loadMessages(). The
-    // window is bounded to the day, so continuation is ordinary offset
-    // pagination (loadMessages merges the day bounds via filterParams()).
-    const result = await fetchMessagesAroundTime(
-      day,
-      {
-        searchText: searchText.value || undefined,
-        itemName: itemNameFilter.value || undefined,
-        hasItemLinks: hasItemLinksFilter.value || undefined,
-        sortOrder: sortOrder.value,
-      },
-      LIMIT,
-    )
-    if (!reqGuard.isCurrent(generation)) return
-    messages.value = result
-    offset.value = result.length
-    if (result.length === 0) {
-      hasMore.value = false
-      return
-    }
-    hasMore.value = result.length === LIMIT
-  } catch (e) {
-    console.error('Failed to load messages around day:', e)
-    offset.value = 0
-    hasMore.value = true
-    loadMessages()
-  } finally {
-    if (reqGuard.isCurrent(generation)) loading.value = false
-  }
-}
 
 onMounted(() => {
   dateNav.loadDays()

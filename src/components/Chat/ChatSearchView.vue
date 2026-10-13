@@ -1,5 +1,5 @@
 <template>
-  <div class="flex flex-col h-full">
+  <div class="flex flex-col h-full" @keydown="onKeydown">
     <!-- Search header -->
     <div class="px-6 py-4 border-b border-border-default bg-surface-base">
       <div class="flex gap-2 items-center">
@@ -56,38 +56,43 @@
         </span>
       </div>
 
+      <!-- Day-log mode: the clicked entry in its real log; the query box above
+           stays live, so refining and jumping to another result is one edit away -->
+      <div v-if="dayLogMode" class="mt-2 flex items-center gap-3 text-xs text-text-muted flex-wrap">
+        <span>
+          Showing the full log for
+          <span class="font-semibold text-accent-gold">{{ dateNav.activeDay.value }}</span>
+          <span v-if="dayLogCount > 0"> — {{ dayLogCount.toLocaleString() }} messages</span>
+        </span>
+        <button
+          @click="backToResults"
+          class="px-3 py-1 bg-surface-elevated border border-border-light rounded text-text-secondary text-xs cursor-pointer hover:bg-surface-hover hover:text-text-primary transition-all"
+        >
+          &larr; Back to results
+        </button>
+      </div>
+
       <!-- Result count -->
-      <div v-if="resultCount !== null" class="mt-2 text-xs text-text-muted">
+      <div v-else-if="resultCount !== null" class="mt-2 text-xs text-text-muted">
         {{ resultCount.toLocaleString() }} matching message{{ resultCount === 1 ? '' : 's' }} {{ dateNav.activeDay.value ? `on ${dateNav.activeDay.value}` : 'across all history' }}
       </div>
     </div>
 
-    <!-- Context mode header -->
-    <div v-if="contextMessageId" class="px-6 py-2 border-b border-border-default bg-surface-elevated flex items-center gap-3">
-      <button
-        @click="exitContext"
-        class="px-3 py-1 bg-surface-base border border-border-light rounded text-text-secondary text-sm cursor-pointer hover:bg-surface-hover hover:text-text-primary transition-all"
-      >
-        &larr; Back to results
-      </button>
-      <span class="text-text-muted text-sm">
-        Showing context in
-        <span v-if="contextChannel" class="font-semibold text-text-secondary">[{{ contextChannel }}]</span>
-      </span>
-    </div>
-
-    <!-- Results -->
+    <!-- Results / day log -->
     <ChatMessageList
-      :messages="displayMessages"
-      :loading="contextMessageId ? contextLoading : loading"
-      :has-more="contextMessageId ? false : hasMore"
-      :show-channel="!contextMessageId"
-      :sort-order="contextMessageId ? undefined : sortOrder"
-      :clickable="!contextMessageId"
-      :highlight-id="contextMessageId ?? undefined"
-      :highlight-terms="contextMessageId ? [] : parsed.termKinds"
+      ref="listRef"
+      :messages="messages"
+      :loading="loading"
+      :has-more="hasMore"
+      :has-newer="hasNewer"
+      :show-channel="true"
+      :sort-order="sortOrder"
+      :clickable="!dayLogMode"
+      :highlight-id="jumpTargetId ?? undefined"
+      :highlight-terms="parsed.termKinds"
       :date-nav="dateNav"
       @load-more="loadMore"
+      @load-newer="loadNewer"
       @toggle-sort="toggleSort"
       @message-click="onMessageClick"
     />
@@ -100,90 +105,87 @@ import { invoke } from '@tauri-apps/api/core'
 import type { ChatMessage, ChatFilter } from '../../types/database'
 import ChatMessageList from './ChatMessageList.vue'
 import { parseSearchQuery } from '../../utils/parseSearchQuery'
-import { useChatDateNav, fetchMessagesAroundTime } from '../../composables/useChatDateNav'
+import { useChatDateNav } from '../../composables/useChatDateNav'
 
 const rawQuery = ref('')
 const messages = ref<ChatMessage[]>([])
 const loading = ref(false)
 const hasMore = ref(true)
+const hasNewer = ref(false)
+/** Index (within the current window's query) of the FIRST loaded row */
 const offset = ref(0)
 const sortOrder = ref<'asc' | 'desc'>('desc')
 const searchInput = ref<HTMLInputElement>()
+const listRef = ref<InstanceType<typeof ChatMessageList>>()
 const resultCount = ref<number | null>(null)
 const LIMIT = 100
 
 // Date navigation
 const dateNav = useChatDateNav()
 
-// Context mode state
-const contextMessageId = ref<number | null>(null)
-const contextMessages = ref<ChatMessage[]>([])
-const contextLoading = ref(false)
-const contextChannel = ref<string | null>(null)
-let contextGeneration = 0
+// Day-log mode: clicking a result opens the entry inside its day's real log
+// (channel colours, rows on both sides, pagination that does not dead-end)
+// instead of a fixed context window. The query box stays live above it.
+const dayLogMode = ref(false)
+const dayLogCount = ref(0)
+const jumpTargetId = ref<number | null>(null)
+let jumpTarget: ChatMessage | null = null
+/** Day selection to restore when leaving day-log mode */
+let preJumpDay: string | null = null
+/** True while this view sets the day itself (jump / back to results), so the
+ *  day watcher does not start a competing load */
+let selfSelectingDay = false
 
 let searchTimeout: number | null = null
 // Query generation: bumped ONLY when the filter/query changes (page-0
-// load). Ordinary pagination (loadMore) must NOT bump it — if it did, a
-// page-2 start racing the page-0 count would discard the only count
-// response and later pages never request another one, leaving the label
-// empty. Query/ page generations are tracked separately.
+// load). Ordinary pagination must NOT bump it — if it did, a page-2 start
+// racing the page-0 count would discard the only count response and later
+// pages never request another one, leaving the label empty. Query and search
+// generations are tracked separately.
 let queryGeneration = 0
 let searchGeneration = 0
 
 const parsed = computed(() => parseSearchQuery(rawQuery.value))
 
-const displayMessages = computed(() =>
-  contextMessageId.value ? contextMessages.value : messages.value
-)
+/** Result-list filter: parsed query (text/sender/channel) + day filter */
+function resultFilter(): ChatFilter {
+  const p = parsed.value
+  return {
+    searchText: p.text || undefined,
+    sender: p.sender || undefined,
+    channel: p.channel || undefined,
+    ...dateNav.filterParams(),
+  }
+}
 
-async function loadMessages() {
+function fetchPage(filter: ChatFilter, start: number): Promise<ChatMessage[]> {
+  return invoke<ChatMessage[]>('get_chat_messages', {
+    ...filter,
+    limit: LIMIT,
+    offset: start,
+    sortOrder: sortOrder.value,
+  })
+}
+
+// ─── Results mode ────────────────────────────────────────────────
+
+async function loadResults(reset: boolean) {
   loading.value = true
-  // Page-0 loads are new queries: bump the query generation and drop the
-  // previous count immediately so the label can't show a stale number.
-  // Page-N loads keep the query generation — the in-flight count from the
-  // page-0 load must still be able to land.
-  const isPage0 = offset.value === 0
-  if (isPage0) {
-    queryGeneration++
+  if (reset) {
+    offset.value = 0
     resultCount.value = null
   }
-  const countGeneration = queryGeneration
+  const countGeneration = reset ? ++queryGeneration : queryGeneration
   const generation = ++searchGeneration
+  const start = reset ? 0 : offset.value + messages.value.length
   try {
-    const p = parsed.value
-    const filter: ChatFilter = {
-      searchText: p.text || undefined,
-      sender: p.sender || undefined,
-      channel: p.channel || undefined,
-      ...dateNav.filterParams(),
-      limit: LIMIT,
-      offset: offset.value,
-      sortOrder: sortOrder.value,
-    }
-
-    const newMessages = await invoke<ChatMessage[]>('get_chat_messages', filter)
-
-    // A newer search started while this one was in flight: discard.
+    const rows = await fetchPage(resultFilter(), start)
     if (generation !== searchGeneration) return
-
-    if (offset.value === 0) {
-      messages.value = newMessages
-    } else {
-      messages.value = [...messages.value, ...newMessages]
-    }
-
-    hasMore.value = newMessages.length === LIMIT
-    offset.value += newMessages.length
-
-    // Count over the full filter (no limit/offset) when viewing page 0
-    if (offset.value === newMessages.length) {
-      invoke<number>('count_chat_messages', {
-        searchText: p.text || undefined,
-        sender: p.sender || undefined,
-        channel: p.channel || undefined,
-        ...dateNav.filterParams(),
-      })
+    messages.value = reset ? rows : [...messages.value, ...rows]
+    hasMore.value = rows.length === LIMIT
+    if (reset) {
+      // Count over the full filter (no limit/offset)
+      invoke<number>('count_chat_messages', resultFilter())
         .then(n => {
           if (countGeneration === queryGeneration) resultCount.value = n
         })
@@ -196,26 +198,165 @@ async function loadMessages() {
   }
 }
 
-function loadMore() {
-  if (loading.value) return
-  loadMessages()
+function exitDayLog() {
+  dayLogMode.value = false
+  dayLogCount.value = 0
+  jumpTargetId.value = null
+  jumpTarget = null
+  hasNewer.value = false
 }
 
+/** Fresh result list for the current query + day filter */
 function reloadResults() {
-  exitContext()
-  if (dateNav.activeDay.value) {
-    loadAroundDay(dateNav.activeDay.value)
-  } else {
+  exitDayLog()
+  loadResults(true)
+}
+
+/** Leave the day log and return to the result list the jump started from */
+function backToResults() {
+  const day = preJumpDay
+  exitDayLog()
+  if (dateNav.activeDay.value !== day) {
+    selfSelectingDay = true
+    dateNav.jumpToDay(day)
+    void nextTick().then(() => { selfSelectingDay = false })
+  }
+  loadResults(true)
+}
+
+// ─── Day-log mode ────────────────────────────────────────────────
+
+/** Open the clicked entry inside its day's log, centred so the rows on both
+ *  sides are the real neighbours rather than a fixed ±N sample. */
+async function onMessageClick(msg: ChatMessage) {
+  if (!dayLogMode.value) preJumpDay = dateNav.activeDay.value
+  const day = dateNav.dayOf(msg.timestamp)
+  dayLogMode.value = true
+  jumpTarget = msg
+  jumpTargetId.value = msg.id
+  dayLogCount.value = 0
+  messages.value = []
+  offset.value = 0
+  hasMore.value = true
+  hasNewer.value = false
+  if (dateNav.activeDay.value !== day) {
+    selfSelectingDay = true
+    dateNav.jumpToDay(day)
+    await nextTick()
+    selfSelectingDay = false
+  }
+  await seekToTarget(msg)
+}
+
+/** Load a window centred on `msg` within its day, in the current sort order. */
+async function seekToTarget(msg: ChatMessage) {
+  const day = dateNav.dayOf(msg.timestamp)
+  const bounds = dateNav.boundsForDay(day)
+  loading.value = true
+  const generation = ++searchGeneration
+  try {
+    // Rows at or before the target's timestamp give its position in the
+    // window for either sort direction.
+    const [total, upTo] = await Promise.all([
+      invoke<number>('count_chat_messages', { ...bounds }),
+      invoke<number>('count_chat_messages', { ...bounds, endTime: msg.timestamp }),
+    ])
+    if (generation !== searchGeneration) return
+    const index = sortOrder.value === 'desc' ? total - upTo : upTo
+    const start = Math.max(0, Math.min(index - Math.floor(LIMIT / 2), Math.max(0, total - LIMIT)))
+    const rows = await fetchPage(bounds, start)
+    if (generation !== searchGeneration) return
+    dayLogCount.value = total
+    messages.value = rows
+    offset.value = start
+    hasMore.value = start + rows.length < total
+    hasNewer.value = start > 0
+  } catch (e) {
+    console.error('Failed to open the message in its day log:', e)
+  } finally {
+    if (generation === searchGeneration) loading.value = false
+  }
+  await nextTick()
+  listRef.value?.focus()
+}
+
+/** Start of the selected day (day change while browsing a day log) */
+async function loadDayLogStart() {
+  jumpTarget = null
+  jumpTargetId.value = null
+  const bounds = dateNav.filterParams()
+  loading.value = true
+  const generation = ++searchGeneration
+  try {
+    const [rows, total] = await Promise.all([
+      fetchPage(bounds, 0),
+      invoke<number>('count_chat_messages', { ...bounds }),
+    ])
+    if (generation !== searchGeneration) return
+    dayLogCount.value = total
+    messages.value = rows
     offset.value = 0
-    hasMore.value = true
-    loadMessages()
+    hasMore.value = rows.length < total
+    hasNewer.value = false
+  } catch (e) {
+    console.error('Failed to load the day log:', e)
+  } finally {
+    if (generation === searchGeneration) loading.value = false
   }
 }
 
+async function loadDayLogMore() {
+  const bounds = dateNav.filterParams()
+  const start = offset.value + messages.value.length
+  loading.value = true
+  const generation = ++searchGeneration
+  try {
+    const rows = await fetchPage(bounds, start)
+    if (generation !== searchGeneration) return
+    messages.value = [...messages.value, ...rows]
+    hasMore.value = rows.length > 0 && start + rows.length < dayLogCount.value
+  } catch (e) {
+    console.error('Failed to load the day log:', e)
+  } finally {
+    if (generation === searchGeneration) loading.value = false
+  }
+}
+
+async function loadDayLogNewer() {
+  const bounds = dateNav.filterParams()
+  const start = Math.max(0, offset.value - LIMIT)
+  loading.value = true
+  const generation = ++searchGeneration
+  try {
+    const rows = await fetchPage(bounds, start)
+    if (generation !== searchGeneration) return
+    messages.value = [...rows, ...messages.value]
+    offset.value = start
+    hasNewer.value = rows.length > 0 && start > 0
+    hasMore.value = start + messages.value.length < dayLogCount.value
+  } catch (e) {
+    console.error('Failed to load the day log:', e)
+  } finally {
+    if (generation === searchGeneration) loading.value = false
+  }
+}
+
+// ─── Toolbar / pagination plumbing ───────────────────────────────
+
+function loadMore() {
+  if (loading.value) return
+  if (dayLogMode.value) void loadDayLogMore()
+  else void loadResults(false)
+}
+
+function loadNewer() {
+  if (loading.value || !dayLogMode.value) return
+  void loadDayLogNewer()
+}
+
 function refresh() {
-  // With a day filter active, refresh re-centers on that day (the plain
-  // day-bounds query can legitimately be empty; around-time keeps context).
-  reloadResults()
+  if (dayLogMode.value) void (jumpTarget ? seekToTarget(jumpTarget) : loadDayLogStart())
+  else reloadResults()
 }
 
 function onSearchInput() {
@@ -225,9 +366,11 @@ function onSearchInput() {
   }, 300)
 }
 
-function toggleSort() {
+async function toggleSort() {
   sortOrder.value = sortOrder.value === 'desc' ? 'asc' : 'desc'
-  reloadResults()
+  // Re-centre on the entry we jumped to; a plain day log restarts at its top
+  if (dayLogMode.value && jumpTarget) await seekToTarget(jumpTarget)
+  else refresh()
 }
 
 function removeTextWord(word: string) {
@@ -252,99 +395,28 @@ function removeOperator(op: 'from' | 'in') {
   reloadResults()
 }
 
-async function onMessageClick(msg: ChatMessage) {
-  contextMessageId.value = msg.id
-  contextChannel.value = msg.channel ?? null
-  contextLoading.value = true
-  const gen = ++contextGeneration
-  try {
-    const result = await invoke<ChatMessage[]>('get_chat_messages_around', {
-      messageId: msg.id,
-      contextCount: 25,
-    })
-    if (gen !== contextGeneration) return
-    contextMessages.value = result
-    if (result.length === 0) exitContext()
-  } catch (e) {
-    console.error('Failed to load message context:', e)
-    if (gen === contextGeneration) exitContext()
-  } finally {
-    if (gen === contextGeneration) contextLoading.value = false
-  }
+/** PageUp/PageDown reach the log even while the query box has focus; the list
+ *  handles them itself (and stops propagation) when it holds focus. */
+function onKeydown(e: KeyboardEvent) {
+  if (e.key !== 'PageDown' && e.key !== 'PageUp') return
+  const el = e.target as HTMLElement | null
+  // Day picker / date input keep their own key behaviour
+  if (el && (el.tagName === 'SELECT' || (el as HTMLInputElement).type === 'date')) return
+  e.preventDefault()
+  listRef.value?.pageScroll(e.key === 'PageDown' ? 1 : -1)
 }
 
-function exitContext() {
-  contextGeneration++
-  contextMessageId.value = null
-  contextMessages.value = []
-  contextChannel.value = null
-  contextLoading.value = false
-}
-
-// Day filter changes reload from the day boundary
+// Day filter changes reload: the day's log while browsing one, otherwise the
+// (query-filtered) result list
 watch(() => dateNav.activeDay.value, (day, prev) => {
-  if (day === prev) return
-  reloadResults()
+  if (day === prev || selfSelectingDay) return
+  hasNewer.value = false
+  if (day && dayLogMode.value) void loadDayLogStart()
+  else reloadResults()
 })
 
-async function loadAroundDay(day: string) {
-  loading.value = true
-  // A day change is a new query: bump the query generation so any in-flight
-  // count from the previous query can't land, then use this generation for
-  // the day's own count request.
-  queryGeneration++
-  const countGeneration = queryGeneration
-  const generation = ++searchGeneration
-  try {
-    // Day window in the current sort order with the complete parsed search
-    // filter (text + sender + channel chips) preserved — same filter
-    // semantics as loadMessages(). The window is bounded to the day, so
-    // continuation is ordinary offset pagination.
-    const p = parsed.value
-    const result = await fetchMessagesAroundTime(
-      day,
-      {
-        searchText: p.text || undefined,
-        sender: p.sender || undefined,
-        channel: p.channel || undefined,
-        sortOrder: sortOrder.value,
-      },
-      LIMIT,
-    )
-    if (generation !== searchGeneration) return
-    messages.value = result
-    offset.value = result.length
-    resultCount.value = null
-    if (result.length === 0) {
-      hasMore.value = false
-      return
-    }
-    hasMore.value = result.length === LIMIT
-    // Recompute the count over the full filter + day bounds.
-    invoke<number>('count_chat_messages', {
-      searchText: p.text || undefined,
-      sender: p.sender || undefined,
-      channel: p.channel || undefined,
-      startTime: `${day} 00:00:00`,
-      endTime: `${day} 23:59:59`,
-    })
-      .then(n => {
-        if (countGeneration === queryGeneration) resultCount.value = n
-      })
-      .catch(e => console.error('Failed to count messages:', e))
-  } catch (e) {
-    console.error('Failed to load messages around day:', e)
-    // Fall back to day-filtered paging
-    offset.value = 0
-    hasMore.value = true
-    loadMessages()
-  } finally {
-    if (generation === searchGeneration) loading.value = false
-  }
-}
-
 onMounted(() => {
-  loadMessages()
+  loadResults(true)
   dateNav.loadDays()
   nextTick(() => searchInput.value?.focus())
 })
