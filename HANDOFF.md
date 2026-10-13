@@ -15,11 +15,13 @@ bottom of a day; and no discoverable sort-order switch.
 
 ### What shipped
 
-- **Results open in the day's real log.** `get_messages_around` + `get_messages_around_time` (DB fns, Tauri commands,
-  `lib.rs` wiring, 8 tests) are **deleted** — a day window is now an ordinary `get_chat_messages` call with that day's UTC
-  `startTime`/`endTime`. Clicking a result selects its display day and loads a window **centred** on it (position from two
-  `count_chat_messages` calls: one over the window, one with `endTime` = the target's timestamp; `index = total - upTo` for
-  desc, `upTo` for asc, `start = clamp(index - 50, 0, total - 100)`), scrolls the row into view gold-bordered, keeps the
+- **Results open in the day's real log.** The `get_chat_messages_around` / `get_chat_messages_around_time` Tauri commands and
+  their `get_messages_around` / `get_messages_around_time` DB functions (`lib.rs` wiring, 8 tests) are **deleted** — a day window
+  is now an ordinary `get_chat_messages` call with that day's UTC
+  `startTime`/`endTime`. Clicking a result selects its display day and loads a window **centred** on it (three
+  `count_chat_messages` calls: the window total, rows up to the target's timestamp, and the target's own same-second run;
+  the run starts at `total - upTo` for desc / `upTo - group` for asc and the window is centred on the run so a wide one
+  cannot push the target out of the page), scrolls the row into view gold-bordered, keeps the
   search terms highlighted, and keeps the query box live above it. "← Back to results" restores the list *and* the day
   selected before the jump; the day picker/arrows/Back-to-Live keep working while browsing.
 - **Display-timezone day buckets** — new `src/utils/displayDay.ts` (`displayDayOf`, `displayDayBounds`,
@@ -63,6 +65,44 @@ size pass `windowStart`/`windowTotal` (ChatSearchView does, for both results and
 a `lastRequest` ref so a *newer* load never reads as "loading more" at the bottom. Verified live: pill stays on screen at
 scrollTop 0 with the real end 12,734 px below, click/PageUp/PageDown all stream, and a `MutationObserver` (no CDP round
 trips — the load finishes in a few ms) caught both transient labels "Loading more messages…" and "Loading newer messages".
+
+### Review round (5 reviewers over d84c779 + d4b83a0 + 46c2d40)
+
+Five read-only reviewers split the three commits by locality. All returned `approve-with-nits`; the substantive findings were real and
+are fixed in the follow-up commits. Confirmed by measurement, not by argument:
+
+1. **`loadDayLogNewer` overlapped the loaded window (major, found independently by two reviewers).** With the junk offset left by a
+   jump (`start = clamp(index − 50, …)` is not page-aligned), `Math.max(0, offset − LIMIT)` clamped to 0 but still fetched a *full*
+   page, so a window starting inside its first 100 rows got rows it already had. Live on 2026-10-11 (2,352 rows, jumped offset 36):
+   the prepend added **200 rows instead of 36, with 64 duplicated rows**, and `offset` stuck at 0 with an oversized window made the
+   next append resume at row 300 — stranding rows 136–299. Fixed by fetching exactly `offset - start` rows (`fetchPage(…, limit)`).
+2. **Prepends double-compensated (major, found while re-testing #1).** Chromium's own scroll anchoring already shifts `scrollTop` for
+   content inserted above the viewport; the explicit re-anchor added the same delta again (1738 → 3445 by the browser → 5152 by our
+   code), landing the viewport near the bottom, which then fired the bottom loader for a *top* direction load. Fixed with
+   `overflow-anchor: none` on the scroll container so the explicit adjustment is the single source of truth (verified: prepend now
+   adds exactly 37 rows, one compensation, `dist` 1802 so no phantom load).
+3. **The pinned bottom pill was clipped (pre-existing layout bug, exposed by this feature).** Every chat view's root is
+   `flex flex-col h-full` containing a header plus the list; with `h-full` the list overflowed by the header height (~75px) and the
+   pane's `overflow-hidden` cut exactly the band the pill pins to (pill rect 1362–1388 vs window 1369 → invisible, in *both* Search
+   and All Messages, pristine source). Fixed by making the list `flex-1 min-h-0`; measured `containerBottom == paneBottom == 1329`
+   and the pill fully visible in Search / All Messages / Channels / Tells.
+4. **Results-mode totals**: the page-matching `filter` was re-derived *after* the await (a count for a query the rendered rows did not
+   belong to → "100 of 3"), and `hasMore` ignored a known total, so an exact multiple of 100 read "More messages below · 300 of 300"
+   instead of the end state. Fixed by capturing the filter once and deriving `hasMore` from the total when known. Verified:
+   `from:Aelfwynn` (exactly 100) → "End of the loaded window · 100 of 100"; `from:SlickSheath` (300) → `100 of 300` → `200 of 300` →
+   "End of the loaded window · 300 of 300".
+5. **Seek centring** ignored same-second runs (`index = total - upTo` is the run's *first* row, so a run ≥ 51 rows could push the
+   clicked row out of the window and silently skip the highlight). Fixed with a third count for the run and centring on it.
+6. Smaller items: the bottom pill showed an enabled-looking "More messages below" (dead click) during parent-initiated loads — now
+   `loading && lastRequest !== 'newer'` (verified via MutationObserver on a day change); `showEnd` no longer required a known total,
+   so the eight no-total callers announce the end too (All Messages on a 49-row day shows it); both sticky wrappers are
+   `pointer-events-none` with `pointer-events-auto` pills so the pinned strip cannot swallow row clicks; `jumpToPresent` is instant
+   (a smooth scroll passes through the top trigger zone and would silently load a page); a `dayResetPending` flag stops a superset
+   window from overriding the day-change top reset; `HANDOFF.md` names the deleted commands with their `get_chat_*` prefixes.
+
+End-to-end re-verification after the fixes: jumping into 2026-10-11 and paging the whole day loaded **2,352 of 2,352 rows** with the
+end state announced and *no* repeated rows — the 3 identically-*rendered* rows are genuine (same minute/sender/text, different
+seconds; the DB has exactly three such groups, 2,352 rows / 2,352 distinct tuples).
 
 ### Verification
 

@@ -160,10 +160,10 @@ function resultFilter(): ChatFilter {
   }
 }
 
-function fetchPage(filter: ChatFilter, start: number): Promise<ChatMessage[]> {
+function fetchPage(filter: ChatFilter, start: number, limit = LIMIT): Promise<ChatMessage[]> {
   return invoke<ChatMessage[]>('get_chat_messages', {
     ...filter,
-    limit: LIMIT,
+    limit,
     offset: start,
     sortOrder: sortOrder.value,
   })
@@ -180,16 +180,26 @@ async function loadResults(reset: boolean) {
   const countGeneration = reset ? ++queryGeneration : queryGeneration
   const generation = ++searchGeneration
   const start = reset ? 0 : offset.value + messages.value.length
+  // ONE filter for the page and its count: re-deriving it after the await could
+  // ask for the count of a query the rendered rows do not belong to.
+  const filter = resultFilter()
   try {
-    const rows = await fetchPage(resultFilter(), start)
+    const rows = await fetchPage(filter, start)
     if (generation !== searchGeneration) return
     messages.value = reset ? rows : [...messages.value, ...rows]
-    hasMore.value = rows.length === LIMIT
+    // The known total, when we have it, is authoritative for the end-of-window
+    // state — `rows.length === LIMIT` keeps "more below" on a full last page.
+    const known = resultCount.value
+    hasMore.value = known !== null
+      ? offset.value + messages.value.length < known
+      : rows.length === LIMIT
     if (reset) {
       // Count over the full filter (no limit/offset)
-      invoke<number>('count_chat_messages', resultFilter())
+      invoke<number>('count_chat_messages', filter)
         .then(n => {
-          if (countGeneration === queryGeneration) resultCount.value = n
+          if (countGeneration !== queryGeneration) return
+          resultCount.value = n
+          hasMore.value = offset.value + messages.value.length < n
         })
         .catch(e => console.error('Failed to count messages:', e))
     }
@@ -257,15 +267,26 @@ async function seekToTarget(msg: ChatMessage) {
   loading.value = true
   const generation = ++searchGeneration
   try {
-    // Rows at or before the target's timestamp give its position in the
-    // window for either sort direction.
-    const [total, upTo] = await Promise.all([
+    // Rows at or before the target's timestamp place it in the window for
+    // either sort direction. Rows sharing its exact second (`group`) can be
+    // several at once, so the window centres on that run rather than on its
+    // first row — a wide run would otherwise push the target out of the page.
+    const [total, upTo, group] = await Promise.all([
       invoke<number>('count_chat_messages', { ...bounds }),
       invoke<number>('count_chat_messages', { ...bounds, endTime: msg.timestamp }),
+      invoke<number>('count_chat_messages', {
+        ...bounds,
+        startTime: msg.timestamp,
+        endTime: msg.timestamp,
+      }),
     ])
     if (generation !== searchGeneration) return
-    const index = sortOrder.value === 'desc' ? total - upTo : upTo
-    const start = Math.max(0, Math.min(index - Math.floor(LIMIT / 2), Math.max(0, total - LIMIT)))
+    const runSpan = Math.max(1, Math.min(group, LIMIT))
+    const runStart = sortOrder.value === 'desc' ? total - upTo : upTo - group
+    const start = Math.max(0, Math.min(
+      runStart - Math.floor((LIMIT - runSpan) / 2),
+      Math.max(0, total - LIMIT),
+    ))
     const rows = await fetchPage(bounds, start)
     if (generation !== searchGeneration) return
     dayLogCount.value = total
@@ -327,10 +348,16 @@ async function loadDayLogMore() {
 async function loadDayLogNewer() {
   const bounds = dateNav.filterParams()
   const start = Math.max(0, offset.value - LIMIT)
+  // Fetch exactly the rows missing above the window. Clamping at row 0 must not
+  // re-fetch rows the window already holds: that duplicated them in the list and
+  // left `offset` at 0 with an oversized window, so the next append resumed past
+  // the real end of the window and stranded the rows in between.
+  const missing = offset.value - start
+  if (missing <= 0) return
   loading.value = true
   const generation = ++searchGeneration
   try {
-    const rows = await fetchPage(bounds, start)
+    const rows = await fetchPage(bounds, start, missing)
     if (generation !== searchGeneration) return
     messages.value = [...rows, ...messages.value]
     offset.value = start

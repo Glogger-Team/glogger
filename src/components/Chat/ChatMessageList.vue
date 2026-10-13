@@ -1,5 +1,5 @@
 <template>
-  <div class="flex flex-col h-full bg-surface-base">
+  <div class="flex flex-col flex-1 min-h-0 bg-surface-base">
     <!-- Date navigation toolbar (always visible while date nav is active) -->
     <div v-if="dateNav" class="flex items-center gap-2 px-4 py-2 border-b border-border-default bg-surface-base flex-wrap">
       <label class="text-xs text-text-muted" for="chat-day-select">Day</label>
@@ -67,7 +67,7 @@
     </div>
     <div
       v-else
-      class="relative flex-1 overflow-y-auto p-4 focus:outline-none"
+      class="relative flex-1 overflow-y-auto p-4 focus:outline-none [overflow-anchor:none]"
       ref="messagesContainer"
       tabindex="0"
       @scroll="onScroll"
@@ -76,11 +76,11 @@
         <!-- Jump to present / newer-above status. The "newer" affordance is
              pinned to the top edge (not left in the flow at the top of the
              loaded window) so it is visible exactly while rows exist above. -->
-        <div class="sticky top-0 z-10 flex justify-between items-center gap-2 pb-2">
+        <div class="sticky top-0 z-10 flex justify-between items-center gap-2 pb-2 pointer-events-none">
           <button
             v-if="hasNewer"
             @click="requestLoadNewer"
-            class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-elevated/95 border border-border-light text-xs text-text-secondary cursor-pointer hover:bg-surface-hover hover:text-text-primary transition-all shadow-lg"
+            class="pointer-events-auto inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-elevated/95 border border-border-light text-xs text-text-secondary cursor-pointer hover:bg-surface-hover hover:text-text-primary transition-all shadow-lg"
             :title="`Rows above the loaded window — click, keep scrolling up, or hold PageUp`"
           >
             <span
@@ -94,7 +94,7 @@
           <button
             v-if="showJumpToPresent"
             @click="jumpToPresent"
-            class="px-4 py-1 bg-accent-gold/90 text-surface-base text-xs font-semibold rounded-full shadow-lg cursor-pointer hover:bg-accent-gold transition-all"
+            class="pointer-events-auto px-4 py-1 bg-accent-gold/90 text-surface-base text-xs font-semibold rounded-full shadow-lg cursor-pointer hover:bg-accent-gold transition-all"
           >
             &#8593; Jump to Present
           </button>
@@ -175,10 +175,10 @@
         <!-- Pinned bottom status: the trailing affordance used to sit a whole
              page below the fold (the loader fires 200px from the bottom), so
              there was no sign that another page was coming or available -->
-        <div v-if="hasMore || showEnd" class="sticky bottom-0 z-10 flex justify-center pt-2">
+        <div v-if="hasMore || showEnd" class="sticky bottom-0 z-10 flex justify-center pt-2 pointer-events-none">
           <span
-            v-if="loading && lastRequest === 'more'"
-            class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-elevated/95 border border-border-light text-xs text-text-muted shadow-lg"
+            v-if="loading && lastRequest !== 'newer'"
+            class="pointer-events-auto inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-elevated/95 border border-border-light text-xs text-text-muted shadow-lg"
           >
             <span class="w-3.5 h-3.5 border-2 border-border-default border-t-accent-gold rounded-full animate-spin"></span>
             Loading more messages&#8230;{{ progress }}
@@ -186,14 +186,14 @@
           <button
             v-else-if="hasMore"
             @click="requestLoadMore"
-            class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-elevated/95 border border-border-light text-xs text-text-secondary cursor-pointer hover:bg-surface-hover hover:text-text-primary transition-all shadow-lg"
+            class="pointer-events-auto inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-elevated/95 border border-border-light text-xs text-text-secondary cursor-pointer hover:bg-surface-hover hover:text-text-primary transition-all shadow-lg"
             title="More rows below — click, keep scrolling, or hold PageDown"
           >
             &#9660; More messages below{{ progress }}
           </button>
           <span
             v-else
-            class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-elevated/95 border border-border-light text-xs text-text-dim"
+            class="pointer-events-auto inline-flex items-center gap-2 px-3 py-1 rounded-full bg-surface-elevated/95 border border-border-light text-xs text-text-dim"
           >
             &#9632; End of the loaded window{{ progress }}
           </span>
@@ -290,6 +290,9 @@ const showJumpToPresent = ref(false)
 
 let loadMoreEmitted = false
 let loadNewerEmitted = false
+/** Set when a day change takes over the position, so the messages watcher lets
+ *  that reset stand instead of re-anchoring */
+let dayResetPending = false
 /** Which edge the in-flight request came from, so the right pinned pill shows
  *  a spinner (a "newer" load must not read as "loading more" at the bottom) */
 const lastRequest = ref<'more' | 'newer' | null>(null)
@@ -311,10 +314,12 @@ const progress = computed(() =>
 )
 /** Rows known to exist above the loaded window */
 const newerAbove = computed(() => props.windowStart ?? 0)
-/** Whole window loaded — say so instead of leaving the bottom silent */
+/** Whole window loaded — say so instead of leaving the bottom silent. `!hasMore`
+ *  is already proof in every caller (`rows.length === LIMIT` in the plain views,
+ *  an explicit total comparison in the day-log paths), so the total is optional
+ *  here and only upgrades the pill with a count. */
 const showEnd = computed(() =>
-  !props.loading && !props.hasMore && props.windowTotal !== undefined
-    && props.messages.length > 0 && loadedEnd.value >= props.windowTotal
+  !props.loading && !props.hasMore && props.messages.length > 0
 )
 
 function requestLoadMore() {
@@ -386,9 +391,12 @@ function onKeydown(e: KeyboardEvent) {
   e.stopPropagation()
 }
 
+// Instant rather than smooth: a smooth scroll to the top passes through and
+// ends inside the 200px top-edge trigger zone, so this explicit jump would
+// silently request (and prepend) another page.
 function jumpToPresent() {
   if (!messagesContainer.value) return
-  messagesContainer.value.scrollTo({ top: 0, behavior: 'smooth' })
+  messagesContainer.value.scrollTo({ top: 0 })
 }
 
 function onDaySelect(value: string) {
@@ -437,8 +445,21 @@ watch(() => props.messages, async (next, prev) => {
   await nextTick()
   const el = messagesContainer.value
   if (!el) return
+  // A day change owns the position: the new window was already reset to its
+  // top, and the prepend test below cannot tell a fresh superset window that
+  // happens to end on the previous last row from real prepended rows.
+  if (dayResetPending) {
+    dayResetPending = false
+    el.scrollTop = 0
+    return
+  }
   // Prepend (rows above the window) keeps the last row and grows the list;
   // a plain append keeps the first row. Anything else is a fresh window.
+  // The container carries `overflow-anchor: none` on purpose: Chromium's own
+  // scroll anchoring compensates for the inserted rows too, and the two
+  // compensations stacked into a double shift that landed the viewport near
+  // the bottom (which then fired the bottom loader). This adjustment is the
+  // single source of truth for prepend position.
   const prepended = !!prev && prev.length > 0 && next.length > prev.length
     && next[0]?.id !== prev[0]?.id
     && next[next.length - 1]?.id === prev[prev.length - 1]?.id
@@ -468,6 +489,7 @@ watch(() => props.dateNav?.activeDay.value, async () => {
   if (!props.dateNav || !messagesContainer.value) return
   await nextTick()
   if (props.highlightId) return
+  dayResetPending = true
   messagesContainer.value.scrollTop = 0
 }, { flush: 'post' })
 
