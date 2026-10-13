@@ -115,7 +115,10 @@ impl GameStateManager {
     /// Convert a Player.log HH:MM:SS timestamp to a full UTC datetime string.
     /// Player.log timestamps are already UTC — just needs a date component added.
     /// Uses `base_date_override` when set (replay / old-log reparse).
-    fn to_utc(&self, ts: &str) -> String {
+    ///
+    /// Public so coordinator event handlers (which persist their own rows, e.g.
+    /// milking) stamp events with the log's time instead of the ingest time.
+    pub fn to_utc(&self, ts: &str) -> String {
         to_utc_datetime_with_base(ts, self.base_date_override)
     }
 

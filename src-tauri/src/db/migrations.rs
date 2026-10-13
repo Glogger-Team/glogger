@@ -385,7 +385,87 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 70)?;
     }
 
+    if current_version < 71 {
+        migration_v71_player_pooping_log(conn)?;
+        super::record_migration(conn, 71)?;
+    }
+
+    if current_version < 72 {
+        migration_v72_milking_dedup(conn)?;
+        super::record_migration(conn, 72)?;
+    }
+
+    if current_version < 73 {
+        migration_v73_milking_cooldown_unknown(conn)?;
+        super::record_migration(conn, 73)?;
+    }
+
     tx.commit()?;
+    Ok(())
+}
+
+/// Migration V73: let a cow cooldown admit that its milk time is unknown.
+///
+/// The game's "You've already milked X in the past hour." error only bounds the
+/// milk: it happened somewhere in `(T-60m, T]`, so a timer that claims a point
+/// either lies optimistically or pessimistically. With `cooldown_unknown = 1`,
+/// `last_milked_at` is documented as the *earliest observed failed attempt* —
+/// giving a provable upper bound on the remaining cooldown
+/// (`≤ attempt + 60m - now`) that the widget renders as "≤ 45m" instead of a
+/// fabricated countdown. A successful milk clears the flag and stores the true
+/// time. Pre-existing rows default to 0 (they hold the old 59-minute guess,
+/// which is indistinguishable from a real stamp — they age out on the next milk).
+fn migration_v73_milking_cooldown_unknown(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE milking_timers ADD COLUMN cooldown_unknown INTEGER NOT NULL DEFAULT 0;",
+    )?;
+    Ok(())
+}
+
+/// Migration V72: one row per milking *event*, not per ingestion.
+///
+/// `player_milking_log` rows are now stamped with the event's own time and both
+/// the live path and the Chat.log backfill can see the same line (a catch-up
+/// replay re-reads, and a backfill rescans archives). Without a key those become
+/// duplicate rows and the widget's counter double-counts, so add the same
+/// `INSERT OR IGNORE` identity the pooping log uses. Existing exact duplicates
+/// (same character/server/direction/other/datetime) collapse to the lowest id.
+fn migration_v72_milking_dedup(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DELETE FROM player_milking_log
+          WHERE id NOT IN (
+                SELECT MIN(id) FROM player_milking_log
+                 GROUP BY character_name, server_name, direction, other_player, milked_at
+          );
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_player_milking_event
+             ON player_milking_log(character_name, server_name, direction, other_player, milked_at);",
+    )?;
+    Ok(())
+}
+
+/// Migration V71: Player pooping log — one row per `[Combat] Name: Poop on
+/// Target!` line (the cow-curse "Poop" ability; the Dungcrafting skill's
+/// xp_table is literally `Pooping`). Powers the lifetime count on the
+/// Character → Stats card.
+///
+/// `pooped_at` holds the chat log's **local wall-clock** timestamp, not UTC:
+/// the live tail and the chat-log backfill must agree on the dedup key, and the
+/// chat backfill never converts to UTC (same convention as the Combat Wisdom
+/// store). The UNIQUE key makes `INSERT OR IGNORE` idempotent, so re-running
+/// the backfill re-counts nothing.
+fn migration_v71_player_pooping_log(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS player_pooping_log (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             character_name TEXT NOT NULL,
+             server_name TEXT NOT NULL,
+             target_name TEXT NOT NULL,
+             pooped_at TEXT NOT NULL,
+             UNIQUE(character_name, server_name, pooped_at, target_name)
+         );
+         CREATE INDEX IF NOT EXISTS idx_player_pooping_char
+             ON player_pooping_log(character_name, server_name, pooped_at);",
+    )?;
     Ok(())
 }
 
@@ -3378,12 +3458,13 @@ mod tests {
         assert_eq!(cookie_zone, "");
 
         // The new key is per-cow: re-milking Homer from another zone updates the
-        // single row instead of inserting a second one.
+        // single row instead of inserting a second one. This mirrors
+        // `coordinator::record_cow_milk` — keep the two in step.
         c.execute(
             "INSERT INTO milking_timers (character_name, server_name, cow_name, zone, last_milked_at)
              VALUES ('Me','Alpha','Homer','Serbule','2026-07-20T11:30:00+00:00')
              ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
-                last_milked_at = excluded.last_milked_at,
+                last_milked_at = MAX(excluded.last_milked_at, milking_timers.last_milked_at),
                 zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END",
             [],
         )
@@ -3396,6 +3477,111 @@ mod tests {
             )
             .unwrap();
         assert_eq!(homer_rows, 1, "re-milk upserts, never duplicates");
+
+        // The same statement replayed with an *older* stamp (a catch-up replay of
+        // an old chat log) must not push the cooldown back, and must still learn a
+        // previously-unknown zone.
+        c.execute(
+            "INSERT INTO milking_timers (character_name, server_name, cow_name, zone, last_milked_at)
+             VALUES ('Me','Alpha','Cookie','Serbule','2026-07-20T07:00:00+00:00')
+             ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
+                last_milked_at = MAX(excluded.last_milked_at, milking_timers.last_milked_at),
+                zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO milking_timers (character_name, server_name, cow_name, zone, last_milked_at)
+             VALUES ('Me','Alpha','Cookie','Eltibule','2026-07-20T06:00:00+00:00')
+             ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
+                last_milked_at = MAX(excluded.last_milked_at, milking_timers.last_milked_at),
+                zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END",
+            [],
+        )
+        .unwrap();
+        let (zone, last): (String, String) = c
+            .query_row(
+                "SELECT zone, last_milked_at FROM milking_timers WHERE cow_name = 'Cookie'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        // Cookie already had a newer stamp (09:00 from the merge), so both the
+        // 07:00 row and the 06:00 replay must leave it alone — while the zone
+        // still learns from the replayed lines.
+        assert_eq!(
+            last, "2026-07-20T09:00:00+00:00",
+            "older stamps must not move the cooldown back"
+        );
+        assert_eq!(zone, "Eltibule", "zone still learns from the replayed line");
+    }
+
+    #[test]
+    fn milking_dedup_migration_collapses_duplicates_and_installs_the_key() {
+        let c = setup_legacy_milking_timers();
+        assert!(migration_v36_player_milking_log(&c).is_ok());
+        assert!(migration_v38_self_milking(&c).is_ok());
+
+        // Pre-v72 data: exact duplicates of the same event, plus look-alikes that
+        // differ in one key part and must survive.
+        c.execute_batch(
+            "INSERT INTO player_milking_log (character_name, server_name, other_player, direction, milked_at) VALUES
+                 ('Zen','Dreva','Zen','self_milked','2026-10-13T01:14:16+00:00'),
+                 ('Zen','Dreva','Zen','self_milked','2026-10-13T01:14:16+00:00'),
+                 ('Zen','Dreva','Zen','self_milked','2026-10-13T01:14:17+00:00'),
+                 ('Zen','Dreva','Reyetta','self_milked','2026-10-13T01:14:16+00:00'),
+                 ('Alt','Dreva','Zen','self_milked','2026-10-13T01:14:16+00:00');",
+        )
+        .unwrap();
+
+        migration_v72_milking_dedup(&c).unwrap();
+
+        let total: i64 = c
+            .query_row("SELECT COUNT(*) FROM player_milking_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 4, "the byte-identical duplicate collapses, distinct keys stay");
+
+        // The index is what makes INSERT ... ON CONFLICT DO NOTHING dedup from now on.
+        let idx: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_player_milking_event'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 1, "unique dedup index is installed");
+
+        // Re-running the migration (fresh installs run every block once) is a no-op.
+        migration_v72_milking_dedup(&c).unwrap();
+        let after: i64 = c
+            .query_row("SELECT COUNT(*) FROM player_milking_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, 4);
+    }
+
+    #[test]
+    fn v73_adds_cooldown_unknown_defaulting_to_known() {
+        let c = setup_legacy_milking_timers();
+        // A pre-v73 row: no flag column, and the value it holds is the old
+        // 59-minute guess — indistinguishable from a real stamp, so it is treated
+        // as known (it ages out at the cow's next milk).
+        c.execute(
+            "INSERT INTO milking_timers VALUES ('Me','Alpha','Cookie','Serbule','2026-07-20T10:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+
+        migration_v73_milking_cooldown_unknown(&c).unwrap();
+
+        let (flag, stamp): (i64, String) = c
+            .query_row(
+                "SELECT cooldown_unknown, last_milked_at FROM milking_timers WHERE cow_name = 'Cookie'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(flag, 0, "existing rows default to a known milk time");
+        assert_eq!(stamp, "2026-07-20T10:00:00+00:00", "the stamp is untouched");
     }
 
     #[test]
@@ -3404,13 +3590,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            70,
+            73,
             "fresh DB migrates to the head version"
         );
         // Second run: every `if current_version < N` block is skipped. If the
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 70);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 73);
     }
 }

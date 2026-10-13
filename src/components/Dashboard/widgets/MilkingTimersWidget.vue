@@ -5,6 +5,15 @@
       <span class="text-xs text-text-muted">Self-milked</span>
       <span class="text-xs font-mono text-accent-gold">{{ selfMilkedCount }}</span>
     </div>
+    <div v-else-if="scanningHistory" class="px-2 shrink-0 text-xs text-text-dim italic">
+      Scanning chat history...
+    </div>
+    <div
+      v-else-if="historyError"
+      class="px-2 shrink-0 text-xs text-accent-red italic truncate"
+      :title="historyError">
+      History import failed — check chat logs path
+    </div>
 
     <!-- Tab bar -->
     <div class="flex gap-1 shrink-0">
@@ -48,8 +57,11 @@
               <span class="text-text-primary text-xs truncate">{{ timer.cow_name }}</span>
               <span
                 class="text-xs font-mono whitespace-nowrap shrink-0"
-                :class="timer.remaining <= 0 ? 'text-value-positive' : 'text-text-dim'">
-                {{ timer.remaining <= 0 ? 'Ready!' : formatRemaining(timer.remaining) }}
+                :class="timer.remaining <= 0 ? 'text-value-positive' : 'text-text-dim'"
+                :title="timer.cooldown_unknown
+                  ? 'Exact milk time unknown — the game only said it happened within the past hour, so this is the latest possible expiry.'
+                  : undefined">
+                {{ timerLabel(timer) }}
               </span>
             </div>
           </div>
@@ -104,11 +116,17 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useGameStateStore } from '../../../stores/gameStateStore'
 import { useSettingsStore } from '../../../stores/settingsStore'
 import AreaInline from '../../Shared/Area/AreaInline.vue'
+import { scanning as scanningHistory, lastError as historyError, ensureAbilityHistory } from '../../../composables/useAbilityHistoryBackfill'
 
 interface MilkingTimer {
   cow_name: string
   zone: string
   last_milked_at: string
+  /**
+   * True when the exact milk time is unknown and `last_milked_at` is the earliest
+   * failed attempt (an upper bound on the cooldown), not an actual milk time.
+   */
+  cooldown_unknown: boolean
 }
 
 interface TimerWithRemaining extends MilkingTimer {
@@ -164,8 +182,13 @@ const dedupedTimers = computed<MilkingTimer[]>(() => {
     }
     const tTime = new Date(t.last_milked_at).getTime()
     const exTime = new Date(existing.last_milked_at).getTime()
-    // Most recent milk time drives the countdown; keep the most recent
-    // non-empty zone as the grouping label.
+    // A known milk time is strictly better information than a bound, so it wins
+    // outright. Among two knowns keep the latest; among two bounds keep the
+    // earliest attempt (the tightest upper bound on the cooldown).
+    const useT = t.cooldown_unknown === existing.cooldown_unknown
+      ? (t.cooldown_unknown ? tTime < exTime : tTime > exTime)
+      : existing.cooldown_unknown
+    // Keep the most recent non-empty zone as the grouping label.
     let zone = existing.zone
     if (t.zone !== '' && (existing.zone === '' || tTime >= exTime)) {
       zone = t.zone
@@ -173,7 +196,8 @@ const dedupedTimers = computed<MilkingTimer[]>(() => {
     byCow.set(t.cow_name, {
       cow_name: t.cow_name,
       zone,
-      last_milked_at: tTime > exTime ? t.last_milked_at : existing.last_milked_at,
+      last_milked_at: useT ? t.last_milked_at : existing.last_milked_at,
+      cooldown_unknown: useT ? t.cooldown_unknown : existing.cooldown_unknown,
     })
   }
   return [...byCow.values()]
@@ -182,6 +206,8 @@ const dedupedTimers = computed<MilkingTimer[]>(() => {
 const groupedTimers = computed<ZoneGroup[]>(() => {
   const withRemaining: TimerWithRemaining[] = dedupedTimers.value.map(t => {
     const milkedAt = new Date(t.last_milked_at).getTime()
+    // Same formula for both kinds: for a known milk it is the remaining
+    // cooldown, for a bound row the latest possible expiry (an upper bound).
     const remaining = Math.ceil((milkedAt + COOLDOWN_MS - now.value) / 1000)
     return { ...t, remaining }
   })
@@ -221,6 +247,18 @@ const groupedTimers = computed<ZoneGroup[]>(() => {
 
   return groups
 })
+
+/**
+ * Label for a cow's cooldown. A bound row (`cooldown_unknown`) can only promise
+ * "no longer than", so it says `≤ 45m` instead of pretending to a countdown;
+ * both kinds are certain at zero, because the bound's expiry is the latest
+ * possible one.
+ */
+function timerLabel(timer: TimerWithRemaining): string {
+  if (timer.remaining <= 0) return 'Ready!'
+  const text = formatRemaining(timer.remaining)
+  return timer.cooldown_unknown ? `≤ ${text}` : text
+}
 
 function formatRemaining(seconds: number): string {
   if (seconds <= 0) return 'Ready!'
@@ -274,6 +312,21 @@ async function loadLeaderboards() {
     milkedLeaderboard.value = milked
     milkedByLeaderboard.value = milkedBy
     selfMilkedCount.value = selfMilked.reduce((sum, e) => sum + e.count, 0)
+
+    // Self-milks only ever appear as excluded-Combat chat lines, so the archived
+    // Chat-*.log history has to be imported before the counter can show
+    // anything. Shared with the Character → Stats card: one scan per session,
+    // never both. Not gated on a zero count — a milk that lands before the first
+    // scan must not block the rest of the archive.
+    if (char) {
+      await ensureAbilityHistory(char, server)
+      const refreshed = await invoke<PlayerMilkingEntry[]>('get_player_milking_leaderboard', {
+        characterName: char,
+        serverName: server,
+        direction: 'self_milked',
+      })
+      selfMilkedCount.value = refreshed.reduce((sum, e) => sum + e.count, 0)
+    }
   } catch (e) {
     console.error('Failed to load milking leaderboards:', e)
   }

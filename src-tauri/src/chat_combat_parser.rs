@@ -40,6 +40,57 @@ pub enum ChatCombatEvent {
     },
 }
 
+/// Parse a self-issued Combat ability line — the cow-curse abilities share one
+/// shape (the chat parser splits the sender off player lines, so `text`
+/// normally arrives as `"<Ability> on <Target>!"`):
+///
+/// ```text
+/// [Combat] TwinkleofToes: Poop on TwinkleofToes!
+/// [Combat] TwinkleofToes: Collect Milk on TwinkleofToes!
+/// ```
+///
+/// Returns the ability's target, or `None` when the line is not that ability or
+/// the issuer is not `player_name` (we track *your* actions, not other players').
+/// Lines the chat parser keeps whole (it does so when the "sender" half contains
+/// `#` or starts with `You `) are still accepted by stripping the
+/// `"<player_name>: "` prefix.
+///
+/// Combat lines never reach `chat_messages` (the channel is excluded by
+/// default), so callers feed these straight from the raw stream.
+pub fn parse_self_ability_line(
+    sender: Option<&str>,
+    text: &str,
+    player_name: &str,
+    ability: &str,
+) -> Option<String> {
+    let text = text.trim();
+
+    let text = match sender {
+        Some(s) if s == player_name => text,
+        Some(_) => return None,
+        None => text.strip_prefix(player_name)?.strip_prefix(':')?.trim(),
+    };
+
+    let target = text
+        .strip_prefix(ability)?
+        .strip_prefix(" on ")?
+        .strip_suffix('!')?
+        .trim();
+    if target.is_empty() {
+        return None;
+    }
+    Some(target.to_string())
+}
+
+/// Parse the cow-curse "Poop" ability line; returns the poop's target.
+pub fn parse_self_poop_line(
+    sender: Option<&str>,
+    text: &str,
+    player_name: &str,
+) -> Option<String> {
+    parse_self_ability_line(sender, text, player_name, "Poop")
+}
+
 /// Try to parse a Combat channel ChatMessage into a combat event.
 /// Returns None if the message is not a Combat message or not relevant to the player.
 pub fn parse_combat_message(
@@ -630,5 +681,136 @@ mod tests {
             "Demonic Swarmer #7537641: Suffered indirect dmg: -2 health",
         );
         assert!(parse_combat_message(&msg, "Zenith").is_none());
+    }
+
+    // ── Cow-curse ability line tests (Poop / Collect Milk) ──────────────────
+    #[test]
+    fn test_poop_line_matches_self() {
+        let msg = combat_msg("TwinkleofToes: Poop on TwinkleofToes!");
+        // The chat parser splits the sender out of player lines.
+        assert_eq!(msg.sender.as_deref(), Some("TwinkleofToes"));
+        assert_eq!(
+            parse_self_poop_line(msg.sender.as_deref(), &msg.message, "TwinkleofToes"),
+            Some("TwinkleofToes".to_string())
+        );
+    }
+
+    #[test]
+    fn test_poop_line_records_other_target() {
+        let msg = combat_msg("TwinkleofToes: Poop on Somebodies Boots!");
+        assert_eq!(
+            parse_self_poop_line(msg.sender.as_deref(), &msg.message, "TwinkleofToes"),
+            Some("Somebodies Boots".to_string())
+        );
+    }
+
+    #[test]
+    fn test_poop_line_other_players_ignored() {
+        let msg = combat_msg("OtherPlayer: Poop on OtherPlayer!");
+        assert_eq!(
+            parse_self_poop_line(msg.sender.as_deref(), &msg.message, "TwinkleofToes"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_poop_line_unsplit_prefix_accepted_and_other_lines_rejected() {
+        // Unsplit variant (chat parser keeps some lines whole).
+        assert_eq!(
+            parse_self_poop_line(None, "TwinkleofToes: Poop on TwinkleofToes!", "TwinkleofToes"),
+            Some("TwinkleofToes".to_string())
+        );
+        // Same shape as the sibling self-milking line — must not count as a poop.
+        assert_eq!(
+            parse_self_poop_line(None, "TwinkleofToes: Collect Milk on TwinkleofToes!", "TwinkleofToes"),
+            None
+        );
+        // Combat damage lines never match.
+        let msg = combat_msg("Zenith: Rib Shatter 9 on Orcish Ranger #7442047! Dmg: 3790 health, 1741 armor");
+        assert_eq!(
+            parse_self_poop_line(msg.sender.as_deref(), &msg.message, "Zenith"),
+            None
+        );
+        // Bare prefix without a target is not an event.
+        assert_eq!(parse_self_poop_line(None, "Poop on !", "TwinkleofToes"), None);
+    }
+
+    #[test]
+    fn test_self_milk_line_matches_self_but_not_raw_line_comparison() {
+        let msg = combat_msg("TwinkleofToes: Collect Milk on TwinkleofToes!");
+        assert_eq!(msg.sender.as_deref(), Some("TwinkleofToes"));
+        // The chat parser strips the sender, so the message no longer carries it.
+        assert_eq!(msg.message, "Collect Milk on TwinkleofToes!");
+
+        assert_eq!(
+            parse_self_ability_line(
+                msg.sender.as_deref(),
+                &msg.message,
+                "TwinkleofToes",
+                "Collect Milk"
+            ),
+            Some("TwinkleofToes".to_string())
+        );
+
+        // Regression guard for the old check: comparing the whole raw line
+        // against the split message could never match, so self-milking never
+        // recorded anything.
+        assert_ne!(
+            msg.message.trim(),
+            format!(
+                "{}: Collect Milk on {}!",
+                "TwinkleofToes", "TwinkleofToes"
+            )
+        );
+    }
+
+    #[test]
+    fn test_ability_lines_do_not_cross_match() {
+        let milk = combat_msg("TwinkleofToes: Collect Milk on TwinkleofToes!");
+        assert_eq!(
+            parse_self_ability_line(
+                milk.sender.as_deref(),
+                &milk.message,
+                "TwinkleofToes",
+                "Poop"
+            ),
+            None
+        );
+
+        let poop = combat_msg("TwinkleofToes: Poop on TwinkleofToes!");
+        assert_eq!(
+            parse_self_ability_line(
+                poop.sender.as_deref(),
+                &poop.message,
+                "TwinkleofToes",
+                "Collect Milk"
+            ),
+            None
+        );
+
+        // Milking someone else (or an NPC cow) is not a SELF-milk: the matcher
+        // reports the other target, which the caller compares against the player.
+        let other = combat_msg("TwinkleofToes: Collect Milk on Homer!");
+        assert_eq!(
+            parse_self_ability_line(
+                other.sender.as_deref(),
+                &other.message,
+                "TwinkleofToes",
+                "Collect Milk"
+            ),
+            Some("Homer".to_string())
+        );
+
+        // Somebody else's milk line is not ours.
+        let theirs = combat_msg("OtherPlayer: Collect Milk on OtherPlayer!");
+        assert_eq!(
+            parse_self_ability_line(
+                theirs.sender.as_deref(),
+                &theirs.message,
+                "TwinkleofToes",
+                "Collect Milk"
+            ),
+            None
+        );
     }
 }

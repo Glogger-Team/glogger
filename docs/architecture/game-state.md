@@ -56,7 +56,7 @@ Snapshot Import → seed_game_state_from_snapshot() → same DB tables
 
 ## Database Schema
 
-All tables live in the V1 unified migration. Every table uses `last_confirmed_at TEXT` for freshness.
+The game-state tables (the `game_state_*` and `character_*` families) live in the V1 unified migration and use `last_confirmed_at TEXT` for freshness. Ledger/event tables added later (`milking_timers`, `player_milking_log`, `player_pooping_log`, `item_transactions`) are their own migrations and carry their own timestamps instead.
 
 | Table | PK | Key Columns |
 |---|---|---|
@@ -81,7 +81,9 @@ All tables live in the V1 unified migration. Every table uses `last_confirmed_at
 | `game_state_strings` | (character_name, server_name, key) | value (NOTEPAD, FRIEND_STATUS, PUBLIC_STATUS, etc.) |
 | `game_state_books` | (character_name, server_name, book_type, title) UNIQUE | content (raw HTML) |
 | `character_report_stats` | (character_name, server_name, category, stat_name) | stat_value (parsed from PlayerAge/Behavior reports) |
-| `milking_timers` | (character_name, server_name, cow_name, zone) | last_milked_at |
+| `milking_timers` | (character_name, server_name, cow_name, zone) | last_milked_at (+ `cooldown_unknown`: the stamp is a bound, not a milk time) |
+| `player_pooping_log` | id (auto) | character/server/target + `pooped_at` (local wall-clock), UNIQUE per event — "Poop on X!" Combat lines (Dungcrafting count) |
+| `player_milking_log` | id (auto) | character/server/other_player + `direction` (`milked`/`milked_by`/`self_milked`) + `milked_at` (RFC3339 UTC event time), UNIQUE per event (v72) |
 | `item_transactions` | id (auto) | timestamp, item_name, internal_name, quantity, context, source, instance_id, vault_key |
 
 ### Item Transaction Ledger (`item_transactions`)
@@ -136,10 +138,11 @@ Lightweight struct with `active_character: Option<String>` and `active_server: O
 | *(BookOpened — handled in coordinator)* | game_state_books | UPSERT | `books` |
 | *(BookOpened + HelpScreen/PlayerAge — coordinator)* | character_report_stats | UPSERT | `report_stats` |
 | *(Cow milk detection — coordinator)* | milking_timers | UPSERT | `milking` |
+| *(Combat "Poop on X!" line — coordinator + Chat.log backfill)* | player_pooping_log | INSERT OR IGNORE | `report_stats` |
 
 ### Timestamp Handling
 
-Log events have `"HH:MM:SS"` timestamps. `GameStateManager` normalizes these to `"YYYY-MM-DD HH:MM:SS"` using `chrono::Local::now()`. All stored timestamps are UTC. The frontend's `useTimestamp` composable converts UTC to the user's preferred display timezone (local, server, or UTC) based on the `timestamp_display_mode` setting.
+Log events have `"HH:MM:SS"` timestamps. `GameStateManager` normalizes these to `"YYYY-MM-DD HH:MM:SS"` using `chrono::Local::now()`. Game-state timestamps are stored UTC; the one deliberate exception is `player_pooping_log.pooped_at`, which keeps the chat log's **local** wall clock so the live tail and the Chat.log backfill derive the identical dedup key (`MIN`/`MAX`/`substr(...,1,10)` in `get_pooping_stats` operate on that local value). The frontend's `useTimestamp` composable converts UTC to the user's preferred display timezone (local, server, or UTC) based on the `timestamp_display_mode` setting.
 
 ### Login Behavior
 

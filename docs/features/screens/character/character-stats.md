@@ -119,6 +119,40 @@ Upserts on `(character_name, server_name, category, stat_name)` — opening the 
 - `src-tauri/src/db/game_state_commands.rs` — `get_character_report_stats` query command
 - `src/components/Character/ReportStatsSection.vue` — Frontend component
 
+## Pooping (Dungcrafting) Group
+
+The same card also renders a synthetic **Dungcrafting** group: the lifetime poop count plus the skill's level.
+
+Pooping is the cow-curse ability whose skill the game displays as **Dungcrafting** (CDN `skills.name = 'Dungcrafting'` with `xp_table = 'Pooping'`; Player.log reports it as `ProcessLoadSkills({type=Pooping,...})`). Its only per-event trace is a Combat-channel chat line:
+
+```text
+26-10-11 19:59:15	[Combat] TwinkleofToes: Poop on TwinkleofToes!
+```
+
+`Combat` is in `default_excluded_channels`, so those lines never reach `chat_messages` — the count is fed from the raw chat stream instead:
+
+| Source | Path |
+|---|---|
+| Live tail | `DataIngestCoordinator::process_chat_events` → `chat_combat_parser::parse_self_poop_line` → `record_poop` (Combat branch, right beside the self-milking check) |
+| Chat.log history | `backfill_ability_history` command — reads every `Chat-*.log` from byte 0 (position-based scans had already reached EOF before this existed); the same scan also imports self-milks for the Milking Timers widget |
+
+Storage: `player_pooping_log` (migration v71), one row per event, `UNIQUE(character_name, server_name, pooped_at, target_name)`. `pooped_at` is the chat log's **local wall-clock** timestamp so live and backfill rows dedup against each other; the insert targets that key (`INSERT … ON CONFLICT DO NOTHING`), so re-running the backfill counts nothing twice and a real write error still surfaces. Only *your* poops count — the sender must be the active character.
+
+The card backfills itself once per app session (shared with the Milking Timers widget), and only for characters that actually have the Dungcrafting skill, then stops touching the archives.
+
+### Rows
+
+| Row | Source |
+|---|---|
+| Level | `game_state_skills` (`Dungcrafting`), shown as `level / max_level` |
+| Total Poops | `COUNT(*)` from `player_pooping_log` |
+| Days Pooped | `COUNT(DISTINCT substr(pooped_at, 1, 10))` |
+| First Poop / Last Poop | `MIN`/`MAX(pooped_at)` (date only) |
+
+Commands: `get_pooping_stats`, `backfill_ability_history`. Live poop events emit `game-state-updated: ["report_stats"]` so the card refreshes.
+
+`useAbilityHistoryBackfill` (composable) owns the one-scan-per-session rule shared with the Milking Timers widget. Surfaces ask for the scan on mount rather than when their counter reads zero — a single live event before the first scan must not lock the archive out. Both surfaces also render the scan's failure (`lastError`) instead of an unexplained empty counter, and a failed attempt gets one retry on the next trigger before the session gives up (2 attempts per character/server — a persistent cause can't be fixed by re-reading the archive). Verified 2026-10-13: a missing `game_data_path` makes the app run its setup wizard and re-derive the path, so an unconfigured directory is not a realistic failure — the net is for file/DB errors.
+
 ## Computed Stats
 
 The Stats tab includes a **Computed Stats** card that calculates derived statistics by joining game state data with CDN recipe metadata. Auto-refreshes on `skills`, `recipes`, or `report_stats` domain updates, and also loads on mount.

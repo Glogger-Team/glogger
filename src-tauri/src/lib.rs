@@ -146,6 +146,7 @@ use chat_commands::{
     get_chat_days, get_chat_messages, get_chat_messages_around, get_chat_messages_around_time,
     get_chat_stats, get_tell_conversations, get_watch_rule_messages, purge_chat_messages,
     scan_chat_log_file, scan_chat_logs, tail_chat_log,
+    backfill_ability_history,
 };
 use commands::parse_log;
 use debug_capture::replay_capture_file;
@@ -203,6 +204,7 @@ use db::game_state_commands::{
     get_computed_stats, get_item_ownership,
     get_attribute_extremes,
     get_player_milking_leaderboard,
+    get_pooping_stats,
     get_teleportation_binds,
     set_mushroom_circles,
     get_garden_almanac,
@@ -846,6 +848,7 @@ pub fn run() {
             // Chat
             scan_chat_logs,
             scan_chat_log_file,
+            backfill_ability_history,
             get_chat_messages,
             count_chat_messages,
             get_chat_messages_around,
@@ -1001,6 +1004,7 @@ pub fn run() {
             get_item_ownership,
             get_attribute_extremes,
             get_player_milking_leaderboard,
+            get_pooping_stats,
             get_tracked_skills,
             set_tracked_skills,
             get_market_values,

@@ -998,14 +998,17 @@ impl DataIngestCoordinator {
                             self.pending_cow_interaction = None;
                         }
                         PlayerEvent::ScreenText {
-                            category, message, ..
+                            category, message, timestamp, ..
                         } if category == "ErrorMessage" => {
-                            // "You've already milked Homer in the past hour."
+                            // "You've already milked Homer in the past hour." — bounds
+                            // the milk to (timestamp - 1h, timestamp]; it does not say
+                            // when it happened (see `record_cow_milk_backfill`).
                             if let Some(cow_name) =
                                 message.strip_prefix("You've already milked ")
                                     .and_then(|s| s.strip_suffix(" in the past hour."))
                             {
-                                self.record_cow_milk_backfill(cow_name);
+                                let ts = self.game_state.to_utc(timestamp);
+                                self.record_cow_milk_backfill(cow_name, &ts);
                             }
                         }
                         PlayerEvent::ScreenText {
@@ -1016,7 +1019,10 @@ impl DataIngestCoordinator {
                                 message.strip_prefix("You obtain fresh milk from ")
                                     .and_then(|s| s.strip_suffix('.'))
                             {
-                                self.record_player_milk(player_name, "milked", timestamp);
+                                // `timestamp` is a bare "HH:MM:SS" UTC clock time;
+                                // add the date (respecting any replay override).
+                                let ts = self.game_state.to_utc(timestamp);
+                                self.record_player_milk(player_name, "milked", &ts);
                             }
                         }
                         PlayerEvent::ScreenText {
@@ -1027,7 +1033,8 @@ impl DataIngestCoordinator {
                                 message.strip_suffix(" has milked you.")
                             {
                                 if !player_name.is_empty() {
-                                    self.record_player_milk(player_name, "milked_by", timestamp);
+                                    let ts = self.game_state.to_utc(timestamp);
+                                    self.record_player_milk(player_name, "milked_by", &ts);
                                 }
                             }
                         }
@@ -1291,7 +1298,7 @@ impl DataIngestCoordinator {
                                             .strip_prefix("Cow_")
                                             .unwrap_or(&cow_internal)
                                             .to_string();
-                                        self.record_cow_milk(&cow_display);
+                                        self.record_cow_milk(&cow_display, timestamp);
                                     }
                                 }
 
@@ -1531,15 +1538,35 @@ impl DataIngestCoordinator {
                     // Check Combat channel for self-milking (cow player milking themselves).
                     // Format: "[Combat] PlayerName: Collect Milk on PlayerName!"
                     // No entity ID (unlike NPC attacks), so the existing combat parser skips it.
+                    // The chat parser has ALREADY split the sender off player lines, so this
+                    // must compare the split message against the matcher — comparing the raw
+                    // line (sender included) never matched and recorded nothing.
                     if msg.channel.as_deref() == Some("Combat") {
                         if let Some(character_name) = self.game_state.get_active_character() {
-                            let expected = format!(
-                                "{}: Collect Milk on {}!",
-                                character_name, character_name
-                            );
-                            if msg.message.trim() == expected {
+                            if crate::chat_combat_parser::parse_self_ability_line(
+                                msg.sender.as_deref(),
+                                &msg.message,
+                                character_name,
+                                "Collect Milk",
+                            )
+                            .as_deref()
+                                == Some(character_name)
+                            {
                                 let ts = msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
                                 self.record_player_milk(character_name, "self_milked", &ts);
+                            }
+
+                            // Cow-curse "Poop" ability — same shape as the milk line:
+                            // "[Combat] PlayerName: Poop on TargetName!". Combat lines are
+                            // excluded from chat_messages by default, so the lifetime count
+                            // is fed from the raw stream (and from the Chat.log backfill).
+                            // Keyed on the LOCAL wall clock so live + backfill dedup.
+                            if let Some(target) = crate::chat_combat_parser::parse_self_poop_line(
+                                msg.sender.as_deref(),
+                                &msg.message,
+                                character_name,
+                            ) {
+                                self.record_poop(&target, &local_ts);
                             }
                         }
                     }
@@ -2443,60 +2470,62 @@ impl DataIngestCoordinator {
 
     // ── Milking timers ────────────────────────────────────────────
 
-    /// Record a successful cow milk (from chat "Bottle of Milk added to inventory"
-    /// while interacting with a Cow_ NPC). Uses current area as the zone.
-    fn record_cow_milk(&self, cow_name: &str) {
+    /// Record a successful cow milk (from the chat "Bottle of Milk added to
+    /// inventory" line while interacting with a `Cow_` NPC) and update that cow's
+    /// cooldown timer, using the current area as the zone.
+    ///
+    /// `timestamp` is the event's own UTC time (`"YYYY-MM-DD HH:MM:SS"`, taken from
+    /// the `[Status]` chat item-gain line — this is the chat path, not Player.log):
+    /// the cooldown must start when the cow was milked, not when Glogger read the
+    /// chat log, or a catch-up replay of an old log would hand out a fresh hour
+    /// every time. The upsert keeps the *newer* of the two stamps
+    /// (`MAX(excluded, stored)`) so a replay can't push a cooldown back while the
+    /// `zone` merge below still learns a previously-unknown area.
+    fn record_cow_milk(&self, cow_name: &str, timestamp: &str) {
         let (character, server) = match self.active_character_server() {
             Some(cs) => cs,
             None => return,
         };
         let zone = self.current_area.clone().unwrap_or_default();
-        let now = chrono::Utc::now().to_rfc3339();
+        let milked_at = milking_event_timestamp(timestamp);
         let conn = match self.db_pool.get_write() {
             Ok(c) => c,
             Err(_) => return,
         };
-        conn.execute(
-            "INSERT INTO milking_timers (character_name, server_name, cow_name, zone, last_milked_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
-                last_milked_at = excluded.last_milked_at,
-                zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END",
-            rusqlite::params![character, server, cow_name, zone, now],
-        )
-        .ok();
+        if let Err(e) = crate::db::game_state_commands::record_cow_milk(
+            &conn, &character, &server, cow_name, &zone, &milked_at,
+        ) {
+            eprintln!("[coordinator] {e}");
+            return;
+        }
         self.app_handle
             .emit("game-state-updated", vec!["milking"])
             .ok();
     }
 
-    /// Backfill a milking timer from the cooldown error message
-    /// ("You've already milked X in the past hour."). Since we don't know
-    /// exactly when the milk happened, record it as 59 minutes ago so the
-    /// timer shows nearly expired.
-    fn record_cow_milk_backfill(&self, cow_name: &str) {
+    /// The game refused the milk with "You've already milked X in the past hour.",
+    /// which bounds the real milk to `(attempt - 1h, attempt]` — it does not say
+    /// when it happened. Record that bound (`record_cow_cooldown_bound`) instead of
+    /// fabricating a stamp: the widget shows "≤ Xm" from it and a known milk time,
+    /// once one arrives, clears the flag. `timestamp` is the error line's own UTC
+    /// time, so a replayed log yields the same bound.
+    fn record_cow_milk_backfill(&self, cow_name: &str, timestamp: &str) {
         let (character, server) = match self.active_character_server() {
             Some(cs) => cs,
             None => return,
         };
         let zone = self.current_area.clone().unwrap_or_default();
-        let backfill_time =
-            (chrono::Utc::now() - chrono::Duration::minutes(59)).to_rfc3339();
+        let attempt_at = milking_event_timestamp(timestamp);
         let conn = match self.db_pool.get_write() {
             Ok(c) => c,
             Err(_) => return,
         };
-        // Only backfill if we don't already have a more recent record for this cow
-        conn.execute(
-            "INSERT INTO milking_timers (character_name, server_name, cow_name, zone, last_milked_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
-                last_milked_at = excluded.last_milked_at,
-                zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END
-                WHERE excluded.last_milked_at > milking_timers.last_milked_at",
-            rusqlite::params![character, server, cow_name, zone, backfill_time],
-        )
-        .ok();
+        if let Err(e) = crate::db::game_state_commands::record_cow_cooldown_bound(
+            &conn, &character, &server, cow_name, &zone, &attempt_at,
+        ) {
+            eprintln!("[coordinator] {e}");
+            return;
+        }
         self.app_handle
             .emit("game-state-updated", vec!["milking"])
             .ok();
@@ -2504,25 +2533,70 @@ impl DataIngestCoordinator {
 
     /// Record a player-to-player milking event.
     /// direction is "milked" (I milked them) or "milked_by" (they milked me).
-    fn record_player_milk(&self, other_player: &str, direction: &str, _timestamp: &str) {
+    ///
+    /// `timestamp` is the event's own UTC time (`"YYYY-MM-DD HH:MM:SS"` for
+    /// Player.log lines, already UTC-converted for chat lines). It is stored as
+    /// `milked_at`: the row must say when the milking happened, not when Glogger
+    /// got around to ingesting it (which could be hours later on catch-up).
+    fn record_player_milk(&self, other_player: &str, direction: &str, timestamp: &str) {
         let (character, server) = match self.active_character_server() {
             Some(cs) => cs,
             None => return,
         };
-        let dt = chrono::Utc::now().to_rfc3339();
+        let milked_at = milking_event_timestamp(timestamp);
         let conn = match self.db_pool.get_write() {
             Ok(c) => c,
             Err(_) => return,
         };
-        conn.execute(
-            "INSERT INTO player_milking_log (character_name, server_name, other_player, direction, milked_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![character, server, other_player, direction, dt],
-        )
-        .ok();
+        match crate::db::game_state_commands::record_milking_event(
+            &conn,
+            &character,
+            &server,
+            other_player,
+            direction,
+            &milked_at,
+        ) {
+            // Already recorded (the Chat.log backfill got there first, or this
+            // line was replayed) — the counter must not move.
+            Ok(false) => return,
+            Ok(true) => {}
+            Err(e) => {
+                eprintln!("[coordinator] Failed to record milking event: {e}");
+                return;
+            }
+        }
         self.app_handle
             .emit("game-state-updated", vec!["milking"])
             .ok();
+    }
+
+    /// Record one "Poop on <target>!" event from the Combat channel (the
+    /// cow-curse ability whose skill is Dungcrafting).
+    ///
+    /// `local_ts` is the chat log's local wall-clock timestamp — deliberately
+    /// NOT the UTC-converted one, because the chat-log backfill never converts
+    /// and both paths must agree on the dedup key.
+    fn record_poop(&self, target: &str, local_ts: &str) {
+        let (character, server) = match self.active_character_server() {
+            Some(cs) => cs,
+            None => return,
+        };
+        let conn = match self.db_pool.get_write() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        match crate::db::game_state_commands::record_poop(
+            &conn, &character, &server, target, local_ts,
+        ) {
+            Ok(true) => {
+                self.app_handle
+                    .emit("game-state-updated", vec!["report_stats"])
+                    .ok();
+            }
+            // Already recorded (the backfill got there first) — nothing changed.
+            Ok(false) => {}
+            Err(e) => eprintln!("[coordinator] Failed to record poop: {e}"),
+        }
     }
 
     /// Parse teleportation bind locations from a "Skill Info" SkillReport book
@@ -3799,5 +3873,55 @@ mod rez_dedup_tests {
         assert!(!within("2026-10-04", "2026-10-04 12:34:56"));
         assert!(!within("", "2026-10-04 12:34:56"));
         assert!(!within("garbage", "2026-10-04 12:34:56"));
+    }
+}
+
+/// RFC3339 (UTC) `milked_at` for a milking event, derived from the event's own
+/// UTC time (`"YYYY-MM-DD HH:MM:SS"` — what `GameStateManager::to_utc` returns
+/// for Player.log lines, and what a UTC-converted chat line already is).
+///
+/// Falls back to `Utc::now()` when the event time is missing or unparseable (a
+/// milking is never dropped over a bad timestamp), mirroring
+/// `parsers::to_utc_datetime_with_base`.
+fn milking_event_timestamp(event_ts: &str) -> String {
+    match chrono::NaiveDateTime::parse_from_str(event_ts.trim(), "%Y-%m-%d %H:%M:%S") {
+        Ok(dt) => chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc)
+            .to_rfc3339(),
+        Err(_) => chrono::Utc::now().to_rfc3339(),
+    }
+}
+
+#[cfg(test)]
+mod milking_timestamp_tests {
+    use super::milking_event_timestamp;
+
+    #[test]
+    fn uses_the_event_time_not_the_ingest_time() {
+        // The self-milk in Chat-26-10-12.log: 20:14:16 local (-05:00), already
+        // converted to UTC by the coordinator before it reaches us.
+        assert_eq!(
+            milking_event_timestamp("2026-10-13 01:14:16"),
+            "2026-10-13T01:14:16+00:00"
+        );
+        // Player.log path: shape returned by `GameStateManager::to_utc`.
+        assert_eq!(
+            milking_event_timestamp("2026-06-26 01:29:44"),
+            "2026-06-26T01:29:44+00:00"
+        );
+    }
+
+    #[test]
+    fn malformed_event_time_falls_back_to_now() {
+        let before = chrono::Utc::now();
+        for bad in ["", "   ", "HH:MM:SS", "2026-10-13", "2026-10-13T01:14:16Z"] {
+            let stamped = milking_event_timestamp(bad);
+            let parsed = chrono::DateTime::parse_from_rfc3339(&stamped)
+                .unwrap_or_else(|e| panic!("{bad:?} produced {stamped}: {e}"));
+            let drift = parsed.with_timezone(&chrono::Utc) - before;
+            assert!(
+                drift.num_seconds().abs() < 60,
+                "{bad:?} produced {stamped}, which is not ~now"
+            );
+        }
     }
 }

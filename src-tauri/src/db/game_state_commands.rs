@@ -1,4 +1,5 @@
 use super::DbPool;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 /// Tauri commands for querying persisted game state
 use tauri::State;
@@ -877,7 +878,13 @@ pub fn get_game_state_books(
 pub struct MilkingTimer {
     pub cow_name: String,
     pub zone: String,
+    /// For a known milk: when it happened. For `cooldown_unknown` rows: the
+    /// **earliest observed failed attempt**, which is what bounds the cooldown
+    /// (`expiry ≤ last_milked_at + 1h`) — see `record_cow_cooldown_bound`.
     pub last_milked_at: String,
+    /// The game only said "milked within the past hour", so this cow's exact
+    /// milk time is unknown: the widget must render an upper bound, not a countdown.
+    pub cooldown_unknown: bool,
 }
 
 #[tauri::command]
@@ -887,9 +894,18 @@ pub fn get_milking_timers(
     server_name: String,
 ) -> Result<Vec<MilkingTimer>, String> {
     let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    get_milking_timers_for(&conn, &character_name, &server_name)
+}
+
+/// Split out from the command so tests can exercise it without Tauri state.
+pub fn get_milking_timers_for<C: crate::db::DbRead + ?Sized>(
+    conn: &C,
+    character_name: &str,
+    server_name: &str,
+) -> Result<Vec<MilkingTimer>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT cow_name, zone, last_milked_at
+            "SELECT cow_name, zone, last_milked_at, cooldown_unknown
              FROM milking_timers
              WHERE character_name = ?1 AND server_name = ?2
              ORDER BY zone, cow_name",
@@ -902,12 +918,80 @@ pub fn get_milking_timers(
                 cow_name: row.get(0)?,
                 zone: row.get(1)?,
                 last_milked_at: row.get(2)?,
+                cooldown_unknown: row.get(3)?,
             })
         })
         .map_err(|e| format!("Query error: {e}"))?;
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Row error: {e}"))
+}
+
+/// Record a **known** cow milk: the cooldown starts at `milked_at` (the milk
+/// event's own UTC time) and the "unknown" flag is cleared, because this is the
+/// truth the bound was only approximating.
+///
+/// The stamp only ever moves forward (`MAX`), so replaying an old chat log can't
+/// hand out a fresh hour; the zone merge still learns a previously-unknown area.
+/// Lives here rather than inline in the coordinator so the statement is testable.
+pub fn record_cow_milk(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    cow_name: &str,
+    zone: &str,
+    milked_at: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO milking_timers
+             (character_name, server_name, cow_name, zone, last_milked_at, cooldown_unknown)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0)
+         ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
+            last_milked_at = MAX(excluded.last_milked_at, milking_timers.last_milked_at),
+            cooldown_unknown = 0,
+            zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END",
+        rusqlite::params![character, server, cow_name, zone, milked_at],
+    )
+    .map_err(|e| format!("Failed to record cow milk: {e}"))?;
+    Ok(())
+}
+
+/// Record that a cow was milked *somewhere within the hour before `attempt_at`
+/// (the game's "You've already milked X in the past hour." error).
+///
+/// The exact milk time is unknowable, so the row keeps a **bound** instead of a
+/// fabricated stamp: `last_milked_at` = the *earliest* observed failed attempt
+/// (each accepted attempt can only tighten it, hence `MIN`), which makes the
+/// cooldown expiry `≤ last_milked_at + 1h` — an upper bound the widget renders as
+/// "≤ Xm" and which becomes a certain "Ready!" at zero.
+///
+/// A row that already holds a *known* milk time is never degraded by this: its
+/// stamp and flag are left alone (a real time is strictly better information),
+/// only the zone merge still applies.
+pub fn record_cow_cooldown_bound(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    cow_name: &str,
+    zone: &str,
+    attempt_at: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO milking_timers
+             (character_name, server_name, cow_name, zone, last_milked_at, cooldown_unknown)
+         VALUES (?1, ?2, ?3, ?4, ?5, 1)
+         ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
+            last_milked_at = CASE
+                WHEN milking_timers.cooldown_unknown = 1
+                  THEN MIN(excluded.last_milked_at, milking_timers.last_milked_at)
+                ELSE milking_timers.last_milked_at
+            END,
+            cooldown_unknown = milking_timers.cooldown_unknown,
+            zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END",
+        rusqlite::params![character, server, cow_name, zone, attempt_at],
+    )
+    .map_err(|e| format!("Failed to record cow cooldown bound: {e}"))?;
+    Ok(())
 }
 
 // ── Character stats ─────────────────────────────────────────────
@@ -1015,6 +1099,147 @@ pub fn get_player_milking_leaderboard(
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Row error: {e}"))
+}
+
+// ── Milking log ────────────────────────────────────────────────────────────
+
+/// Record one milking event. `milked_at` is RFC3339 UTC **event time**.
+///
+/// Idempotent — `v72` makes `(character, server, direction, other_player,
+/// milked_at)` unique, so the same line seen twice (live tail + Chat.log
+/// backfill, or a catch-up replay) leaves one row and the widget's counter can't
+/// double-count. Returns `false` when that key was already present.
+///
+/// The conflict target is spelled out rather than `INSERT OR IGNORE` so *other*
+/// constraint failures (a bad `direction` against the v38 CHECK, a NULL) still
+/// raise instead of being silently reported as a duplicate.
+pub fn record_milking_event(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    other_player: &str,
+    direction: &str,
+    milked_at: &str,
+) -> Result<bool, String> {
+    let inserted = conn
+        .execute(
+            "INSERT INTO player_milking_log
+                 (character_name, server_name, other_player, direction, milked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(character_name, server_name, direction, other_player, milked_at)
+                 DO NOTHING",
+            rusqlite::params![character, server, other_player, direction, milked_at],
+        )
+        .map_err(|e| format!("Failed to record milking event: {e}"))?;
+    Ok(inserted > 0)
+}
+
+// ── Pooping (Dungcrafting) ─────────────────────────────────────────────────
+
+/// Lifetime pooping stats for one character.
+///
+/// `total_poops` / `days_pooped` / first / last come from `player_pooping_log`
+/// (fed by the live Combat-channel hook and the Chat.log backfill). The
+/// `skill_*` fields mirror the character's Dungcrafting skill row — the game
+/// names the skill "Dungcrafting" while its skill type/xp_table is "Pooping".
+#[derive(Debug, Clone, Serialize)]
+pub struct PoopingStats {
+    pub total_poops: i64,
+    pub days_pooped: i64,
+    pub first_poop: Option<String>,
+    pub last_poop: Option<String>,
+    pub skill_level: Option<i64>,
+    pub skill_max_level: Option<i64>,
+}
+
+/// Record one poop. `pooped_at` is the chat log's LOCAL wall-clock timestamp
+/// (`YYYY-MM-DD HH:MM:SS`) — the live tail and the chat-log backfill must agree
+/// on the dedup key, and the backfill never converts to UTC. Idempotent:
+/// returns `false` when that key was already present (the conflict target is
+/// spelled out so other constraint failures still raise).
+pub fn record_poop(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    target: &str,
+    pooped_at: &str,
+) -> Result<bool, String> {
+    let inserted = conn
+        .execute(
+            "INSERT INTO player_pooping_log
+                 (character_name, server_name, target_name, pooped_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(character_name, server_name, pooped_at, target_name)
+                 DO NOTHING",
+            rusqlite::params![character, server, target, pooped_at],
+        )
+        .map_err(|e| format!("Failed to record poop: {e}"))?;
+    Ok(inserted > 0)
+}
+
+#[tauri::command]
+pub fn get_pooping_stats(
+    db: State<'_, DbPool>,
+    character_name: String,
+    server_name: String,
+) -> Result<PoopingStats, String> {
+    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    get_pooping_stats_for(&conn, &character_name, &server_name)
+}
+
+/// Split out from the command so tests can exercise it without Tauri state.
+/// Generic over `DbRead` so it accepts read connections, write connections and
+/// transactions alike (same convention as the other read helpers here).
+pub fn get_pooping_stats_for<C: crate::db::DbRead + ?Sized>(
+    conn: &C,
+    character_name: &str,
+    server_name: &str,
+) -> Result<PoopingStats, String> {
+    let (total_poops, days_pooped, first_poop, last_poop) = conn
+        .query_row(
+            "SELECT COUNT(*), COUNT(DISTINCT substr(pooped_at, 1, 10)), MIN(pooped_at), MAX(pooped_at)
+               FROM player_pooping_log
+              WHERE character_name = ?1 AND server_name = ?2",
+            rusqlite::params![character_name, server_name],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )
+        .map_err(|e| format!("Query error: {e}"))?;
+
+    // Accept either spelling: the game's display name is "Dungcrafting", the
+    // skill type in Player.log is "Pooping". A rename on either side still
+    // resolves as long as one of the names matches.
+    let skill = conn
+        .query_row(
+            "SELECT level, max_level FROM game_state_skills
+              WHERE character_name = ?1 AND server_name = ?2
+                AND (skill_name = 'Dungcrafting' OR skill_name = 'Pooping')
+              ORDER BY level DESC LIMIT 1",
+            rusqlite::params![character_name, server_name],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Query error: {e}"))?;
+
+    let (skill_level, skill_max_level) = match skill {
+        Some((level, max_level)) => (Some(level), Some(max_level)),
+        None => (None, None),
+    };
+
+    Ok(PoopingStats {
+        total_poops,
+        days_pooped,
+        first_poop,
+        last_poop,
+        skill_level,
+        skill_max_level,
+    })
 }
 
 // ── Harvest Almanac ────────────────────────────────────────────────────────
@@ -1618,5 +1843,181 @@ mod tests {
         assert_eq!(parse_time_played_hours(""), None);
         assert_eq!(parse_time_played_hours("garbage"), None);
         assert_eq!(parse_time_played_hours("71 days"), Some(71.0 * 24.0));
+    }
+
+    fn setup() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run_migrations(&conn, None).unwrap();
+        conn
+    }
+
+    #[test]
+    fn poop_stats_dedup_per_char_and_read_skill() {
+        let conn = setup();
+
+        // The live tail and the Chat.log backfill both see the same line — the
+        // second insert is a no-op, not a second poop.
+        assert!(record_poop(&conn, "Zen", "Dreva", "Zen", "2026-08-10 20:42:54").unwrap());
+        assert!(!record_poop(&conn, "Zen", "Dreva", "Zen", "2026-08-10 20:42:54").unwrap());
+        assert!(record_poop(&conn, "Zen", "Dreva", "Zen", "2026-08-11 09:00:00").unwrap());
+        // Another character on the same server must not leak into the count.
+        record_poop(&conn, "Alt", "Dreva", "Alt", "2026-08-11 09:00:00").unwrap();
+
+        conn.execute(
+            "INSERT INTO game_state_skills
+                 (character_name, server_name, skill_id, skill_name, level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
+             VALUES ('Zen','Dreva',7,'Dungcrafting',50,0,0,-1,50,'2026-08-11T00:00:00','log')",
+            [],
+        )
+        .unwrap();
+
+        let stats = get_pooping_stats_for(&conn, "Zen", "Dreva").unwrap();
+        assert_eq!(stats.total_poops, 2);
+        assert_eq!(stats.days_pooped, 2);
+        assert_eq!(stats.first_poop.as_deref(), Some("2026-08-10 20:42:54"));
+        assert_eq!(stats.last_poop.as_deref(), Some("2026-08-11 09:00:00"));
+        assert_eq!(stats.skill_level, Some(50));
+        assert_eq!(stats.skill_max_level, Some(50));
+
+        // A character with poops but no Dungcrafting row still gets counts.
+        let bare = get_pooping_stats_for(&conn, "Alt", "Dreva").unwrap();
+        assert_eq!(bare.total_poops, 1);
+        assert_eq!(bare.skill_level, None);
+    }
+
+    #[test]
+    fn cow_cooldown_bound_is_honest_and_real_milk_wins() {
+        let conn = setup();
+
+        // A failed attempt records a *bound*: the flag is set and the stamp is the
+        // attempt itself, so the widget can show "expiry ≤ attempt + 1h".
+        record_cow_cooldown_bound(&conn, "Zen", "Dreva", "Homer", "Serbule", "2026-10-13T01:00:00+00:00")
+            .unwrap();
+        let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
+        assert_eq!(timers.len(), 1);
+        assert!(timers[0].cooldown_unknown);
+        assert_eq!(timers[0].last_milked_at, "2026-10-13T01:00:00+00:00");
+        assert_eq!(timers[0].zone, "Serbule");
+
+        // Later attempts keep the flag and tighten the bound to the *earliest*
+        // attempt seen (a stricter statement about when the milk happened) — a
+        // chronological replay therefore converges instead of drifting.
+        record_cow_cooldown_bound(&conn, "Zen", "Dreva", "Homer", "Serbule", "2026-10-13T01:30:00+00:00")
+            .unwrap();
+        record_cow_cooldown_bound(&conn, "Zen", "Dreva", "Homer", "", "2026-10-13T00:50:00+00:00")
+            .unwrap();
+        let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
+        assert!(timers[0].cooldown_unknown);
+        assert_eq!(timers[0].last_milked_at, "2026-10-13T00:50:00+00:00");
+        assert_eq!(timers[0].zone, "Serbule", "blank zone must not clobber a known one");
+
+        // A real milk is strictly better information: it clears the flag and
+        // installs the true time.
+        record_cow_milk(&conn, "Zen", "Dreva", "Homer", "Serbule", "2026-10-13T02:05:00+00:00")
+            .unwrap();
+        let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
+        assert!(!timers[0].cooldown_unknown);
+        assert_eq!(timers[0].last_milked_at, "2026-10-13T02:05:00+00:00");
+
+        // …and no later bound may degrade it (only the zone merge still applies).
+        record_cow_cooldown_bound(&conn, "Zen", "Dreva", "Homer", "Eltibule", "2026-10-13T02:20:00+00:00")
+            .unwrap();
+        let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
+        assert!(!timers[0].cooldown_unknown);
+        assert_eq!(timers[0].last_milked_at, "2026-10-13T02:05:00+00:00");
+        assert_eq!(timers[0].zone, "Eltibule");
+
+        // Replaying an older successful milk can't move the stamp back either.
+        record_cow_milk(&conn, "Zen", "Dreva", "Homer", "", "2026-10-13T01:00:00+00:00").unwrap();
+        let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
+        assert_eq!(timers[0].last_milked_at, "2026-10-13T02:05:00+00:00");
+        assert!(!timers[0].cooldown_unknown);
+    }
+
+    #[test]
+    fn milking_events_dedup_on_the_v72_key_and_surface_bad_directions() {
+        let conn = setup();
+
+        // Same event twice (live tail + Chat.log backfill / a replayed catch-up):
+        // exactly one row, and the second call reports "nothing inserted" so the
+        // caller can skip its `milking` refresh event.
+        assert!(record_milking_event(
+            &conn,
+            "Zen",
+            "Dreva",
+            "Zen",
+            "self_milked",
+            "2026-10-13T01:14:16+00:00"
+        )
+        .unwrap());
+        assert!(!record_milking_event(
+            &conn,
+            "Zen",
+            "Dreva",
+            "Zen",
+            "self_milked",
+            "2026-10-13T01:14:16+00:00"
+        )
+        .unwrap());
+
+        // Every other part of the key still separates rows: another second,
+        // direction, player, or character.
+        assert!(record_milking_event(
+            &conn,
+            "Zen",
+            "Dreva",
+            "Zen",
+            "self_milked",
+            "2026-10-13T01:14:17+00:00"
+        )
+        .unwrap());
+        assert!(record_milking_event(
+            &conn,
+            "Zen",
+            "Dreva",
+            "Zen",
+            "milked_by",
+            "2026-10-13T01:14:16+00:00"
+        )
+        .unwrap());
+        assert!(record_milking_event(
+            &conn,
+            "Zen",
+            "Dreva",
+            "Reyetta",
+            "milked",
+            "2026-10-13T01:14:16+00:00"
+        )
+        .unwrap());
+        assert!(record_milking_event(
+            &conn,
+            "Alt",
+            "Dreva",
+            "Zen",
+            "self_milked",
+            "2026-10-13T01:14:16+00:00"
+        )
+        .unwrap());
+
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM player_milking_log WHERE character_name = 'Zen'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 4);
+
+        // The conflict target is explicit, so a value the v38 CHECK rejects is an
+        // error rather than a silent no-op that looks like a duplicate.
+        let err = record_milking_event(
+            &conn,
+            "Zen",
+            "Dreva",
+            "Zen",
+            "bogus_direction",
+            "2026-10-13T01:14:18+00:00",
+        );
+        assert!(err.is_err(), "CHECK violation must surface, got {err:?}");
     }
 }

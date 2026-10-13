@@ -9,9 +9,21 @@
       </span>
     </div>
 
+    <!-- Archive-import state: independent of the stats branches, so a failure
+         can't be mistaken for "you have no archived poops". -->
+    <div v-if="scanningHistory" class="text-xs text-text-dim italic shrink-0">
+      Scanning chat history for poops...
+    </div>
+    <div
+      v-else-if="historyError"
+      class="text-xs text-accent-red italic shrink-0 truncate"
+      :title="historyError">
+      Chat history import failed — check the chat logs path
+    </div>
+
     <div v-if="loading" class="text-xs text-text-muted italic">Loading...</div>
 
-    <div v-else-if="stats.length === 0" class="text-xs text-text-dim italic">
+    <div v-else-if="allStats.length === 0" class="text-xs text-text-dim italic">
       No report stats yet. Open your behavior report or age report in-game to populate.
     </div>
 
@@ -53,6 +65,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useSettingsStore } from '../../stores/settingsStore'
 import { formatDateTimeFull as formatTimestamp } from '../../composables/useTimestamp'
+import { scanning as scanningHistory, lastError as historyError, ensureAbilityHistory } from '../../composables/useAbilityHistoryBackfill'
 
 interface ReportStat {
   category: string
@@ -66,10 +79,23 @@ interface StatGroup {
   stats: ReportStat[]
 }
 
-const CATEGORY_ORDER = ['age', 'killing_stats', 'challenges', 'food_stats', 'misc_stats', 'badges']
+/// Lifetime pooping counts (Dungcrafting) — a synthetic group layered on top of
+/// the report rows. `player_pooping_log` is fed from the Combat-channel
+/// "Poop on X!" lines, which the chat log's excluded-channel filter never stores.
+interface PoopingStats {
+  total_poops: number
+  days_pooped: number
+  first_poop: string | null
+  last_poop: string | null
+  skill_level: number | null
+  skill_max_level: number | null
+}
+
+const CATEGORY_ORDER = ['dungcrafting', 'age', 'killing_stats', 'challenges', 'food_stats', 'misc_stats', 'badges']
 
 const settings = useSettingsStore()
 const stats = ref<ReportStat[]>([])
+const poopStats = ref<PoopingStats | null>(null)
 const loading = ref(false)
 const filter = ref('')
 
@@ -81,10 +107,33 @@ const lastUpdated = computed(() => {
     s.updated_at > latest ? s.updated_at : latest, stats.value[0].updated_at)
 })
 
+/// Rows derived from the poop log + Dungcrafting skill, rendered as an
+/// ordinary group so the filter box and formatting work unchanged.
+const poopRows = computed<ReportStat[]>(() => {
+  const p = poopStats.value
+  if (!p) return []
+  const rows: ReportStat[] = []
+  const push = (stat_name: string, stat_value: string) =>
+    rows.push({ category: 'dungcrafting', stat_name, stat_value, updated_at: '' })
+
+  if (p.skill_level !== null && p.skill_max_level !== null) {
+    push('level', `${p.skill_level} / ${p.skill_max_level}`)
+  }
+  if (p.total_poops > 0) {
+    push('total_poops', String(p.total_poops))
+    push('days_pooped', String(p.days_pooped))
+    if (p.first_poop) push('first_poop', p.first_poop.slice(0, 10))
+    if (p.last_poop) push('last_poop', p.last_poop.slice(0, 10))
+  }
+  return rows
+})
+
+const allStats = computed<ReportStat[]>(() => [...poopRows.value, ...stats.value])
+
 const filteredStats = computed(() => {
   const f = filter.value.toLowerCase()
-  if (!f) return stats.value
-  return stats.value.filter(s =>
+  if (!f) return allStats.value
+  return allStats.value.filter(s =>
     s.stat_name.toLowerCase().includes(f) ||
     s.category.toLowerCase().includes(f) ||
     s.stat_value.toLowerCase().includes(f)
@@ -136,6 +185,28 @@ function formatValue(value: string): string {
   return value
 }
 
+async function loadPoopingStats(char: string, server: string) {
+  try {
+    poopStats.value = await invoke<PoopingStats>('get_pooping_stats', {
+      characterName: char,
+      serverName: server,
+    })
+  } catch (e) {
+    console.error('Failed to load pooping stats:', e)
+  }
+}
+
+/// Import the archived Chat-*.log history for the Dungcrafting group, once per
+/// app session (the shared composable enforces the "once"). Cow-type characters
+/// only — a character without the Dungcrafting skill has no poops to find.
+/// Deliberately *not* gated on the count being zero: a live poop that lands
+/// before the first scan must not stop the rest of the archive from importing.
+async function ensurePoopHistory(char: string, server: string) {
+  if (poopStats.value?.skill_level === null) return
+  await ensureAbilityHistory(char, server)
+  await loadPoopingStats(char, server)
+}
+
 async function loadStats() {
   const char = settings.settings.activeCharacterName
   const server = settings.settings.activeServerName
@@ -147,17 +218,22 @@ async function loadStats() {
       characterName: char,
       serverName: server,
     })
+    await loadPoopingStats(char, server)
   } catch (e) {
     console.error('Failed to load report stats:', e)
   } finally {
     loading.value = false
   }
+  await ensurePoopHistory(char, server)
 }
 
 onMounted(async () => {
   await loadStats()
   unlisten = await listen<string[]>('game-state-updated', (event) => {
-    if (event.payload.includes('report_stats')) {
+    // `skills` too: the Dungcrafting group's Level row comes from
+    // `game_state_skills` (a level-up emits `skills`, not `report_stats`), so a
+    // stale level would otherwise sit on screen until the tab is remounted.
+    if (event.payload.includes('report_stats') || event.payload.includes('skills')) {
       loadStats()
     }
   })

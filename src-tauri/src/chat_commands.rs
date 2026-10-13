@@ -1,5 +1,7 @@
 /// Tauri commands for chat functionality
+use crate::chat_combat_parser;
 use crate::chat_parser;
+use crate::db::game_state_commands::{record_milking_event, record_poop};
 use crate::db::queries::log_positions;
 use crate::db::{chat_commands, DbPool};
 use crate::parsers::chat_local_to_utc;
@@ -156,6 +158,242 @@ pub async fn scan_chat_logs(
 pub struct ScanResult {
     pub files_processed: usize,
     pub messages_imported: usize,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct AbilityHistoryBackfillResult {
+    pub files_scanned: usize,
+    /// Files the sweep couldn't read (locked, rotating, deleted mid-sweep). They
+    /// are logged and skipped rather than aborting the rest of the archive.
+    pub files_skipped: usize,
+    pub poops_recorded: usize,
+    pub self_milks_recorded: usize,
+}
+
+/// Result of scanning one Chat log for ability lines: the parsed candidate
+/// messages plus the timezone offset recorded in that file's own login line
+/// (seconds east of UTC), when it has one.
+type ChatLogAbilityScan = (Vec<chat_parser::ChatMessage>, Option<i32>);
+
+/// Backfill the per-ability history tables from every archived `Chat-*.log`:
+/// `player_pooping_log` (Dungcrafting) and `player_milking_log` self-milks.
+///
+/// Both abilities only ever appear as Combat-channel lines, and Combat is
+/// excluded from `chat_messages` by default — so nothing was stored anywhere and
+/// position-based chat scans had already reached EOF before either feature
+/// existed. Read each file from byte 0 instead. Poop timestamps keep the log's
+/// LOCAL wall clock (the dedup key the live hook writes); self-milk timestamps are
+/// UTC-converted RFC3339 (the shape `player_milking_log` has always used),
+/// converted with **the log file's own login-line offset** rather than today's
+/// setting, so re-running after a DST flip or a changed `manual_timezone_override`
+/// re-derives the identical instant instead of inserting a twin row.
+///
+/// Both inserts only skip their own dedup key (`ON CONFLICT … DO NOTHING`), so
+/// re-running records nothing new and a real write error still surfaces.
+#[tauri::command]
+pub async fn backfill_ability_history(
+    db_pool: State<'_, DbPool>,
+    settings: State<'_, Arc<SettingsManager>>,
+    app: AppHandle,
+    character_name: String,
+    server_name: String,
+    path: Option<String>,
+) -> Result<AbilityHistoryBackfillResult, String> {
+    let chat_logs_dir = match path.filter(|p| !p.trim().is_empty()) {
+        Some(p) => PathBuf::from(p),
+        None => settings
+            .get_chat_logs_dir()
+            .ok_or_else(|| "Chat logs directory is not configured".to_string())?,
+    };
+
+    // Fallback only: files that carry a login line convert with their own offset.
+    let app_settings = settings.get();
+    let fallback_tz_offset = app_settings
+        .manual_timezone_override
+        .or(app_settings.timezone_offset_seconds)
+        .unwrap_or(0);
+
+    let log_files = chat_parser::get_chat_log_files(&chat_logs_dir)
+        .map_err(|e| format!("Failed to scan chat logs directory: {e}"))?;
+
+    let mut files_scanned = 0;
+    let mut files_skipped = 0;
+    let mut poops_recorded = 0;
+    let mut self_milks_recorded = 0;
+
+    for log_file in &log_files {
+        // Disk I/O + parsing before checking out the writer, so a long backfill
+        // can't monopolize the write queue and block live ingest (same split as
+        // `scan_chat_logs`). One unreadable file (locked, rotating, deleted
+        // mid-sweep) must not abort the rest of the archive: the caller only gets
+        // one shot per session, so a hard failure would silently strand every
+        // later file.
+        let (messages, file_offset) = match ability_lines_in_file(
+            &log_file.file_path,
+            &[POOP_LINE_MARKER, SELF_MILK_LINE_MARKER],
+        ) {
+            Ok(scan) => scan,
+            Err(e) => {
+                eprintln!(
+                    "[backfill] Skipping unreadable chat log {}: {e}",
+                    log_file.file_name
+                );
+                files_skipped += 1;
+                continue;
+            }
+        };
+        files_scanned += 1;
+
+        let tz_offset = file_offset.unwrap_or(fallback_tz_offset);
+        let poops = poop_events_in_messages(&messages, &character_name);
+        let self_milks = self_milk_events_in_messages(&messages, &character_name, tz_offset);
+        if poops.is_empty() && self_milks.is_empty() {
+            continue;
+        }
+
+        let conn = db_pool
+            .get_write()
+            .map_err(|e| format!("Database error: {e}"))?;
+        for (target, pooped_at) in poops {
+            if record_poop(&conn, &character_name, &server_name, &target, &pooped_at)
+                .map_err(|e| format!("Failed to record poop: {e}"))?
+            {
+                poops_recorded += 1;
+            }
+        }
+        for (target, milked_at) in self_milks {
+            if record_milking_event(
+                &conn,
+                &character_name,
+                &server_name,
+                &target,
+                "self_milked",
+                &milked_at,
+            )
+            .map_err(|e| format!("Failed to record self-milking: {e}"))?
+            {
+                self_milks_recorded += 1;
+            }
+        }
+    }
+
+    if poops_recorded > 0 || self_milks_recorded > 0 {
+        app.emit("game-state-updated", vec!["report_stats", "milking"])
+            .ok();
+    }
+
+    Ok(AbilityHistoryBackfillResult {
+        files_scanned,
+        files_skipped,
+        poops_recorded,
+        self_milks_recorded,
+    })
+}
+
+/// Cheap pre-filters for `ability_lines_in_file`: the chat parser is only asked
+/// about lines containing one of these.
+const POOP_LINE_MARKER: &str = "Poop on ";
+const SELF_MILK_LINE_MARKER: &str = "Collect Milk on ";
+
+/// Parse only the lines of one Chat log that contain one of `needles`, plus the
+/// offset from the file's login line.
+///
+/// The backfill sweeps every archived log (~100 files, hundreds of MB) for a
+/// handful of ability lines, so scan the raw text first and hand the chat parser
+/// only candidate lines: full parsing (a `chrono` parse per line) is ~10x the
+/// cost and these lines are far rarer than one per file.
+///
+/// The login line is picked up in the same pass because it carries the file's own
+/// `Timezone Offset` — the offset a line must be converted with is a property of
+/// the log, not of whatever the settings say today (see the command's doc).
+fn ability_lines_in_file(
+    path: &std::path::Path,
+    needles: &[&str],
+) -> std::io::Result<ChatLogAbilityScan> {
+    let bytes = std::fs::read(path)?;
+    let text = String::from_utf8_lossy(&bytes);
+    let mut messages = Vec::new();
+    let mut login_offset = None;
+    for line in text.lines() {
+        // Same cheap text test as the needles: only a login line is parsed for
+        // its offset, and only until one is found.
+        if login_offset.is_none() && line.contains("Logged In As") {
+            if let Some(info) = chat_parser::parse_chat_login_line(line) {
+                login_offset = info.timezone_offset_seconds;
+            }
+        }
+        if !needles.iter().any(|needle| line.contains(needle)) {
+            continue;
+        }
+        if let Some(msg) = chat_parser::parse_chat_line(line) {
+            messages.push(msg);
+        }
+    }
+    Ok((messages, login_offset))
+}
+
+/// Poop events in one parsed Chat log: `(target, local wall-clock timestamp)`.
+///
+/// Split out from the command so the matching rules are testable without disk
+/// or Tauri state.
+fn poop_events_in_messages(
+    messages: &[chat_parser::ChatMessage],
+    character_name: &str,
+) -> Vec<(String, String)> {
+    messages
+        .iter()
+        .filter_map(|msg| {
+            if msg.channel.as_deref() != Some("Combat") {
+                return None;
+            }
+            let target = chat_combat_parser::parse_self_poop_line(
+                msg.sender.as_deref(),
+                &msg.message,
+                character_name,
+            )?;
+            Some((
+                target,
+                msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+            ))
+        })
+        .collect()
+}
+
+/// Self-milk events in one parsed Chat log:
+/// `(target, RFC3339 UTC timestamp)`.
+///
+/// The chat log is local time, so convert with `tz_offset_seconds` first —
+/// `player_milking_log.milked_at` is UTC, matching the live hook. Callers pass the
+/// offset from that log file's own login line (falling back to the settings
+/// offset), so the instant is stable no matter what the timezone setting says
+/// later.
+fn self_milk_events_in_messages(
+    messages: &[chat_parser::ChatMessage],
+    character_name: &str,
+    tz_offset_seconds: i32,
+) -> Vec<(String, String)> {
+    messages
+        .iter()
+        .filter_map(|msg| {
+            if msg.channel.as_deref() != Some("Combat") {
+                return None;
+            }
+            let target = chat_combat_parser::parse_self_ability_line(
+                msg.sender.as_deref(),
+                &msg.message,
+                character_name,
+                "Collect Milk",
+            )?;
+            if target != character_name {
+                return None;
+            }
+            let utc = crate::parsers::chat_local_to_utc(msg.timestamp, tz_offset_seconds);
+            let milked_at =
+                chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(utc, chrono::Utc)
+                    .to_rfc3339();
+            Some((target, milked_at))
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -656,6 +894,228 @@ mod tests {
         assert_eq!(
             remaining, 1,
             "first DELETE must roll back when a later statement fails"
+        );
+    }
+
+    fn parse_lines(lines: &[&str]) -> Vec<chat_parser::ChatMessage> {
+        lines
+            .iter()
+            .filter_map(|l| chat_parser::parse_chat_line(l))
+            .collect()
+    }
+
+    #[test]
+    fn poop_events_pick_only_self_poops() {
+        let messages = parse_lines(&[
+            "26-08-10 20:42:54\t[Combat] TwinkleofToes: Poop on TwinkleofToes!",
+            // Someone else's poop line (another character's log) — not ours.
+            "26-08-10 20:45:00\t[Combat] OtherPerson: Poop on OtherPerson!",
+            // Excluded-ish noise on the same channel: must not match.
+            "26-08-10 20:46:00\t[Combat] TwinkleofToes: Collect Milk on TwinkleofToes!",
+            "26-08-10 20:47:00\t[Combat] Boar #12345: Gore on TwinkleofToes! Dmg: 30 health, 0 armor",
+            // Pooping on something other than yourself still counts.
+            "26-08-11 21:03:00\t[Combat] TwinkleofToes: Poop on the Floor!",
+            // Wrong channel, right text.
+            "26-08-11 21:04:00\t[Guild] TwinkleofToes: Poop on TwinkleofToes!",
+        ]);
+
+        let events = poop_events_in_messages(&messages, "TwinkleofToes");
+        assert_eq!(
+            events,
+            vec![
+                (
+                    "TwinkleofToes".to_string(),
+                    "2026-08-10 20:42:54".to_string()
+                ),
+                ("the Floor".to_string(), "2026-08-11 21:03:00".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn self_milk_events_convert_to_utc_rfc3339_and_stay_self_only() {
+        let messages = parse_lines(&[
+            // 20:14:16 local at -05:00 → 2026-10-13T01:14:16Z.
+            "26-10-12 20:14:16\t[Combat] TwinkleofToes: Collect Milk on TwinkleofToes!",
+            // Milking somebody else is not a self-milk.
+            "26-10-12 20:20:00\t[Combat] TwinkleofToes: Collect Milk on Homer!",
+            // Another player's line, and non-milk Combat noise.
+            "26-10-12 20:21:00\t[Combat] OtherPlayer: Collect Milk on OtherPlayer!",
+            "26-10-12 20:22:29\t[Combat] TwinkleofToes: Poop on TwinkleofToes!",
+        ]);
+
+        let events = self_milk_events_in_messages(&messages, "TwinkleofToes", -5 * 3600);
+        assert_eq!(
+            events,
+            vec![(
+                "TwinkleofToes".to_string(),
+                "2026-10-13T01:14:16+00:00".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn ability_lines_in_file_prefilters_without_losing_matches() {
+        let path = std::env::temp_dir().join(format!(
+            "glogger-ability-lines-{}-{}.log",
+            std::process::id(),
+            "prefilter"
+        ));
+        std::fs::write(
+            &path,
+            concat!(
+                "**************************************** Logged In As Tufty. Server Dreva. Timezone Offset -05:00:00.\r\n",
+                "26-10-12 20:14:16\t[Guild] Someone: hello there\r\n",
+                "26-10-12 20:14:16\t[Combat] TwinkleofToes: Collect Milk on TwinkleofToes!\r\n",
+                "26-10-12 20:14:20\t[Status] Bottle of Milk added to inventory.\r\n",
+                "26-10-12 20:27:35\t[Combat] TwinkleofToes: Poop on TwinkleofToes!\r\n",
+            ),
+        )
+        .unwrap();
+
+        let (messages, file_offset) =
+            ability_lines_in_file(&path, &[POOP_LINE_MARKER, SELF_MILK_LINE_MARKER]).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        // The file's own offset travels with its lines — that, not today's
+        // setting, is what makes a re-run reprocess the same instant.
+        assert_eq!(file_offset, Some(-5 * 3600));
+
+        // Only the two ability lines survive the pre-filter, and they come back
+        // as real parsed messages: CRLF stripped, sender split out, time intact.
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].sender.as_deref(), Some("TwinkleofToes"));
+        assert_eq!(messages[0].message, "Collect Milk on TwinkleofToes!");
+        assert_eq!(
+            messages[0].timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+            "2026-10-12 20:14:16"
+        );
+        assert_eq!(messages[1].message, "Poop on TwinkleofToes!");
+    }
+
+    #[test]
+    fn ability_lines_in_file_without_a_login_line_reports_no_offset() {
+        let path = std::env::temp_dir().join(format!(
+            "glogger-ability-lines-{}-{}.log",
+            std::process::id(),
+            "no-header"
+        ));
+        std::fs::write(
+            &path,
+            "26-10-12 20:27:35\t[Combat] TwinkleofToes: Poop on TwinkleofToes!\r\n",
+        )
+        .unwrap();
+
+        let (messages, file_offset) =
+            ability_lines_in_file(&path, &[POOP_LINE_MARKER]).unwrap();
+        let _ = std::fs::remove_file(&path);
+
+        // Caller falls back to the settings offset for such files.
+        assert_eq!(file_offset, None);
+        assert_eq!(messages.len(), 1);
+    }
+
+    /// Opt-in diagnostic over the machine's real ChatLogs (path-dependent, so
+    /// ignored by default — same convention as the survey replay tests):
+    /// `cargo test --lib -- --ignored backfill_ability_history_smoke`.
+    /// Honours `GLOGGER_CHAT_LOGS_DIR` / `GLOGGER_POOP_SMOKE_CHAR` /
+    /// `GLOGGER_TZ_OFFSET_SECONDS`.
+    #[test]
+    #[ignore]
+    fn backfill_ability_history_smoke() {
+        let dir = match std::env::var("GLOGGER_CHAT_LOGS_DIR") {
+            Ok(d) => PathBuf::from(d),
+            Err(_) => {
+                let home = std::env::var("USERPROFILE")
+                    .or_else(|_| std::env::var("HOME"))
+                    .expect("no USERPROFILE/HOME");
+                PathBuf::from(home)
+                    .join("AppData/LocalLow/Elder Game/Project Gorgon/ChatLogs")
+            }
+        };
+        let character =
+            std::env::var("GLOGGER_POOP_SMOKE_CHAR").unwrap_or_else(|_| "TwinkleofToes".to_string());
+        // Fallback only: every real archive file carries its own login line, so the
+        // recorded instants must not depend on this value (asserted below).
+        let fallback_tz: i32 = std::env::var("GLOGGER_TZ_OFFSET_SECONDS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+
+        let files = chat_parser::get_chat_log_files(&dir).unwrap();
+        assert!(!files.is_empty(), "no Chat-*.log files in {}", dir.display());
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run_migrations(&conn, None).unwrap();
+
+        let scan = |conn: &rusqlite::Connection, fallback: i32, record: bool| {
+            let mut poops = 0;
+            let mut self_milks = 0;
+            let mut instants: Vec<String> = Vec::new();
+            for f in &files {
+                // Same helper the command uses — exercises the byte-level
+                // pre-filter and the per-file offset too.
+                let (messages, file_offset) = ability_lines_in_file(
+                    &f.file_path,
+                    &[POOP_LINE_MARKER, SELF_MILK_LINE_MARKER],
+                )
+                .unwrap();
+                let file_tz = file_offset.unwrap_or(fallback);
+                for (target, ts) in self_milk_events_in_messages(&messages, &character, file_tz) {
+                    instants.push(ts.clone());
+                    if record
+                        && record_milking_event(
+                            conn,
+                            &character,
+                            "Dreva",
+                            &target,
+                            "self_milked",
+                            &ts,
+                        )
+                        .unwrap()
+                    {
+                        self_milks += 1;
+                    }
+                }
+                for (target, ts) in poop_events_in_messages(&messages, &character) {
+                    if record
+                        && record_poop(conn, &character, "Dreva", &target, &ts).unwrap()
+                    {
+                        poops += 1;
+                    }
+                }
+            }
+            (poops, self_milks, instants)
+        };
+
+        let (poops, self_milks, instants) = scan(&conn, fallback_tz, true);
+        let stats =
+            crate::db::game_state_commands::get_pooping_stats_for(&conn, &character, "Dreva").unwrap();
+        println!(
+            "ability history smoke: {poops} poop(s) + {self_milks} self-milk(s) over {} files; {character} total_poops={} days={} first={:?} last={:?}",
+            files.len(),
+            stats.total_poops,
+            stats.days_pooped,
+            stats.first_poop,
+            stats.last_poop
+        );
+        assert!(poops > 0, "expected poops in the archived chat logs");
+        assert!(self_milks > 0, "expected self-milks in the archived chat logs");
+        assert_eq!(stats.total_poops as usize, poops);
+        let second_pass = scan(&conn, fallback_tz, true);
+        assert_eq!(
+            (second_pass.0, second_pass.1),
+            (0, 0),
+            "second pass must record nothing new (ON CONFLICT DO NOTHING on both tables)"
+        );
+
+        // The self-milk instants are a function of the *logs*, not of the current
+        // timezone setting: converting with a wildly different fallback offset must
+        // yield byte-identical instants (every archive file has its own login line).
+        assert_eq!(
+            scan(&conn, fallback_tz + 7 * 3600, false).2,
+            instants,
+            "self-milk instants must not depend on the settings offset"
         );
     }
 }

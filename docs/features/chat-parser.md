@@ -70,6 +70,15 @@ Parse a single chat log line into a structured `ChatMessage`.
 - For non-bracketed content: always system messages (banners, area transitions)
 - Chat messages can include linebreaks.
 
+**Gotcha — the sender is already split off `[Channel] Sender: text` lines.** `message` therefore does **not** contain `"Sender: "`, so any downstream check that compares `message` against a whole raw line can never match. Two per-ability hooks live in the coordinator's Combat branch (`DataIngestCoordinator::process_chat_events`) for exactly this reason, both driven by `chat_combat_parser::parse_self_ability_line`:
+
+| Line | Effect |
+|---|---|
+| `[Combat] Name: Collect Milk on Name!` | `player_milking_log` row, direction `self_milked` |
+| `[Combat] Name: Poop on Name!` | `player_pooping_log` row (Dungcrafting count) |
+
+The `Collect Milk` check compared `message` against `"Name: Collect Milk on Name!"` until 2026-10, which could never match a sender-split message: the archive's self-milk lines therefore recorded **zero** rows before the fix (the count is only knowable from the logs, which is what `backfill_ability_history` measures).
+
 ### 2. Channel Exclusion
 
 **Important:** Channel exclusion controls what gets **persisted to the database**, not what gets parsed. The parser itself parses ALL channels — exclusion is applied at the `insert_chat_messages()` call in the coordinator. This ensures that structured parsers (like `ChatStatusParser` for `[Status]` messages) always receive their data regardless of the user's exclusion settings.
