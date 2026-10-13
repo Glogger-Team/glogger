@@ -1,5 +1,81 @@
 # glogger — Session Handoff
 
+**Date:** 2026-10-12 (Session 38 — chat day log: search jump, display-timezone days, two-way paging)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `main` — committed in chunks (`fix(chat)` day buckets, `feat(chat)` day-log jump, `docs(chat)`). No version bump, not pushed.
+**Status:** ✅ Implemented + verified: 661 `cargo test --lib` green, `vue-tsc`/`vite build` clean, plus a live smoke against the
+`glogger.Dev` profile driven over WebView2 CDP.
+
+## TL;DR — Session 38
+
+**User report:** clicking a Chat Logs → Search result opened a fixed ±25 "context" sample (`get_chat_messages_around`) that
+lost the channel colours, dead-ended when scrolled, and gave no way back to the query box; the day dropdown didn't line up
+with the clock times at a day's edges ("pick 08-24, scroll to the bottom, see 08-23 timestamps"); no quick way to reach the
+bottom of a day; and no discoverable sort-order switch.
+
+### What shipped
+
+- **Results open in the day's real log.** `get_messages_around` + `get_messages_around_time` (DB fns, Tauri commands,
+  `lib.rs` wiring, 8 tests) are **deleted** — a day window is now an ordinary `get_chat_messages` call with that day's UTC
+  `startTime`/`endTime`. Clicking a result selects its display day and loads a window **centred** on it (position from two
+  `count_chat_messages` calls: one over the window, one with `endTime` = the target's timestamp; `index = total - upTo` for
+  desc, `upTo` for asc, `start = clamp(index - 50, 0, total - 100)`), scrolls the row into view gold-bordered, keeps the
+  search terms highlighted, and keeps the query box live above it. "← Back to results" restores the list *and* the day
+  selected before the jump; the day picker/arrows/Back-to-Live keep working while browsing.
+- **Display-timezone day buckets** — new `src/utils/displayDay.ts` (`displayDayOf`, `displayDayBounds`,
+  `displayOffsetSeconds`) + `getDisplayOffsetSeconds()` in `useTimestamp`. `get_chat_days(offsetSeconds?)` buckets with
+  `date(timestamp, printf('%d seconds', ?1))`, `displayDayBounds()` turns a day into UTC `startTime`/`endTime`, and list
+  headers use the same shift, so picker ⇄ windows ⇄ headers ⇄ rendered clock agree. Offsets are seconds east of UTC
+  (matching `timezone_offset_seconds` / `chat_local_to_utc`).
+- **Two-way pagination in `ChatMessageList`** — `hasNewer` prop + `@load-newer`, top-edge auto-load, "Load
+  newer/older messages" button, prepend re-anchoring, `tabindex="0"` with PageUp/PageDown/Home/End, and `defineExpose({
+  pageScroll, focus })`; `ChatSearchView` forwards page keys while its search box has focus. Holding PageDown streams to the
+  end of the day, PageUp to the start.
+- **Sort toggle moved into the day toolbar** (it used to live inside the scrolling list, so it vanished after a jump) and
+  now applies in both modes; toggling while jumped re-centres on the same message.
+- **`loadAroundDay` deleted from all 8 chat views** — day changes now just restart the window at offset 0, since the day
+  bounds are merged into `loadMessages()` via `dateNav.filterParams()`.
+
+### Gotchas (durable)
+
+- **Pre-flush watchers see stale props.** The jump must skip the day-change scroll reset while a highlight is pending, but
+  the guard read `props.highlightId` — stale in a `pre`-flush watcher (props are patched *after* pre watchers). The reset
+  went through, its scroll event at `scrollTop 0` tripped the new top-edge loader, and the prepended page pushed the
+  jumped-to row out of view (observed live as `scrollTop 4659` with the highlight 2.3k px below the fold). Fixed with
+  `{ flush: 'post' }` on that watcher.
+- **A *smooth* `scrollIntoView` fights edge auto-loaders**: its intermediate scroll events pass through `scrollTop < 200`
+  and fire `load-newer`. The highlight scroll is instant (`behavior: 'auto'`) now.
+- The prepend re-anchor must capture `scrollHeight` in the **pre-flush** part of the watcher (before `await nextTick()`),
+  otherwise the delta is measured against the already-grown DOM. Detection: the list grew AND `next[0].id` changed AND
+  `next[last].id` is unchanged.
+- `messages = []` before a jump briefly shows the spinner (and destroys the scroll container, which is why the new window
+  starts at `scrollTop 0`) — harmless, but it is what makes the jump's initial position predictable.
+
+### Verification
+
+- `cargo test --lib` **661 passed** (new: display-timezone bucketing; day-window bounds / no adjacent-day leak / in-window
+  offset pagination replacing the deleted around-message tests). `npx vue-tsc --noEmit` and full `npm run build` clean.
+- Against the real 149,140-row `glogger.Dev` DB: the SQL day list equals JS bucketing for **all 93 days**; each day's
+  window contains exactly its display day (count-verified); the seek page at 1 % / 50 % / 99 % of a 6,178-row day, in both
+  sort orders, contains the target with contiguous append *and* prepend slices.
+- Live smoke (WebView2 CDP: `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` on `npm run tauri dev`,
+  then `browser.open({ app: { cdp_url: 'http://127.0.0.1:9222' } })`): jump → banner "Showing the full log for 2026-10-11 —
+  2,352 messages", exactly one gold row visible in the viewport, 4–6 channel colour classes present, query retained;
+  PageUp/PageDown stream 100→200 rows with the anchor holding; sort flip reverses order and keeps the row centred; Back to
+  results → "172 matching messages across all history"; day browsing 2026-10-04 (4,656 msgs) loads 100→500 with no
+  adjacent-day rows.
+
+### Notes / open ends
+
+- The display-mode setting change re-fetches the day list; an already-open window picks up the new bounds on its next
+  load/refresh (no view-level watcher — deliberate, the setting is a rare user action).
+- Day bucketing uses one offset (the one in effect now), so the hour around a DST switch buckets like the current offset
+  rather than that date's true local offset; picker/windows/headers stay mutually consistent regardless.
+- `docs/features/screens/chat.md` updated (commands, ChatFilter `sortOrder`, ChatMessageList details, design decisions).
+
+
+# glogger — Session Handoff
+
 **Date:** 2026-10-11 (Session 37 — release pipeline: Windows + macOS + Linux + Flatpak)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `main` — committed + pushed (`924f609`, `be03489`, `520271e`, `0424340`, `cf776c5`, `44cbc0d`, `26ab6f3`, `d8cee16` + docs). No Rust/frontend behavior change.

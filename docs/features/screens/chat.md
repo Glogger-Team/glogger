@@ -19,7 +19,8 @@ The screen also hosts a **Poems** tab — a browsable, searchable collection of 
 **Frontend (Vue/TS):**
 - `src/components/Chat/ChatView.vue` — 10-tab container
 - `src/components/Chat/ChatMessageList.vue` — shared paginated message renderer
-- `src/components/Chat/ChatSearchView.vue` — unified search with context navigation
+- `src/components/Chat/ChatSearchView.vue` — unified search; results open in the day's real log
+- `src/utils/displayDay.ts` — display-timezone day bucketing (offset → day / UTC day bounds) shared by the day picker, windows and headers
 - `src/components/Chat/ChatMessage.vue` — individual message display
 - `src/components/Chat/MessageWithItemLinks.vue` — item link detection and rendering
 - `src/utils/parseSearchQuery.ts` — search query parser for `from:`/`in:` operators
@@ -70,9 +71,11 @@ Shared:
 Generic message list renderer used by all tabs:
 - **Standard layout** — timestamp, channel badge (optional), sender name, message body
 - **Tell/bubble layout** — chat bubbles with player messages on right, others on left
-- **Pagination** — infinite scroll (auto-loads at 200px from bottom), with fallback "Load More" button. 100 messages per page. Loading indicator is inline, preserving scroll position. Race-condition guarded (emit guard in scroll handler + loading check in parent).
-- **Clickable messages** — optional `clickable` prop enables click-to-view-context; `highlightId` prop highlights a specific message with gold border and auto-scrolls to it
-- **Timestamps** — short format for today, full format for older messages
+- **Day toolbar** — day dropdown (display-timezone days + counts), date picker, ◀/▶ day stepping, Back to Live, and the ascending/descending sort toggle (kept in the toolbar so it stays reachable once a day runs several pages)
+- **Pagination** — infinite scroll in both directions (auto-loads within 200px of either edge), 100 messages per page, with fallback "Load More"/"Load newer|older" buttons. Prepends re-anchor `scrollTop` so the visible row does not move. Race-condition guarded (emit guards in the scroll handler + loading check in parent).
+- **Keyboard** — when the list has focus, PageUp/PageDown page the window (holding them streams pages through the edge loaders) and Home/End jump to the ends; the parent view forwards the page keys while its search box holds focus
+- **Clickable messages** — optional `clickable` prop enables click-to-open; `highlightId` prop marks a specific message with a gold border and scrolls it into view (instant, so the intermediate scroll events can't trip the edge loaders)
+- **Timestamps** — short format for today, full format for older messages; day headers appear only when the loaded window spans more than one display day
 
 ### MessageWithItemLinks
 
@@ -95,8 +98,9 @@ Parses message text to detect `[Item: ItemName]` patterns and renders them as `I
 - `tail_chat_log(chat_log_file) → Vec<ChatMessage>` — continuous import of active log
 
 ### Query
-- `get_chat_messages(ChatFilter) → Vec<ChatMessage>` — filtered message query
-- `get_chat_messages_around(message_id, context_count?) → Vec<ChatMessage>` — messages surrounding a target message in the same channel (default 25 before/after)
+- `get_chat_messages(ChatFilter) → Vec<ChatMessage>` — filtered message query (day windows are ordinary `startTime`/`endTime` bounds on this query)
+- `count_chat_messages(ChatFilter) → number` — count matching the same filter semantics
+- `get_chat_days(offsetSeconds?) → Vec<ChatDayRow>` — every day that has messages with its count, newest first, bucketed in the viewer's display timezone
 - `get_chat_channels() → Vec<String>` — list all channels
 - `get_chat_channel_stats() → Vec<ChannelStat>` — per-channel message counts
 - `get_tell_conversations() → Vec<ChannelStat>` — list conversation partners
@@ -123,6 +127,7 @@ interface ChatFilter {
   tellPartner?: string;
   limit?: number;
   offset?: number;
+  sortOrder?: 'asc' | 'desc';
 }
 ```
 
@@ -132,6 +137,7 @@ interface ChatFilter {
 - **Item link extraction at parse time** — item references are detected during import and stored in a separate table, enabling "item links only" filtering without re-scanning messages.
 - **Watchword rules in settings** — rules persist in `settingsStore` (app settings file) rather than the database, keeping them lightweight and portable.
 - **Deduplication** — `INSERT OR IGNORE` prevents duplicate messages when re-importing or tailing overlapping ranges.
-- **Offset pagination** — simple offset/limit pagination rather than cursor-based, sufficient for chat browsing patterns.
+- **Offset pagination** — simple offset/limit pagination rather than cursor-based, sufficient for chat browsing patterns. Continuation works in both directions: appending below the window and (after a mid-day jump) prepending above it, with the scroll position re-anchored so the visible row stays put.
+- **Display-timezone day buckets** — stored timestamps are UTC but every rendered clock time is shifted into the viewer's display timezone (Local/Server/UTC), so the day picker, the day windows it opens and the day headers inside the list are all bucketed with that same shift (`src/utils/displayDay.ts`). Day bounds are handed to the query as UTC `startTime`/`endTime`.
 - **Structured search syntax** — `from:player` and `in:channel` operators parsed on the frontend and mapped to existing backend filter fields. Remaining text goes to FTS5.
-- **Context navigation** — clicking a search result loads surrounding messages via `get_chat_messages_around`, allowing users to see the conversation context.
+- **Results open in the day's real log** — clicking a search result selects that message's day and loads a window centred on it (row position derived from two `count_chat_messages` calls), so the entry sits among its real neighbours with channel colours and pagination that keeps going, instead of a fixed ±N context sample. The query box stays live above it ("← Back to results" restores the list).
