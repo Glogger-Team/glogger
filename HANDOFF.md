@@ -1,5 +1,63 @@
 # glogger — Session Handoff
 
+**Date:** 2026-10-13 (Session 39 — Cook's Helper learned-recipe fix, dead settings removed, doc truth pass)
+**Machine:** Windows 11 (primary dev box)
+**Branch:** `main` — uncommitted working tree. No version bump.
+**Status:** ✅ Implemented + verified: `cargo test --lib` **662 passed** (6 ignored), `npm run build` (vue-tsc + vite) clean,
+and the app launched live over WebView2 CDP (`glogger.Dev`) with no console errors.
+
+## TL;DR — Session 39
+
+### What shipped
+
+- **Cook's Helper no longer hides learned-but-uncooked recipes.** `gameStateStore.learnedRecipeKeys` (new: the
+  presence of a `game_state_recipes` row = learned) replaces `knownRecipeKeys` (`completion_count > 0`) in
+  `cooksHelperStore.helpfulRecipes`; `knownRecipeKeys` keeps its "known *and* crafted" meaning for
+  `craftingStore.getSkillCraftingStats` (`:1198`) and `LevelingTab`'s `isCrafted` (`:603`). The log emits
+  `ProcessUpdateRecipe(id, 0)` on a first learn — exactly what the old filter discarded. Measured on the dev DB:
+  `learnedRecipeKeys` 1329 vs `knownRecipeKeys` 776, and the helpful list went 0 → 1 (recipe 1268 "Basic
+  Cornbread", learned with count 0).
+- **Dead retention settings deleted** — `chat_retention_days`, `tells_retention_days`, `guild_retention_days`,
+  `user_data_auto_purge_days` (Rust `settings.rs` + `settingsStore.ts`) and the "Chat Log Retention" section in
+  `ChatLogsSettings.vue`: nothing read or enforced them, and this fork does not purge chat. `settingsStore.ts`
+  also gained the `acceptHMRUpdate` block it was missing.
+- **Doc truth pass** — `docs/TODO.md` re-audited (Investigations bucket re-homed: mods/augments closed as a
+  log-format limitation, the appearance-only equipment view promoted to *Medium Effort*, three entries given
+  explicit `Blocked on:` lines, tally reconciled against the real checkbox list); `AGENTS.md` census corrected to
+  668 tests / 55 files; `docs/plans/casino-bet-tracker.md` no longer claims the betting half is unbuilt.
+
+### Gotchas (durable)
+
+- `game_state_recipes` rows are per `(character_name, server_name, recipe_id)` and UPSERT-only, so **row
+  presence** is the only sound "learned" signal; `completion_count` stays 0 until the first craft. `LevelingTab`
+  already used presence (`key in completionMap`) for `isKnown` — follow that, don't invent a third convention.
+- Deleting a field from `AppSettings` is safe because the struct has no `deny_unknown_fields`: existing
+  `settings.json` files keep their stale keys and still parse (there is now a test pinning that).
+- A dev launch can sit on the splash for minutes burning a full core (catch-up over a 7 MB `Player.log`) — CPU
+  time climbing ~1:1 with wall time means working, not hung.
+- WebView2-CDP smoke recipe: `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` on
+  `npm run tauri dev`, then `browser.open({ app: { cdp_url: 'http://127.0.0.1:9222' } })`. `tab.run` callbacks
+  have **no `document`** — do DOM work inside `page.evaluate(...)` (`tab.waitFor` does see the DOM).
+
+### Verification
+
+- `cargo test --lib` **662 passed / 6 ignored**, `npm run build` (vue-tsc + vite) clean, re-run after the removals.
+- Cook's Helper fix proven twice: headlessly through the store's own hydrate paths against real dev-DB rows
+  (`refreshDomain('recipes')` + `tryAutoImport()` with a stubbed IPC), and live in the app on TwinkleofToes/Dreva.
+- Live WebView2-CDP pass over `glogger.Dev`: Settings → User Data renders and Cook's Helper shows the recipe the
+  old filter dropped; no console errors.
+
+### Notes / open ends
+
+- A file-deletion feature for the game's `Reports` folder was **built and then removed in the same session** at
+  the user's request: the app cannot delete files, and `docs/TODO.md` carries no entry for it. The pre-existing DB
+  Auto-Purge (old rows, **off by default**) is untouched.
+- The working tree is left uncommitted for the user to slice into commits.
+
+---
+
+# glogger — Session Handoff
+
 **Date:** 2026-10-12 (Session 38 — chat day log: search jump, display-timezone days, two-way paging)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `main` — committed in chunks (`fix(chat)` day buckets, `feat(chat)` day-log jump, `docs(chat)`). No version bump, not pushed.

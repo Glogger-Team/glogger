@@ -61,22 +61,38 @@ that matters depends on real snapshot counts/sizes on the user's
 machine — pure tuning, no correctness bug.
 
 **Concrete open items:**
-- [ ] Measure real-world volume: snapshot row count × average
-      `raw_json` size (e.g. `SELECT COUNT(*), AVG(LENGTH(raw_json)),
-      SUM(LENGTH(raw_json)) FROM character_item_snapshots`). If the sum
-      stays in the low tens of MB, leave as-is and note it here.
+- [x] **Measured 2026-10-13 — leave as-is.** On the real dev DB
+      (`%APPDATA%/glogger.Dev/glogger.db`, 149 MB): **12 snapshot rows,
+      158 KB average `raw_json`, 1.79 MB total** — an order of magnitude
+      under the "low tens of MB" threshold, so Phase 1's all-at-once
+      materialization stays. Re-measure with
+      `SELECT COUNT(*), AVG(LENGTH(raw_json)), SUM(LENGTH(raw_json))/1048576.0
+      FROM character_item_snapshots` if snapshot volume grows.
 - [ ] If it grows past that: batch the scan (transaction per ~50
       snapshots, parsing inside each batch window). Keep the
       error-all-or-nothing semantics per batch, and keep Phase 1's
       read-connection scoping (read conns dropped before any `await`
       — that pattern was verified safe; don't regress it).
-- [ ] TOCTOU between read/write phases is nominal (values captured
+- [x] TOCTOU between read/write phases is nominal (values captured
       once, snapshot rows are write-once) — no action needed, noted
       here so nobody "fixes" it into a re-read later.
 
 ---
 
 ## 3. ChatMessageList activeDay scroll reset — nextTick race
+
+**Status: superseded 2026-10-12 (Session 38, `d4b83a0` + `a54817d`).** The day-log jump rewrite
+replaced this path — see "pre-flush watchers see stale props" in that session's HANDOFF entry. Current
+shape in [ChatMessageList.vue](../../src/components/Chat/ChatMessageList.vue):
+
+- The `dateNav.activeDay` watcher is `{ flush: 'post' }`, so it *does* see the jump's `highlightId`
+  prop, and it returns early for a highlight (the row's own scroll-into-view owns the position).
+- A `dayResetPending` flag hands the position to the `messages` watcher on the next window arrival, so
+  the parent's late `messages` assignment can no longer re-clamp a reset that fired against the old
+  scroll height — which is the failure this item described.
+
+Items below are kept for reference only; re-verify live before touching this path again (the app has
+no test for it). The "no scroll fight" constraint still holds and is now enforced by that flag.
 
 **Where:** `src/components/Chat/ChatMessageList.vue` — the `watch` on
 `props.dateNav?.activeDay` (~L330) that resets `scrollTop = 0` after a
@@ -90,19 +106,21 @@ scroll height and the newly rendered list can re-clamp `scrollTop` to
 non-zero — day-jump would land mid-list. Intermittent by nature; not
 statically provable. Needs live observation.
 
-**Concrete open items:**
-- [ ] Repro attempt: slow network/dev-tools throttling + jump to a day
+**Concrete open items (all moot — kept for reference):**
+- [x] Repro attempt: slow network/dev-tools throttling + jump to a day
       far from the current window; check whether the list sometimes
       opens mid-list instead of at the top. Desc AND asc sort orders
       (top of window is the anchor either way — verified).
-- [ ] If it reproduces: preferred fix is watching both sources —
+- [x] If it reproduces: preferred fix is watching both sources —
       `watch([() => props.dateNav?.activeDay.value, () => props.messages],
       ...)` so the reset runs only after BOTH change; alternative is
-      double `nextTick`.
-- [ ] Known-good today (verified in review): no live conflict with the
+      double `nextTick`. **Not needed** — the `dayResetPending` flag is
+      the chosen mechanism instead.
+- [x] Known-good today (verified in review): no live conflict with the
       `messages.length`/`highlightId` watchers (no view passes
       `auto-scroll`; context mode clears highlightId before the day
       jump). If a future view passes both `auto-scroll` and `date-nav`,
       re-check ordering here.
-- [ ] Do NOT add a scroll fight: any fix must keep the
+- [x] Do NOT add a scroll fight: any fix must keep the
       "scroll to highlight" watcher winning when `highlightId` is set.
+      **Still true** — the early `return` on `highlightId` is the guard.

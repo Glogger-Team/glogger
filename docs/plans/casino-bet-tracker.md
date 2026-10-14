@@ -10,7 +10,7 @@ Parse arena fight announcements, bet confirmations, and outcomes. Track bet hist
   - `db/arena_commands.rs` + migration v64 (`arena_matches`) — records + aggregates (per-fighter W/L, directed H2H matrix, recent), chat-log backfill.
   - `coordinator.rs` wiring (live) + startup backfill in `lib.rs`.
   - `ArenaWidget.vue` (`arena` dashboard widget) — rankings, H2H matrix, matchup predictor (H2H ≥3 samples, else overall win rate).
-- **Still TODO (the betting/P&L half):** parse the player's own wager from `Player.log` NPC 5712 talk screens and correlate payouts. Confirmed parseable (see below) but not yet built.
+- **Betting/P&L half: SHIPPED.** `arena_parser.rs` — stateful `ArenaBetTracker` resolves the player's own wager from `Player.log` NPC 5712 talk screens (`Confirm Bet`) and correlates the payout with the fight outcome. `db/arena_commands.rs` + migration v65 (`arena_bets`, dedup via `idx_arena_bets_dedup`) persist them with `record_arena_bet` and aggregate them into `ArenaStats.betting` via `get_arena_stats`; startup backfill is `backfill_arena_bets_from_player_logs` (both registered in `lib.rs`). Rendered by `ArenaWidget.vue` — personal betting rate + P&L in the header next to the fighter tracker.
 
 ## Confirmed Log Events (captured from real logs)
 
@@ -19,9 +19,9 @@ Parse arena fight announcements, bet confirmations, and outcomes. Track bet hist
 - **Bet placement + odds** (`Player.log`, NPC 5712 "Kuzavek"): `ProcessTalkScreen(5712, "Confirm Bet", "You are betting <em>7500</em> Councils that Otis defeats Leo... you will receive <em>14250</em> Councils...")` — wager, pick, opponent, payout.
 - **Payout**: win → `ProcessScreenText(CombatInfo, "You received N Councils.")` (generic — must gate on expected amount + area + time); loss → no line.
 
-## Log Events (Unconfirmed — Needs Captures)
+## Other Log Events
 
-No arena log samples exist. Likely events based on game mechanics:
+Arena captures now exist (see "Confirmed Log Events" above), and the events below are handled by the shipped parsers (`ArenaTracker` / `ArenaBetTracker`); kept here as reference:
 - `ProcessScreenText` — fight announcements, bet confirmations, outcomes
 - `ProcessTalkScreen` — arena NPC bet placement dialogue
 - `[Status]` chat — "You used N councils" (bet) / "You received N Councils" (payout) — already parsed as `CouncilsChanged`

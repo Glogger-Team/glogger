@@ -48,7 +48,7 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 | Dev server | `npm run tauri dev` | Vite HMR on :1420, auto-rebuilds Rust |
 | Frontend build + typecheck | `npm run build` | `vue-tsc --noEmit && vite build` |
 | Rust check | `cd src-tauri && cargo check` | Faster feedback |
-| Rust tests | `cd src-tauri && cargo test --lib`|569 tests, 46 files|
+| Rust tests | `cd src-tauri && cargo test --lib`|668 tests, 55 files|
 | TOS/CoC hard lines | `pwsh scripts/check-glogger-constraints.ps1` | Game-interaction limits gate: local pre-push hook (install per clone: `scripts/setup-hooks.sh`) + the release workflow's `validate` job |
 | Full Rust tests | `cd src-tauri && cargo test` | No `src-tauri/tests/` dir exists; everything is in-lib |
 | Survey replay | `npm run survey-test` | `--ignored` accuracy report, minutes-scale, needs `test_data/` + `docs/CDN-full-examples/` |
@@ -95,7 +95,7 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 
 ## Testing & QA
 
-- **Rust only**; conventional in-file `#[cfg(test)] mod tests` blocks at file bottom, no external runner, no integration dir. ~569 tests across 46 files, all fast except survey replay.
+- **Rust only**; conventional in-file `#[cfg(test)] mod tests` blocks at file bottom, no external runner, no integration dir. ~668 tests across 55 files, all fast except the slow/path-dependent suites, which are `#[ignore]`-gated (5 survey replay + 1 chat-log backfill).
 - DB tests use `rusqlite::Connection::open_in_memory()` + `crate::db::migrations::run_migrations` via a local `setup()` helper per module; parser tests embed real log-line fixtures as string constants.
 - Frontend: **no tests** — `vue-tsc --noEmit` is the only gate; the dev panel is for manual/live testing.
 - Replay fixtures live **outside the crate** (`test_data/`, `docs/CDN-full-examples/`), reached via relative paths from `src-tauri` — breaks if run from another CWD.
