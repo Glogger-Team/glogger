@@ -394,12 +394,19 @@ export const useGameStateStore = defineStore('gameState', () => {
     return map
   })
 
-  /** Set of known recipe keys (completion_count > 0) */
+  /** Set of known recipe keys — known AND crafted at least once (completion_count > 0) */
   const knownRecipeKeys = computed(() => {
     const set = new Set<string>()
     for (const r of recipes.value) {
       if (r.completion_count > 0) set.add(`Recipe_${r.recipe_id}`)
     }
+    return set
+  })
+
+  /** Set of learned recipe keys — a game_state_recipes row exists iff the cook knows it (completion_count stays 0 until the first craft) */
+  const learnedRecipeKeys = computed(() => {
+    const set = new Set<string>()
+    for (const r of recipes.value) set.add(`Recipe_${r.recipe_id}`)
     return set
   })
 
@@ -1220,6 +1227,7 @@ export const useGameStateStore = defineStore('gameState', () => {
     recipesById,
     recipeCompletions,
     knownRecipeKeys,
+    learnedRecipeKeys,
     favorByNpc,
     currenciesByName,
     effectsById,
