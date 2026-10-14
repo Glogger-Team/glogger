@@ -115,63 +115,6 @@
         <div v-if="deleteError" class="error-box">{{ deleteError }}</div>
       </div>
     </div>
-
-    <div class="settings-section">
-      <h3>Chat Log Retention</h3>
-
-      <div class="mb-4">
-        <label class="block text-text-secondary mb-1">General channels retention:</label>
-        <div class="flex items-center gap-2 mt-2">
-          <input
-            type="number"
-            v-model.number="chatRetentionDays"
-            @blur="saveChatRetention"
-            min="1"
-            max="9999"
-            class="input w-25"
-            placeholder="Forever" />
-          <span class="text-text-secondary">days</span>
-          <span class="text-text-muted text-xs">(leave empty for forever)</span>
-        </div>
-      </div>
-
-      <div class="mb-4">
-        <label class="block text-text-secondary mb-1">Tells retention:</label>
-        <div class="flex items-center gap-2 mt-2">
-          <input
-            type="number"
-            v-model.number="tellsRetentionDays"
-            @blur="saveTellsRetention"
-            min="1"
-            max="9999"
-            class="input w-25"
-            placeholder="Forever" />
-          <span class="text-text-secondary">days</span>
-          <span class="text-text-muted text-xs">(leave empty for forever)</span>
-        </div>
-      </div>
-
-      <div class="mb-4">
-        <label class="block text-text-secondary mb-1">Guild chat retention:</label>
-        <div class="flex items-center gap-2 mt-2">
-          <input
-            type="number"
-            v-model.number="guildRetentionDays"
-            @blur="saveGuildRetention"
-            min="1"
-            max="9999"
-            class="input w-25"
-            placeholder="Forever" />
-          <span class="text-text-secondary">days</span>
-          <span class="text-text-muted text-xs">(leave empty for forever)</span>
-        </div>
-      </div>
-
-      <p class="text-text-muted text-xs leading-relaxed">
-        Tells and Guild chat can be configured with longer retention than other channels
-        since you may want to preserve those conversations.
-      </p>
-    </div>
   </div>
 </template>
 
@@ -322,29 +265,6 @@ async function deleteAllChatMessages() {
   } finally {
     deleting.value = false;
   }
-}
-
-// Retention settings
-const chatRetentionDays = ref<number | null>(settingsStore.settings.chatRetentionDays);
-const tellsRetentionDays = ref<number | null>(settingsStore.settings.tellsRetentionDays);
-const guildRetentionDays = ref<number | null>(settingsStore.settings.guildRetentionDays);
-
-function saveChatRetention() {
-  const val = chatRetentionDays.value && chatRetentionDays.value > 0 ? chatRetentionDays.value : null;
-  chatRetentionDays.value = val;
-  settingsStore.updateSettings({ chatRetentionDays: val });
-}
-
-function saveTellsRetention() {
-  const val = tellsRetentionDays.value && tellsRetentionDays.value > 0 ? tellsRetentionDays.value : null;
-  tellsRetentionDays.value = val;
-  settingsStore.updateSettings({ tellsRetentionDays: val });
-}
-
-function saveGuildRetention() {
-  const val = guildRetentionDays.value && guildRetentionDays.value > 0 ? guildRetentionDays.value : null;
-  guildRetentionDays.value = val;
-  settingsStore.updateSettings({ guildRetentionDays: val });
 }
 
 onMounted(() => {

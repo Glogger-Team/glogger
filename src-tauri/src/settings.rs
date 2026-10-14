@@ -42,18 +42,6 @@ pub struct AppSettings {
     #[serde(default = "default_excluded_channels")]
     pub excluded_chat_channels: Vec<String>,
 
-    /// Default retention days for most chat channels
-    #[serde(default = "default_chat_retention_days")]
-    pub chat_retention_days: Option<u32>,
-
-    /// Retention days for Tells (may want longer)
-    #[serde(default)]
-    pub tells_retention_days: Option<u32>,
-
-    /// Retention days for Guild chat (may want longer)
-    #[serde(default)]
-    pub guild_retention_days: Option<u32>,
-
     /// Enable dev mode (reveals beta features/tools)
     #[serde(default)]
     pub dev_mode_enabled: bool,
@@ -65,10 +53,6 @@ pub struct AppSettings {
     /// Auto-update CDN game data when new version found
     #[serde(default = "default_true")]
     pub auto_update_game_data: bool,
-
-    /// Auto-purge days for user data (non-chat, non-gamedata)
-    #[serde(default)]
-    pub user_data_auto_purge_days: Option<u32>,
 
     /// Watch rules for chat notifications (watchwords, item watches, sender alerts)
     #[serde(default)]
@@ -327,10 +311,6 @@ fn default_excluded_channels() -> Vec<String> {
     ]
 }
 
-fn default_chat_retention_days() -> Option<u32> {
-    None
-}
-
 fn default_true() -> bool {
     true
 }
@@ -351,13 +331,9 @@ impl Default for AppSettings {
             auto_tail_player_log: false,
             db_path: None,
             excluded_chat_channels: default_excluded_channels(),
-            chat_retention_days: None,
-            tells_retention_days: None,
-            guild_retention_days: None,
             dev_mode_enabled: false,
             auto_check_game_data: true,
             auto_update_game_data: true,
-            user_data_auto_purge_days: None,
             watch_rules: Vec::new(),
             setup_completed: false,
             active_character_name: None,
@@ -610,4 +586,30 @@ pub fn get_settings_file_path(
         .to_str()
         .map(|s| s.to_string())
         .ok_or_else(|| "Invalid path".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Existing settings.json files still carry the now-removed retention keys;
+    /// `AppSettings` must not use `deny_unknown_fields`, so they keep parsing.
+    #[test]
+    fn legacy_settings_with_removed_keys_still_deserialize() {
+        let json = r#"{
+            "log_file_path": "",
+            "auto_watch_on_startup": false,
+            "game_data_path": "/tmp/game",
+            "auto_purge_enabled": false,
+            "auto_purge_days": 90,
+            "chat_retention_days": 30,
+            "tells_retention_days": 60,
+            "guild_retention_days": 90,
+            "user_data_auto_purge_days": 14
+        }"#;
+        let s: AppSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(s.game_data_path, "/tmp/game");
+        assert_eq!(s.auto_purge_days, 90);
+        assert!(!s.auto_purge_enabled);
+    }
 }

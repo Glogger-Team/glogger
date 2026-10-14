@@ -63,9 +63,6 @@ The exact path is displayed at the bottom of the Settings page in the app.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `excluded_chat_channels` | string[] | `["Error", "Emotes", ...]` | Chat channels excluded from DB persistence (does NOT affect parsing — see [live-event-streams.md](live-event-streams.md)) |
-| `chat_retention_days` | number or null | `90` | Default retention for most chat channels |
-| `tells_retention_days` | number or null | `null` | Retention for Tell messages (null = use chat default) |
-| `guild_retention_days` | number or null | `null` | Retention for Guild chat (null = use chat default) |
 | `watch_rules` | WatchRule[] | `[]` | Chat watch rules for notifications (see [chat-parser.md](../features/chat-parser.md)) |
 
 ### Data Management
@@ -74,7 +71,6 @@ The exact path is displayed at the bottom of the Settings page in the app.
 |-------|------|---------|-------------|
 | `auto_purge_enabled` | boolean | `false` | Enable automatic purging of old player data on startup |
 | `auto_purge_days` | number | `90` | Delete player data older than this many days |
-| `user_data_auto_purge_days` | number or null | `null` | Auto-purge days for user data (non-chat, non-gamedata) |
 
 ### Feature Settings
 
@@ -159,14 +155,27 @@ Contains day-to-day configuration:
 - **Timestamp Display** — choose between Local Time, Server Time, or UTC for all timestamp displays
 - **Game Data (CDN)** — shows cached vs. remote CDN version, update status, force refresh button
 
+### User Data Tab
+
+`UserDataSettings.vue` — the data-management surface (record counts, backups, purges):
+
+- **User Data Storage** — record counts + compact database
+- **Backup & Export** — export survey/market/sales history to a backup file
+- **Auto-Purge** — checkbox + days input for automatic *database* cleanup on startup (off by default)
+- **Manual Purge** — purge records by age or purge all
+- **Reports Import** — reserved for the reports auto-import
+
 ### Advanced Tab
 
-Contains maintenance and data management operations:
+`AdvancedSettings.vue` — developer/diagnostics surface:
 
-- **Database Management** — database statistics, record counts, refresh button
-- **Force CDN Table Rebuild** — clear and repopulate CDN-derived tables
-- **Player Data Cleanup** — purge records by age or purge all
-- **Auto-Purge Settings** — checkbox + days input for automatic cleanup on startup
+- **Developer Mode** — reveals beta features, experimental tools, and extra debugging info (off by default)
+- **Data Browser** — raw-JSON panel, unobtainable-item visibility, history size
+- **Character Report Watching** — auto-ingest new character exports (chat detection + fallback polling)
+- **Player.log Upload** / **Dual-Log Replay** — dev-mode-only manual parse and paired replay tools
+
+(Record counts, database compaction, and manual purges live in the **User Data** tab —
+`UserDataSettings.vue`; CDN table rebuild lives in the **Game Data** tab — `GameDataSettings.vue`.)
 
 ### About Tab
 

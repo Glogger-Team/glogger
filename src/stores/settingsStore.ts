@@ -1,4 +1,4 @@
-import { defineStore } from "pinia";
+import { defineStore, acceptHMRUpdate } from "pinia";
 import { ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { WatchRule } from "../types/database";
@@ -13,13 +13,9 @@ export interface AppSettings {
   autoTailPlayerLog: boolean;
   dbPath: string | null;
   excludedChatChannels: string[];
-  chatRetentionDays: number | null;
-  tellsRetentionDays: number | null;
-  guildRetentionDays: number | null;
   devModeEnabled: boolean;
   autoCheckGameData: boolean;
   autoUpdateGameData: boolean;
-  userDataAutoPurgeDays: number | null;
   watchRules: WatchRule[];
   setupCompleted: boolean;
   activeCharacterName: string | null;
@@ -60,13 +56,9 @@ interface BackendSettings {
   auto_tail_player_log: boolean;
   db_path: string | null;
   excluded_chat_channels: string[];
-  chat_retention_days: number | null;
-  tells_retention_days: number | null;
-  guild_retention_days: number | null;
   dev_mode_enabled: boolean;
   auto_check_game_data: boolean;
   auto_update_game_data: boolean;
-  user_data_auto_purge_days: number | null;
   watch_rules: WatchRule[];
   setup_completed: boolean;
   active_character_name: string | null;
@@ -108,13 +100,9 @@ function toBackendSettings(settings: AppSettings): BackendSettings {
     auto_tail_player_log: settings.autoTailPlayerLog,
     db_path: settings.dbPath,
     excluded_chat_channels: settings.excludedChatChannels,
-    chat_retention_days: settings.chatRetentionDays,
-    tells_retention_days: settings.tellsRetentionDays,
-    guild_retention_days: settings.guildRetentionDays,
     dev_mode_enabled: settings.devModeEnabled,
     auto_check_game_data: settings.autoCheckGameData,
     auto_update_game_data: settings.autoUpdateGameData,
-    user_data_auto_purge_days: settings.userDataAutoPurgeDays,
     watch_rules: settings.watchRules,
     setup_completed: settings.setupCompleted,
     active_character_name: settings.activeCharacterName,
@@ -227,13 +215,9 @@ function fromBackendSettings(settings: BackendSettings): AppSettings {
     autoTailPlayerLog: settings.auto_tail_player_log ?? false,
     dbPath: settings.db_path ?? null,
     excludedChatChannels: settings.excluded_chat_channels ?? DEFAULT_EXCLUDED_CHANNELS,
-    chatRetentionDays: settings.chat_retention_days ?? null,
-    tellsRetentionDays: settings.tells_retention_days ?? null,
-    guildRetentionDays: settings.guild_retention_days ?? null,
     devModeEnabled: settings.dev_mode_enabled ?? false,
     autoCheckGameData: settings.auto_check_game_data ?? true,
     autoUpdateGameData: settings.auto_update_game_data ?? true,
-    userDataAutoPurgeDays: settings.user_data_auto_purge_days ?? null,
     watchRules: settings.watch_rules ?? [],
     setupCompleted: settings.setup_completed ?? false,
     activeCharacterName: settings.active_character_name ?? null,
@@ -276,13 +260,9 @@ function getDefaultSettings(): AppSettings {
     autoTailPlayerLog: false,
     dbPath: null,
     excludedChatChannels: DEFAULT_EXCLUDED_CHANNELS,
-    chatRetentionDays: null,
-    tellsRetentionDays: null,
-    guildRetentionDays: null,
     devModeEnabled: false,
     autoCheckGameData: true,
     autoUpdateGameData: true,
-    userDataAutoPurgeDays: null,
     watchRules: [],
     setupCompleted: false,
     activeCharacterName: null,
@@ -438,3 +418,7 @@ export const useSettingsStore = defineStore("settings", () => {
     updateAutoTailChat,
   };
 });
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useSettingsStore, import.meta.hot))
+}

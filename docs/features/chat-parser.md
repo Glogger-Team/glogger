@@ -256,7 +256,6 @@ Search historical chat messages with flexible filters. Serves both the "search o
 ### Settings Integration
 - `excluded_chat_channels` — drives channel filtering (replaces hardcoded `EXCLUDED_CHANNELS`)
 - `game_data_path` — determines ChatLogs directory location
-- `chat_retention_days`, `tells_retention_days`, `guild_retention_days` — retention policies per channel type
 - `chat_notification_channels` — which channels show unread badges
 - `watch_rules` — persisted watchword/item watch rule definitions
 
