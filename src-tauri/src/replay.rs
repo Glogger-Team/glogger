@@ -617,7 +617,9 @@ impl Default for ArchiveLimits {
 }
 
 /// Read the archive limits from settings, clamped to at least 1 so a
-/// hand-edited `0` cannot make the archive delete what it just wrote.
+/// hand-edited `0` cannot disable the bounds entirely. (A `max_mb` below one
+/// session's size still cannot empty the archive — `prune_player_log_archive`
+/// never evicts the newest copy.)
 pub fn archive_limits(settings: &crate::settings::SettingsManager) -> ArchiveLimits {
     let s = settings.get();
     ArchiveLimits {
@@ -676,9 +678,12 @@ fn archive_player_log(src: &Path, dir: &Path, limits: ArchiveLimits) -> std::io:
 }
 
 /// Enforce `limits`: delete copies older than `retention_days`, then evict
-/// oldest-first until both `max_files` and `max_mb` hold. Also clears
-/// interrupted copies. Best-effort: every failure is ignored, and only files
-/// matching this archive's own naming are ever touched.
+/// oldest-first until both `max_files` and `max_mb` hold — never the newest
+/// copy, so a byte budget below one session's size cannot empty the archive.
+/// Also clears interrupted copies. Best-effort: every failure is ignored, and
+/// only files matching this archive's own naming (`Player-<16 hex>.log`) are
+/// ever touched, so a `Player.log`/`Player-prev.log` a user drops in here is
+/// left alone.
 fn prune_player_log_archive(dir: &Path, limits: ArchiveLimits) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -690,15 +695,22 @@ fn prune_player_log_archive(dir: &Path, limits: ArchiveLimits) {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
-        if !name.starts_with("Player-") {
+        // `archive_player_log`'s own naming only. `name.starts_with("Player-")
+        // && ends_with(".log")` would also claim the live logs' names and any
+        // `Player-prev.log` a user copied in here (which the backfill scans).
+        let is_ours = name
+            .strip_prefix("Player-")
+            .and_then(|stem| {
+                stem.strip_suffix(PLAYER_LOG_ARCHIVE_PARTIAL_SUFFIX)
+                    .or_else(|| stem.strip_suffix(".log"))
+            })
+            .is_some_and(|hash| hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit()));
+        if !is_ours {
             continue;
         }
         if name.ends_with(PLAYER_LOG_ARCHIVE_PARTIAL_SUFFIX) {
             // Interrupted copy (crash between write and rename) — never usable.
             let _ = std::fs::remove_file(&path);
-            continue;
-        }
-        if !name.ends_with(".log") {
             continue;
         }
         let Ok(meta) = entry.metadata() else {
@@ -723,16 +735,23 @@ fn prune_player_log_archive(dir: &Path, limits: ArchiveLimits) {
         });
     }
 
-    // Oldest-first eviction until both bounds hold. The byte budget is checked
-    // after the sum, so a single oversized session can never wedge the archive
-    // past its limit permanently.
+    // Oldest-first eviction until both bounds hold, keeping the newest copy:
+    // the byte budget is the usual binding limit, and with a budget below one
+    // session's size an unprotected loop would delete the file just written and
+    // leave the archive permanently empty. The byte budget is checked after the
+    // sum, so a single oversized session can never wedge the archive past its
+    // limit permanently.
     let max_bytes = u64::from(limits.max_mb) * 1024 * 1024;
     let max_files = limits.max_files as usize;
     files.sort_by_key(|(mtime, _, _)| *mtime);
     let mut total: u64 = files.iter().map(|(_, len, _)| *len).sum();
     let mut remaining = files.len();
-    for (_, len, path) in files {
+    let evictable = files.len().saturating_sub(1);
+    for (evicted, (_, len, path)) in files.into_iter().enumerate() {
         if remaining <= max_files && total <= max_bytes {
+            break;
+        }
+        if evicted >= evictable {
             break;
         }
         let _ = std::fs::remove_file(&path);
@@ -1276,6 +1295,61 @@ mod ingest_tests {
 
         assert!(!partial.exists(), "interrupted copy removed");
         assert!(keep.exists(), "complete copy kept");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A byte budget below one session's size (the clamp floor is 1 MiB; a
+    /// session's Player.log is 30–45 MB) must not delete the copy that was just
+    /// written — otherwise the archive is emptied on every tick and the backfill
+    /// silently loses its extra reach-back.
+    #[test]
+    fn prune_keeps_the_newest_copy_even_when_the_byte_budget_is_impossible() {
+        let dir = temp_dir();
+        let only = dir.join("Player-00000000000000ee.log");
+        std::fs::File::create(&only)
+            .unwrap()
+            .set_len(40 * 1024 * 1024)
+            .unwrap();
+
+        prune_player_log_archive(
+            &dir,
+            ArchiveLimits {
+                max_mb: 1,
+                ..ArchiveLimits::default()
+            },
+        );
+
+        assert!(only.exists(), "the only copy survives an impossible budget");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only this feature's own naming is ever deleted. `Player-prev.log` matches
+    /// the loose `Player-*.log` prefix, and the *backfill* scans that name as a
+    /// source, so a user-dropped copy must not be pruned out from under it.
+    #[test]
+    fn prune_touches_only_its_own_naming() {
+        let dir = temp_dir();
+        let dropped = dir.join("Player-prev.log");
+        std::fs::write(&dropped, b"x").unwrap();
+        let live = dir.join("Player.log");
+        std::fs::write(&live, b"x").unwrap();
+        let ours = dir.join("Player-00000000000000ff.log");
+        std::fs::write(&ours, b"x").unwrap();
+
+        prune_player_log_archive(
+            &dir,
+            ArchiveLimits {
+                max_files: 1,
+                max_mb: 1,
+                ..ArchiveLimits::default()
+            },
+        );
+
+        assert!(dropped.exists(), "a user-dropped copy is left alone");
+        assert!(live.exists(), "the live log's name is left alone");
+        assert!(ours.exists(), "our own copy is kept");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

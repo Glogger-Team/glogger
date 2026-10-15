@@ -623,6 +623,31 @@ impl DataIngestCoordinator {
         // logins will properly clear transient state. During the initial catch-up
         // replay we skip clearing to preserve data built for each character.
         if !self.game_state.is_live() {
+            // The catch-up guard drops the sessions of characters other than the
+            // selected one, so a log whose *last* login is one of them leaves
+            // `active_character = None` — and every live event is dropped by
+            // `process_events_batch` until something re-arms it. The Player.log
+            // watcher records the last login line's character unconditionally
+            // (the matcher, not the guard), so re-arm from that: it is the
+            // session actually being tailed now. Without this the whole live
+            // session is lost whenever the chat marker is missed.
+            if self.game_state.get_active_character().is_none() {
+                if let Some(name) = self
+                    .player_watcher
+                    .as_ref()
+                    .and_then(|w| w.get_active_character())
+                    .map(str::to_string)
+                {
+                    startup_log!(
+                        "Player.log catch-up left the active character cleared; re-arming from the log's last login: '{}'",
+                        name
+                    );
+                    let mut settings = self.settings.get();
+                    settings.active_character_name = Some(name.clone());
+                    self.settings.update(settings).ok();
+                    self.game_state.set_active_character_name(&name);
+                }
+            }
             startup_log!("Player.log catch-up complete — switching to live tailing mode");
             self.game_state.set_live_mode();
         }
@@ -797,6 +822,25 @@ impl DataIngestCoordinator {
                     // selected character's skills/inventory with the other's
                     // (measured: TestPlayer ended up with OtherAlt's skill load).
                     if self.game_state.is_live() {
+                        // A live login line still re-arms identity when the
+                        // catch-up guard below (or a previous session's) left it
+                        // cleared: `active_character = None` makes
+                        // `process_events_batch` drop *every* event, and the chat
+                        // log's marker is the only other re-arm — it can be
+                        // missed (the chat watcher tails from a saved position)
+                        // or never start. Do the same settings + game-state
+                        // update the marker does, minus the `character-login`
+                        // emit (live identity events stay the marker's job).
+                        if self.game_state.get_active_character().is_none() {
+                            startup_log!(
+                                "Live login line re-armed the cleared active character: '{}'",
+                                character_name
+                            );
+                            let mut settings = self.settings.get();
+                            settings.active_character_name = Some(character_name.clone());
+                            self.settings.update(settings).ok();
+                            self.game_state.set_active_character_name(&character_name);
+                        }
                         continue;
                     }
 
@@ -2795,9 +2839,12 @@ impl DataIngestCoordinator {
                 })
                 .unwrap_or_else(|| (item_name.to_string(), None, None));
 
-        // Player.log timestamps are UTC HH:MM:SS; attach today's UTC date
-        // (base_date_override handles replay/reparse).
-        let observed_at = crate::parsers::to_utc_datetime_with_base(timestamp, None);
+        // Player.log timestamps are UTC HH:MM:SS. `peek_utc`, not the bare
+        // helper: this runs inside the ordered replay, so it must report the
+        // date this line gets under the session's own anchor (`LogDateResolver`)
+        // without advancing the rollover baseline — and the live path's
+        // anchor/replay override is then respected here too.
+        let observed_at = self.game_state.peek_utc(timestamp);
 
         let Ok(conn) = self.db_pool.get_write() else {
             return;

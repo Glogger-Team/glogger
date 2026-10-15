@@ -12,9 +12,17 @@ count to the game's number.
 
 ## What it does
 
-- **At startup** (Step 5d chain in `lib.rs`, after the arena-bet backfill) and
-  **on demand** (`backfill_statehelm_gifts`, the "Rescan logs" button on
-  Character → Statehelm).
+- **At startup** — after the CDN data is persisted (`lib.rs`'s background
+  `init_game_data` task, right after `game-data-ready`), *not* in the Step 5d
+  backfill chain: the reconcile resolves NPC display names against the persisted
+  `npcs` table, and the chain is a separately spawned task, so from there it
+  silently no-opped on a fresh DB (empty `npcs`) with no retry. It logs
+  `Statehelm gift backfill skipped: npcs table is empty` in that case.
+  **On demand**: `backfill_statehelm_gifts`, the "Rescan logs" button on
+  Character → Statehelm. The command is `async` + `spawn_blocking`
+  (`replay::ingest_player_log`'s pattern) because the scan can read the whole
+  archive — 512 MiB by default — and a non-async Tauri command would do that on
+  the main thread.
 - Sources, in order: archived rotated copies in
   `<app data dir>/player-logs` (recent ones only), `Player-prev.log`, then
   `Player.log`. Path list is built by `backfill_from_player_logs`.
@@ -126,16 +134,27 @@ Why these three, and why in that shape:
   Settings takes effect within one tick instead of waiting for the game to
   rotate (or for a restart). A `readdir` over a handful of entries is far
   cheaper than the log scans beside it.
-- **Only this feature's own files are touched:** prune ignores anything not
-  matching `Player-*.log` and only ever runs in glogger's own data directory
-  (never the game's log folder). Values are clamped to ≥ 1 on both sides, so a
-  hand-edited `0` cannot make the archive delete what it just wrote.
+- **Only this feature's own files are touched:** prune claims only its own naming
+  (`Player-<16 hex digits>.log`, and the `.partial` write-then-rename leftovers)
+  and only ever runs in glogger's own data directory (never the game's log
+  folder) — a `Player.log` / `Player-prev.log` a user drops in there is read by
+  the backfill but never deleted. Values are clamped to ≥ 1 on both sides, and
+  the count/byte eviction **never removes the newest copy**, so even a
+  hand-edited `max_mb` of 1 (below one 30–45 MB session) cannot make the archive
+  delete what it just wrote.
+
+- **The byte budget cannot empty the archive.** Eviction is oldest-first but
+  stops at the newest copy, so a budget smaller than one session keeps that one
+  session and the backfill still reaches back one rotation.
 
 ## Frontend
 
 - `useStatehelmTracker`'s week boundary is the DB format
   (`YYYY-MM-DD HH:MM:SS`, `weekStartDb`), not `toISOString()`: an ISO cutoff
-  sorts before every Monday-dated row and silently dropped them. It is also
+  reads `…T04:00:00.000Z`, whose index 10 is `'T'` (0x54) against a row's `' '`
+  (0x20), so it sorts *after* every same-date row — the pre-fix
+  `row >= cutoff` test was therefore false for Monday-dated rows and dropped
+  them. It is also
   what `remove_last_gift`'s `gifted_at >= ?4` compares against. Rows written by
   `add_manual_gift` (`'T' > ' '` on the boundary day) stay included, so no data
   migration was needed.

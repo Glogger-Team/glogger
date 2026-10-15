@@ -904,6 +904,33 @@ fn build_ability_name_index(
     index
 }
 
+/// Display name → NPC key, with a deterministic pick when several NPCs share a
+/// display name (the CDN does: eight "Work Orders", for example).
+///
+/// `npcs` is a `HashMap`, so a plain `.collect()` picks whichever duplicate the
+/// hash order happened to visit last — arbitrary per run. Keep the lowest key,
+/// which is also what the DB-backed resolver does
+/// (`SELECT key FROM npcs WHERE name = ?1 ORDER BY key LIMIT 1` in
+/// `db::statehelm_commands`). Those two resolve names for the *same* line (the
+/// live `GiftCountObserved` arm and the log backfill), and the gift tracker
+/// keys rows by NPC key, so a disagreement would split one NPC's weekly count
+/// across two rows.
+pub(crate) fn build_npc_name_index<'a, I>(npcs: I) -> HashMap<String, String>
+where
+    I: IntoIterator<Item = (&'a String, &'a String)>,
+{
+    let mut index: HashMap<String, String> = HashMap::new();
+    for (key, name) in npcs {
+        match index.get(name) {
+            Some(existing) if existing.as_str() <= key.as_str() => {}
+            _ => {
+                index.insert(name.clone(), key.clone());
+            }
+        }
+    }
+    index
+}
+
 /// Build all derived indices from parsed game data.
 fn build_all_indices(
     items: &HashMap<u32, items::ItemInfo>,
@@ -1006,10 +1033,7 @@ fn build_all_indices(
         .map(|(id, skill)| (skill.internal_name.clone(), *id))
         .collect();
 
-    let npc_name_index: HashMap<String, String> = npcs
-        .iter()
-        .map(|(key, npc)| (npc.name.clone(), key.clone()))
-        .collect();
+    let npc_name_index = build_npc_name_index(npcs.iter().map(|(key, npc)| (key, &npc.name)));
 
     let mut area_name_index: HashMap<String, String> = HashMap::new();
     for (key, area) in areas {
@@ -1565,6 +1589,33 @@ fn build_tsys_ability_index(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Duplicate display names must resolve to one key on every run, and to the
+    /// same key the DB-backed resolver picks (`ORDER BY key LIMIT 1`). The live
+    /// gift arm and the log backfill resolve the *same* note's display name
+    /// through these two paths, and the gift tracker keys rows by NPC key — a
+    /// disagreement splits one NPC's weekly count across two rows. A plain
+    /// `.collect()` over the CDN `HashMap` picks whichever duplicate it visits
+    /// last, which is why this is built by hand.
+    #[test]
+    fn npc_name_index_picks_the_lowest_key_for_duplicate_display_names() {
+        // Insertion order puts the higher key last, so a `.collect()` would keep
+        // that one.
+        let pairs: Vec<(String, String)> = vec![
+            ("NPC_WorkOrdersA".into(), "Work Orders".into()),
+            ("NPC_WorkOrdersB".into(), "Work Orders".into()),
+            ("NPC_Unique".into(), "Solo".into()),
+        ];
+
+        let index = build_npc_name_index(pairs.iter().map(|(key, name)| (key, name)));
+
+        assert_eq!(
+            index.get("Work Orders").map(String::as_str),
+            Some("NPC_WorkOrdersA"),
+            "the lowest key wins, deterministically"
+        );
+        assert_eq!(index.get("Solo").map(String::as_str), Some("NPC_Unique"));
+    }
 
     fn ability(id: u32, name: &str, monster: bool) -> abilities::AbilityInfo {
         abilities::AbilityInfo {

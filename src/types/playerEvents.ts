@@ -328,6 +328,32 @@ export interface CorpseExtractEvent {
 
 // === Union Type ===
 
+/** The game's own declared UTC instant from a `Player.log` login line
+ *  ("Logged in as character X. Time UTC=MM/DD/YYYY HH:MM:SS."). Anchors the date
+ *  for every `[HH:MM:SS]` line after it; nothing in the UI consumes it. */
+export interface LogSessionAnchoredEvent {
+  kind: 'LogSessionAnchored'
+  utc: string
+}
+
+/** A gift-capped (Statehelm) NPC's authoritative weekly gift count, from the
+ *  "<Npc> will accept up to <b>N</b> gifts … has received <b>M</b>" note. */
+export interface GiftCountObservedEvent {
+  kind: 'GiftCountObserved'
+  timestamp: string
+  npc_name: string
+  received: number
+  max: number
+}
+
+export interface CorpseSearchedEvent {
+  kind: 'CorpseSearched'
+  timestamp: string
+  corpse_entity_id: number
+  corpse_name: string
+  has_permission: boolean
+}
+
 export type PlayerEvent =
   | ItemAddedEvent
   | ItemStackChangedEvent
@@ -358,3 +384,6 @@ export type PlayerEvent =
   | EffectNameUpdatedEvent
   | LootPickedUpEvent
   | CorpseExtractEvent
+  | CorpseSearchedEvent
+  | GiftCountObservedEvent
+  | LogSessionAnchoredEvent

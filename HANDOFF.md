@@ -6,6 +6,95 @@
 **Status:** ✅ Implemented + verified: `cargo test --lib` **689 passed** (6 ignored, 695 total), `npm run build` (vue-tsc + vite) clean,
 `pwsh scripts/check-glogger-constraints.ps1` green, and a live WebView2-CDP smoke over `glogger.Dev` (real logs, real DB).
 
+## Session 41 — review-fix pass over Session 40's commit
+
+**Date:** 2026-10-15 (fixes for `6324d55`, from an 8-reviewer in-harness pass plus an
+independent external review; every claim below was re-verified against the code, and two
+were corrected: the external review's "whole session is dropped" is bounded to the login
+snapshot, and its suggested remedy — switch identity instead of dropping — is unsafe).
+**Status:** ✅ `cargo test --lib` **696 passed** (6 ignored, 702 total — +7 new), `npm run build`
+clean, `pwsh scripts/check-glogger-constraints.ps1` green.
+
+### Correctness fixes
+
+- **The startup gift backfill silently no-opped on a fresh DB.** It resolves NPC display names
+  against the persisted `npcs` table, but ran in the Step 5d chain, which `lib.rs` spawns
+  independently of the CDN task that fills that table (`persist_cdn_data`) — on a first
+  launch / wiped DB it lost the race, returned 0 and *said nothing*, with no retry. It now runs
+  in the CDN task right after `game-data-ready` (both the "persisted" and "already persisted"
+  branches leave `npcs` populated), and logs
+  `Statehelm gift backfill skipped: npcs table is empty (CDN data not persisted yet)` if it ever
+  sees an empty table. Pinned by `backfill_no_ops_until_npcs_are_persisted`.
+- **Rescan logs blocked the window.** `backfill_statehelm_gifts` was a sync command, so Tauri ran
+  the scan (two live logs plus up to `player_log_archive_max_mb` = 512 MiB of archive) on the
+  main thread. Now `async` + `tokio::task::spawn_blocking`, mirroring `replay::ingest_player_log`.
+- **Identity could stay cleared into live tailing, dropping the whole live session.** The catch-up
+  guard sets `active_character = None` for other characters, and `process_events_batch` drops
+  every event while it is `None`; the only other re-arm is the Chat.log marker, whose watcher
+  tails from a saved position and can miss it. Two fixes, both writing settings *and* game state
+  with no `character-login` emit: `poll()` re-arms at catch-up end from the Player.log watcher's
+  last login line, and a live login line re-arms when `active_character` is `None`.
+- **A delete buffered when the login line arrived was emitted after the anchor.** The anchor
+  arm returned before flushing, so the buffered `ItemDeleted` (an *earlier* line) landed after
+  `LogSessionAnchored`; the stateful resolver then read its earlier time of day as a UTC-midnight
+  crossing and dated the rest of the batch a day ahead. The flush is now hoisted to the top of
+  `process_line`'s post-resolution path and the 40 redundant per-arm calls are gone (which is how
+  `flush_all_pending` briefly lost its own — the `unused_mut` warning caught it).
+- **`record_purchase_observation` bypassed the resolver** with a comment naming the deleted
+  `base_date_override`; it now uses `peek_utc`, like the milking side channels.
+- **Duplicate NPC display names resolved differently in the two paths.** The backfill picks
+  `ORDER BY key LIMIT 1`; the live arm used a `.collect()` over a `HashMap` (arbitrary last
+  writer). `game_data::build_npc_name_index` now keeps the lowest key, so both agree — pinned
+  cross-path by `duplicate_display_names_resolve_identically_in_the_live_and_sql_paths`.
+- **`resolve_at`'s base-date branch read the real clock** on unparsable input (via
+  `to_utc_datetime_with_base`) instead of the injected `now`, breaking the seam `peek_at` honours.
+- **The archive could be emptied.** `prune_player_log_archive` evicted oldest-first with no floor,
+  so a `max_mb` below one session's size (the clamp floor is 1 MiB; sessions are 30–45 MB) deleted
+  the copy just written, every tick. Eviction now stops at the newest copy.
+- **Prune claimed more than its own naming.** `Player-*.log` also matches `Player.log` /
+  `Player-prev.log` — and the *backfill* scans that name as a source, so a user-dropped copy could
+  be read and then silently deleted. The predicate now requires `Player-<16 hex>.log` (+`.partial`).
+- **A failed log read looked like "no notes found".** `scan_gift_notes` collapsed `read_to_string`
+  errors into an empty result; it now logs the path and the error.
+- **The frontend week boundary was frozen.** `weekStart` had no reactive dependency, so a
+  keep-alive'd app left open across the Monday reset kept last week's cutoff (and handed
+  `remove_last_gift` a stale boundary while the backend computed a fresh one). A shared
+  1-minute `weekClock` tick now drives `weekStart`/`nextWeekStart`/`weekStartDb` (module-scope, so
+  the view and widget share one interval; `globalThis`-guarded so HMR cannot stack them).
+- **TS event mirror** gained `LogSessionAnchored` (new in `6324d55`), plus `GiftCountObserved` and
+  `CorpseSearched`, which were already missing.
+- **Docs truth pass:** `docs/architecture/time.md` (+`live-event-streams.md`,
+  `time-handling-audit.md`) still described `to_utc_datetime_with_base(ts, None)` as "today's UTC
+  date" and the Statehelm reset as UTC-based; `docs/features/statehelm-gift-backfill.md` and
+  HANDOFF had the ISO sort direction backwards (an ISO cutoff sorts *after* same-date rows —
+  `'T'` 0x54 vs `' '` 0x20 — which is why `row >= cutoff` failed, not before);
+  `widget-milking-timers.md` still said `to_utc` + `base_date_override`. Stray working-tree dumps
+  (`parsers_diff.txt`, `rust_variants.txt`, `ts_variants.txt`) deleted.
+
+### Falsified first
+
+`prune_keeps_the_newest_copy_even_when_the_byte_budget_is_impossible` and
+`test_delete_buffered_at_the_login_line_flushes_ahead_of_the_anchor` both fail when their fix is
+reverted (verified). The duplicate-name tests pin the new deterministic contract and the
+cross-path agreement rather than a revertible line.
+
+### Verified
+
+- Week-boundary parity re-run independently: the committed TS logic reproduces all 7 of
+  `game_state::tests`' vectors, and `now + easternOffsetMinutes(now)` equals `Intl`'s own ET wall
+  date over 3,294 sampled instants.
+- The frozen-computed mechanism demonstrated with `@vue/reactivity`: a dependency-free `computed`
+  never re-evaluates; the ticked one does.
+- **Live smoke (real logs, real DB, `npm run tauri dev`, WebView2 CDP on 9222):**
+  `Statehelm gift backfill: nothing to reconcile (3 log file(s) scanned)` appears *after*
+  `CDN v486 already persisted to database, skipping` — i.e. at the new invocation site, with the
+  archive copy, `Player-prev.log` and `Player.log` all in the path list. Driving **Rescan logs**
+  from the real webview (`window.__TAURI_INTERNALS__.invoke('backfill_statehelm_gifts')`) returned
+  `0` after a **2,414 ms** scan (44 MB archive + both live logs) while a cheap command
+  (`get_cache_status`) issued *during* that scan returned in **73 ms** — the main thread is not
+  blocked; a sync command would have queued it behind the whole scan. Both invocations logged their
+  own line in the app stdout.
+
 ## TL;DR — Session 40
 
 ### What shipped
@@ -14,7 +103,7 @@
   because `Player-prev.log` is only ingested for kills/loot, never through `process_events_batch`. New
   `src-tauri/src/db/statehelm_commands.rs` scans the `Player.log` family for gift-cap notes ("… has received
   `<b>2</b>` so far this week") and reconciles each capped NPC's current-week `game_state_gift_log` rows to the
-  game's own count. Runs at startup (Step 5d chain) and on demand: `backfill_statehelm_gifts` → the **Rescan logs**
+  game's own count. Runs at startup (after the CDN persist that fills `npcs` — see Session 41) and on demand: `backfill_statehelm_gifts` → the **Rescan logs**
   button on Character → Statehelm. Idempotent (absolute count per NPC per week): no migration, no content-hash table.
 - **One reconcile, one parser.** The live `GiftCountObserved` arm and the backfill now share
   `db::game_state_commands::reconcile_gift_count`, and both dispatch through the new free function
@@ -23,7 +112,8 @@
   rotation watcher) so the backfill reaches past the two logs the game keeps. Bounded at 14 days / 20 files /
   512 MiB, write-then-rename, swept at startup; full rationale in `docs/features/statehelm-gift-backfill.md`.
 - **Frontend week boundary fixed.** `useStatehelmTracker` compared rows against `weekStart.toISOString()`, which
-  sorts *before* every Monday-dated row (`'T' < ' '`) — every Monday's gifts were silently dropped from
+  sorts *after* every same-date row (index 10 is `'T'` 0x54 vs the row's `' '` 0x20), so `row >= cutoff` was
+  false for Monday-dated rows — every Monday's gifts were silently dropped from
   `giftsThisWeek` and from `remove_last_gift`'s cutoff. Now `weekStartDb` (DB format, `YYYY-MM-DD HH:MM:SS`).
   `add_manual_gift` writes that same DB format, and the three week-boundary comparisons (the TS cutoff,
   `reconcile_gift_count`, `remove_last_gift`) normalize legacy ISO rows with `replace(gifted_at,'T',' ')`, so

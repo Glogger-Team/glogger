@@ -13,7 +13,7 @@ The codebase is **largely consistent** with the documented time standards. The b
 - `chrono::Local` usage is appropriate:
   - `Local::now()` in debug `eprintln!` macros (`game_state.rs:16`, `cdn_commands.rs:23`, `lib.rs:212`) — debug logging only, not stored.
   - `Local::now()` in `stall_year_resolver.rs:84` — used to determine the current calendar year for year-less stall timestamps, not stored as a timestamp.
-- `to_utc_datetime_with_base()` and `chat_local_to_utc()` in `parsers.rs` correctly handle both Player.log (UTC) and Chat.log (local-to-UTC conversion) ingestion paths.
+- [`parsers::LogDateResolver`](../../src-tauri/src/parsers.rs) owns the Player.log date for both consumers (`GameStateManager`, `SurveySessionAggregator`), and `chat_local_to_utc()` handles Chat.log (local-to-UTC) — both ingestion paths are correct; the resolver's clock fallback also rolls back a day when a line's time of day is still ahead of it (a lagging read over UTC midnight).
 - No issues found.
 
 ## Frontend: useTimestamp.ts Composable — Correct
@@ -100,5 +100,5 @@ These use browser APIs directly instead of the `useTimestamp.ts` composable, mea
 - **DatePicker.vue** — Uses `toLocaleDateString()` for calendar month/day labels. This is a date-selection widget where the local calendar is correct. Not a violation.
 - **ChangelogTab.vue** — Uses `toLocaleDateString()` for GitHub release dates. External metadata, not game timestamps. Not a violation.
 - **gameStateStore `_tickClocks()`** — Uses `toLocaleString('en-US', { timeZone: 'America/New_York' })` to calculate PG server time / game time. This is intentional — it's computing real-world Eastern time for the game clock display, not formatting a stored timestamp. Correct.
-- **useStatehelmTracker** — Uses `Date.UTC()` for week boundary calculation. Correct — Statehelm weekly reset is UTC-based.
+- **useStatehelmTracker** — Computes the weekly boundary from the platform's own tz database (`Intl`, `America/New_York`) and compares it against DB-format (`YYYY-MM-DD HH:MM:SS`, UTC) stamps. Correct — the Statehelm weekly reset is Monday 00:00 *Eastern* (04:00/05:00 UTC; the game's note says "The week resets on Monday EDT."), not UTC.
 - **ZoneNpcsWidget vendor timer** — Uses `new Date()` for countdown math against a UTC timestamp. Correct — wall-clock comparison for live timer.

@@ -130,7 +130,11 @@ impl LogDateResolver {
     /// [`Self::resolve`] against a fixed clock (test seam).
     pub(crate) fn resolve_at(&mut self, ts: &str, now: chrono::DateTime<chrono::Utc>) -> String {
         if let Some(date) = self.base_date {
-            return to_utc_datetime_with_base(ts, Some(date));
+            // `to_utc_datetime_at`, not `to_utc_datetime_with_base`: the latter
+            // reads the real clock on unparsable input, which would break this
+            // seam's fixed-clock contract (see `peek_at`, which already threads
+            // `now` here).
+            return to_utc_datetime_at(ts, Some(date), now);
         }
 
         let Some((date, last_time)) = self.session.as_mut() else {
@@ -411,6 +415,24 @@ mod tests {
         assert_eq!(
             stamp_at("2026-10-15T01:27:00Z", "not a time"),
             "2026-10-15 01:27:00"
+        );
+    }
+
+    /// `resolve_at`'s fixed-clock seam must hold on the base-date path too: it
+    /// called the real clock on unparsable input (via
+    /// `to_utc_datetime_with_base`), so this path could not be tested with a
+    /// fixed clock and disagreed with `peek_at`, which already threads `now`.
+    #[test]
+    fn base_date_path_honours_the_clock_seam() {
+        let now = fixed_now("2026-10-15T01:27:00Z");
+        let mut dates = LogDateResolver::default();
+        dates.set_base_date(chrono::NaiveDate::from_ymd_opt(2026, 10, 12).unwrap());
+
+        assert_eq!(dates.resolve_at("23:31:26", now), "2026-10-12 23:31:26");
+        assert_eq!(
+            dates.resolve_at("not a time", now),
+            "2026-10-15 01:27:00",
+            "unparsable input falls back to the injected clock, not the real one"
         );
     }
 

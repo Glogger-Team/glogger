@@ -106,7 +106,7 @@ blank one. The widget additionally de-duplicates by `cow_name` as a safeguard.
 
 | Source | Time handed in |
 |---|---|
-| Player.log `ScreenText` (`milked` / `milked_by`) | `GameStateManager::to_utc("HH:MM:SS")` — bare log clock time + date, honouring the replay `base_date_override` |
+| Player.log `ScreenText` (`milked` / `milked_by`) | `GameStateManager::peek_utc("HH:MM:SS")` — bare log clock time + the session's date, without advancing `LogDateResolver`'s rollover baseline (these side channels read a line before its batch is replayed) |
 | Chat `[Combat] … Collect Milk …` (`self_milked`) | the chat line timestamp converted with **that log file's own login-line offset** (falling back to the settings offset) — see below |
 
 A missing/unparseable event time falls back to `Utc::now()` so a milking is never dropped.

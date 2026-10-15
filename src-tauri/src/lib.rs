@@ -588,16 +588,6 @@ pub fn run() {
                         }
                         Err(e) => eprintln!("Arena bet backfill failed: {e}"),
                     }
-                    // Statehelm weekly gift counts from Player.log +
-                    // Player-prev.log + archived rotated copies. Reads the same
-                    // two Player logs as the arena-bet backfill just above, so it
-                    // stays in this serialized chain (shared writer contention).
-                    match db::statehelm_commands::backfill_from_player_logs(&sm, &dbp, &ah) {
-                        // Emits `game-state-updated ["favor"]` and logs its own
-                        // progress line when it reconciles anything.
-                        Ok(_) => {}
-                        Err(e) => eprintln!("Statehelm gift backfill failed: {e}"),
-                    }
                     match db::words_of_power_commands::backfill_used_words_from_chat_logs(&sm, &dbp)
                     {
                         Ok(0) => {}
@@ -689,6 +679,29 @@ pub fn run() {
 
                         // Notify the frontend that data is loaded
                         app_handle.emit("game-data-ready", data.version).ok();
+
+                        // Statehelm weekly gift counts, re-read from Player.log /
+                        // Player-prev.log / archived rotated copies. Deliberately
+                        // here and not in the Step 5d chain: the reconcile resolves
+                        // NPC display names against the `npcs` table, and the chain
+                        // and this CDN task are spawned independently, so from the
+                        // chain it silently no-opped on a fresh DB (empty `npcs`)
+                        // with no retry. Both branches above leave `npcs` populated.
+                        if let (Some(sm), Some(dbp)) = (
+                            app_handle.try_state::<Arc<crate::settings::SettingsManager>>(),
+                            app_handle.try_state::<db::DbPool>(),
+                        ) {
+                            match db::statehelm_commands::backfill_from_player_logs(
+                                &sm,
+                                &dbp,
+                                &app_handle,
+                            ) {
+                                // Emits `game-state-updated ["favor"]` and logs its
+                                // own progress line when it reconciles anything.
+                                Ok(_) => {}
+                                Err(e) => eprintln!("Statehelm gift backfill failed: {e}"),
+                            }
+                        }
                     }
                     Err(e) => {
                         startup_log!("Game data init FAILED: {e}");

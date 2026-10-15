@@ -22,7 +22,7 @@ The app ingests timestamps from two sources with different raw formats:
 
 | Source | Raw Format | Conversion |
 |---|---|---|
-| Player.log | `[HH:MM:SS]` — UTC, no date | Combined with a UTC base date via [`to_utc_datetime_with_base()`](../../src-tauri/src/parsers.rs) — no offset needed |
+| Player.log | `[HH:MM:SS]` — UTC, no date | Dated via [`parsers::LogDateResolver`](../../src-tauri/src/parsers.rs): an explicit base date (replay / old-log reparse), else the session date on the log's own login line, else the clock with a one-day rollback — no offset needed |
 | Chat.log | `YY-MM-DD HH:MM:SS` — player's local time | Converted to UTC via [`chat_local_to_utc()`](../../src-tauri/src/parsers.rs) using the detected timezone offset |
 
 ### Player.log base date
@@ -45,7 +45,7 @@ Users can also set `manual_timezone_override` in settings, which takes precedenc
 
 ## Backend (Rust)
 
-- Use `to_utc_datetime_with_base(time_str, base_date)` from [`parsers.rs`](../../src-tauri/src/parsers.rs) to convert Player.log `HH:MM:SS` times to full UTC datetime strings. Pass `None` for live (uses today's UTC date); replay / old-log reparse passes the date they derived from chat log / file mtime.
+- Use [`parsers::LogDateResolver`](../../src-tauri/src/parsers.rs) to convert Player.log `HH:MM:SS` times to full UTC datetime strings: `set_base_date(date)` when the caller knows the capture date (replay / old-log reparse, which wins over everything), `anchor_session(utc)` on the log's own login line (`PlayerEvent::LogSessionAnchored`), and `resolve(ts)` to stamp each line — it rolls the session date forward when the time of day goes backwards (a UTC-midnight crossing). Use `peek(ts)` instead of `resolve(ts)` from any side channel that reads a line before its batch is replayed: it reports the same date without advancing the rollover baseline. A live path with no anchor falls back to the clock, rolled back a day when the line's time of day is still ahead of it (`to_utc_datetime_with_base(ts, None)` now applies that rollback; only pass `Some(date)` when you have a real base date).
 - Use `chat_local_to_utc(dt, tz_offset_seconds)` from [`parsers.rs`](../../src-tauri/src/parsers.rs) to convert Chat.log `NaiveDateTime` from local time to UTC.
 - Use `chrono::Utc::now()` when generating timestamps from the system clock.
 - Never store local time in the database.

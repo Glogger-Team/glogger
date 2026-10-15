@@ -98,6 +98,54 @@ function getCurrentWeekStart(): Date {
   return new Date(mondayWall - offsetMonday * 60000)
 }
 
+/** A shared clock tick, refreshed once a minute.
+ *
+ *  `getCurrentWeekStart()` reads the wall clock and nothing reactive, so a plain
+ *  `computed` around it is evaluated once and never invalidated — and the
+ *  Statehelm view is keep-alive'd, so an app left open across the Monday reset
+ *  kept *last* week's cutoff: `giftsThisWeek` counted the previous week's rows
+ *  and `removeGift` handed `remove_last_gift` a stale boundary while the backend
+ *  compared against a freshly computed one. Every boundary below derives from
+ *  this tick, so they all roll at the reset.
+ *
+ *  Module-scope (with a `globalThis` guard) so the view and the dashboard widget
+ *  share a single interval and HMR edits cannot stack more of them. */
+const weekClock = ref(Date.now())
+const weekClockGlobal = globalThis as typeof globalThis & { __gloggerWeekClockTick?: number }
+if (!weekClockGlobal.__gloggerWeekClockTick) {
+  weekClockGlobal.__gloggerWeekClockTick = window.setInterval(
+    () => { weekClock.value = Date.now() },
+    60_000,
+  )
+}
+
+/** Monday 00:00 America/New_York of the current week, as a real instant. */
+const weekStart = computed(() => {
+  void weekClock.value // reactive dependency: recompute each tick
+  return getCurrentWeekStart()
+})
+
+/** Monday 00:00 America/New_York of the *following* week — the actual reset
+ *  instant. `weekStart + 168 h` is an hour off in the two DST-transition weeks
+ *  (the week there is 167 h / 169 h), so every countdown reads this. */
+const nextWeekStart = computed(() => {
+  const w = weekStart.value
+  const wall = Date.UTC(w.getUTCFullYear(), w.getUTCMonth(), w.getUTCDate() + 7, 0, 0, 0, 0)
+  const offsetMonday = easternOffsetMinutes(new Date(wall - easternOffsetMinutes(w) * 60000))
+  return new Date(wall - offsetMonday * 60000)
+})
+
+/** The week boundary in the gift log's storage format
+ *  (`YYYY-MM-DD HH:MM:SS`, UTC). String comparisons must use this: an ISO cutoff
+ *  reads `…T04:00:00.000Z`, whose index 10 is 'T' (0x54) against a row's ' '
+ *  (0x20), so it sorts *after* every same-date row — the old
+ *  `row >= cutoff` test was false for Monday-dated rows and dropped them. */
+const weekStartDb = computed(() => {
+  const d = weekStart.value
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
+})
+
 export function useStatehelmTracker() {
   const gameData = useGameDataStore()
   const gameState = useGameStateStore()
@@ -118,25 +166,6 @@ export function useStatehelmTracker() {
       return (area === 'areastatehelm' || area === 'areastatehelmcaves')
         && npc.preferences.length > 0
     }).sort((a, b) => a.name.localeCompare(b.name))
-  })
-
-  const weekStart = computed(() => getCurrentWeekStart())
-  /** Monday 00:00 America/New_York of the *following* week — the actual reset
-   *  instant. `weekStart + 168 h` is an hour off in the two DST-transition weeks
-   *  (the week there is 167 h / 169 h), so every countdown reads this. */
-  const nextWeekStart = computed(() => {
-    const w = weekStart.value
-    const wall = Date.UTC(w.getUTCFullYear(), w.getUTCMonth(), w.getUTCDate() + 7, 0, 0, 0, 0)
-    const offsetMonday = easternOffsetMinutes(new Date(wall - easternOffsetMinutes(w) * 60000))
-    return new Date(wall - offsetMonday * 60000)
-  })
-  /** The week boundary in the gift log's storage format
-   *  (`YYYY-MM-DD HH:MM:SS`, UTC). String comparisons must use this: an ISO
-   *  cutoff sorts before every Monday-dated row and silently drops them. */
-  const weekStartDb = computed(() => {
-    const d = weekStart.value
-    const p = (n: number) => String(n).padStart(2, '0')
-    return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
   })
 
   const giftsThisWeek = computed(() => {

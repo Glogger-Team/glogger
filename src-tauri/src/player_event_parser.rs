@@ -1152,6 +1152,16 @@ impl PlayerEventParser {
             return events;
         }
 
+        // Buffered `ProcessDeleteItem`s belong to an *earlier* line than this
+        // one, so they are emitted before anything this line produces. Every
+        // line does it here, once: the arms below (`Logged in as character`,
+        // the gift-cap note, `ProcessUpdateSkill(`, the `!LocalPlayer: Process`
+        // fast path) previously each flushed on their own, and the ones that
+        // forgot left a delete buffered past a later `LogSessionAnchored` — the
+        // date resolver is stateful, so its earlier time of day then read as a
+        // UTC-midnight crossing and dated every following event a day ahead.
+        self.flush_pending_deletes(&mut events);
+
         // The Player.log login line declares the session's own UTC instant.
         // It is not a `LocalPlayer: Process` line, so it must be handled before
         // the fast path below; nothing else can consume it.
@@ -1166,14 +1176,12 @@ impl PlayerEventParser {
         // (but still flush pending deletes above)
         if !line.contains("LocalPlayer: Process") {
             // Flush any remaining pending deletes as Unknown
-            self.flush_pending_deletes(&mut events);
             return events;
         }
 
         // Dispatch by event type
         if line.contains("ProcessAddItem(") {
             // Flush pending deletes before processing new events
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_add_item(line) {
                 // Track for RemoveLoot correlation
                 if let PlayerEvent::ItemAdded { instance_id, item_name, initial_quantity, .. } = &ev {
@@ -1187,7 +1195,6 @@ impl PlayerEventParser {
                 events.push(ev);
             }
         } else if line.contains("ProcessUpdateItemCode(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_update_item_code(line) {
                 // Track for RemoveLoot correlation (positive deltas only)
                 if let PlayerEvent::ItemStackChanged { instance_id, item_name, item_type_id, delta, .. } = &ev {
@@ -1206,7 +1213,6 @@ impl PlayerEventParser {
             // Don't flush yet — buffer this delete
             self.parse_delete_item(line);
         } else if line.contains("ProcessLoadSkills(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_load_skills(line) {
                 // Seed the running skill table from the full snapshot.
                 if let PlayerEvent::SkillsLoaded { skills, .. } = &ev {
@@ -1218,12 +1224,10 @@ impl PlayerEventParser {
                 events.push(ev);
             }
         } else if line.contains("ProcessStartInteraction(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_start_interaction(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessDeltaFavor(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_delta_favor(line) {
                 events.push(ev);
             }
@@ -1236,29 +1240,24 @@ impl PlayerEventParser {
         } else if line.contains("ProcessVendorAddItem(") {
             // This should have been handled in resolve_pending_deletes,
             // but handle standalone case too
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_vendor_add_item(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessVendorUpdateItem(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_vendor_update_item(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessAddToStorageVault(") {
             // This should have been handled in resolve_pending_deletes,
             // but handle standalone case too
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_add_to_storage(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessRemoveFromStorageVault(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_remove_from_storage(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessRemoveLoot(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_remove_loot(line) {
                 events.push(ev);
             }
@@ -1273,144 +1272,116 @@ impl PlayerEventParser {
                 events.push(ev);
             }
         } else if line.contains("ProcessDoDelayLoop(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_delay_loop(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessScreenText(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_screen_text(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessBook(") {
-            self.flush_pending_deletes(&mut events);
             events.extend(self.parse_book(line));
         } else if line.contains("ProcessEndInteraction(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_end_interaction(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessTalkScreen(") {
             // Context-only for corpse search. Also emits PlayerMessage events
             // for pigeon sends and stall note sends.
-            self.flush_pending_deletes(&mut events);
             self.handle_talk_screen(line, &mut events);
         } else if line.contains("ProcessPlayerVendorScreen(") {
             // Player-stall screens: (npcId, helpText, listType, slotCount,
             // isManager, ...). Tracked as a session for price-capture;
             // ShopLog books (own stall) are handled by parse_book separately.
-            self.flush_pending_deletes(&mut events);
             self.handle_player_vendor_screen(line, &mut events);
         } else if line.contains("ProcessPlayerVendorScreenRemove(") {
             // Item taken off a player-stall screen (purchase from another
             // player, or collecting your own listing back).
-            self.flush_pending_deletes(&mut events);
             self.handle_player_vendor_screen_remove(line, &mut events);
         } else if line.contains("ProcessVendorScreen(") {
             // Context-only: vendor window open.
-            self.flush_pending_deletes(&mut events);
             self.handle_vendor_screen(line);
         } else if line.contains("ProcessShowStorageVault(") {
             // Context-only: storage UI open.
-            self.flush_pending_deletes(&mut events);
             self.handle_show_storage_vault(line);
         } else if line.contains("ProcessSetActiveSkills(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_set_active_skills(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessPlayerMount(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_player_mount(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessSetWeather(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_set_weather(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessUpdateRecipe(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_update_recipe(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessCombatModeStatus(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_combat_mode_status(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessVendorUpdateAvailableGold(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_vendor_update_gold(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessSetAttributes(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_set_attributes(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessLoadAbilities(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_load_abilities(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessLoadRecipes(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_load_recipes(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessSetEquippedItems(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_set_equipped_items(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessAddEffects(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_add_effects(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessRemoveEffects(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_remove_effects(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessUpdateEffectName(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_update_effect_name(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessUpdateDescription(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_update_description(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessSetCelestialInfo(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_celestial_info(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessGuildGeneralInfo(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_guild_general_info(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessCompleteDirectedGoals(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_complete_directed_goals(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessSetString(") {
-            self.flush_pending_deletes(&mut events);
             if let Some(ev) = self.parse_set_string(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessInputBox(") {
             // Track stall note sends: title contains "Send Note to <player>"
-            self.flush_pending_deletes(&mut events);
             self.handle_input_box(line);
         } else {
-            // Unrecognized Process line — flush pending
-            self.flush_pending_deletes(&mut events);
+            // Unrecognized Process line — nothing to emit (pending deletes were
+            // already flushed at the top of `process_line`).
         }
 
         events
@@ -4088,6 +4059,40 @@ mod tests {
             }
             _ => panic!("Expected ItemDeleted with Unknown"),
         }
+    }
+
+    /// A `ProcessDeleteItem` still buffered when the login line arrives must be
+    /// emitted *before* the anchor. `LogDateResolver` is stateful and the batch
+    /// is replayed in order, so a delete emitted after the anchor resolves its
+    /// earlier time of day as a UTC-midnight crossing and dates every following
+    /// event a day ahead.
+    #[test]
+    fn test_delete_buffered_at_the_login_line_flushes_ahead_of_the_anchor() {
+        let mut parser = PlayerEventParser::new();
+
+        parser.process_line(
+            r#"[22:00:00] LocalPlayer: ProcessAddItem(SomeItem(114961794), 1, False)"#,
+        );
+        assert!(
+            parser
+                .process_line(r#"[22:00:01] LocalPlayer: ProcessDeleteItem(114961794)"#)
+                .is_empty(),
+            "the delete is buffered for context resolution"
+        );
+
+        let events = parser.process_line(
+            "[22:43:41] Logged in as character TwinkleofToes. Time UTC=10/14/2026 22:43:41. Timezone Offset -05:00:00",
+        );
+        assert_eq!(
+            events.len(),
+            2,
+            "the buffered delete, then the session anchor"
+        );
+        assert!(
+            matches!(events[0], PlayerEvent::ItemDeleted { .. }),
+            "the delete precedes the anchor in log order"
+        );
+        assert!(matches!(events[1], PlayerEvent::LogSessionAnchored { .. }));
     }
 
     #[test]

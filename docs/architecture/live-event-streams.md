@@ -302,7 +302,7 @@ All timestamps are **UTC internally**. The frontend converts to local time for d
 
 | Source | Raw Format | How it becomes UTC |
 |---|---|---|
-| Player.log | `[HH:MM:SS]` (already UTC, no date) | Combined with a caller-supplied UTC base date via `to_utc_datetime_with_base()` in [`parsers.rs`](../../src-tauri/src/parsers.rs) — today's date for live, chat-derived date for replay, file mtime for solo reparse |
+| Player.log | `[HH:MM:SS]` (already UTC, no date) | Dated by [`parsers::LogDateResolver`](../../src-tauri/src/parsers.rs) in [`parsers.rs`](../../src-tauri/src/parsers.rs) — an explicit base date for replay / solo reparse, else the session date from the log's own login line (`PlayerEvent::LogSessionAnchored`), else the clock with a one-day rollback when the line's time of day is ahead of it |
 | Chat.log | `YY-MM-DD HH:MM:SS` (player's local time) | Converted to UTC via `chat_local_to_utc()` in [`parsers.rs`](../../src-tauri/src/parsers.rs) using the detected timezone offset |
 | Timezone offset | `Timezone Offset -07:00:00` in chat login line | Parsed by `parse_timezone_offset()` in [`chat_parser.rs`](../../src-tauri/src/chat_parser.rs), stored in settings, used for Chat.log timestamp conversion |
 

@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::{NaiveTime, TimeZone, Utc};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager};
 
 use super::DbPool;
 use crate::player_event_parser::{parse_gift_count_line, PlayerEvent};
@@ -54,8 +54,17 @@ pub struct GiftNote {
 /// handling *adds* to `game_state_favor.cumulative_delta`, so replaying them
 /// would double-count favor. The absolute note count is the only signal needed.
 pub fn scan_gift_notes(path: &Path, week_start: &str) -> Vec<GiftNote> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return Vec::new();
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        // Not silently "no notes in this file": this is the difference between
+        // "nothing to reconcile" and "the scan could not read the log".
+        Err(e) => {
+            startup_log!(
+                "Statehelm gift scan skipped {}: {e}",
+                path.display()
+            );
+            return Vec::new();
+        }
     };
 
     let mut notes = Vec::new();
@@ -144,13 +153,19 @@ pub fn backfill_gifts_from_paths(
     }
 
     // A fresh DB has no CDN persisted yet, so display names cannot be resolved
-    // to CDN keys — and the widget has nothing to show then either.
+    // to CDN keys — and the widget has nothing to show then either. The caller
+    // (`backfill_from_player_logs`) runs this *after* the CDN persist precisely
+    // so this is a real "not yet" rather than a race; log it, because the
+    // user-visible outcome is otherwise indistinguishable from "no notes found".
     {
         let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
         let npc_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM npcs", [], |row| row.get(0))
             .unwrap_or(0);
         if npc_count == 0 {
+            startup_log!(
+                "Statehelm gift backfill skipped: npcs table is empty (CDN data not persisted yet)"
+            );
             return Ok(0);
         }
     }
@@ -307,19 +322,31 @@ pub fn backfill_from_player_logs(
             "Statehelm gift backfill: {} NPC count(s) reconciled",
             changed
         );
+    } else {
+        // Sibling backfills log their zero results too — and here it is the only
+        // way to tell "ran, nothing to reconcile" apart from "never ran".
+        startup_log!(
+            "Statehelm gift backfill: nothing to reconcile ({} log file(s) scanned)",
+            paths.len()
+        );
     }
     Ok(changed)
 }
 
 /// Tauri command: rescan the logs on demand and reconcile the week's gift
 /// counts (the "Rescan logs" button on the Statehelm view).
+///
+/// `async` + `spawn_blocking`: the scan reads both live logs *and* the whole
+/// rotated archive — up to `player_log_archive_max_mb` (512 MiB by default) —
+/// and a non-async Tauri command would do that on the main thread, freezing the
+/// window for the duration. Mirrors `replay::ingest_player_log`.
 #[tauri::command]
-pub fn backfill_statehelm_gifts(
-    settings: State<'_, Arc<SettingsManager>>,
-    db: State<'_, DbPool>,
-    app: AppHandle,
-) -> Result<usize, String> {
-    backfill_from_player_logs(&settings, &db, &app)
+pub async fn backfill_statehelm_gifts(app: AppHandle) -> Result<usize, String> {
+    let settings = app.state::<Arc<SettingsManager>>().inner().clone();
+    let db = app.state::<DbPool>().inner().clone();
+    tauri::async_runtime::spawn_blocking(move || backfill_from_player_logs(&settings, &db, &app))
+        .await
+        .map_err(|e| format!("Backfill task failed: {e}"))?
 }
 
 #[cfg(test)]
@@ -487,6 +514,98 @@ mod tests {
             })
             .unwrap();
         assert_eq!(total, 2, "the stale row is kept, just not counted");
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// The backfill resolves display names against the persisted `npcs` table
+    /// (the live arm uses the in-memory CDN index instead), so it is a no-op on a
+    /// DB whose CDN data is not persisted yet — the reason `lib.rs` runs it
+    /// *after* `persist_cdn_data` rather than in the Step 5d chain, which is
+    /// spawned independently and loses that race on a fresh install. The same
+    /// file must reconcile once `npcs` is populated.
+    #[test]
+    fn backfill_no_ops_until_npcs_are_persisted() {
+        let (pool, db_path) = temp_pool();
+        let log = format!(
+            "[12:04:37] Logged in as character TestPlayer. Time UTC=10/14/2026 12:04:37. Timezone Offset -05:00:00\n{}\n",
+            note_line("12:20:00", "Corinth", 2),
+        );
+        let path = write_log(&log);
+
+        assert_eq!(
+            backfill_gifts_from_paths(
+                std::slice::from_ref(&path),
+                WEEK_START,
+                "TestServer",
+                &pool
+            )
+            .unwrap(),
+            0,
+            "no NPC rows to resolve display names against"
+        );
+        let rows: i64 = pool
+            .get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM game_state_gift_log", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 0, "and nothing is written");
+
+        insert_npc(&pool.get_write().unwrap(), "NPC_Corinth", "Corinth");
+        assert_eq!(
+            backfill_gifts_from_paths(
+                std::slice::from_ref(&path),
+                WEEK_START,
+                "TestServer",
+                &pool
+            )
+            .unwrap(),
+            1,
+            "the same log reconciles once the CDN is persisted"
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// The live gift arm resolves a note's display name through the in-memory
+    /// CDN index (`game_data::build_npc_name_index`) and the backfill through
+    /// SQL (`ORDER BY key LIMIT 1`). Both must land one duplicate display name
+    /// on the *same* NPC key — the tracker keys rows by key, so a disagreement
+    /// splits one NPC's weekly count across two rows.
+    #[test]
+    fn duplicate_display_names_resolve_identically_in_the_live_and_sql_paths() {
+        let (pool, db_path) = temp_pool();
+        let pairs: Vec<(String, String)> = vec![
+            ("NPC_TwinB".into(), "Twin".into()),
+            ("NPC_TwinA".into(), "Twin".into()),
+        ];
+        {
+            let conn = pool.get_write().unwrap();
+            for (key, name) in &pairs {
+                insert_npc(&conn, key, name);
+            }
+        }
+
+        let sql_pick: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT key FROM npcs WHERE name = ?1 ORDER BY key LIMIT 1",
+                ["Twin"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let index_pick = crate::game_data::build_npc_name_index(
+            pairs.iter().map(|(key, name)| (key, name)),
+        )
+        .remove("Twin")
+        .unwrap();
+
+        assert_eq!(sql_pick, "NPC_TwinA", "the lowest key wins");
+        assert_eq!(index_pick, sql_pick, "one key for both resolvers");
 
         let _ = std::fs::remove_file(&db_path);
     }
