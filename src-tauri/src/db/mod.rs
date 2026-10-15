@@ -35,6 +35,7 @@ pub mod stall_tracker_commands;
 // legacy survey screen was removed; allow dead_code until that work lands.
 #[allow(dead_code)]
 pub mod survey_commands;
+pub mod statehelm_commands;
 pub mod timer_commands;
 pub mod hoplology_commands;
 pub mod word_of_power_catalog;

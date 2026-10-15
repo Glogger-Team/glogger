@@ -50,6 +50,7 @@ Cross-cutting feature documentation not tied to a single screen.
 - [dev-mode.md](features/dev-mode.md) — Dev Mode: toggle, dev panel window (game state, component showcase, testing helpers), hidden settings.
 - [update-notifications.md](features/update-notifications.md) — Update notifications: GitHub release check, bottom bar indicator, toast alert.
 - [trip-routing.md](features/trip-routing.md) — Trip routing: multi-zone route planner with zone graph, teleport-aware solver, bind location parsing.
+- [statehelm-gift-backfill.md](features/statehelm-gift-backfill.md) — Statehelm weekly gift-status backfill from the game's own logs: reconcile rule, bounded rotated-log archive, session dating.
 
 *Feature docs that were specific to a single screen have been merged into the corresponding screen docs below (character import → [character-stats](features/screens/character/character-stats.md), inventory import → [inventory-snapshots](features/screens/inventory/inventory-snapshots.md), farming → [economics-farming](features/screens/economics/economics-farming.md), surveying → [economics-surveying](features/screens/economics/economics-surveying.md), storage vaults → [inventory-vaults](features/screens/inventory/inventory-vaults.md), data browser → [data-browser](features/screens/data-browser.md), dashboard → [dashboard](features/screens/dashboard.md), gourmand → [character-gourmand](features/screens/character/character-gourmand.md)).*
 

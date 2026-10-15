@@ -783,26 +783,40 @@ impl DataIngestCoordinator {
 
                     startup_log!("Character detected from Player.log: {}", character_name);
 
-                    // During initial catch-up (replay mode), the Player.log may
-                    // contain login lines for multiple characters. If the user
-                    // already selected a character during setup, only track events
-                    // for that character — ignore logins for others so their data
-                    // doesn't get persisted under the wrong identity.
-                    if !self.game_state.is_live() {
-                        let selected = self.settings.get().active_character_name.clone();
-                        if let Some(ref selected_name) = selected {
-                            if *selected_name != character_name {
-                                startup_log!(
-                                    "Ignoring catch-up login for '{}' (selected character is '{}')",
-                                    character_name,
-                                    selected_name
-                                );
-                                // Clear game state character so events for this
-                                // character are silently dropped by process_events_batch
-                                // (it returns early when active_character is None).
-                                self.game_state.clear_active_character();
-                                continue;
-                            }
+                    // Live identity changes are the chat log's job: its
+                    // `******** Logged In As <name>. Server <server>` marker also
+                    // knows the server, and it is what the frontend's reload path
+                    // expects (see `process_chat_events`) — so don't emit a second
+                    // `character-login` per login here.
+                    //
+                    // During catch-up this line is the only thing that can stop
+                    // one character's session from being written under another's
+                    // identity. Every game-state table keys on `character_name`
+                    // and most are full-state dumps, so an unguarded catch-up
+                    // over a log holding two characters silently replaces the
+                    // selected character's skills/inventory with the other's
+                    // (measured: TestPlayer ended up with OtherAlt's skill load).
+                    if self.game_state.is_live() {
+                        continue;
+                    }
+
+                    // Catch-up only from here. The Player.log may contain login
+                    // lines for multiple characters: if the user already selected
+                    // a character, ignore logins for others so their data isn't
+                    // persisted under the wrong identity.
+                    let selected = self.settings.get().active_character_name;
+                    if let Some(selected_name) = &selected {
+                        if selected_name != &character_name {
+                            startup_log!(
+                                "Ignoring catch-up login for '{}' (selected character is '{}')",
+                                character_name,
+                                selected_name
+                            );
+                            // Clear game state character so events for this
+                            // character are silently dropped by process_events_batch
+                            // (it returns early when active_character is None).
+                            self.game_state.clear_active_character();
+                            continue;
                         }
                     }
 
@@ -817,9 +831,10 @@ impl DataIngestCoordinator {
                     // Update game state character name only (server stays as-is)
                     self.game_state.set_active_character_name(&character_name);
 
-                    self.app_handle
-                        .emit("character-login", &character_name)
-                        .ok();
+                    // Don't emit `character-login`: live identity changes (and the
+                    // frontend reload they trigger) are the chat log's job, and
+                    // during catch-up the startup sequence loads the character
+                    // explicitly once the poll completes.
                 }
                 LogEvent::ChatLogPath { path, .. } => {
                     startup_log!("Chat log path detected: {}", path);
@@ -1007,7 +1022,11 @@ impl DataIngestCoordinator {
                                 message.strip_prefix("You've already milked ")
                                     .and_then(|s| s.strip_suffix(" in the past hour."))
                             {
-                                let ts = self.game_state.to_utc(timestamp);
+                                // `peek_utc`, not `to_utc`: this side channel runs
+                                // before the event's batch is replayed, and a
+                                // resolve here would advance the session date
+                                // baseline out of order (see `peek_utc`).
+                                let ts = self.game_state.peek_utc(timestamp);
                                 self.record_cow_milk_backfill(cow_name, &ts);
                             }
                         }
@@ -1020,8 +1039,9 @@ impl DataIngestCoordinator {
                                     .and_then(|s| s.strip_suffix('.'))
                             {
                                 // `timestamp` is a bare "HH:MM:SS" UTC clock time;
-                                // add the date (respecting any replay override).
-                                let ts = self.game_state.to_utc(timestamp);
+                                // add the date (respecting any replay override),
+                                // without advancing the batch's rollover baseline.
+                                let ts = self.game_state.peek_utc(timestamp);
                                 self.record_player_milk(player_name, "milked", &ts);
                             }
                         }
@@ -1033,7 +1053,7 @@ impl DataIngestCoordinator {
                                 message.strip_suffix(" has milked you.")
                             {
                                 if !player_name.is_empty() {
-                                    let ts = self.game_state.to_utc(timestamp);
+                                    let ts = self.game_state.peek_utc(timestamp);
                                     self.record_player_milk(player_name, "milked_by", &ts);
                                 }
                             }

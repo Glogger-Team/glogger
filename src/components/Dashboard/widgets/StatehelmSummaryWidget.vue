@@ -59,7 +59,7 @@ const {
   loading,
   loadGiftLog,
   loadSkillMeta,
-  weekStart,
+  nextWeekStart,
 } = useStatehelmTracker()
 
 onMounted(() => {
@@ -91,9 +91,11 @@ const progressPct = computed(() => {
   return Math.round((totalGiftsGiven.value / totalGiftsMax.value) * 100)
 })
 
-/** Time until weekly reset (Monday 00:00 UTC) */
+/** Time until weekly reset (Monday 00:00 America/New_York — the game's own
+ *  reset instant, from `useStatehelmTracker`'s shared boundary; not
+ *  `weekStart + 7 days`, which is an hour off in the DST-transition weeks) */
 const resetLabel = computed(() => {
-  const resetTime = new Date(weekStart.value.getTime() + 7 * 24 * 60 * 60 * 1000)
+  const resetTime = nextWeekStart.value
   const now = new Date()
   const diff = resetTime.getTime() - now.getTime()
   if (diff <= 0) return 'Resetting...'

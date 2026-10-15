@@ -253,8 +253,24 @@ impl PlayerLogWatcher {
 // Core Pattern Matchers
 // ============================================================
 
-/// Match character login pattern: "Logged in as character [CharacterName]"
+/// Match a Player.log character login line, recording the character as active.
+///
+/// Current clients write `Logged in as character <Name>. Time UTC=MM/DD/YYYY
+/// HH:MM:SS. Timezone Offset …` — parsed by
+/// [`crate::parsers::parse_player_log_login_line`], which also yields the
+/// session's own UTC instant. Older clients bracketed the name
+/// (`Logged in as character [<Name>]`) and declared no time; that form still
+/// matches, with the event carrying the ingest time.
 fn match_character_login(line: &str, watcher: &mut PlayerLogWatcher) -> Option<LogEvent> {
+    if let Some((character_name, utc)) = crate::parsers::parse_player_log_login_line(line) {
+        watcher.active_character = Some(character_name.clone());
+        return Some(LogEvent::CharacterLogin {
+            character_name,
+            timestamp: utc,
+            area: None,
+        });
+    }
+
     if let Some(start) = line.find("Logged in as character [") {
         if let Some(end) = line[start..].find(']') {
             let name_start = start + "Logged in as character [".len();
@@ -679,6 +695,28 @@ mod tests {
     fn test_parse_character_login() {
         let mut watcher = PlayerLogWatcher::new(PathBuf::from("test.log"));
 
+        // Current client: un-bracketed name plus the session's declared UTC time.
+        let event = watcher.parse_line(
+            "[22:43:41] Logged in as character TestCharacter. Time UTC=10/14/2026 22:43:41. Timezone Offset -05:00:00",
+        );
+        assert!(event.is_some());
+
+        if let Some(LogEvent::CharacterLogin {
+            character_name,
+            timestamp,
+            ..
+        }) = event
+        {
+            assert_eq!(character_name, "TestCharacter");
+            assert_eq!(timestamp.to_string(), "2026-10-14 22:43:41");
+        } else {
+            panic!("Expected CharacterLogin event");
+        }
+
+        assert_eq!(watcher.get_active_character(), Some("TestCharacter"));
+
+        // Older clients bracketed the name and declared no time.
+        let mut watcher = PlayerLogWatcher::new(PathBuf::from("test.log"));
         let event = watcher.parse_line("Logged in as character [TestCharacter]");
         assert!(event.is_some());
 

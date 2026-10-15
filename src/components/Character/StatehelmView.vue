@@ -6,14 +6,27 @@
       <!-- Header -->
       <div class="flex items-center justify-between">
         <h2 class="text-lg font-semibold text-text-primary">Statehelm Reputation</h2>
-        <div v-if="filteredStatuses.length > 0" class="flex items-center gap-3">
-          <span class="text-sm text-text-muted">
-            {{ totalGiftsGiven }} / {{ totalGiftsMax }} gifts this week
-          </span>
-          <span class="text-xs text-text-dim">
-            Resets {{ weekResetLabel }}
-          </span>
+        <div class="flex items-center gap-3">
+          <div v-if="filteredStatuses.length > 0" class="flex items-center gap-3">
+            <span class="text-sm text-text-muted">
+              {{ totalGiftsGiven }} / {{ totalGiftsMax }} gifts this week
+            </span>
+            <span class="text-xs text-text-dim">
+              Resets {{ weekResetLabel }}
+            </span>
+          </div>
+          <button
+            @click="rescanLogs"
+            :disabled="rescanning"
+            class="px-3 py-1.5 bg-surface-elevated border border-border-light rounded text-text-secondary text-sm cursor-pointer transition-all hover:bg-border-default hover:text-text-primary disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+            title="Re-read Player.log, Player-prev.log and archived copies, and reconcile each NPC's weekly gift count to the game's own note"
+          >{{ rescanning ? 'Rescanning…' : 'Rescan logs' }}</button>
         </div>
+      </div>
+
+      <!-- Rescan status -->
+      <div v-if="rescanMessage" class="text-xs" :class="rescanError ? 'text-value-negative' : 'text-text-dim'">
+        {{ rescanMessage }}
       </div>
 
       <!-- Filters -->
@@ -112,6 +125,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import { useStatehelmTracker } from '../../composables/useStatehelmTracker'
 import { useGameStateStore } from '../../stores/gameStateStore'
 import { useGameDataStore } from '../../stores/gameDataStore'
@@ -133,7 +147,7 @@ const {
   loadGiftLog,
   addGift,
   removeGift,
-  weekStart,
+  nextWeekStart,
 } = useStatehelmTracker()
 
 // Selection state
@@ -213,8 +227,7 @@ const filteredStatuses = computed(() => {
 })
 
 const weekResetLabel = computed(() => {
-  const next = new Date(weekStart.value)
-  next.setUTCDate(next.getUTCDate() + 7)
+  const next = new Date(nextWeekStart.value)
   const now = new Date()
   const diffMs = next.getTime() - now.getTime()
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
@@ -222,6 +235,32 @@ const weekResetLabel = computed(() => {
   if (diffDays > 0) return `in ${diffDays}d ${diffHours}h`
   return `in ${diffHours}h`
 })
+
+// ── Rescan logs ─────────────────────────────────────────────────────────
+// Re-read the game's own Player.log / Player-prev.log / archived copies and
+// reconcile each capped NPC's weekly gift count to the game's note.
+const rescanning = ref(false)
+const rescanMessage = ref('')
+const rescanError = ref(false)
+
+async function rescanLogs() {
+  rescanning.value = true
+  rescanMessage.value = ''
+  rescanError.value = false
+  try {
+    const n = await invoke<number>('backfill_statehelm_gifts')
+    await loadGiftLog()
+    rescanMessage.value = n > 0
+      ? `Reconciled ${n} NPC${n === 1 ? '' : 's'} from the logs.`
+      : 'No new gift info found in the logs.'
+  } catch (e) {
+    rescanError.value = true
+    rescanMessage.value = `Rescan failed: ${e}`
+    console.error('[statehelm] Rescan failed:', e)
+  } finally {
+    rescanning.value = false
+  }
+}
 
 onMounted(() => {
   loadGiftLog()

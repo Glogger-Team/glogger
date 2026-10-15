@@ -7,7 +7,7 @@ Cross-reference stored items with NPC gift preferences, generate pickup/delivery
 - **NPC preferences**: CDN data with `desire` (Love/Like/Hate), `keywords`, `pref` weight per NPC
 - **Reverse indices**: `npc_favor_by_item_name` and `npc_favor_by_keyword` HashMaps in game_data
 - **Existing command**: `get_npcs_wanting_item` already combines both lookup types
-- **Gift tracking**: `useStatehelmTracker` composable tracks gifts-this-week per NPC (max 5/week, Monday UTC reset)
+- **Gift tracking**: `useStatehelmTracker` composable tracks gifts-this-week per NPC (max 5/week, Monday 00:00 America/New_York reset)
 - **Storage data**: `gameState.storage` + `storageVaultsByKey` with area keys for routing
 - **Route planner**: [trip_router.rs](../../src-tauri/src/trip_router.rs) handles multi-stop route optimization
 - **Statehelm UI**: [StatehelmView.vue](../../src/components/Character/StatehelmView.vue) with NPC cards and gift tracking

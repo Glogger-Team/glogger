@@ -74,6 +74,47 @@
           glogger running still count toward drop rates. Deduplicated against live data, so nothing
           is double-counted.
         </p>
+
+        <div v-if="autoIngestPlayerPrev" class="mt-4 p-4 bg-surface-dark border border-border-default rounded">
+          <label class="block text-text-secondary mb-1">Keep rotated Player.log copies:</label>
+          <div class="flex items-center gap-2 mt-2 flex-wrap">
+            <input
+              type="number"
+              v-model.number="archiveRetentionDays"
+              @blur="handleArchiveLimitsChange"
+              min="1"
+              max="365"
+              class="input w-25"
+              placeholder="Days" />
+            <span class="text-text-secondary">days</span>
+            <input
+              type="number"
+              v-model.number="archiveMaxFiles"
+              @blur="handleArchiveLimitsChange"
+              min="1"
+              max="200"
+              class="input w-25"
+              placeholder="Files" />
+            <span class="text-text-secondary">copies</span>
+            <input
+              type="number"
+              v-model.number="archiveMaxMb"
+              @blur="handleArchiveLimitsChange"
+              min="1"
+              max="8192"
+              class="input w-25"
+              placeholder="MB" />
+            <span class="text-text-secondary">MB total</span>
+          </div>
+          <p class="mt-2 text-text-muted text-xs leading-relaxed">
+            Rotated sessions are archived in <code>&lt;app data&gt;/player-logs</code> so the weekly
+            Statehelm gift tracker can re-read the game's own gift counts from them, and so the
+            game's own notes reach further back than the two logs the client keeps. Whichever limit
+            is tightest wins — a session's Player.log is 30–45 MB, so the MB budget usually binds
+            first — and the oldest copies are deleted first. Lower any of them to reclaim disk space;
+            nothing else on disk is touched.
+          </p>
+        </div>
       </div>
     </div>
 
@@ -209,6 +250,9 @@ const timestampMode = ref(settingsStore.settings.timestampDisplayMode);
 const use24Hour = ref(settingsStore.settings.use24HourTime);
 const autoDetectPathsOnStartup = ref(settingsStore.settings.autoDetectPathsOnStartup);
 const autoIngestPlayerPrev = ref(settingsStore.settings.autoIngestPlayerPrev);
+const archiveRetentionDays = ref(settingsStore.settings.playerLogArchiveRetentionDays);
+const archiveMaxFiles = ref(settingsStore.settings.playerLogArchiveMaxFiles);
+const archiveMaxMb = ref(settingsStore.settings.playerLogArchiveMaxMb);
 
 const timestampOptions = [
   { value: 'local' as const, label: 'Local Time' },
@@ -277,6 +321,21 @@ watch(
 watch(
   () => settingsStore.settings.autoIngestPlayerPrev,
   (val) => { autoIngestPlayerPrev.value = val; }
+);
+
+watch(
+  () => settingsStore.settings.playerLogArchiveRetentionDays,
+  (val) => { archiveRetentionDays.value = val; }
+);
+
+watch(
+  () => settingsStore.settings.playerLogArchiveMaxFiles,
+  (val) => { archiveMaxFiles.value = val; }
+);
+
+watch(
+  () => settingsStore.settings.playerLogArchiveMaxMb,
+  (val) => { archiveMaxMb.value = val; }
 );
 
 async function browseGameDataFolder() {
@@ -358,6 +417,21 @@ function handleAutoDetectPathsToggle() {
 
 function handleAutoIngestToggle() {
   settingsStore.updateSettings({ autoIngestPlayerPrev: autoIngestPlayerPrev.value });
+}
+
+/** Save all three archive limits together, clamped to the same minimums the
+ *  backend enforces (Rust clamps to >= 1 as well). */
+function handleArchiveLimitsChange() {
+  const atLeast = (value: number, min: number, max: number) =>
+    Math.min(max, Math.max(min, Math.floor(value || min)));
+  archiveRetentionDays.value = atLeast(archiveRetentionDays.value, 1, 365);
+  archiveMaxFiles.value = atLeast(archiveMaxFiles.value, 1, 200);
+  archiveMaxMb.value = atLeast(archiveMaxMb.value, 1, 8192);
+  settingsStore.updateSettings({
+    playerLogArchiveRetentionDays: archiveRetentionDays.value,
+    playerLogArchiveMaxFiles: archiveMaxFiles.value,
+    playerLogArchiveMaxMb: archiveMaxMb.value,
+  });
 }
 
 function handleAutoTailChatToggle() {

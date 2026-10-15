@@ -5,7 +5,7 @@
 /// motherlode loot quantities from Chat.log [Status] messages) using archived logs.
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Emitter, Manager};
@@ -584,29 +584,161 @@ fn content_hash(bytes: &[u8]) -> String {
     format!("{hash:016x}")
 }
 
-/// Parse a Player.log login line, returning `(character_name, base_date)`.
-///
-/// Format: `[HH:MM:SS] Logged in as character <Name>. Time UTC=MM/DD/YYYY HH:MM:SS. Timezone Offset ±HH:MM:SS`
-/// Player.log is self-sufficient — no Chat.log pairing is needed: the character
-/// and the UTC base date both come from this line.
-fn parse_player_login_line(line: &str) -> Option<(String, chrono::NaiveDate)> {
-    let marker = "Logged in as character ";
-    let start = line.find(marker)? + marker.len();
-    let rest = &line[start..];
-    // Name runs up to the first '.' (character names contain no periods).
-    let dot = rest.find('.')?;
-    let character_name = rest[..dot].trim().trim_matches(['[', ']']).to_string();
-    if character_name.is_empty() {
-        return None;
+/// Subdirectory (under the app data dir) holding rotated `Player.log` copies.
+pub const PLAYER_LOG_ARCHIVE_SUBDIR: &str = "player-logs";
+/// Default archive limits, mirrored by `AppSettings` (`player_log_archive_*`)
+/// and editable in Settings → General.
+pub const PLAYER_LOG_ARCHIVE_DEFAULT_RETENTION_DAYS: u32 = 14;
+pub const PLAYER_LOG_ARCHIVE_DEFAULT_MAX_FILES: u32 = 20;
+pub const PLAYER_LOG_ARCHIVE_DEFAULT_MAX_MB: u32 = 512;
+/// Suffix used for the in-progress copy before it is renamed into place.
+const PLAYER_LOG_ARCHIVE_PARTIAL_SUFFIX: &str = ".log.partial";
+
+/// Effective rotated-`Player.log` archive limits. All three are enforced
+/// oldest-copy-first; the byte budget is usually the binding one, since a
+/// session's `Player.log` is 30–45 MB (20 copies ≈ 900 MB). Byte-budgeted
+/// retention is what `journald` (`SystemMaxUse=`), Docker (`max-size`) and
+/// `logrotate` (`size`) all gate on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ArchiveLimits {
+    pub retention_days: u32,
+    pub max_files: u32,
+    pub max_mb: u32,
+}
+
+impl Default for ArchiveLimits {
+    fn default() -> Self {
+        Self {
+            retention_days: PLAYER_LOG_ARCHIVE_DEFAULT_RETENTION_DAYS,
+            max_files: PLAYER_LOG_ARCHIVE_DEFAULT_MAX_FILES,
+            max_mb: PLAYER_LOG_ARCHIVE_DEFAULT_MAX_MB,
+        }
+    }
+}
+
+/// Read the archive limits from settings, clamped to at least 1 so a
+/// hand-edited `0` cannot make the archive delete what it just wrote.
+pub fn archive_limits(settings: &crate::settings::SettingsManager) -> ArchiveLimits {
+    let s = settings.get();
+    ArchiveLimits {
+        retention_days: s.player_log_archive_retention_days.max(1),
+        max_files: s.player_log_archive_max_files.max(1),
+        max_mb: s.player_log_archive_max_mb.max(1),
+    }
+}
+
+/// `<app data dir>/player-logs` — derived from the settings file's parent, so
+/// it lives beside `glogger.db`/settings rather than in the game's log dir.
+pub fn player_log_archive_dir(settings: &crate::settings::SettingsManager) -> Option<PathBuf> {
+    Some(
+        settings
+            .settings_file_path()
+            .parent()?
+            .join(PLAYER_LOG_ARCHIVE_SUBDIR),
+    )
+}
+
+/// Copy `src` into the archive as `Player-<fnv1a content hash>.log` unless that
+/// file already exists; then prune to `limits`. Content-hashing means re-scans
+/// and repeated startups never duplicate a session (the same session copies to
+/// the same name). Returns Ok(true) when a copy was written.
+fn archive_player_log(src: &Path, dir: &Path, limits: ArchiveLimits) -> std::io::Result<bool> {
+    let bytes = std::fs::read(src)?;
+    let hash = content_hash(&bytes);
+    let dest = dir.join(format!("Player-{hash}.log"));
+    if dest.exists() {
+        return Ok(false);
+    }
+    std::fs::create_dir_all(dir)?;
+
+    // Write under a partial name and rename into place. The archive name is
+    // content-addressed, so a copy interrupted mid-write would exist under a
+    // name that certifies the *wrong* content — and its existence check would
+    // then suppress the correct copy forever. Rename is atomic, so the file
+    // either does not exist or holds exactly the hashed bytes.
+    let partial = dir.join(format!("Player-{hash}{PLAYER_LOG_ARCHIVE_PARTIAL_SUFFIX}"));
+    std::fs::write(&partial, &bytes)?;
+    match std::fs::rename(&partial, &dest) {
+        Ok(()) => {}
+        // Another writer got there first; identical content is already in place.
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = std::fs::remove_file(&partial);
+            return Ok(false);
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&partial);
+            return Err(e);
+        }
     }
 
-    let utc_marker = "Time UTC=";
-    let utc_start = line.find(utc_marker)? + utc_marker.len();
-    let utc_rest = &line[utc_start..];
-    // Date is the first whitespace-delimited token: "MM/DD/YYYY".
-    let date_token = utc_rest.split_whitespace().next()?;
-    let base_date = chrono::NaiveDate::parse_from_str(date_token, "%m/%d/%Y").ok()?;
-    Some((character_name, base_date))
+    prune_player_log_archive(dir, limits);
+    Ok(true)
+}
+
+/// Enforce `limits`: delete copies older than `retention_days`, then evict
+/// oldest-first until both `max_files` and `max_mb` hold. Also clears
+/// interrupted copies. Best-effort: every failure is ignored, and only files
+/// matching this archive's own naming are ever touched.
+fn prune_player_log_archive(dir: &Path, limits: ArchiveLimits) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("Player-") {
+            continue;
+        }
+        if name.ends_with(PLAYER_LOG_ARCHIVE_PARTIAL_SUFFIX) {
+            // Interrupted copy (crash between write and rename) — never usable.
+            let _ = std::fs::remove_file(&path);
+            continue;
+        }
+        if !name.ends_with(".log") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let Ok(mtime) = meta.modified() else {
+            continue;
+        };
+        files.push((mtime, meta.len(), path));
+    }
+
+    if let Some(cutoff) = std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(
+        u64::from(limits.retention_days) * 24 * 60 * 60,
+    )) {
+        files.retain(|(mtime, _, path)| {
+            if *mtime < cutoff {
+                let _ = std::fs::remove_file(path);
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    // Oldest-first eviction until both bounds hold. The byte budget is checked
+    // after the sum, so a single oversized session can never wedge the archive
+    // past its limit permanently.
+    let max_bytes = u64::from(limits.max_mb) * 1024 * 1024;
+    let max_files = limits.max_files as usize;
+    files.sort_by_key(|(mtime, _, _)| *mtime);
+    let mut total: u64 = files.iter().map(|(_, len, _)| *len).sum();
+    let mut remaining = files.len();
+    for (_, len, path) in files {
+        if remaining <= max_files && total <= max_bytes {
+            break;
+        }
+        let _ = std::fs::remove_file(&path);
+        total = total.saturating_sub(len);
+        remaining -= 1;
+    }
 }
 
 /// Silently ingest lootable kills + loot from a single Player.log into the
@@ -654,7 +786,8 @@ pub fn ingest_kill_loot_from_logs(
     let content = String::from_utf8_lossy(&player_bytes);
     let (character_name, base_date) = match content
         .lines()
-        .find_map(parse_player_login_line)
+        .find_map(crate::parsers::parse_player_log_login_line)
+        .map(|(name, utc)| (name, utc.date()))
     {
         Some(v) => v,
         None => {
@@ -865,6 +998,16 @@ pub fn spawn_player_prev_watcher(
         let mut last_mtime: Option<std::time::SystemTime> = None;
 
         loop {
+            // Enforce the archive limits every tick: a copy only prunes the
+            // directory after a *new* session is archived, and the limits are
+            // user-editable in Settings, so lowering one must take effect
+            // without waiting for the game to rotate (or for a restart). A
+            // readdir over a handful of entries is far cheaper than the log
+            // scans below it.
+            if let Some(dir) = player_log_archive_dir(&settings) {
+                prune_player_log_archive(&dir, archive_limits(&settings));
+            }
+
             if settings.get_auto_ingest_player_prev() {
                 if let Some(prev_path) = settings.get_player_prev_log_path() {
                     if let Ok(mtime) = std::fs::metadata(&prev_path).and_then(|m| m.modified()) {
@@ -879,6 +1022,16 @@ pub fn spawn_player_prev_watcher(
                                 }
                                 Ok(_) => {}
                                 Err(e) => eprintln!("[ingest] Player-prev backfill failed: {e}"),
+                            }
+                            // Archive the rotated session (content-hashed, so
+                            // re-scans/repeated startups never duplicate it).
+                            // Errors are non-fatal — never abort the loop.
+                            if let Some(dir) = player_log_archive_dir(&settings) {
+                                if let Err(e) =
+                                    archive_player_log(&prev_path, &dir, archive_limits(&settings))
+                                {
+                                    eprintln!("[ingest] Player.log archive failed: {e}");
+                                }
                             }
                         }
                     }
@@ -940,6 +1093,270 @@ mod ingest_tests {
         let mut f = std::fs::File::create(&path).expect("create log");
         f.write_all(lines.as_bytes()).expect("write log");
         path
+    }
+
+    fn temp_dir() -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        path.push(format!("glogger_archive_test_{nanos}"));
+        std::fs::create_dir_all(&path).expect("create dir");
+        path
+    }
+
+    /// Count `Player-*.log` files in `dir`.
+    fn archived_count(dir: &Path) -> usize {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.starts_with("Player-") && n.ends_with(".log"))
+            })
+            .count()
+    }
+
+    #[test]
+    fn archive_player_log_dedups_identical_content() {
+        let dir = temp_dir();
+        let limits = ArchiveLimits::default();
+        let src = dir.join("src.log");
+        std::fs::write(&src, b"session one").unwrap();
+
+        assert!(
+            archive_player_log(&src, &dir, limits).unwrap(),
+            "first copy written"
+        );
+        assert_eq!(archived_count(&dir), 1);
+
+        // Same content (a re-scan or an app restart) must not duplicate.
+        assert!(
+            !archive_player_log(&src, &dir, limits).unwrap(),
+            "identical content is a no-op"
+        );
+        assert_eq!(archived_count(&dir), 1);
+
+        // A different session produces a new file.
+        std::fs::write(&src, b"session two").unwrap();
+        assert!(archive_player_log(&src, &dir, limits).unwrap());
+        assert_eq!(archived_count(&dir), 2);
+
+        // No in-progress copy is left behind (write-then-rename).
+        assert!(
+            !std::fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .any(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".partial"))),
+            "no partial file remains"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_enforces_the_byte_budget_oldest_first() {
+        let dir = temp_dir();
+        let limits = ArchiveLimits::default();
+        let byte_budget = u64::from(limits.max_mb) * 1024 * 1024;
+        let set_mtime = |path: &Path, secs_ago: u64| {
+            let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+            f.set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(std::time::SystemTime::now() - Duration::from_secs(secs_ago)),
+            )
+            .unwrap();
+        };
+
+        // Four sparse files of slightly more than a quarter of the budget each:
+        // the count cap is nowhere near binding, so only the byte budget can
+        // evict. (Sparse files cost no real disk space.)
+        let quarter = byte_budget / 4 + 1;
+        for i in 0..4u64 {
+            let p = dir.join(format!("Player-{i:016x}.log"));
+            std::fs::File::create(&p).unwrap().set_len(quarter).unwrap();
+            set_mtime(&p, 1000 + i);
+        }
+
+        prune_player_log_archive(&dir, limits);
+
+        // Total must fit the budget: three quarters is fine, four is not, so
+        // the oldest copy (the largest mtime age) goes.
+        assert_eq!(archived_count(&dir), 3, "byte budget enforced");
+        assert!(
+            !dir.join("Player-0000000000000003.log").exists(),
+            "oldest evicted"
+        );
+        assert!(
+            dir.join("Player-0000000000000000.log").exists(),
+            "newest kept"
+        );
+        let total: u64 = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.metadata().unwrap().len())
+            .sum();
+        assert!(total <= byte_budget, "remaining bytes within budget");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_honours_narrowed_settings_limits() {
+        let dir = temp_dir();
+        let set_mtime = |path: &Path, secs_ago: u64| {
+            let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+            f.set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(std::time::SystemTime::now() - Duration::from_secs(secs_ago)),
+            )
+            .unwrap();
+        };
+
+        // Five current copies, all well inside the byte budget.
+        for i in 0..5u64 {
+            let p = dir.join(format!("Player-{i:016x}.log"));
+            std::fs::write(&p, b"x").unwrap();
+            set_mtime(&p, 100 + i);
+        }
+
+        // A narrowed file cap (what the Settings UI writes) evicts oldest-first.
+        prune_player_log_archive(
+            &dir,
+            ArchiveLimits {
+                max_files: 2,
+                ..ArchiveLimits::default()
+            },
+        );
+        assert_eq!(archived_count(&dir), 2, "settings file cap enforced");
+        assert!(
+            dir.join("Player-0000000000000000.log").exists()
+                && dir.join("Player-0000000000000001.log").exists(),
+            "newest two kept (largest mtime ages evicted)"
+        );
+
+        // A tightened byte budget does the same on its own (1 MiB, two 600 KiB
+        // copies = 1.2 MiB > budget).
+        let dir2 = temp_dir();
+        for i in 0..2u64 {
+            let p = dir2.join(format!("Player-{i:016x}.log"));
+            std::fs::File::create(&p).unwrap().set_len(600 * 1024).unwrap();
+            set_mtime(&p, 100 + i);
+        }
+        prune_player_log_archive(
+            &dir2,
+            ArchiveLimits {
+                max_mb: 1,
+                ..ArchiveLimits::default()
+            },
+        );
+        assert_eq!(archived_count(&dir2), 1, "settings byte budget enforced");
+        assert!(
+            dir2.join("Player-0000000000000000.log").exists(),
+            "newest copy kept (older one evicted for bytes)"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
+    #[test]
+    fn prune_clears_interrupted_copies() {
+        let dir = temp_dir();
+        let partial = dir.join(format!(
+            "Player-00000000000000cc{PLAYER_LOG_ARCHIVE_PARTIAL_SUFFIX}"
+        ));
+        std::fs::write(&partial, b"half a session").unwrap();
+        let keep = dir.join("Player-00000000000000dd.log");
+        std::fs::write(&keep, b"x").unwrap();
+
+        prune_player_log_archive(&dir, ArchiveLimits::default());
+
+        assert!(!partial.exists(), "interrupted copy removed");
+        assert!(keep.exists(), "complete copy kept");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_enforces_retention_days_and_max_files() {
+        let dir = temp_dir();
+        let limits = ArchiveLimits::default();
+        let set_mtime = |path: &Path, secs_ago: u64| {
+            let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+            f.set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(std::time::SystemTime::now() - Duration::from_secs(secs_ago)),
+            )
+            .unwrap();
+        };
+
+        // Retention: one copy older than the window, plus exactly the file cap
+        // worth of current copies (so the cap prune stays out of the way).
+        let ancient = dir.join("Player-00000000000000aa.log");
+        std::fs::write(&ancient, b"x").unwrap();
+        set_mtime(
+            &ancient,
+            (u64::from(limits.retention_days) + 3) * 24 * 60 * 60,
+        );
+
+        let fresh = dir.join("Player-00000000000000bb.log");
+        std::fs::write(&fresh, b"x").unwrap();
+        set_mtime(&fresh, 60);
+
+        // A non-archive file must never be touched.
+        let other = dir.join("not-an-archive.txt");
+        std::fs::write(&other, b"x").unwrap();
+
+        for i in 0..limits.max_files as usize - 1 {
+            let p = dir.join(format!("Player-{i:016x}.log"));
+            std::fs::write(&p, b"x").unwrap();
+            set_mtime(&p, 120 + i as u64);
+        }
+
+        prune_player_log_archive(&dir, limits);
+
+        assert!(!ancient.exists(), "copy beyond retention pruned");
+        assert!(fresh.exists(), "current copy kept");
+        assert!(other.exists(), "non-archive file untouched");
+        assert_eq!(
+            archived_count(&dir),
+            limits.max_files as usize,
+            "at the cap, nothing extra pruned"
+        );
+
+        // Cap: push past the file cap; the oldest copies go first.
+        for i in 0..5u64 {
+            let p = dir.join(format!("Player-{:016x}.log", 0xf00 + i));
+            std::fs::write(&p, b"x").unwrap();
+            // All five are older than the existing copies.
+            set_mtime(&p, 1000 + i * 10);
+        }
+
+        prune_player_log_archive(&dir, limits);
+
+        assert_eq!(
+            archived_count(&dir),
+            limits.max_files as usize,
+            "oldest pruned down to the cap"
+        );
+        assert!(
+            !dir.join("Player-0000000000000f04.log").exists(),
+            "oldest extra removed"
+        );
+        assert!(
+            !dir.join("Player-0000000000000f00.log").exists(),
+            "all five oldest extras removed"
+        );
+        assert!(
+            dir.join("Player-0000000000000000.log").exists(),
+            "a recent copy survives"
+        );
+        assert!(fresh.exists(), "the current copy survives");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -641,6 +641,56 @@ pub fn set_tracked_skills(
 
 // ── Gift Log ────────────────────────────────────────────────────────────────
 
+/// Reconcile the `week_start`-onward gift-log rows for one NPC to `target`
+/// (the game's authoritative weekly count). Adds rows stamped `at` (favor 0)
+/// when short, trims the newest extras when long. Returns true when the row
+/// count changed. Same semantics as the live `GiftCountObserved` arm.
+pub(crate) fn reconcile_gift_count(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    npc_key: &str,
+    npc_name: &str,
+    at: &str,
+    target: u32,
+    week_start: &str,
+) -> Result<bool, rusqlite::Error> {
+    // `replace(gifted_at, 'T', ' ')`: rows written by the manual `+` button (and
+    // older builds) carry ISO `YYYY-MM-DDTHH:MM:SSZ` stamps, and 'T' sorts after
+    // ' ', so an untrimmed comparison counts an early-Monday gift into the new
+    // week. The live/backfill rows are already in this format.
+    let existing: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM game_state_gift_log
+         WHERE character_name = ?1 AND server_name = ?2 AND npc_key = ?3
+           AND replace(gifted_at, 'T', ' ') >= ?4",
+        rusqlite::params![character, server, npc_key, week_start],
+        |row| row.get(0),
+    )?;
+
+    let target = target as i64;
+    if target > existing {
+        for _ in 0..(target - existing) {
+            conn.execute(
+                "INSERT INTO game_state_gift_log (character_name, server_name, npc_key, npc_name, gifted_at, favor_delta)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+                rusqlite::params![character, server, npc_key, npc_name, at],
+            )?;
+        }
+    } else if target < existing {
+        // Trim the newest extras (e.g. a manual over-count) down to the game's value.
+        conn.execute(
+            "DELETE FROM game_state_gift_log WHERE id IN (
+                SELECT id FROM game_state_gift_log
+                WHERE character_name = ?1 AND server_name = ?2 AND npc_key = ?3
+                  AND replace(gifted_at, 'T', ' ') >= ?4
+                ORDER BY replace(gifted_at, 'T', ' ') DESC, id DESC LIMIT ?5)",
+            rusqlite::params![character, server, npc_key, week_start, existing - target],
+        )?;
+    }
+
+    Ok(target != existing)
+}
+
 #[derive(Serialize)]
 pub struct GiftLogEntry {
     pub npc_key: String,
@@ -689,7 +739,11 @@ pub fn add_manual_gift(
     npc_name: String,
 ) -> Result<(), String> {
     let conn = db.get_write().map_err(|e| format!("Database error: {e}"))?;
-    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    // Same storage format as the live/backfill rows (`YYYY-MM-DD HH:MM:SS`):
+    // the weekly cutoff compares these stamps lexicographically, and an ISO stamp
+    // sorts after every same-date row ('T' > ' '), which would tally an
+    // early-Monday gift into the new week.
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     conn.execute(
         "INSERT INTO game_state_gift_log (character_name, server_name, npc_key, npc_name, gifted_at, favor_delta)
          VALUES (?1, ?2, ?3, ?4, ?5, 0.0)",
@@ -711,8 +765,9 @@ pub fn remove_last_gift(
     conn.execute(
         "DELETE FROM game_state_gift_log WHERE id = (
             SELECT id FROM game_state_gift_log
-            WHERE character_name = ?1 AND server_name = ?2 AND npc_key = ?3 AND gifted_at >= ?4
-            ORDER BY gifted_at DESC LIMIT 1
+            WHERE character_name = ?1 AND server_name = ?2 AND npc_key = ?3
+              AND replace(gifted_at, 'T', ' ') >= ?4
+            ORDER BY replace(gifted_at, 'T', ' ') DESC LIMIT 1
         )",
         rusqlite::params![character_name, server_name, npc_key, week_start],
     )

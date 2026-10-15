@@ -1,6 +1,6 @@
 # Statehelm Reputation Tracker
 
-Tracks weekly gift progress for Statehelm NPCs. Each NPC accepts up to 5 gifts per week (weeks reset Monday 00:00 UTC). Shows NPC services (training, storage, vendor) and gift preferences at a glance.
+Tracks weekly gift progress for Statehelm NPCs. Each NPC accepts up to 5 gifts per week (weeks reset Monday 00:00 America/New_York — the game's own reset instant, 04:00/05:00 UTC). Shows NPC services (training, storage, vendor) and gift preferences at a glance.
 
 ## How It Works
 
@@ -12,19 +12,37 @@ Gift events are detected from `ProcessDeltaFavor` log lines where `is_gift` is `
 
 ## NPC Selection
 
-Statehelm NPCs are identified dynamically from CDN data:
-- `area_friendly_name` or `area_name` contains "Statehelm"
-- NPC has at least one entry in `preferences` (meaning they accept gifts)
+Statehelm NPCs are identified from CDN data by area:
+- `area_name` is `AreaStatehelm` (the city) **or** `AreaStatehelmCaves` (the
+  sewers — Hamilton, Smoke Tail, Fuzzlebun), and
+- the NPC has at least one entry in `preferences` (they accept gifts)
 
-This is fully data-driven — new NPCs added to Statehelm in future CDN updates appear automatically.
+The weekly cap is a Statehelm-region rule (the game's own note: "Statehelm
+townsfolk are more sophisticated than villagers elsewhere…"), and it applies in
+the sewers too. No CDN field marks the cap, so the area is the signal. Fully
+data-driven — new Statehelm NPCs in future CDN updates appear automatically.
 
 ## Weekly Reset
 
-The week boundary is calculated as Monday 00:00 UTC. Gift counts are derived by filtering `game_state_gift_log` entries with `gifted_at >= weekStart`. No data is deleted on reset — old gift logs are retained for history.
+The week boundary is Monday 00:00 America/New_York, computed by
+`useStatehelmTracker.getCurrentWeekStart` (frontend) and
+`game_state::current_week_start_utc` (backend, for the gift-log reconcile) —
+**the two must stay identical**. Gift counts are derived by filtering
+`game_state_gift_log` entries with `gifted_at >= weekStart`. No data is deleted
+on reset — old gift logs are retained for history.
+
+## Backfill from the game's logs
+
+Gifts given while glogger was closed are recovered by re-reading the game's own
+gift-cap notes from `Player.log`, `Player-prev.log` and the archive in
+`<app data>/player-logs`, then reconciling each capped NPC's current-week row
+count to the game's number. Runs at startup and from the **Rescan logs** button;
+see [statehelm-gift-backfill.md](../../statehelm-gift-backfill.md) for the
+invariants, the archive limits (Settings → General) and the dating rule.
 
 ## Manual Adjustment
 
-Users can manually increment/decrement gift counts per NPC using +/- buttons on each card. This covers cases where glogger missed a gift event (e.g., app wasn't running) or incorrectly tracked one. Manual additions insert a row with `favor_delta = 0.0`; removals delete the most recent gift log entry for that NPC within the current week.
+Users can manually increment/decrement gift counts per NPC using +/- buttons on each card. Manual additions insert a row with `favor_delta = 0.0`; removals delete the most recent gift log entry for that NPC within the current week. A manual change is reconciled back to the game's own count the next time a cap note for that NPC is read (live, at startup, or via Rescan logs).
 
 ## NPC Card Info
 
@@ -56,6 +74,7 @@ Each card displays:
 
 - Gift log persistence: `src-tauri/src/game_state.rs` (in `FavorChanged` handler)
 - Database migration: `src-tauri/src/db/migrations.rs` (v17)
-- Tauri commands: `src-tauri/src/db/game_state_commands.rs` (`get_gift_log`, `add_manual_gift`, `remove_last_gift`)
+- Tauri commands: `src-tauri/src/db/game_state_commands.rs` (`get_gift_log`, `add_manual_gift`, `remove_last_gift`, shared `reconcile_gift_count`) and `src-tauri/src/db/statehelm_commands.rs` (`backfill_statehelm_gifts`)
 - Frontend composable: `src/composables/useStatehelmTracker.ts`
 - UI: `src/components/Character/StatehelmView.vue`
+- Feature doc: [statehelm-gift-backfill.md](../../statehelm-gift-backfill.md)

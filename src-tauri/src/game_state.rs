@@ -1,6 +1,6 @@
 use crate::cdn_commands::GameDataState;
 use crate::db::DbPool;
-use crate::parsers::to_utc_datetime_with_base;
+use crate::parsers::LogDateResolver;
 /// Game State Manager — persists derived game state from PlayerEvents to SQLite.
 ///
 /// Follows the SurveySessionTracker pattern: lightweight struct that receives
@@ -19,17 +19,48 @@ macro_rules! startup_log {
 
 // to_datetime removed — use GameStateManager::to_utc(ts) instead
 
-/// Monday 00:00:00 UTC of the current week, in the DB timestamp format
-/// (`%Y-%m-%d %H:%M:%S`). Matches the frontend's weekly gift reset boundary
+/// Monday 00:00 America/New_York of the current week, in the DB timestamp
+/// format (`%Y-%m-%d %H:%M:%S`, UTC). The game's own gift-cap note says "The
+/// week resets on Monday EDT.", so the weekly boundary is Eastern time — not
+/// Monday 00:00 UTC (the two differ by 4–5 hours, which misattributes every
+/// gift given around the reset). Matches the frontend's boundary
 /// (`useStatehelmTracker.getCurrentWeekStart`).
-fn current_week_start_utc() -> String {
-    let now = Utc::now();
-    let days_since_monday = now.weekday().num_days_from_monday() as i64;
-    let monday = (now - Duration::days(days_since_monday))
-        .date_naive()
-        .and_hms_opt(0, 0, 0)
+pub(crate) fn current_week_start_utc() -> String {
+    week_start_utc_at(Utc::now())
+}
+
+/// [`current_week_start_utc`] for an arbitrary instant (test seam).
+pub(crate) fn week_start_utc_at(now: chrono::DateTime<Utc>) -> String {
+    // Work in Eastern wall-clock terms so the week is the game's week: on a UTC
+    // Monday before 04:00/05:00 the game is still in the previous week.
+    let eastern = now - Duration::hours(eastern_utc_offset_hours(now.date_naive()) as i64);
+    let days_since_monday = eastern.weekday().num_days_from_monday() as i64;
+    let monday = eastern.date_naive() - Duration::days(days_since_monday);
+    let start = monday
+        .and_hms_opt(eastern_utc_offset_hours(monday), 0, 0)
         .unwrap();
-    monday.format("%Y-%m-%d %H:%M:%S").to_string()
+    start.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+/// UTC offset of America/New_York on `date`: 4 (EDT) from the second Sunday in
+/// March to the first Sunday in November, else 5 (EST). The weekly reset is
+/// Monday 00:00 local and DST transitions land on Sundays at 02:00, so the
+/// offset is decided by the date alone — no tz database dependency needed.
+fn eastern_utc_offset_hours(date: chrono::NaiveDate) -> u32 {
+    /// `nth` occurrence (1-based) of Sunday in `month`.
+    fn nth_sunday(year: i32, month: u32, nth: u32) -> chrono::NaiveDate {
+        let first = chrono::NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+        let first_sunday = 1 + (7 - first.weekday().num_days_from_sunday()) % 7;
+        chrono::NaiveDate::from_ymd_opt(year, month, first_sunday + 7 * (nth - 1)).unwrap()
+    }
+
+    let dst_start = nth_sunday(date.year(), 3, 2);
+    let dst_end = nth_sunday(date.year(), 11, 1);
+    if date >= dst_start && date < dst_end {
+        4
+    } else {
+        5
+    }
 }
 
 /// Result of processing a player event
@@ -49,10 +80,10 @@ pub struct GameStateManager {
     game_data: GameDataState,
     /// NPC key of the vendor currently being interacted with (set on InteractionStarted, cleared on InteractionEnded)
     current_vendor_npc: Option<String>,
-    /// When set, overrides the UTC date used to stamp Player.log `HH:MM:SS`
-    /// timestamps. Used by replay and old-log reparse so events are written
-    /// with the date of the original capture, not today.
-    base_date_override: Option<chrono::NaiveDate>,
+    /// Dates for Player.log `HH:MM:SS` timestamps: an explicit override
+    /// (replay / old-log reparse), else the session date declared by the log's
+    /// own login line, else the clock. See [`LogDateResolver`].
+    log_dates: LogDateResolver,
 }
 
 impl GameStateManager {
@@ -63,7 +94,7 @@ impl GameStateManager {
             live_mode: false,
             game_data,
             current_vendor_npc: None,
-            base_date_override: None,
+            log_dates: LogDateResolver::default(),
         }
     }
 
@@ -71,7 +102,16 @@ impl GameStateManager {
     /// Live tailing leaves this unset; replay / old-log reparse sets it so
     /// DB writes carry the correct historical date.
     pub fn set_base_date(&mut self, date: chrono::NaiveDate) {
-        self.base_date_override = Some(date);
+        self.log_dates.set_base_date(date);
+    }
+
+    /// Anchor the session date from the Player.log login line's own
+    /// `Time UTC=` (`PlayerEvent::LogSessionAnchored`): every `HH:MM:SS` line
+    /// after it is dated by the session it came from, however much the read lags
+    /// the log. Ignored while an explicit base date is set, which is already
+    /// authoritative (replay / old-log reparse).
+    pub fn anchor_log_session(&mut self, utc: chrono::NaiveDateTime) {
+        self.log_dates.anchor_session(utc);
     }
 
     /// Mark that catch-up replay is complete and future logins are live.
@@ -114,12 +154,26 @@ impl GameStateManager {
 
     /// Convert a Player.log HH:MM:SS timestamp to a full UTC datetime string.
     /// Player.log timestamps are already UTC — just needs a date component added.
-    /// Uses `base_date_override` when set (replay / old-log reparse).
+    ///
+    /// Precedence lives in [`LogDateResolver`]: explicit base date (replay /
+    /// old-log reparse) → the session date from the log's own login line →
+    /// the clock.
     ///
     /// Public so coordinator event handlers (which persist their own rows, e.g.
     /// milking) stamp events with the log's time instead of the ingest time.
-    pub fn to_utc(&self, ts: &str) -> String {
-        to_utc_datetime_with_base(ts, self.base_date_override)
+    pub fn to_utc(&mut self, ts: &str) -> String {
+        self.log_dates.resolve(ts)
+    }
+
+    /// [`Self::to_utc`] **without** advancing the session rollover baseline.
+    ///
+    /// For side channels that read a line before the batch it belongs to is
+    /// replayed: the coordinator resolves milking `ScreenText` timestamps while
+    /// iterating, then `process_events_batch` resolves the same batch in log
+    /// order. Advancing twice, out of order, would roll the session date a day
+    /// forward for every row after it. See [`crate::parsers::LogDateResolver::peek`].
+    pub fn peek_utc(&self, ts: &str) -> String {
+        self.log_dates.peek(ts)
     }
 
     /// Update the active character.
@@ -274,6 +328,12 @@ impl GameStateManager {
     ) {
 
         match event {
+            PlayerEvent::LogSessionAnchored { utc } => {
+                // Not a persisted event: it only tells us which UTC day the
+                // lines after it belong to (see `to_utc`).
+                self.anchor_log_session(*utc);
+            }
+
             PlayerEvent::SkillsLoaded { timestamp, skills } => {
                 let dt = self.to_utc(timestamp);
                 // Full skill dump on login — replace all skills for this character+server
@@ -674,35 +734,25 @@ impl GameStateManager {
                 // authoritative count. A bulk gift (a stack given in one action)
                 // emits a single ProcessDeltaFavor line, so the per-favor row count
                 // can undershoot; this corrects it without disturbing other NPCs.
+                // A note the game printed before this week began reports the
+                // *previous* week's count. Reconciling it would write rows into
+                // last week — or, when this week's count is already higher,
+                // trim this week's real gifts down to last week's number. The
+                // backfill drops these the same way, so the two paths agree.
                 let week_start = current_week_start_utc();
-                let existing: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM game_state_gift_log
-                         WHERE character_name = ?1 AND server_name = ?2 AND npc_key = ?3 AND gifted_at >= ?4",
-                        rusqlite::params![character, server, npc_key, week_start],
-                        |row| row.get(0),
+                if dt >= week_start
+                    && crate::db::game_state_commands::reconcile_gift_count(
+                        conn,
+                        character,
+                        server,
+                        &npc_key,
+                        &display_name,
+                        &dt,
+                        *received,
+                        &week_start,
                     )
-                    .unwrap_or(0);
-                let target = *received as i64;
-
-                if target > existing {
-                    for _ in 0..(target - existing) {
-                        conn.execute(
-                            "INSERT INTO game_state_gift_log (character_name, server_name, npc_key, npc_name, gifted_at, favor_delta)
-                             VALUES (?1, ?2, ?3, ?4, ?5, 0)",
-                            rusqlite::params![character, server, npc_key, display_name, dt],
-                        ).ok();
-                    }
-                    domains.push("favor");
-                } else if target < existing {
-                    // Trim the newest extras (e.g. a manual over-count) down to the game's value.
-                    conn.execute(
-                        "DELETE FROM game_state_gift_log WHERE id IN (
-                            SELECT id FROM game_state_gift_log
-                            WHERE character_name = ?1 AND server_name = ?2 AND npc_key = ?3 AND gifted_at >= ?4
-                            ORDER BY gifted_at DESC, id DESC LIMIT ?5)",
-                        rusqlite::params![character, server, npc_key, week_start, existing - target],
-                    ).ok();
+                    .unwrap_or(false)
+                {
                     domains.push("favor");
                 }
             }
@@ -936,7 +986,7 @@ impl GameStateManager {
                 price,
                 ..
             } => {
-                if let Some(npc_key) = &self.current_vendor_npc {
+                if let Some(npc_key) = self.current_vendor_npc.clone() {
                     let dt = self.to_utc(timestamp);
                     let councils = *price as i64;
                     conn.execute(
@@ -961,7 +1011,7 @@ impl GameStateManager {
                 max_gold,
                 ..
             } => {
-                if let Some(npc_key) = &self.current_vendor_npc {
+                if let Some(npc_key) = self.current_vendor_npc.clone() {
                     let dt = self.to_utc(timestamp);
                     if *current_gold < *max_gold {
                         conn.execute(
@@ -1316,4 +1366,185 @@ fn correct_stack_in_table(
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn week_start(instant: &str) -> String {
+        week_start_utc_at(
+            chrono::DateTime::parse_from_rfc3339(instant)
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+    }
+
+    /// The weekly gift boundary is Monday 00:00 America/New_York (the game's
+    /// own note: "The week resets on Monday EDT."), i.e. 04:00 UTC in DST and
+    /// 05:00 UTC in EST — never Monday 00:00 UTC.
+    #[test]
+    fn week_boundary_is_monday_midnight_eastern() {
+        // Thu 01:00 UTC = Wed 21:00 EDT → week started Mon 10-12.
+        assert_eq!(week_start("2026-10-15T01:00:00Z"), "2026-10-12 04:00:00");
+        // Mon 01:00 UTC is still Sunday 21:00 EDT — the game's week has NOT
+        // rolled; a Monday-UTC boundary would have jumped ahead here.
+        assert_eq!(week_start("2026-10-19T01:00:00Z"), "2026-10-12 04:00:00");
+        // Mon 01:00 EDT → the new week.
+        assert_eq!(week_start("2026-10-19T05:00:00Z"), "2026-10-19 04:00:00");
+        // EST (after the first Sunday in November): 05:00 UTC.
+        assert_eq!(week_start("2026-11-02T06:00:00Z"), "2026-11-02 05:00:00");
+        assert_eq!(week_start("2026-11-02T04:30:00Z"), "2026-10-26 04:00:00");
+        // EDT resumes the second Sunday in March.
+        assert_eq!(week_start("2026-03-09T04:30:00Z"), "2026-03-09 04:00:00");
+        assert_eq!(week_start("2026-03-09T03:30:00Z"), "2026-03-02 05:00:00");
+    }
+
+    /// Two DST rules, one boundary: assert the offset itself at the edges.
+    #[test]
+    fn eastern_offset_switches_on_the_us_dst_dates() {
+        let d = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        assert_eq!(eastern_utc_offset_hours(d("2026-03-07")), 5); // Sat before
+        assert_eq!(eastern_utc_offset_hours(d("2026-03-08")), 4); // 2nd Sunday
+        assert_eq!(eastern_utc_offset_hours(d("2026-10-31")), 4);
+        assert_eq!(eastern_utc_offset_hours(d("2026-11-01")), 5); // 1st Sunday
+        assert_eq!(eastern_utc_offset_hours(d("2026-11-02")), 5);
+    }
+
+    /// A gift-cap note the game printed before this week began reports the
+    /// previous week's count: it must not be reconciled at all — otherwise it
+    /// writes rows into last week, or trims this week's real gifts down to last
+    /// week's number. (The backfill drops these; this pins the live arm to the
+    /// same rule.)
+    #[test]
+    fn gift_note_from_a_previous_week_is_not_reconciled() {
+        use std::sync::Arc;
+
+        let db_path = std::env::temp_dir().join(format!(
+            "glogger_gift_week_test_{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
+
+        let week_start = current_week_start_utc();
+        let week_start_date =
+            chrono::NaiveDate::parse_from_str(&week_start[..10], "%Y-%m-%d").unwrap();
+        let day_of = |offset_days: i64, hhmmss: &str| {
+            format!(
+                "{} {hhmmss}",
+                (week_start_date + Duration::days(offset_days)).format("%Y-%m-%d")
+            )
+        };
+
+        // Five real gifts already recorded this week. The arm resolves NPC
+        // names against game data (empty here), so it falls back to the raw
+        // name — seed rows under the same key it will look for.
+        {
+            let conn = pool.get_write().unwrap();
+            for i in 0..5 {
+                conn.execute(
+                    "INSERT INTO game_state_gift_log (character_name, server_name, npc_key, npc_name, gifted_at, favor_delta)
+                     VALUES ('TestPlayer', 'Dreva', 'Corinth', 'Corinth', ?1, 0.0)",
+                    rusqlite::params![day_of(0, &format!("1{i}:00:00"))],
+                )
+                .unwrap();
+            }
+        }
+
+        let mut manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
+            crate::game_data::GameData::empty(),
+        )));
+        manager.set_active_character_name("TestPlayer");
+        manager.set_active_server_name("Dreva");
+
+        let count_this_week = || -> i64 {
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM game_state_gift_log WHERE gifted_at >= ?1",
+                    [&week_start],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+
+        // Last week's final note (the count was 2 that week).
+        manager.set_base_date(week_start_date - Duration::days(1));
+        let stale = vec![PlayerEvent::GiftCountObserved {
+            timestamp: "23:30:00".to_string(),
+            npc_name: "Corinth".to_string(),
+            received: 2,
+            max: 5,
+        }];
+        let result = manager.process_events_batch(&stale, &pool);
+        assert!(
+            !result.domains_updated.contains(&"favor"),
+            "an out-of-week note must not report a gift change"
+        );
+        assert_eq!(count_this_week(), 5, "this week's gifts survive untouched");
+        let rows_last_week: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM game_state_gift_log WHERE gifted_at < ?1",
+                [&week_start],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows_last_week, 0, "nothing is written into last week either");
+
+        // The same note *inside* this week still reconciles (5 → 2).
+        manager.set_base_date(week_start_date);
+        let in_week = vec![PlayerEvent::GiftCountObserved {
+            timestamp: "12:00:00".to_string(),
+            npc_name: "Corinth".to_string(),
+            received: 2,
+            max: 5,
+        }];
+        let result = manager.process_events_batch(&in_week, &pool);
+        assert!(
+            result.domains_updated.contains(&"favor"),
+            "an in-week note still reconciles"
+        );
+        assert_eq!(count_this_week(), 2, "trimmed to the game's count");
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// The manager dates lines from the log's own login line (via the
+    /// `LogSessionAnchored` event) and rolls the date when the log crosses UTC
+    /// midnight — no dependence on the ingest clock, so a catch-up lagging the
+    /// log by any amount is dated by the session it came from.
+    #[test]
+    fn manager_dates_lines_from_the_login_anchor() {
+        use std::sync::Arc;
+
+        let mut manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
+            crate::game_data::GameData::empty(),
+        )));
+
+        // The anchor event, as the parser emits it from the real login line.
+        manager.anchor_log_session(
+            chrono::NaiveDateTime::parse_from_str("2026-10-14 22:43:41", "%Y-%m-%d %H:%M:%S")
+                .unwrap(),
+        );
+        assert_eq!(manager.to_utc("22:43:41"), "2026-10-14 22:43:41");
+        assert_eq!(manager.to_utc("23:31:15"), "2026-10-14 23:31:15");
+        // Past UTC midnight in the log → next day, still not "now".
+        assert_eq!(manager.to_utc("00:10:00"), "2026-10-15 00:10:00");
+
+        // A side channel peeks a later line (the coordinator's milking resolve
+        // runs before the event's batch is replayed); the in-order scan must
+        // still date the batch's earlier lines from the session. Before the peek
+        // seam this rolled the session date a day forward.
+        assert_eq!(manager.peek_utc("00:40:00"), "2026-10-15 00:40:00");
+        assert_eq!(manager.to_utc("00:20:00"), "2026-10-15 00:20:00");
+
+        // A replay/reparse base date still wins over the anchor.
+        manager.set_base_date(chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap());
+        assert_eq!(manager.to_utc("23:31:15"), "2026-10-01 23:31:15");
+    }
 }

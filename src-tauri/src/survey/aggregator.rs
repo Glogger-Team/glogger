@@ -20,7 +20,7 @@
 
 use crate::game_data::SurveyKind;
 use crate::player_event_parser::{ActivitySource, ItemProvenance, PlayerEvent};
-use crate::parsers::to_utc_datetime_with_base;
+use crate::parsers::LogDateResolver;
 use crate::survey::{multihit_state, persistence};
 use crate::survey::types::{SessionStartTrigger, SurveyUseKind, SurveyUseStatus};
 use crate::cdn_commands::GameDataState;
@@ -94,8 +94,11 @@ struct PendingUse {
 struct DeferredBasicGain {
     /// Quantity (1 for ItemAdded, delta for ItemStackChanged).
     qty: u32,
-    /// HH:MM:SS timestamp from the event, for loot-timestamp updates.
-    timestamp_hms: Option<String>,
+    /// The gain line's own UTC stamp, resolved **in order** when the line was
+    /// seen (`event_iso`) — never re-resolved at drain time, which would resolve
+    /// an earlier time of day after the consuming map's and roll the session date
+    /// a day forward for every following event.
+    resolved_at: Option<String>,
 }
 
 /// Chat-side record of the survey-spawned node currently being mined
@@ -220,11 +223,10 @@ pub struct SurveySessionAggregator {
     /// Refreshed when a session is started/ended.
     cached_active_session_id: Option<Option<i64>>,
 
-    /// When set, overrides the UTC date used to stamp Player.log `HH:MM:SS`
-    /// timestamps seen by the aggregator. Live tailing leaves this unset;
-    /// replay / old-log reparse sets it so session/use rows carry the correct
-    /// historical date.
-    base_date_override: Option<chrono::NaiveDate>,
+    /// Dates for the Player.log `HH:MM:SS` timestamps the aggregator stamps:
+    /// an explicit override (replay / old-log reparse), else the session date
+    /// from the log's own login line, else the clock. See [`LogDateResolver`].
+    log_dates: LogDateResolver,
 
     /// When false, the aggregator skips auto-creating sessions on crafting
     /// or first-use detection. The user must manually start sessions.
@@ -247,7 +249,7 @@ impl SurveySessionAggregator {
             known_survey_nodes: VecDeque::new(),
             chat_adopted_uses: VecDeque::new(),
             cached_active_session_id: None,
-            base_date_override: None,
+            log_dates: LogDateResolver::default(),
             auto_start_enabled: true,
         }
     }
@@ -255,11 +257,11 @@ impl SurveySessionAggregator {
     /// Stamp Player.log times with an explicit UTC date instead of today's.
     /// Live tailing leaves this unset.
     pub fn set_base_date(&mut self, date: chrono::NaiveDate) {
-        self.base_date_override = Some(date);
+        self.log_dates.set_base_date(date);
     }
 
-    fn to_utc(&self, ts: &str) -> String {
-        to_utc_datetime_with_base(ts, self.base_date_override)
+    fn to_utc(&mut self, ts: &str) -> String {
+        self.log_dates.resolve(ts)
     }
 
     // ============================================================
@@ -502,6 +504,13 @@ impl SurveySessionAggregator {
         current_area: Option<&str>,
     ) -> Vec<SurveyAggregatorEvent> {
         let mut emitted = Vec::new();
+
+        // The log's own login line re-anchors the date for everything after it
+        // (see `LogDateResolver`); it is not itself a survey event.
+        if let PlayerEvent::LogSessionAnchored { utc } = event {
+            self.log_dates.anchor_session(*utc);
+            return emitted;
+        }
 
         // Age out pending-use entries whose 60s grace window has expired.
         if let Some(now_secs) = event_secs_of_day(event) {
@@ -845,8 +854,11 @@ impl SurveySessionAggregator {
                 let mut total_deferred_qty = 0u32;
                 for gain in &deferred {
                     total_deferred_qty += gain.qty;
-                    if let Some(ref hms) = gain.timestamp_hms {
-                        update_session_loot_timestamps(conn, use_id, &self.to_utc(hms));
+                    // Already resolved, in order, when the gain line was seen —
+                    // re-resolving here would use an earlier time of day than the
+                    // consuming map's and roll the session date forward.
+                    if let Some(ref at) = gain.resolved_at {
+                        update_session_loot_timestamps(conn, use_id, at);
                     }
                 }
                 if total_deferred_qty > 0 {
@@ -1256,6 +1268,10 @@ impl SurveySessionAggregator {
         conn: &Connection,
         qty: u32,
     ) {
+        // Resolve this gain's own stamp while it *is* the newest line seen; the
+        // deferred drain then never has to re-resolve an earlier time of day.
+        let resolved_at = event_hms_timestamp(event).map(|hms| self.to_utc(hms));
+
         // Find the most-recent (back of the queue) Basic pending use.
         let Some(idx) = self
             .pending_uses
@@ -1264,17 +1280,14 @@ impl SurveySessionAggregator {
         else {
             // No pending Basic use yet — the DeleteItem hasn't fired.
             // Buffer this gain so handle_survey_consumed can attribute it.
-            self.deferred_basic_gains.push(DeferredBasicGain {
-                qty,
-                timestamp_hms: event_hms_timestamp(event).map(|s| s.to_string()),
-            });
+            self.deferred_basic_gains.push(DeferredBasicGain { qty, resolved_at });
             return;
         };
         let use_id = self.pending_uses[idx].survey_use_id;
 
         let _ = persistence::add_loot_qty(conn, use_id, qty);
-        if let Some(hms) = event_hms_timestamp(event) {
-            update_session_loot_timestamps(conn, use_id, &self.to_utc(hms));
+        if let Some(at) = resolved_at {
+            update_session_loot_timestamps(conn, use_id, &at);
         }
         if let PlayerEvent::ItemAdded { provenance, .. } = event {
             inject_survey_use_id_into(provenance, use_id);

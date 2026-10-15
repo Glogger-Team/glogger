@@ -1,10 +1,236 @@
 # glogger — Session Handoff
 
-**Date:** 2026-10-13 (Session 39 — Cook's Helper learned-recipe fix, dead settings removed, doc truth pass)
+**Date:** 2026-10-14 (Session 40 — Statehelm gift-status backfill from the logs, bounded rotated-log archive)
 **Machine:** Windows 11 (primary dev box)
 **Branch:** `main` — uncommitted working tree. No version bump.
-**Status:** ✅ Implemented + verified: `cargo test --lib` **662 passed** (6 ignored), `npm run build` (vue-tsc + vite) clean,
-and the app launched live over WebView2 CDP (`glogger.Dev`) with no console errors.
+**Status:** ✅ Implemented + verified: `cargo test --lib` **689 passed** (6 ignored, 695 total), `npm run build` (vue-tsc + vite) clean,
+`pwsh scripts/check-glogger-constraints.ps1` green, and a live WebView2-CDP smoke over `glogger.Dev` (real logs, real DB).
+
+## TL;DR — Session 40
+
+### What shipped
+
+- **Statehelm gift status now backfills from the game's own logs.** Gifts given while glogger was closed were lost
+  because `Player-prev.log` is only ingested for kills/loot, never through `process_events_batch`. New
+  `src-tauri/src/db/statehelm_commands.rs` scans the `Player.log` family for gift-cap notes ("… has received
+  `<b>2</b>` so far this week") and reconciles each capped NPC's current-week `game_state_gift_log` rows to the
+  game's own count. Runs at startup (Step 5d chain) and on demand: `backfill_statehelm_gifts` → the **Rescan logs**
+  button on Character → Statehelm. Idempotent (absolute count per NPC per week): no migration, no content-hash table.
+- **One reconcile, one parser.** The live `GiftCountObserved` arm and the backfill now share
+  `db::game_state_commands::reconcile_gift_count`, and both dispatch through the new free function
+  `player_event_parser::parse_gift_count_line` — they cannot drift.
+- **Rotated logs are archived** (`<app data dir>/player-logs/Player-<fnv1a>.log`, written by the existing 30 s
+  rotation watcher) so the backfill reaches past the two logs the game keeps. Bounded at 14 days / 20 files /
+  512 MiB, write-then-rename, swept at startup; full rationale in `docs/features/statehelm-gift-backfill.md`.
+- **Frontend week boundary fixed.** `useStatehelmTracker` compared rows against `weekStart.toISOString()`, which
+  sorts *before* every Monday-dated row (`'T' < ' '`) — every Monday's gifts were silently dropped from
+  `giftsThisWeek` and from `remove_last_gift`'s cutoff. Now `weekStartDb` (DB format, `YYYY-MM-DD HH:MM:SS`).
+  `add_manual_gift` writes that same DB format, and the three week-boundary comparisons (the TS cutoff,
+  `reconcile_gift_count`, `remove_last_gift`) normalize legacy ISO rows with `replace(gifted_at,'T',' ')`, so
+  no data migration.
+- Docs: `docs/features/statehelm-gift-backfill.md` (new), limits doc §3 notes the archive, test census in
+  `AGENTS.md`/`docs/TODO.md` → 695 tests / 57 files.
+
+### Follow-up (same session): sewers NPCs, Eastern week, editable limits
+
+- **Sewers NPCs are included.** `statehelmNpcs` now matches `AreaStatehelm` **or**
+  `AreaStatehelmCaves` (+ preferences), so Hamilton (5/5), Smoke Tail and Fuzzlebun are
+  tracked on the view and in the widget — live check: header went `2 / 185` → `7 / 200`
+  (Hamilton 5 + Sourgum 2). No CDN field marks the cap (`ItemGifts` is a service tier
+  list), so the area is the only available signal; the game's own note is the evidence
+  that the sewers are capped.
+- **Week boundary moved to Monday 00:00 America/New_York** in both places
+  (`game_state::current_week_start_utc`, `useStatehelmTracker.getCurrentWeekStart`) —
+  the note says "The week resets on Monday EDT.", and a UTC boundary silently
+  misattributes the 4–5 h after the reset (it also kept last week's final counts visible
+  until the first new note). Rust derives the offset from the US DST dates (no tz
+  dependency); the frontend reads `Intl`'s `America/New_York`. Both are pinned to the same
+  seven-case table (incl. both DST edges) in `game_state::tests` and a node cross-check.
+  **Change one side, change the other in the same commit.**
+- **Archive limits are settings** (`player_log_archive_retention_days` / `_max_files` /
+  `_max_mb`, Settings → General next to the Player-prev toggle; defaults 14 / 20 / 512).
+  `replay::ArchiveLimits` + `archive_limits(settings)` feed `prune_player_log_archive`,
+  which now runs on **every 30 s tick** — a limit lowered in the UI takes effect within a
+  tick, no restart or rotation needed (verified live: MB budget 512 → 30 evicted the
+  44 MB copy in <40 s, restored to 512 after). Values clamp to ≥ 1 on both sides.
+
+### Follow-up (same session): the live path's off-by-one date, root-caused and fixed
+
+- **Root cause.** Every Player.log-derived timestamp the live path persists goes through
+  `parsers::to_utc_datetime_with_base(ts, None)`, which took `Utc::now().date_naive()` — the
+  **ingest** date, with no anchor and no midnight rollover. A line read with any lag across UTC
+  midnight therefore gets stamped up to ~24 h in the future of the line it describes.
+  `GameStateManager::to_utc` (every `game_state_*` write) and the stall-observation insert
+  (`coordinator.rs:2780`) both pass `None`; `set_base_date` is only called by manual
+  parse/replay/reparse. Evidence: a `[23:31:26]` note logged 2026-10-14 was stored as
+  `2026-10-15 23:31:26` during a 01:27 catch-up (still visible as `NPC_Cheb 2026-10-15 23:05:18`
+  / `NPC_Hamilton 2026-10-15 23:52:54` in the dev DB). Consequence beyond cosmetics: a row dated
+  into the *next* ET week skews that week's gift counts until a fresh note arrives.
+- **Fix.** `to_utc_datetime_with_base` now rolls back a day when the line's time of day is still
+  ahead of the clock (5 s slack for clock skew), which is exact whenever the read lags by less
+  than a day — the whole class of catch-up/backlog/paused-watcher cases. An explicit base date
+  still wins. `to_utc_datetime_at(ts, base, now)` is the test seam; six cases in
+  `parsers::tests` include the exact observed line and both midnight edges. (The multi-day case is
+  handled by the login-line anchor added in the next section.)
+- **Verified end-to-end** through the real catch-up path on a **throwaway profile** (fresh
+  `db_path` + synthetic `Player.log` in `%TEMP%`, real `settings.json` backed up and restored
+  byte-identical, temp profiles deleted, real DB re-checked: unchanged). Session read at 02:05 UTC:
+  `[23:31:15]` → `2026-10-14 23:31:15` (yesterday) and `[00:10:00]` → `2026-10-15 00:10:00`
+  (today). Pre-fix both would have been `2026-10-15`.
+- **Still not anchored to the log's own clock.** The live Player.log parser does not read login
+  lines at all — `log_watchers::match_character_login` looks for a bracketed `[Name]` form the
+  current client does not emit (it writes `Logged in as character X. Time UTC=MM/DD/YYYY HH:MM:SS`),
+  and its event `timestamp` is never consumed by any handler. So a catch-up lagging **more than a
+  day** (multi-day backlog) can still be dated up to a day late. Anchoring there is the next step if
+  it matters: parse the login line's `Time UTC=` in the watcher, set the session base date on
+  `CharacterLogin`, and advance it on a time-of-day decrease (the rollover the gift backfill
+  already implements in `scan_gift_notes`).
+
+### Follow-up (same session): the >24 h lag, anchored to the log's own login line
+
+- **What changed.** The login-line parser moved to its natural home and got richer:
+  `parsers::parse_player_log_login_line(line) -> Option<(String, NaiveDateTime)>` (was
+  `replay::parse_player_login_line`, date only). The live parser now emits
+  `PlayerEvent::LogSessionAnchored { utc }` for that line — handled **before** `process_line`'s
+  `LocalPlayer: Process` fast path, since a login line matches nothing else — and both consumers
+  anchor on it: `GameStateManager` (in `process_event_inner`, so the event ordering inside a batch
+  is preserved) and `SurveySessionAggregator` (in `process_event`). The precedence now lives in one
+  shared type, `parsers::LogDateResolver`: explicit base date (replay / old-log reparse) → session
+  date from the login line, rolled forward on a time-of-day decrease → the clock with a one-day
+  rollback when the line's time of day is ahead of it (the earlier fix, kept as the fallback for
+  tails that start mid-session, where no login line is ever read). `to_utc` is now `&mut self` on
+  both consumers (two `self.current_vendor_npc` borrows were cloned to allow that).
+- **Verified live, 5 days of lag.** Throwaway profile (fresh `db_path` + synthetic `Player.log`
+  under `%TEMP%`, real `settings.json` backed up/restored byte-identical, temp profile deleted, real
+  DB re-checked unchanged). The log's login line declared `10/10/2026 23:20:00` while the clock was
+  `2026-10-15 02:18`; the live catch-up wrote `2026-10-10 23:31:15` (×3) and `2026-10-11 00:10:00`
+  (×2) — anchored *and* rolled at UTC midnight, with the clock date never leaking in. The backfill
+  could not have written them (its `npcs`-empty guard still held at that point in startup, and the
+  notes were outside the week, so it logged nothing).
+- **`log_watchers::match_character_login` was dead, and that was hiding a real bug — fixed.** It
+  only matched a bracketed `Logged in as character [Name]` form the current client does not emit, so
+  the coordinator's Player.log `CharacterLogin` arm never ran. Measured with a synthetic two-character
+  log on a throwaway profile: the second character's `ProcessLoadSkills` was attributed to the
+  selected one, leaving **`TestPlayer / Combat = 99`** (the other alt's value, and `SkillsLoaded` is a
+  full-state dump, so it *replaced* the real 7). The matcher now uses
+  `parsers::parse_player_log_login_line` (same login parser as the date anchor), keeping the bracketed
+  form as a fallback, and the arm is gated to `!is_live()`: during catch-up it ignores logins for any
+  character other than the selected one (dropping their events), and in live tailing it does nothing
+  extra — identity and the frontend reload stay owned by the Chat.log marker in
+  `process_chat_events`. Re-ran the same profile: `TestPlayer / Combat = 7`, no other-character rows,
+  console shows `Ignoring catch-up login for 'OtherAlt' (selected character is 'TestPlayer')`.
+
+### Follow-up (same session): the live reconcile now honours the week, like the backfill
+
+- **The gap.** The backfill drops gift-cap notes outside the current week; the live
+  `GiftCountObserved` arm did not, so it reconciled last week's note against this week's rows.
+  Measured before the fix (throwaway probes, then deleted): with this week empty, the stale note
+  reported `changed=true` and wrote 5 rows into **last week**; with this week already at 5 rows and
+  a stale note saying 2, it **trimmed this week from 5 rows to 2** — deleting real recorded gifts.
+  Reachable via any read that replays pre-reset lines while this week's rows exist (a catch-up
+  spanning the reset, a manual replay of an old log).
+- **The fix.** One guard in the live arm: `if dt >= week_start` before
+  `reconcile_gift_count` (same DB-format string compare the backfill uses). Regression test
+  `game_state::tests::gift_note_from_a_previous_week_is_not_reconciled` pins both halves: an
+  out-of-week note reports no change, writes nothing into either week, and leaves this week's five
+  rows alone; the same note dated inside this week still reconciles 5 → 2.
+
+### Gotchas (durable)
+
+- **The week boundary is Eastern, and both sides must move together.**
+  `current_week_start_utc()` and the tracker's `getCurrentWeekStart` compute Monday 00:00
+  `America/New_York` (04:00/05:00 UTC) — the game's own reset instant. Change one, change
+  the other in the same commit: a row that exists but is filtered out (or vice versa)
+  shows wrong counts. Rust hand-rolls the US DST dates; JS uses `Intl` so it never has to.
+- **Player.log has no date — anchor on the login line, fall back to the clock.** `LogDateResolver`
+  (parsers) owns the precedence for both `GameStateManager` and the survey aggregator: explicit base
+  date → the login line's own `Time UTC=` (`LogSessionAnchored`, rolled at UTC midnight) → the clock,
+  rolled back a day when the line's time of day is ahead of it. The anchor is the only thing that
+  survives arbitrarily long read lag; the clock path only covers ≤24 h (a mid-session tail).
+- **Content-addressed archive names demand atomic writes.** `Player-<hash>.log` only "certifies" its bytes if it
+  was renamed into place; a half-written file would suppress the correct copy forever via `exists()`. Write
+  `*.log.partial`, then rename.
+- **A file *count* does not bound disk use.** 20 copies × 30–45 MB ≈ 900 MB. Every retention system that survives
+  variable-size records gates on bytes (journald `SystemMaxUse=`, Docker `max-size`, `logrotate` `size`) — hence
+  the 512 MiB default budget, which is usually the binding limit.
+- **A limit is only enforced when its code runs.** Pruning first lived only in the successful-copy branch, so an
+  elapsed retention window (or a limit lowered in Settings) lingered until the game next rotated. Prune now runs
+  on every 30 s tick — one `readdir` over a handful of entries, far cheaper than the log scans beside it.
+- **`parse_gift_count_line` needs the sentence break.** The NPC name is taken from after the last `". "` before
+  " will accept up to" (real line: "…value over quantity. Corinth will accept up to…"), so fixtures must include
+  it — a bare `"Corinth will accept…"` resolves no name and the row lands under a garbage key.
+- **No CDN field marks the weekly gift cap.** `Services[].ItemGifts` is a favor-tier list, not a limit, so
+  `statehelmNpcs` uses the region as the signal (city + sewers, with preferences). A capped NPC outside those two
+  areas would need the filter widened.
+- WebView2-CDP smoke recipe (unchanged): `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` on
+  `npm run tauri dev`, then `browser.open({ app: { cdp_url: 'http://127.0.0.1:9222' } })`; `tab.run` has **no
+  `document`** — do DOM work in `tab.evaluate(...)`. Real game logs live in `%LOCALAPPDATA%Low`→
+  `AppData\LocalLow\Elder Game\Project Gorgon\` (`Player.log`, `Player-prev.log`).
+
+### Verification
+
+- `cargo test --lib` **689 passed / 6 ignored** (695 total, +27 new: 6 `statehelm_commands`, 5 archive/prune in
+  `replay`, 4 week-boundary/gift-week in `game_state`, 10 Player.log dating in `parsers`/`player_event_parser`,
+  2 review-fix regressions — the `peek` seam and the legacy-ISO week cutoff),
+  `npm run build` (vue-tsc + vite) clean, constraints scanner **green**.
+- Live smoke over `glogger.Dev` with the real logs (notes: `Burl 0`, `Sourgum 2`, `Hamilton 5`):
+  - Button → "Reconciled 1 NPC from the logs." with `NPC_Sourgum` gone from the week, back to `2/5` on the screen
+    (header `2 / 185 gifts this week`); second click → "No new gift info found in the logs." (idempotent).
+  - Startup with one `NPC_Sourgum` row deleted → `Statehelm gift backfill: 1 NPC count(s) reconciled`, two
+    `favor_delta = 0` rows restored at `2026-10-14 23:31:26`. `NPC_Hamilton` reconciled to 5 in the DB.
+  - Archive: one `Player-<hash>.log`, **md5-identical** to `Player-prev.log`, no duplicate across restarts; a
+    planted 30-day-old `Player-00000000000000aa.log` was swept on the first tick.
+  - Boundary proof: `node -e "…'2026-10-12 05:00:00' >= '2026-10-12T00:00:00.000Z'"` → `false` (the old cutoff
+    dropped that row); against `'2026-10-12 00:00:00'` → `true`.
+- Follow-up checks (same run): Statehelm view/header `7 / 200` with `Hamilton 5/5`, `Smoke Tail 0/5`,
+  `Fuzzlebun 0/5` present; the JS boundary matched the Rust table on all 7 cases (node cross-check);
+  Settings → General rendered the three archive limits and writing `MB total = 30` persisted to `settings.json`
+  and evicted the 44 MB archived copy within one tick (<40 s), then `512` restored it; touching `Player-prev.log`
+  re-archived the same content-hash file, proving the settings-driven write path.
+- Player.log dating, twice on throwaway profiles (real `settings.json` restored byte-identical, real DB
+  re-checked unchanged): a 2 h lag read at `02:05` dated `[23:31:15]` → `2026-10-14 23:31:15` and
+  `[00:10:00]` → `2026-10-15 00:10:00`; then a **5-day** lag (login line `10/10/2026 23:20:00`, clock
+  `2026-10-15 02:18`) dated `2026-10-10 23:31:15` (×3) and `2026-10-11 00:10:00` (×2) — the clock never leaked
+  in, and the backfill was provably not the writer.
+- Character attribution during catch-up, before/after on the same synthetic two-character log:
+  `TestPlayer / Combat = 99` (OtherAlt's skill load overwrote it) → `TestPlayer / Combat = 7` with no
+  other-character rows, and `Ignoring catch-up login for 'OtherAlt' …` in the console.
+
+### Review pass (same session) — 6 findings, all fixed
+
+Four reviewers swept the uncommitted tree; two were real bugs and both came from one root: **`LogDateResolver`
+became stateful, while two call paths resolve overlapping timestamps out of order**, so the midnight rollover
+fired on an *earlier* line and dated every following row a day ahead.
+
+- **Side channels now peek.** `LogDateResolver::peek` / `GameStateManager::peek_utc` report the date a line
+  would get (including the hypothetical midnight roll) *without* advancing the baseline, and the coordinator's
+  three milking resolves (`coordinator.rs` — cow backfill, "milked", "milked_by") use it instead of `to_utc`:
+  those ran while iterating, before `process_events_batch` replayed their batch. Falsified — with `resolve_at`
+  in the new parsers test the assertion fails as `2026-10-15 22:44:00`, a day ahead of the session's `10-14`.
+- **The survey aggregator no longer re-resolves deferred Basic gains.** `DeferredBasicGain` keeps the stamp
+  resolved *in order* when the gain line was seen (the `event_iso` at the head of `process_event`), instead of
+  resolving an earlier time of day at drain time, after the consuming map's own resolve.
+- **Week comparisons tolerate legacy ISO rows.** `add_manual_gift` wrote `%Y-%m-%dT%H:%M:%SZ` while the live and
+  backfill rows use `%Y-%m-%d %H:%M:%S`, and `'T' > ' '` tallied a same-date row into the new week (the window
+  is Monday 00:00–04:00/05:00 UTC = Sunday evening ET). The writer now matches, and `reconcile_gift_count`,
+  `remove_last_gift` and the TS cutoff normalize via `replace(gifted_at,'T',' ')` / `.replace('T',' ').slice(0,19)`
+  so rows already in the DB keep behaving. Falsified — reverting the `replace(...)` in the count query makes the
+  new `legacy_iso_rows_are_not_counted_into_the_new_week` test fail.
+- **Reset countdowns read the boundary, not `+168 h`.** `useStatehelmTracker` gained `nextWeekStart`; the widget
+  and `StatehelmView` both used `weekStart + 7 days`, an hour off in the two DST-transition weeks. Sweep over
+  35,040 instants (2026-01-01 → 2028-01-01): every `nextWeekStart` is exactly the instant `getCurrentWeekStart`
+  rolls, the previous boundary still holds at −1 min, and week lengths are 167/168/169 h — with all 7 of Rust's
+  `week_boundary_is_monday_midnight_eastern` vectors reproduced by the TS side.
+- **The gift-note scanner seeds its rollover baseline from the login line** (`prev_time = Some(utc.time())`), as
+  `LogDateResolver::anchor_session` does; before, the first line after a login could never roll at UTC midnight.
+- **Docs:** HANDOFF carried `681 tests / 57 files` plus a Session-8 "Monday 00:00 UTC" line, and the new feature
+  doc was missing from `docs/index.md`. The durable `peek_utc` rule now lives in `AGENTS.md`'s Player.log-dating
+  gotcha, and the two previously-untracked files (`db/statehelm_commands.rs`, the feature doc) are staged.
+
+### Notes / open ends
+
+- Uncapped Statehelm NPCs keep whatever the live path recorded; only NPCs with an in-week cap note are reconciled.
+- The archive is a cache: if a limit evicts it (or `Player-prev.log` rotates), the next rotation re-archives it.
 
 ## TL;DR — Session 39
 
@@ -1886,7 +2112,8 @@ pre-gift).
   from `" will accept up to <b>"` past the last `". "` to capture multi-word names
   like "Sir Brooker"). Dispatched before the `ProcessTalkScreen` branch. 2 unit tests.
 - **`game_state.rs`** — `GiftCountObserved` arm **reconciles** that NPC's gift-log
-  rows for the current week (Monday 00:00 UTC, new `current_week_start_utc()` helper)
+  rows for the current week (Monday 00:00 UTC *then* — corrected in Session 40 to the
+  game's own Monday 00:00 America/New_York reset, `current_week_start_utc()` helper)
   up/down to the game's exact count, leaving other NPCs and the manual +/- controls
   intact. Coexists with the existing per-`FavorChanged` insert (which still covers
   non-Statehelm gifts): the reconcile is absolute, not additive, so no double count.

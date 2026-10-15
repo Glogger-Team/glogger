@@ -64,6 +64,11 @@ No release merges without a green `scripts/check-glogger-constraints.ps1`
 
 - **Reading files the user's own client wrote to the user's own disk:**
   `Player.log`, `Chat.log`, our own SQLite DB, settings files.
+- **Keeping a bounded copy of the game's own rotated `Player.log`** in
+  glogger's own data directory (`<app data dir>/player-logs`, default caps 14
+  days / 20 files / 512 MiB, user-editable in Settings → General —
+  `docs/features/statehelm-gift-backfill.md`). Same files, same disk, glogger's
+  own folder: no game file is ever written and nothing leaves the machine.
 - **Reading pixels of the user's own screen** (GDI `BitBlt` of the game
   window) for OCR — passive, no game-process handles, no input, data the user
   already sees. (Screen-scraping is not a TOS-named category; it reads the

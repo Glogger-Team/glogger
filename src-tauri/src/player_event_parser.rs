@@ -99,6 +99,14 @@ pub enum PlayerEvent {
         max: u32,
     },
 
+    /// The `Player.log` login line's own declared UTC instant
+    /// (`Logged in as character X. Time UTC=MM/DD/YYYY HH:MM:SS.`). Anchors the
+    /// date for every `HH:MM:SS` timestamp that follows, so a catch-up that lags
+    /// the log by more than a day still dates lines by the session they came from.
+    LogSessionAnchored {
+        utc: chrono::NaiveDateTime,
+    },
+
     // === Vendor Events ===
     VendorSold {
         timestamp: String,
@@ -1144,6 +1152,16 @@ impl PlayerEventParser {
             return events;
         }
 
+        // The Player.log login line declares the session's own UTC instant.
+        // It is not a `LocalPlayer: Process` line, so it must be handled before
+        // the fast path below; nothing else can consume it.
+        if line.contains("Logged in as character ") && line.contains("Time UTC=") {
+            if let Some((_character, utc)) = crate::parsers::parse_player_log_login_line(line) {
+                events.push(PlayerEvent::LogSessionAnchored { utc });
+            }
+            return events;
+        }
+
         // Fast path: skip lines that aren't LocalPlayer Process events
         // (but still flush pending deletes above)
         if !line.contains("LocalPlayer: Process") {
@@ -1212,7 +1230,7 @@ impl PlayerEventParser {
         } else if line.contains("gifts per calendar week and has received") {
             // Gift-cap note embedded in a ProcessTalkScreen / ProcessPromptForItem
             // line — carries the game's authoritative weekly gift count.
-            if let Some(ev) = self.parse_gift_count(line) {
+            if let Some(ev) = parse_gift_count_line(line) {
                 events.push(ev);
             }
         } else if line.contains("ProcessVendorAddItem(") {
@@ -1834,47 +1852,6 @@ impl PlayerEventParser {
             npc_name,
             delta,
             is_gift,
-        })
-    }
-
-    /// Parse the gift-cap note that gift-capped (Statehelm) NPCs show:
-    /// `<Npc> will accept up to <b>5</b> gifts per calendar week and has received
-    /// <b>2</b> so far this week.` The note is embedded in a ProcessTalkScreen
-    /// (post-gift) or ProcessPromptForItem (pre-gift) line; either gives the
-    /// game's authoritative current count, which the gift log is reconciled to.
-    fn parse_gift_count(&self, line: &str) -> Option<PlayerEvent> {
-        let ts = parse_timestamp(line)?;
-
-        let marker = " will accept up to <b>";
-        let marker_pos = line.find(marker)?;
-
-        // NPC display name: the word(s) just before " will accept up to". The
-        // preceding sentence ends with ". ", so take everything after the last
-        // ". " before the marker.
-        let before = &line[..marker_pos];
-        let name_start = before.rfind(". ").map(|i| i + 2).unwrap_or(0);
-        let npc_name = before[name_start..].trim().to_string();
-        if npc_name.is_empty() {
-            return None;
-        }
-
-        // max: the number inside the first <b>…</b> after the marker.
-        let after_marker = &line[marker_pos + marker.len()..];
-        let max_end = after_marker.find("</b>")?;
-        let max: u32 = after_marker[..max_end].trim().parse().ok()?;
-
-        // received: "has received <b>N</b> so far this week"
-        let recv_marker = "has received <b>";
-        let recv_pos = line.find(recv_marker)?;
-        let recv_rest = &line[recv_pos + recv_marker.len()..];
-        let recv_end = recv_rest.find("</b>")?;
-        let received: u32 = recv_rest[..recv_end].trim().parse().ok()?;
-
-        Some(PlayerEvent::GiftCountObserved {
-            timestamp: ts,
-            npc_name,
-            received,
-            max,
         })
     }
 
@@ -3695,6 +3672,50 @@ fn unescape_log_string(s: &str) -> String {
     out
 }
 
+/// Parse the gift-cap note that gift-capped (Statehelm) NPCs show:
+/// `<Npc> will accept up to <b>5</b> gifts per calendar week and has received
+/// <b>2</b> so far this week.` The note is embedded in a ProcessTalkScreen
+/// (post-gift) or ProcessPromptForItem (pre-gift) line; either gives the
+/// game's authoritative current count, which the gift log is reconciled to.
+///
+/// Free function (uses no parser state) so the live parser dispatch and the
+/// Player.log gift backfill agree line-for-line.
+pub fn parse_gift_count_line(line: &str) -> Option<PlayerEvent> {
+    let ts = parse_timestamp(line)?;
+
+    let marker = " will accept up to <b>";
+    let marker_pos = line.find(marker)?;
+
+    // NPC display name: the word(s) just before " will accept up to". The
+    // preceding sentence ends with ". ", so take everything after the last
+    // ". " before the marker.
+    let before = &line[..marker_pos];
+    let name_start = before.rfind(". ").map(|i| i + 2).unwrap_or(0);
+    let npc_name = before[name_start..].trim().to_string();
+    if npc_name.is_empty() {
+        return None;
+    }
+
+    // max: the number inside the first <b>…</b> after the marker.
+    let after_marker = &line[marker_pos + marker.len()..];
+    let max_end = after_marker.find("</b>")?;
+    let max: u32 = after_marker[..max_end].trim().parse().ok()?;
+
+    // received: "has received <b>N</b> so far this week"
+    let recv_marker = "has received <b>";
+    let recv_pos = line.find(recv_marker)?;
+    let recv_rest = &line[recv_pos + recv_marker.len()..];
+    let recv_end = recv_rest.find("</b>")?;
+    let received: u32 = recv_rest[..recv_end].trim().parse().ok()?;
+
+    Some(PlayerEvent::GiftCountObserved {
+        timestamp: ts,
+        npc_name,
+        received,
+        max,
+    })
+}
+
 /// A poem parsed from a `Poem by X` talk-screen line.
 pub struct ParsedPoem {
     /// Raw `HH:MM:SS` timestamp from the log line.
@@ -4152,6 +4173,27 @@ mod tests {
             }
             _ => panic!("Expected FavorChanged"),
         }
+    }
+
+    #[test]
+    fn test_parse_login_line_anchors_the_session_date() {
+        let mut parser = PlayerEventParser::new();
+        // The real line: bracket time and `Time UTC=` are the same instant.
+        let events = parser.process_line(
+            r#"[22:43:41] Logged in as character TwinkleofToes. Time UTC=10/14/2026 22:43:41. Timezone Offset -05:00:00"#,
+        );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            PlayerEvent::LogSessionAnchored { utc } => {
+                assert_eq!(utc.to_string(), "2026-10-14 22:43:41");
+            }
+            other => panic!("Expected LogSessionAnchored, got {other:?}"),
+        }
+
+        // A line without the declared UTC time anchors nothing.
+        assert!(parser
+            .process_line("[12:00:00] Logged in as character [Zenith]")
+            .is_empty());
     }
 
     #[test]

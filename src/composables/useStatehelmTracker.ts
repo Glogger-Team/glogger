@@ -54,18 +54,48 @@ async function ensureSkillMeta() {
   return skillsLoadPromise
 }
 
-/** Get the Monday 00:00 UTC boundary for the current week */
+/** UTC offset of America/New_York at `instant`, in minutes (`-240` EDT,
+ *  `-300` EST), read from the platform's own tz database via `Intl` so the
+ *  DST rules are never re-implemented here. */
+function easternOffsetMinutes(instant: Date): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hour12: false,
+  }).formatToParts(instant)
+  const wall: Record<string, string> = {}
+  for (const { type, value } of parts) wall[type] = value
+  // `hour12: false` can render midnight as "24".
+  const asUtc = Date.UTC(
+    Number(wall.year), Number(wall.month) - 1, Number(wall.day),
+    Number(wall.hour) % 24, Number(wall.minute), Number(wall.second)
+  )
+  return Math.round((asUtc - instant.getTime()) / 60000)
+}
+
+/** Monday 00:00 America/New_York of the current week, as a real instant.
+ *
+ *  The game's gift-cap note says "The week resets on Monday EDT.", so the
+ *  boundary is Eastern time — 04:00/05:00 UTC on Monday, not Monday 00:00 UTC
+ *  (a UTC boundary misattributes every gift given around the reset). Must stay
+ *  identical to Rust's `game_state::current_week_start_utc`. */
 function getCurrentWeekStart(): Date {
   const now = new Date()
-  const utcDay = now.getUTCDay() // 0=Sun, 1=Mon, ...
+  const offsetNow = easternOffsetMinutes(now)
+  const easternNow = new Date(now.getTime() + offsetNow * 60000)
+  const utcDay = easternNow.getUTCDay() // 0=Sun, 1=Mon, ...
   const daysSinceMonday = utcDay === 0 ? 6 : utcDay - 1
-  const monday = new Date(Date.UTC(
-    now.getUTCFullYear(),
-    now.getUTCMonth(),
-    now.getUTCDate() - daysSinceMonday,
+  const mondayWall = Date.UTC(
+    easternNow.getUTCFullYear(),
+    easternNow.getUTCMonth(),
+    easternNow.getUTCDate() - daysSinceMonday,
     0, 0, 0, 0
-  ))
-  return monday
+  )
+  // The week can straddle a DST switch, so re-resolve the offset at the Monday
+  // itself before turning the wall clock into an instant.
+  const offsetMonday = easternOffsetMinutes(new Date(mondayWall - offsetNow * 60000))
+  return new Date(mondayWall - offsetMonday * 60000)
 }
 
 export function useStatehelmTracker() {
@@ -79,22 +109,43 @@ export function useStatehelmTracker() {
   const statehelmNpcs = computed<NpcInfo[]>(() => {
     const allNpcs = Object.values(gameData.npcsByKey)
     return allNpcs.filter(npc => {
-      // Only the Statehelm city proper (AreaStatehelm) uses the weekly 5-gift
-      // favor cap. Exclude the Statehelm Sewers (AreaStatehelmCaves), whose
-      // animal-form trainers (Pig/Rabbit/etc.) have no such cap.
+      // The weekly 5-gift cap is a Statehelm-region rule — the game's own note
+      // reads "Statehelm townsfolk are more sophisticated than villagers
+      // elsewhere… it would be uncouth to receive too many gifts per week" —
+      // and it applies in the Statehelm Sewers too (Hamilton, Smoke Tail and
+      // Fuzzlebun, all `AreaStatehelmCaves`, show the cap note).
       const area = (npc.area_name ?? '').toLowerCase()
-      return area === 'areastatehelm' && npc.preferences.length > 0
+      return (area === 'areastatehelm' || area === 'areastatehelmcaves')
+        && npc.preferences.length > 0
     }).sort((a, b) => a.name.localeCompare(b.name))
   })
 
   const weekStart = computed(() => getCurrentWeekStart())
-  const weekStartIso = computed(() => weekStart.value.toISOString())
+  /** Monday 00:00 America/New_York of the *following* week — the actual reset
+   *  instant. `weekStart + 168 h` is an hour off in the two DST-transition weeks
+   *  (the week there is 167 h / 169 h), so every countdown reads this. */
+  const nextWeekStart = computed(() => {
+    const w = weekStart.value
+    const wall = Date.UTC(w.getUTCFullYear(), w.getUTCMonth(), w.getUTCDate() + 7, 0, 0, 0, 0)
+    const offsetMonday = easternOffsetMinutes(new Date(wall - easternOffsetMinutes(w) * 60000))
+    return new Date(wall - offsetMonday * 60000)
+  })
+  /** The week boundary in the gift log's storage format
+   *  (`YYYY-MM-DD HH:MM:SS`, UTC). String comparisons must use this: an ISO
+   *  cutoff sorts before every Monday-dated row and silently drops them. */
+  const weekStartDb = computed(() => {
+    const d = weekStart.value
+    const p = (n: number) => String(n).padStart(2, '0')
+    return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
+  })
 
   const giftsThisWeek = computed(() => {
-    const cutoff = weekStartIso.value
+    const cutoff = weekStartDb.value
     const counts: Record<string, GiftLogEntry[]> = {}
     for (const entry of giftLog.value) {
-      if (entry.gifted_at >= cutoff) {
+      // Normalized: rows written by older builds carry ISO stamps, and 'T' > ' '
+      // would count a same-date row earlier in the day as in-week.
+      if (entry.gifted_at.replace('T', ' ').slice(0, 19) >= cutoff) {
         if (!counts[entry.npc_key]) counts[entry.npc_key] = []
         counts[entry.npc_key].push(entry)
       }
@@ -338,7 +389,7 @@ export function useStatehelmTracker() {
       characterName,
       serverName,
       npcKey,
-      weekStart: weekStartIso.value,
+      weekStart: weekStartDb.value,
     })
     await loadGiftLog()
   }
@@ -377,6 +428,6 @@ export function useStatehelmTracker() {
     loadSkillMeta: ensureSkillMeta,
     addGift,
     removeGift,
-    weekStart,
+    nextWeekStart,
   }
 }

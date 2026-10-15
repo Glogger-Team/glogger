@@ -588,6 +588,16 @@ pub fn run() {
                         }
                         Err(e) => eprintln!("Arena bet backfill failed: {e}"),
                     }
+                    // Statehelm weekly gift counts from Player.log +
+                    // Player-prev.log + archived rotated copies. Reads the same
+                    // two Player logs as the arena-bet backfill just above, so it
+                    // stays in this serialized chain (shared writer contention).
+                    match db::statehelm_commands::backfill_from_player_logs(&sm, &dbp, &ah) {
+                        // Emits `game-state-updated ["favor"]` and logs its own
+                        // progress line when it reconciles anything.
+                        Ok(_) => {}
+                        Err(e) => eprintln!("Statehelm gift backfill failed: {e}"),
+                    }
                     match db::words_of_power_commands::backfill_used_words_from_chat_logs(&sm, &dbp)
                     {
                         Ok(0) => {}
@@ -988,6 +998,7 @@ pub fn run() {
             get_gift_log,
             add_manual_gift,
             remove_last_gift,
+            db::statehelm_commands::backfill_statehelm_gifts,
             get_game_state_currencies,
             get_currency_estimate,
             get_game_state_effects,

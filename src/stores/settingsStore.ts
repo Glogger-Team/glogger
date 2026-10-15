@@ -39,6 +39,9 @@ export interface AppSettings {
   uiScale: number;
   autoDetectPathsOnStartup: boolean;
   autoIngestPlayerPrev: boolean;
+  playerLogArchiveRetentionDays: number;
+  playerLogArchiveMaxFiles: number;
+  playerLogArchiveMaxMb: number;
   farmingAutosaveMinutes: number;
   autoStartFarmingSessions: boolean;
   farmingSessionCapMinutes: number;
@@ -82,6 +85,9 @@ interface BackendSettings {
   ui_scale: number;
   auto_detect_paths_on_startup: boolean;
   auto_ingest_player_prev: boolean;
+  player_log_archive_retention_days: number;
+  player_log_archive_max_files: number;
+  player_log_archive_max_mb: number;
   farming_autosave_minutes: number;
   auto_start_farming_sessions: boolean;
   farming_session_cap_minutes: number;
@@ -126,6 +132,9 @@ function toBackendSettings(settings: AppSettings): BackendSettings {
     ui_scale: settings.uiScale,
     auto_detect_paths_on_startup: settings.autoDetectPathsOnStartup,
     auto_ingest_player_prev: settings.autoIngestPlayerPrev,
+    player_log_archive_retention_days: settings.playerLogArchiveRetentionDays,
+    player_log_archive_max_files: settings.playerLogArchiveMaxFiles,
+    player_log_archive_max_mb: settings.playerLogArchiveMaxMb,
     farming_autosave_minutes: settings.farmingAutosaveMinutes,
     auto_start_farming_sessions: settings.autoStartFarmingSessions,
     farming_session_cap_minutes: settings.farmingSessionCapMinutes,
@@ -241,6 +250,9 @@ function fromBackendSettings(settings: BackendSettings): AppSettings {
     uiScale: settings.ui_scale ?? DEFAULT_UI_SCALE,
     autoDetectPathsOnStartup: settings.auto_detect_paths_on_startup ?? false,
     autoIngestPlayerPrev: settings.auto_ingest_player_prev ?? true,
+    playerLogArchiveRetentionDays: settings.player_log_archive_retention_days ?? 14,
+    playerLogArchiveMaxFiles: settings.player_log_archive_max_files ?? 20,
+    playerLogArchiveMaxMb: settings.player_log_archive_max_mb ?? 512,
     farmingAutosaveMinutes: settings.farming_autosave_minutes ?? 5,
     autoStartFarmingSessions: settings.auto_start_farming_sessions ?? false,
     farmingSessionCapMinutes: settings.farming_session_cap_minutes ?? 120,
@@ -286,6 +298,9 @@ function getDefaultSettings(): AppSettings {
     uiScale: DEFAULT_UI_SCALE,
     autoDetectPathsOnStartup: false,
     autoIngestPlayerPrev: true,
+    playerLogArchiveRetentionDays: 14,
+    playerLogArchiveMaxFiles: 20,
+    playerLogArchiveMaxMb: 512,
     farmingAutosaveMinutes: 5,
     autoStartFarmingSessions: false,
     farmingSessionCapMinutes: 120,

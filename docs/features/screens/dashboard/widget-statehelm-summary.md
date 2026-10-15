@@ -28,7 +28,7 @@ Skill-driven summary of weekly Statehelm gift progress:
   - it is at **Like Family** *and* offers no storage — storage NPCs keep scaling past
     Like Family, so those stay on the list.
 
-Weekly reset is Monday 00:00 UTC. Uses the same `useStatehelmTracker` composable as the
+Weekly reset is Monday 00:00 America/New_York (the game's own reset instant; 04:00/05:00 UTC). Uses the same `useStatehelmTracker` composable as the
 full Statehelm tab — calls `loadGiftLog()` and `loadSkillMeta()` on mount.
 
 **Data source:** `useStatehelmTracker` composable (gift log from database, NPC + skill data

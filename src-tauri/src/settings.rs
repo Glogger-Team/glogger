@@ -177,6 +177,21 @@ pub struct AppSettings {
     #[serde(default = "default_true")]
     pub auto_ingest_player_prev: bool,
 
+    /// Rotated `Player.log` archive: keep copies for at most this many days.
+    /// (Same watcher as `auto_ingest_player_prev`; the archive lets the weekly
+    /// Statehelm gift tracker re-read the game's own gift counts.)
+    #[serde(default = "default_archive_retention_days")]
+    pub player_log_archive_retention_days: u32,
+
+    /// Rotated `Player.log` archive: keep at most this many copies.
+    #[serde(default = "default_archive_max_files")]
+    pub player_log_archive_max_files: u32,
+
+    /// Rotated `Player.log` archive: keep at most this many MiB in total. A
+    /// session's `Player.log` is 30–45 MB, so this is usually the binding limit.
+    #[serde(default = "default_archive_max_mb")]
+    pub player_log_archive_max_mb: u32,
+
     /// How often (in minutes) an active farming session is auto-saved to the
     /// database so its data survives a crash or power loss before the session is
     /// ended manually. 0 = disabled; otherwise one of 5, 10, or 30.
@@ -203,6 +218,18 @@ fn default_farming_autosave_minutes() -> u32 {
 
 fn default_farming_session_cap_minutes() -> u32 {
     120
+}
+
+fn default_archive_retention_days() -> u32 {
+    14
+}
+
+fn default_archive_max_files() -> u32 {
+    20
+}
+
+fn default_archive_max_mb() -> u32 {
+    512
 }
 
 fn default_dashboard_widget_opacity() -> u32 {
@@ -359,6 +386,9 @@ impl Default for AppSettings {
             ui_scale: default_ui_scale(),
             auto_detect_paths_on_startup: false,
             auto_ingest_player_prev: true,
+            player_log_archive_retention_days: default_archive_retention_days(),
+            player_log_archive_max_files: default_archive_max_files(),
+            player_log_archive_max_mb: default_archive_max_mb(),
             farming_autosave_minutes: default_farming_autosave_minutes(),
             auto_start_farming_sessions: false,
             farming_session_cap_minutes: default_farming_session_cap_minutes(),
@@ -611,5 +641,11 @@ mod tests {
         assert_eq!(s.game_data_path, "/tmp/game");
         assert_eq!(s.auto_purge_days, 90);
         assert!(!s.auto_purge_enabled);
+        // Settings files written before the rotated-log archive existed must
+        // pick up the archive defaults, not 0 (which would clamp to 1 and
+        // evict everything but one copy).
+        assert_eq!(s.player_log_archive_retention_days, 14);
+        assert_eq!(s.player_log_archive_max_files, 20);
+        assert_eq!(s.player_log_archive_max_mb, 512);
     }
 }
