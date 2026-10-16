@@ -1,10 +1,11 @@
-## What's Changed since v1.2.0
+## What's Changed since v1.2.1
 
-### Improvements
-- impv: drop dead chat-retention settings (`df82bcd`)
+### Features
+- feat: backfill Statehelm gift status from the game's own logs (`6324d55`)
 
 ### Fixes
-- fix: show learned-but-uncooked recipes in Cook's Helper (`697f8fc`)
+- fix: attribute each Player.log session to its own character during catch-up (`335a410`)
+- fix: review pass over the Statehelm gift backfill (`3a6350e`)
 
 ---
-*3 commits since v1.2.0*
+*4 commits since v1.2.1*
