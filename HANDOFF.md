@@ -6,12 +6,290 @@
 **Status:** ✅ Implemented + verified: `cargo test --lib` **689 passed** (6 ignored, 695 total), `npm run build` (vue-tsc + vite) clean,
 `pwsh scripts/check-glogger-constraints.ps1` green, and a live WebView2-CDP smoke over `glogger.Dev` (real logs, real DB).
 
+## Session 42 — per-session `Player.log` attribution (catch-up guard removed)
+
+**Date:** 2026-10-15. Closes the item "Catch-up guard drops a non-selected character's login
+snapshot" — added to `docs/TODO.md` the same day and filed straight under *Closed* (it came out of
+this session's own review, so it was never an open item).
+**Status:** ✅ `cargo test --lib` **703 passed** (6 ignored, 709 total — +2 new in the attribution pass,
++5 in the catch-up server hardening follow-up below), `npm run build`
+(vue-tsc + vite) clean, and a full two-character catch-up smoke on a throwaway profile (log orders
+both ways + single-character + WebView2-CDP check of what the UI actually loaded).
+
+### What changed
+
+- **A `Player.log` login line now *attributes* the session that follows it** instead of gating on
+  the selection. The catch-up branch of the coordinator's `CharacterLogin` arm calls the new
+  `DataIngestCoordinator::adopt_player_log_session`, so a session's own full-state dumps
+  (`SkillsLoaded`, recipes, equipment) and its deltas are written under the character that
+  produced them rather than being dropped. Dropping was only ever safe while "active character"
+  had two owners — the guard compared `settings` while persistence read the game state.
+  `GameStateManager` is now the single owner of the ingest identity, and `ingest_shop_log` (the
+  last `settings` read in the event path, and the reason per-session attribution used to
+  split-brain the DB) reads it too.
+- **`session_server_for` (new module-level helper)** resolves the session's server from
+  `user_characters` — the table that pairs a character with a server, written by the Chat.log
+  login marker — preferring the server already in use, then the picker's active row,
+  then the most recently updated one. It answers a tri-state (`SessionServerLookup`):
+  `Row(server)`, `NoRow` (no row for that character — hands off to
+  `apply_catch_up_login`, which takes the character's own `Chat.log` login line and only falls
+  back to the server in use when neither source knows it), and `Failed` (pool/prepare/SQL error —
+  keeps the server in use and does *not* reach the chat tier, so a read error cannot masquerade as
+  an unknown character). Pinned by
+  `coordinator::session_identity_tests::session_server` (all six cases, incl. a dropped
+  `user_characters` table for `Failed`, + the tie-breaks) and by
+  `catch_up_login_takes_the_server_from_the_chat_log` / `…_keeps_the_server_in_use` /
+  `…_never_borrows_another_characters_marker`.
+- **Catch-up end (`poll`) syncs `settings` — character *and* server — to the ingest identity**
+  (rows and every query are keyed by both), and still re-arms from the watcher's restored
+  character when the drained content contained no login line at all (a log resumed mid-session).
+  `GameStateManager::clear_active_character` is deleted; nothing else referenced it.
+- **Frontend (deviation from the plan, forced by measurement).** The plan assumed the
+  post-catch-up `settingsStore.initialize()` re-read the backend settings. It does not: it
+  early-returns on `isLoaded`, which the splash phase already set. Measured on the smoke profile,
+  the UI stayed on the pre-catch-up selection and keyed every query on it (150 skills for the
+  seeded character) while ingest wrote the adopted one. `initialize(force = false)` now takes a
+  force flag and `startupStore` passes `true` at that call, so Tasks 3–4 load the character the
+  catch-up adopted. Verified over CDP: header renders `OtherAltServer — OtherAlt` and
+  `gameState.skills` holds OtherAlt's own row (`Combat` 99, `2026-10-14 12:00:35`) instead of the
+  seeded character's 150 skills.
+- **A failed settings read no longer fabricates defaults.** `loadSettings()` returned
+  `getDefaultSettings()` on a read error, which `initialize()` assigned over the loaded copy — a
+  later full-object `save_settings` would then persist those defaults. It now returns `null`
+  (`settingsStore.ts`), and `initialize()` keeps the copy it has (on the forced re-read, the
+  splash-phase one) and leaves `isLoaded` false so a *first* load still retries.
+- Guarded by `game_state::tests::identity_switch_keeps_each_sessions_skills` (two sessions' dumps
+  stay separate — the measured `TestPlayer / Combat = 99` shape, where the second session's full
+  dump replaced the first's). It is a contract guard on the pair-scoped dump, **not** a regression
+  pin: it drives `GameStateManager` directly and passes on the pre-change code, because what routes
+  a session to its identity is `adopt_player_log_session` (covered by the catch-up smoke above).
+
+### Smoke (throwaway profile)
+
+Copy of the dev DB (`sqlite3` backup, WAL recovered) + synthetic `Player.log` under `%TEMP%`,
+`db_path`/`log_file_path` pointed at it, path auto-detect / chat tailing / report watching off.
+Real `%APPDATA%\glogger.Dev\settings.json` backed up and restored **byte-identical**
+(md5 `ec6fe42780f1ba158abff6608f57943b`); real dev DB untouched (`glogger.db` mtime unchanged);
+throwaway dir deleted. `user_characters` seeded `TestPlayer/Dreva` (`is_active=1`),
+`TestPlayer/Legacy` (`updated_at` newer), `OtherAlt/OtherAltServer`.
+
+- **Two sessions, TestPlayer → OtherAlt:** console `Player.log session identity: TestPlayer on
+  Dreva (server from server in use)` → `Player.log session identity: OtherAlt on OtherAltServer
+  (server from chat log)` → `Catch-up identity: OtherAlt on OtherAltServer`; DB `game_state_skills`
+  = `TestPlayer/Dreva` 7 **and** `OtherAlt/OtherAltServer` 99 (the second session neither dropped
+  nor merged); `settings.json` → `OtherAlt` / `OtherAltServer`.
+- **Order flipped (OtherAlt → TestPlayer):** ends `TestPlayer` / `Dreva` in settings, both rows
+  unchanged — the end state follows the log's newest session.
+- **Single-character log with the selection already equal to it:** no `Catch-up identity:` line
+  (no settings churn), rows unchanged — today's behavior for the matching case.
+- **Resumed from a saved byte position** (no login line in the drained content): identity comes
+  from the settings seed / the watcher's restored character, unchanged from before.
+- **UI (CDP):** after catch-up the settings store reads `OtherAlt / OtherAltServer`, the
+  Character screen header renders `OtherAltServer — OtherAlt`, and the loaded skill set is the
+  adopted character's own.
+
+### Assumption / residual
+
+- A session whose character has no `user_characters` row **and no login line in any `Chat-*.log`**
+  keeps the server in use, so its rows land under that fallback `(character, server)` key
+  **permanently** — a full-state dump only replaces its own pair slice, so a later real login fixes
+  the rows written after it, not those. (The earlier "bounded… until its next real login" wording was
+  wrong.) Accepted: the fallback key is the one that character's other sessions use unless it plays
+  on a different server than the current selection, and the alternative — leaving the server unset —
+  drops the session, which is the loss `adopt_player_log_session` removes. Only invisible to the
+  server-scoped UI; the console line names the pair used *and where it came from*
+  (`(server from …)`).
+  - **Narrowed by the chat-login tier.** The character's own `Chat.log` login line is the second
+    source (`chat_session_servers`, scanned once per catch-up window before the Player.log drain),
+    so a character absent from `user_characters` now takes its server from the logs instead of
+    borrowing another character's, and the key *is* a pure function of the logs whenever either
+    source answers. This is what the earlier "making the key log-derived too means a `poll()`
+    drain-order swap" note called not done: the scan runs first, but the drain order itself did not
+    change — only where `set_live_mode()` lands (after the chat drain, so the marker no longer
+    clears transient rows the replay just built).
+- Same class, narrower: a **server switch** inside replayed history is not seen when the character
+  has a `user_characters` row. The server in use wins the tie-break, so such a session is keyed to
+  the current one until the Chat.log marker's live login corrects the identity (`poll()` drains the
+  Player.log before the Chat.log). A character with *no* row is not affected: its chat login line
+  decides.
+- Live login lines for another character are still ignored unless the identity is `None`; live
+  switches (and the `character-login` emit + frontend reload) remain the Chat.log marker's job.
+- `user_characters.is_active` is untouched (the picker owns it). `record_stall_prices` (UI
+  command) and `books_watcher` (own thread) still read `settings` deliberately — they stamp
+  user-side artifacts, not log-derived rows, which is why the durable selection stays accurate.
+
+### Follow-up (same session): catch-up server hardening — log-derived key + drain ordering
+
+Three changes on top of the attribution pass, all in `coordinator.rs`:
+
+- **`chat_session_servers` (new module-level helper).** `character -> server` from every
+  `Chat-*.log` under the chat-log dir, files visited oldest-name-first (`Chat-YY-MM-DD.log` sorts
+  chronologically) so the last login line wins and the answer depends only on the log files.
+  `parse_chat_login_line` is reused — no new parser. `DataIngestCoordinator` caches it in
+  `catch_up_chat_servers`, rebuilt by `refresh_catch_up_session_servers` at the top of `poll()`
+  while `!is_live()` (i.e. before the Player.log drain) and cleared when live mode turns on.
+- **`apply_catch_up_login` (new free function) is the whole server decision**, extracted out of
+  `adopt_player_log_session` so it can be driven without a coordinator or an `AppHandle`
+  (`tauri::test::mock_app` yields `App<MockRuntime>` while `DataIngestCoordinator::new` takes a
+  `Wry` handle — a `poll()`-level test would need the coordinator generic over `Runtime`, out of
+  proportion). Tiers: `user_characters` row (server in use, else picker-active/newest) →
+  the character's own chat login line → the server in use. It returns `SessionServerSource`
+  (`InUse` / `UserCharacters` / `ChatLog` / `None`), now printed by the identity line:
+  `Player.log session identity: X on Y (server from …)`.
+- **`set_live_mode()` moved after the chat drain.** It used to run inside the `!is_live()` block
+  *before* `ChatLogWatcher::poll()`, so the catch-up's own chat login marker called
+  `set_active_character` with `live_mode = true` and `DELETE`d `game_state_inventory` /
+  `equipment` / `combat` / `mount` (plus the favor-delta reset) for that character+server —
+  wiping transient rows the replay had just built. Live mode now turns on only after both drains
+  have been replayed, re-evaluated every poll; the console line became
+  `Catch-up complete — switching to live tailing mode`.
+
+Pinned by 5 new tests in `coordinator::session_identity_tests` (709 total, 57 files):
+`chat_session_servers_reads_oldest_file_first`, `chat_session_servers_missing_dir_is_empty`,
+`catch_up_login_takes_the_server_from_the_chat_log` (the regression pin — real scanner, real
+migrated DB, real `process_events_batch`, asserting `OtherAlt/OtherAltServer = 99` **and no
+`OtherAlt/Dreva` row**), `catch_up_login_unknown_character_keeps_the_server_in_use`,
+`catch_up_login_never_borrows_another_characters_marker`. Falsified first: reverting only the
+chat tier's `None =>` arm makes the pin fail on the `ChatLog` source assert (`left: None`).
+
+**Smoke (throwaway profile, 4 launches, `npm run tauri dev`).** Fresh `db_path` + synthetic
+`Player.log` (two sessions, `LOADING LEVEL TestArea` / `OtherArea`) and
+`game/ChatLogs/Chat-26-10-15.log` (two real-format login lines) under `%TEMP%\glogger-hardening`;
+`settings.json` pointed at all three; path auto-detect, Player-prev ingest, CDN check/update,
+chat tailing (except the last run) and report watching off. Real `settings.json` restored
+byte-identical (md5 `ec6fe42780f1ba158abff6608f57943b`), real `glogger.db` (+`-wal`/`-shm`) and
+`data/` untouched (only `settings.json` had a fresh mtime; `.window-state.json` unchanged),
+throwaway dir deleted.
+
+- **Run A — fresh DB, no `user_characters` rows, chat tailing off:** console
+  `Catch-up chat-login scan: 2 character(s) with a server in …\glogger-hardening\game\ChatLogs` →
+  `Player.log session identity: TestPlayer on Dreva (server from chat log)` →
+  `…OtherAlt on OtherAltServer (server from chat log)` → `Catch-up identity: OtherAlt on
+  OtherAltServer`; `game_state_area` = `TestPlayer|Dreva|TestArea` **and**
+  `OtherAlt|OtherAltServer|OtherArea`, no other key. Pre-change the second session would have
+  read `OtherAlt on Dreva` (the selected character's server).
+- **Run B — picker row `TestPlayer/Dreva` seeded, positions cleared, same log:**
+  `…TestPlayer on Dreva (server from user_characters)` → `…OtherAlt on OtherAltServer (server from
+  chat log)`; the same two `game_state_area` keys, no duplicate and no `OtherAlt/Dreva`.
+- **Run C — log order flipped (OtherAlt first):** `…OtherAlt on OtherAltServer (server from chat
+  log)` → `…TestPlayer on Dreva (server from user_characters)` → `Catch-up identity: TestPlayer on
+  Dreva`; both area rows unchanged, `settings.json` ends on `TestPlayer` / `Dreva`.
+- **Run D — `auto_tail_chat: true`, selection reset to `TestPlayer`/`Dreva`, positions cleared,
+  and a probe `game_state_inventory` row `OtherAlt|OtherAltServer|Probe Item` seeded:**
+  `…TestPlayer on Dreva (server from server in use)` → `…OtherAlt on OtherAltServer (server from
+  chat log)` (all three resolution tiers now exercised), then the chat drain —
+  `Server detected: OtherAltServer (character: OtherAlt)` →
+  `Active character set: OtherAlt on OtherAltServer (mode: replay)` /
+  `[game_state] Active character set to OtherAlt on OtherAltServer (replay)` — **before**
+  `Catch-up complete — switching to live tailing mode`; the probe row **survived** the marker's
+  `set_active_character` (pre-fix, `live_mode` was already true there, the line lost its `(replay)`
+  suffix and the four tables were wiped for `OtherAlt|OtherAltServer`).
+
+### Review-fix pass (same session) — 3 findings, all fixed
+
+Two-reviewer pass over the uncommitted change (Rust core; frontend + docs). No blocker; the core
+change was confirmed sound (one owner for the ingest identity, resolver SQL against the real
+`user_characters` schema, the catch-up sync runs once and no-ops when unchanged,
+`clear_active_character` genuinely unreferenced).
+
+- **`session_server_for` no longer answers a failed query like an unknown character.**
+  `db.get()` / `prepare` / SQL failures all collapsed into `None` via `.ok()?`, and `None` is the
+  caller's *semantic* "no row → keep the server in use" — so a read failure silently keyed a whole
+  replayed session to another character's server, and the `Player.log session identity:` line looked
+  like a success. Every failure is now logged with its cause (same shape as Session 41's
+  `scan_gift_notes` fix).
+
+  This bullet originally claimed "only `QueryReturnedNoRows` is `None` now" — the error arms still
+  returned that same `None`, so the claim was false; the *second* review-fix pass (same session,
+  below) made it literal by replacing the `Option` with the `SessionServerLookup` tri-state
+  (`Row` / `NoRow` / `Failed`), where `Failed` keeps the server in use and never reaches the
+  chat tier.
+- **The live re-arm comment claimed an unreachable state.** It said a live login line re-arms when
+  "a previous session (or the catch-up replay) left it cleared" — but this patch deleted the only
+  code that cleared the identity (`clear_active_character`), so after `GameStateManager::new` the
+  field can now only be *never established*. Comment and its console line reworded accordingly.
+- **Test census bumped.** `AGENTS.md` (`:51`, `:98`) and `docs/TODO.md:183` still said 702 / "696
+  passed + 6 ignored" while this session's own `HANDOFF` line said 698 passed / 704 total. The
+  docs were corrected to the count at that point in the session (**704** total: 702 + this pass's
+  2), and then re-corrected to **709 / 703 passed** when the catch-up server-hardening follow-up
+  below added its 5 tests. Verified by `cargo test --lib` → `703 passed; 0 failed; 6 ignored` and
+  by count (`#[test]` = 709, still 57 files, 6 `#[ignore]`).
+
+### Review-fix pass #2 (same session) — 3-reviewer pass, 7 findings, all fixed
+
+Second in-harness pass over the same uncommitted change set (`coordinator.rs`, `game_state.rs`,
+`settingsStore.ts`, `startupStore.ts` + the three docs), one reviewer per locality. No blocker:
+the attribution core was re-confirmed sound (flush-before-adopt, resolver order against the real
+`user_characters` schema, the guard's deletion complete with no test lost, `initialize(true)`
+necessary *and* correctly placed after the awaited `poll_watchers`). Fixed:
+
+- **The `session_server_for` fix above was cosmetic.** Its error arms still returned the caller's
+  "no row" answer, so the comment's and this file's claim that a failed read is distinguished was
+  false — see the rewrite of that bullet above and the `SessionServerLookup` tri-state in the code.
+- **The chat-login scan ran once per non-live *poll*, not once per catch-up window.**
+  `set_live_mode()` is only reached at the bottom of a poll, so any persistent player-side error
+  (`PlayerLogWatcher::poll` / the `ChatLogPath` arm) made the 500ms polling thread re-read every
+  `Chat-*.log` under the coordinator lock, forever. `catch_up_servers_scanned` now gates the scan
+  the way the docs always described it (cleared with the map when the window closes).
+- **Doc claims that settings trails the replay for the whole catch-up were wrong.** The chat
+  drain's `ServerDetected` / `CharacterLogin` arms write `settings` in *both* modes (no `is_live`
+  gate), and `poll`'s sync runs after the Player.log drain, before the chat drain. Comment
+  (`adopt_player_log_session`), the poll sync comment and the `AGENTS.md` gotcha now say what the
+  code does; `AGENTS.md` also records the `Failed` lookup outcome.
+- **`docs/architecture/live-event-streams.md` still documented the old poll order** (live-mode
+  switch as step 2, between the drains) after this change moved it after both; its "~1.5s tick"
+  was stale too (the tick is `spawn_polling_thread(…, 500ms)` in `lib.rs`). Both corrected. The
+  same 1500ms claim still sits in `pipeline-structure.md:78-79` and `startup-sequence.md:37,130`
+  — pre-existing drift, outside this change set, left alone.
+- **This file's own review-fix bullet census was wrong** (704 / 698 vs the 709 / 703 now in every
+  doc); corrected, with the two-step bump made explicit.
+- **Session 41's "identity could stay cleared into live tailing" bullet narrated the deleted guard
+  as current behavior**; annotated.
+- **The frontend bullet omitted the `loadSettings` failure-semantics change**; recorded.
+
+### Review-fix pass #3 (same session) — 3-reviewer re-review of the fixed tree, 6 findings
+
+Third in-harness pass, same three localities, over the tree as fixed above. No blocker and no code
+defect: the tri-state routing (`Failed` never reaches the chat tier, all five `SessionServerSource`
+variants constructed), the `catch_up_servers_scanned` window (set once before the work, cleared only
+where the window ends, and `process_player_events` has exactly one caller so the map is always built
+before `adopt_player_log_session` reads it), the deferred `set_live_mode` (replay-mode chat drain, so
+the live-gated `DELETE`s no longer run against replayed rows), the `clear_active_character` deletion
+(no caller/test/assertion left, `process_events_batch`'s `None` guard still reachable), the
+`loadSettings` null path (single consumer, cannot clobber the loaded copy — and the skipped style
+appliers are value-identical to the stylesheet fallbacks), and `initialize(true)` (load-bearing: no
+`settings-*` listener exists; race-free: the awaited `poll_watchers` is synchronous and the write is
+in-memory+disk before it returns) were all re-verified against the code. Five document defects and
+one test-comment defect were fixed:
+
+- **`docs/TODO.md:198` described the server resolution without its chat tier** ("an unknown character
+  keeps the server in use" — false, and it contradicted `AGENTS.md` and this file's own run log).
+  Reworded to the real chain.
+- **`AGENTS.md:115` attributed the `TestPlayer / Combat = 99` shape to "before per-session
+  attribution"** — a dropped session cannot replace the real 7, so the sentence contradicted itself.
+  The `99` belongs to the *pre-guard* era (dead login matcher); the guard fixed it by dropping, and
+  dropping's cost (the alt's own rows) is what this session's attribution removes.
+- **`HANDOFF.md:180` claimed "all four tiers now exercised"**; the runs print three
+  (`server in use`, `user_characters`, `chat log`). Corrected.
+- **The Session-41 header's verdict** ("switch identity instead of dropping — is unsafe") was the
+  last un-annotated passage the change reverses; annotated like its siblings.
+- **The case-(f) comment in `coordinator.rs` claimed a mechanism that is not what fires.**
+  Disputed, then settled by measurement: `cargo test --lib …::session_server --exact --nocapture`
+  prints `session server lookup failed: no such table: user_characters` — the *query* arm's wording,
+  not the prepare arm's — so the comment now names the arm it covers and says the pool/prepare arms
+  are not reachable from there (an earlier draft's "SQLite reports it at prepare" claim was wrong).
+- **`GameStateManager::get_active_character`/`get_active_server` were still captioned "Debug: get…"**
+  although the coordinator's whole ingest identity now hangs off them. Re-documented as the ingest
+  identity's two halves rather than a debug view.
+
 ## Session 41 — review-fix pass over Session 40's commit
 
 **Date:** 2026-10-15 (fixes for `6324d55`, from an 8-reviewer in-harness pass plus an
 independent external review; every claim below was re-verified against the code, and two
 were corrected: the external review's "whole session is dropped" is bounded to the login
-snapshot, and its suggested remedy — switch identity instead of dropping — is unsafe).
+snapshot, and its suggested remedy — switch identity instead of dropping — is unsafe.
+*(Superseded in Session 42, which ships that remedy: it was unsafe only while the ingest identity
+had two owners, and removing that split is what Session 42 did.)*)
 **Status:** ✅ `cargo test --lib` **696 passed** (6 ignored, 702 total — +7 new), `npm run build`
 clean, `pwsh scripts/check-glogger-constraints.ps1` green.
 
@@ -28,9 +306,13 @@ clean, `pwsh scripts/check-glogger-constraints.ps1` green.
 - **Rescan logs blocked the window.** `backfill_statehelm_gifts` was a sync command, so Tauri ran
   the scan (two live logs plus up to `player_log_archive_max_mb` = 512 MiB of archive) on the
   main thread. Now `async` + `tokio::task::spawn_blocking`, mirroring `replay::ingest_player_log`.
-- **Identity could stay cleared into live tailing, dropping the whole live session.** The catch-up
-  guard sets `active_character = None` for other characters, and `process_events_batch` drops
-  every event while it is `None`; the only other re-arm is the Chat.log marker, whose watcher
+- **Identity could stay cleared into live tailing, dropping the whole live session.** *(Premise
+  obsolete in Session 42: the catch-up guard and `clear_active_character` it rests on were deleted
+  — a Player.log login line now attributes its session instead of clearing the identity for other
+  characters. Both re-arm paths described here still exist, now reachable only from the
+  never-established state.)* The catch-up guard sets `active_character = None` for other
+  characters, and `process_events_batch` drops every event while it is `None`; the only other
+  re-arm is the Chat.log marker, whose watcher
   tails from a saved position and can miss it. Two fixes, both writing settings *and* game state
   with no `character-login` emit: `poll()` re-arms at catch-up end from the Player.log watcher's
   last login line, and a live login line re-arms when `active_character` is `None`.
@@ -209,6 +491,9 @@ cross-path agreement rather than a revertible line.
   extra — identity and the frontend reload stay owned by the Chat.log marker in
   `process_chat_events`. Re-ran the same profile: `TestPlayer / Combat = 7`, no other-character rows,
   console shows `Ignoring catch-up login for 'OtherAlt' (selected character is 'TestPlayer')`.
+  *(The catch-up guard described above was **removed in Session 42** — the login line now attributes
+  the session that follows it, which is the same outcome for this profile and also keeps the alt's
+  own session instead of dropping it.)*
 
 ### Follow-up (same session): the live reconcile now honours the week, like the backfill
 
@@ -285,6 +570,8 @@ cross-path agreement rather than a revertible line.
 - Character attribution during catch-up, before/after on the same synthetic two-character log:
   `TestPlayer / Combat = 99` (OtherAlt's skill load overwrote it) → `TestPlayer / Combat = 7` with no
   other-character rows, and `Ignoring catch-up login for 'OtherAlt' …` in the console.
+  *(Session 42: that guard message no longer exists — the login line attributes the session instead,
+  so the same log now also keeps OtherAlt's own rows. The `TestPlayer = 7` outcome is unchanged.)*
 
 ### Review pass (same session) — 6 findings, all fixed
 

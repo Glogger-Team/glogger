@@ -55,11 +55,11 @@ DataIngestCoordinator                       DataIngestCoordinator
 
 ### Poll cycle ordering
 
-Both watchers are polled on the same coordinator tick (every ~1.5s). Within a single tick:
+Both watchers are polled on the same coordinator tick (every 500ms — `spawn_polling_thread(coordinator, Duration::from_millis(500))`, `lib.rs`). Within a single tick:
 
 1. **Player events processed first** — `process_player_events()`
-2. **Game state switches to live mode** after the first poll (catch-up replay complete)
-3. **Chat events processed second** — `process_chat_events()`
+2. **Chat events processed second** — `process_chat_events()`
+3. **Game state switches to live mode** after the first poll (catch-up replay complete) — i.e. after both drains: the chat login marker's `set_active_character` clears transient state when live, and that must not land on rows the replay just built
 4. **Watcher positions saved** to database
 
 This ordering means a `PlayerEvent::ItemAdded` always arrives before the corresponding `ChatStatusEvent::ItemGained` for the same game action. Features that correlate across streams can rely on this.
