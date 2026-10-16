@@ -308,13 +308,14 @@ function getDefaultSettings(): AppSettings {
   };
 }
 
-async function loadSettings(): Promise<AppSettings> {
+/** `null` when the backend read failed: the caller keeps the copy it has. */
+async function loadSettings(): Promise<AppSettings | null> {
   try {
     const backendSettings = await invoke<BackendSettings>("load_settings");
     return fromBackendSettings(backendSettings);
   } catch (e) {
     console.error("Failed to load settings:", e);
-    return getDefaultSettings();
+    return null;
   }
 }
 
@@ -332,11 +333,24 @@ export const useSettingsStore = defineStore("settings", () => {
   const settingsFilePath = ref<string>("");
   const isLoaded = ref(false);
 
-  // Initialize settings on store creation
-  async function initialize() {
-    if (isLoaded.value) return;
+  // Initialize settings on store creation.
+  //
+  // `force` re-reads the backend copy even though the store is already loaded:
+  // the catch-up replay can change the active character/server *after* the
+  // splash-phase load (per-session Player.log attribution syncs `settings` at
+  // the end of the catch-up poll), and startup then keys the character and
+  // game-state loads on it — without the re-read the UI would stay on the
+  // pre-catch-up selection.
+  async function initialize(force = false) {
+    if (isLoaded.value && !force) return;
 
-    settings.value = await loadSettings();
+    // A failed read is `null`: keep whatever is loaded — on the forced re-read
+    // that is the splash-phase copy — instead of replacing it with defaults,
+    // which a later full-object `save_settings` would then persist. `isLoaded`
+    // stays false when the *first* load fails, so the next call retries.
+    const loaded = await loadSettings();
+    if (!loaded) return;
+    settings.value = loaded;
     applyFontFamily(settings.value.uiFontFamily);
     applyFontSize(settings.value.uiFontSize);
     applyDashboardWidgetOpacity(settings.value.dashboardWidgetOpacity);

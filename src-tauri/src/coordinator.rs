@@ -131,6 +131,14 @@ pub struct DataIngestCoordinator {
     /// a pair straddling a minute boundary is still one rez. Pruned to a
     /// bounded window below so it never grows unbounded.
     last_rez_dedup: std::collections::HashMap<String, String>,
+    /// `character -> server` scanned from the chat logs at the start of the
+    /// catch-up window (`refresh_catch_up_session_servers`); cleared once live.
+    catch_up_chat_servers: std::collections::HashMap<String, String>,
+    /// Whether `catch_up_chat_servers` was built for this catch-up window.
+    /// One scan per window, not one per non-live poll: a poll that fails before
+    /// reaching `set_live_mode` would otherwise re-read every `Chat-*.log` on
+    /// the 500ms polling thread, holding the coordinator lock each time.
+    catch_up_servers_scanned: bool,
 }
 
 impl DataIngestCoordinator {
@@ -175,6 +183,8 @@ impl DataIngestCoordinator {
             recent_kills: std::collections::HashMap::new(),
             arena_tracker: crate::arena_parser::ArenaTracker::new(),
             last_rez_dedup: std::collections::HashMap::new(),
+            catch_up_chat_servers: std::collections::HashMap::new(),
+            catch_up_servers_scanned: false,
         })
     }
 
@@ -212,6 +222,68 @@ impl DataIngestCoordinator {
         let c = self.game_state.get_active_character()?;
         let s = self.game_state.get_active_server()?;
         Some((c.to_string(), s.to_string()))
+    }
+
+    /// Adopt a Player.log session's own character as the ingest identity.
+    ///
+    /// The Player.log is a sequence of per-character sessions; each
+    /// `Logged in as character X` line starts one, and everything after it must
+    /// be keyed to X. Only the game state is written — it is the single owner of
+    /// the ingest identity, and every log-derived row write reads it. The
+    /// durable/display selection in `settings` is not this path's business: the
+    /// chat log's own login marker writes it during the replay too (that arm has
+    /// no `is_live` gate), and `poll` syncs both fields from the ingest identity
+    /// right after the Player.log drain — which is the value the frontend loads
+    /// once `poll_watchers` returns.
+    ///
+    /// The server is not in the Player.log: it is the character's own
+    /// `user_characters` row when it has one (picker-active, else newest), else
+    /// the character's own chat login line from this catch-up's
+    /// `chat_session_servers` scan, else the server in use. See
+    /// `apply_catch_up_login`.
+    fn adopt_player_log_session(&mut self, character_name: &str) -> SessionServerSource {
+        let source = apply_catch_up_login(
+            &mut self.game_state,
+            &self.db_pool,
+            &self.catch_up_chat_servers,
+            character_name,
+        );
+        startup_log!(
+            "Player.log session identity: {} on {} (server from {})",
+            character_name,
+            self.game_state.get_active_server().unwrap_or("(unknown server)"),
+            source.label()
+        );
+        source
+    }
+
+    /// One chat-login scan per catch-up window, before the Player.log drain.
+    ///
+    /// Guarded by `catch_up_servers_scanned` rather than by `is_live()`, so a
+    /// poll that fails before `set_live_mode` — the only thing that ends the
+    /// window — re-drains the log without re-reading every `Chat-*.log`.
+    fn refresh_catch_up_session_servers(&mut self) {
+        if self.catch_up_servers_scanned {
+            return;
+        }
+        self.catch_up_servers_scanned = true;
+        let dir = self.settings.get_chat_logs_dir().or_else(|| {
+            self.player_watcher
+                .as_ref()
+                .and_then(|w| w.get_chat_log_path())
+                .and_then(|p| p.parent().map(std::path::PathBuf::from))
+        });
+        let Some(dir) = dir else {
+            self.catch_up_chat_servers.clear();
+            startup_log!("Catch-up chat-login scan skipped: no chat log directory");
+            return;
+        };
+        self.catch_up_chat_servers = chat_session_servers(&dir);
+        startup_log!(
+            "Catch-up chat-login scan: {} character(s) with a server in {}",
+            self.catch_up_chat_servers.len(),
+            dir.display()
+        );
     }
 
     /// Read access to the DB pool. Feature commands need this to issue
@@ -613,6 +685,13 @@ impl DataIngestCoordinator {
 
     /// Poll all active watchers and process events
     pub fn poll(&mut self) -> Result<(), String> {
+        // One chat-login scan per catch-up window: the Player.log names no
+        // server, and a character with no `user_characters` row has no other
+        // log-derived source. Built before the drain so every login line sees it.
+        if !self.game_state.is_live() {
+            self.refresh_catch_up_session_servers();
+        }
+
         // Poll player log watcher
         if let Some(watcher) = &mut self.player_watcher {
             let events = watcher.poll()?;
@@ -623,14 +702,10 @@ impl DataIngestCoordinator {
         // logins will properly clear transient state. During the initial catch-up
         // replay we skip clearing to preserve data built for each character.
         if !self.game_state.is_live() {
-            // The catch-up guard drops the sessions of characters other than the
-            // selected one, so a log whose *last* login is one of them leaves
-            // `active_character = None` — and every live event is dropped by
-            // `process_events_batch` until something re-arms it. The Player.log
-            // watcher records the last login line's character unconditionally
-            // (the matcher, not the guard), so re-arm from that: it is the
-            // session actually being tailed now. Without this the whole live
-            // session is lost whenever the chat marker is missed.
+            // No login line was seen at all (the log was resumed mid-session
+            // from a saved position): the watcher's restored character is then
+            // the only identity source. Without this, `process_events_batch`
+            // drops every live event until the chat marker fires.
             if self.game_state.get_active_character().is_none() {
                 if let Some(name) = self
                     .player_watcher
@@ -639,23 +714,55 @@ impl DataIngestCoordinator {
                     .map(str::to_string)
                 {
                     startup_log!(
-                        "Player.log catch-up left the active character cleared; re-arming from the log's last login: '{}'",
+                        "Player.log catch-up saw no login line; re-arming from the log's saved position: '{}'",
                         name
                     );
-                    let mut settings = self.settings.get();
-                    settings.active_character_name = Some(name.clone());
-                    self.settings.update(settings).ok();
-                    self.game_state.set_active_character_name(&name);
+                    self.adopt_player_log_session(&name);
                 }
             }
-            startup_log!("Player.log catch-up complete — switching to live tailing mode");
-            self.game_state.set_live_mode();
+
+            // The log's newest session is who is playing now: make the durable
+            // selection agree with the ingest identity — character *and* server,
+            // because every query and every row is keyed by both, and the
+            // frontend re-reads settings right after this poll. This is the
+            // Player.log drain's identity, not the poll's: the chat drain below
+            // runs after it and its own login marker may then re-set both fields
+            // (it has no `is_live` gate), and the frontend reads the result of
+            // the whole poll.
+            if let Some((name, server)) = self.active_character_server() {
+                let mut settings = self.settings.get();
+                if settings.active_character_name.as_deref() != Some(name.as_str())
+                    || settings.active_server_name.as_deref() != Some(server.as_str())
+                {
+                    startup_log!("Catch-up identity: {} on {}", name, server);
+                    settings.active_character_name = Some(name);
+                    settings.active_server_name = Some(server);
+                    self.settings.update(settings).ok();
+                }
+            } else {
+                startup_log!(
+                    "Player.log catch-up finished with no ingest identity — live events will be dropped"
+                );
+            }
         }
 
         // Poll chat log watcher
         if let Some(watcher) = &mut self.chat_watcher {
             let events = watcher.poll()?;
             self.process_chat_events(events)?;
+        }
+
+        // Live mode turns on only after the whole catch-up — the Player.log drain
+        // *and* the chat drain — has been replayed: the chat login marker's
+        // `set_active_character` clears transient state when live, and that must
+        // not happen to rows the replay just built. Re-evaluated every poll, so a
+        // failed poll simply retries (without re-running the chat-login scan —
+        // see `catch_up_servers_scanned`).
+        if !self.game_state.is_live() {
+            startup_log!("Catch-up complete — switching to live tailing mode");
+            self.game_state.set_live_mode();
+            self.catch_up_chat_servers.clear();
+            self.catch_up_servers_scanned = false;
         }
 
         // Drain raw lines from watchers into the debug capture temp file
@@ -814,26 +921,27 @@ impl DataIngestCoordinator {
                     // expects (see `process_chat_events`) — so don't emit a second
                     // `character-login` per login here.
                     //
-                    // During catch-up this line is the only thing that can stop
-                    // one character's session from being written under another's
-                    // identity. Every game-state table keys on `character_name`
-                    // and most are full-state dumps, so an unguarded catch-up
-                    // over a log holding two characters silently replaces the
-                    // selected character's skills/inventory with the other's
-                    // (measured: TestPlayer ended up with OtherAlt's skill load).
+                    // During catch-up this line *attributes* the session that
+                    // follows it: the Player.log is a sequence of per-character
+                    // sessions, so its own login line says whose rows everything
+                    // after it produces. Lives below.
                     if self.game_state.is_live() {
-                        // A live login line still re-arms identity when the
-                        // catch-up guard below (or a previous session's) left it
-                        // cleared: `active_character = None` makes
+                        // A live login line re-arms an identity that was never
+                        // established (fresh settings, no Player.log login line,
+                        // no chat marker): `active_character = None` makes
                         // `process_events_batch` drop *every* event, and the chat
                         // log's marker is the only other re-arm — it can be
                         // missed (the chat watcher tails from a saved position)
-                        // or never start. Do the same settings + game-state
-                        // update the marker does, minus the `character-login`
-                        // emit (live identity events stay the marker's job).
+                        // or never start. Nothing clears the identity after
+                        // `GameStateManager::new` any more (the catch-up guard's
+                        // `clear_active_character` is gone), so this is the only
+                        // remaining way that window closes. Do the same settings
+                        // + game-state update the marker does, minus the
+                        // `character-login` emit (live identity events stay the
+                        // marker's job).
                         if self.game_state.get_active_character().is_none() {
                             startup_log!(
-                                "Live login line re-armed the cleared active character: '{}'",
+                                "Live login line re-armed the unset active character: '{}'",
                                 character_name
                             );
                             let mut settings = self.settings.get();
@@ -844,41 +952,22 @@ impl DataIngestCoordinator {
                         continue;
                     }
 
-                    // Catch-up only from here. The Player.log may contain login
-                    // lines for multiple characters: if the user already selected
-                    // a character, ignore logins for others so their data isn't
-                    // persisted under the wrong identity.
-                    let selected = self.settings.get().active_character_name;
-                    if let Some(selected_name) = &selected {
-                        if selected_name != &character_name {
-                            startup_log!(
-                                "Ignoring catch-up login for '{}' (selected character is '{}')",
-                                character_name,
-                                selected_name
-                            );
-                            // Clear game state character so events for this
-                            // character are silently dropped by process_events_batch
-                            // (it returns early when active_character is None).
-                            self.game_state.clear_active_character();
-                            continue;
-                        }
-                    }
-
-                    // Player.log knows the character name but NOT the server.
-                    // Update the character name in settings; the chat log's
-                    // ServerDetected + CharacterLogin pair is the authoritative
-                    // source that calls set_active_character with both values.
-                    let mut settings = self.settings.get();
-                    settings.active_character_name = Some(character_name.clone());
-                    self.settings.update(settings).ok();
-
-                    // Update game state character name only (server stays as-is)
-                    self.game_state.set_active_character_name(&character_name);
-
-                    // Don't emit `character-login`: live identity changes (and the
+                    // Catch-up: the Player.log is a sequence of per-character
+                    // sessions and every login line starts one. Adopt that
+                    // session's own character so its full-state dumps
+                    // (SkillsLoaded, recipes, equipment) and its deltas are
+                    // written under the character that produced them instead of
+                    // being dropped. Dropping was only needed while the ingest
+                    // identity had two owners: a switch that moved the game
+                    // state but not `settings` split-brained the DB. The
+                    // identity now has one owner (`GameStateManager`), and the
+                    // durable selection is synced to it when the replay ends —
+                    // see `poll`.
+                    self.adopt_player_log_session(&character_name);
+                    // No `character-login` emit: live identity changes (and the
                     // frontend reload they trigger) are the chat log's job, and
-                    // during catch-up the startup sequence loads the character
-                    // explicitly once the poll completes.
+                    // the startup sequence loads the character explicitly once
+                    // the poll completes — including one adopted here.
                 }
                 LogEvent::ChatLogPath { path, .. } => {
                     startup_log!("Chat log path detected: {}", path);
@@ -2884,13 +2973,14 @@ impl DataIngestCoordinator {
     ///
     /// Called from the `PlayerEventParsed` arm when a `BookOpened` event
     /// with `book_type == "PlayerShopLog"` arrives. During initial catch-up
-    /// replay we still want to ingest, so this uses `settings.active_character_name`
+    /// replay we still want to ingest, so this reads the ingest identity
     /// directly rather than gating on `game_state.is_live()`.
     fn ingest_shop_log(&self, log_timestamp: &str, title: &str, content: &str) {
-        let Some(active_character) = self.settings.get().active_character_name.clone() else {
-            // No active character yet — defer. Real Player.log events imply
-            // a character is active; this is a belt-and-suspenders guard
-            // against startup ordering races.
+        // Keyed by the ingest identity (the session being replayed), not the
+        // durable selection: during catch-up the selection deliberately trails
+        // the replay, and these rows come from the log's own book.
+        let Some(active_character) = self.game_state.get_active_character().map(str::to_string)
+        else {
             return;
         };
 
@@ -3813,6 +3903,187 @@ pub(crate) fn normalize_combat_loadout(skill1: &str, skill2: &str) -> Option<Str
     Some(parts.join("+"))
 }
 
+/// Where a catch-up session's server came from (startup log line + tests).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionServerSource {
+    /// A `user_characters` row for this character sits on the server in use.
+    InUse,
+    /// The character's own `user_characters` row (picker-active, else newest).
+    UserCharacters,
+    /// The catch-up chat-login scan (`chat_session_servers`).
+    ChatLog,
+    /// Nothing knew it: the server in use is kept.
+    None,
+    /// The lookup could not run: the server in use is kept, and the chat-login
+    /// tier is *not* consulted — a read failure is not an unknown character.
+    LookupFailed,
+}
+
+impl SessionServerSource {
+    fn label(self) -> &'static str {
+        match self {
+            SessionServerSource::InUse => "server in use",
+            SessionServerSource::UserCharacters => "user_characters",
+            SessionServerSource::ChatLog => "chat log",
+            SessionServerSource::None => "none — kept the server in use",
+            SessionServerSource::LookupFailed => "lookup failed — kept the server in use",
+        }
+    }
+}
+
+/// Answer of [`session_server_for`].
+///
+/// `NoRow` and `Failed` must stay distinct: the caller keys a whole replayed
+/// session on the answer, and the accepted residual is that those rows are not
+/// self-correcting — a transient read failure must not borrow another
+/// character's server by looking like an unknown character.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SessionServerLookup {
+    /// The character's own `user_characters` row.
+    Row(String),
+    /// The character has no row at all: consult the chat-login scan.
+    NoRow,
+    /// Pool / prepare / SQL failure (already logged): keep the server in use.
+    Failed,
+}
+
+/// Adopt a drained Player.log login line as the ingest identity.
+///
+/// Free function (not a method) so the routing — the only place that decides
+/// which `(character, server)` the following session's rows are keyed to — is
+/// testable without a coordinator or an `AppHandle`.
+fn apply_catch_up_login(
+    game_state: &mut GameStateManager,
+    db: &DbPool,
+    chat_servers: &std::collections::HashMap<String, String>,
+    character_name: &str,
+) -> SessionServerSource {
+    let current_server = game_state.get_active_server().map(str::to_string);
+    game_state.set_active_character_name(character_name);
+    let (server, source) = match session_server_for(db, character_name, current_server.as_deref()) {
+        SessionServerLookup::Row(server) => {
+            let source = if current_server.as_deref() == Some(server.as_str()) {
+                SessionServerSource::InUse
+            } else {
+                SessionServerSource::UserCharacters
+            };
+            (Some(server), source)
+        }
+        // No `user_characters` row at all — the case that used to borrow the
+        // selected character's server: take this character's own chat login line.
+        SessionServerLookup::NoRow => match chat_servers.get(character_name) {
+            Some(server) => (Some(server.clone()), SessionServerSource::ChatLog),
+            None => (current_server.clone(), SessionServerSource::None),
+        },
+        // A read failure says nothing about the character, so it must not reach
+        // the chat tier (whose answer would then own the session's rows for good).
+        SessionServerLookup::Failed => (current_server.clone(), SessionServerSource::LookupFailed),
+    };
+    if let Some(server) = server {
+        game_state.set_active_server_name(&server);
+    }
+    source
+}
+
+/// Server to attribute a Player.log session to: [`SessionServerLookup`].
+///
+/// A Player.log login line names the character but not the server, so take it
+/// from `user_characters` — the only table that pairs the two, written by the
+/// chat-login marker (`process_chat_events`), which does read the server out of
+/// Chat.log. Prefer the server already in use (keeps the selected character's
+/// rows where they already are), then the picker's active row, then the most
+/// recently updated one. `NoRow` when the character is unknown there: the caller
+/// then consults the catch-up chat-login scan and keeps the server it has only
+/// if that is empty too. A failed read is `Failed`, never `NoRow`.
+///
+/// The order is total: `updated_at` is written with second precision
+/// (`CURRENT_TIMESTAMP`), so `id` breaks its ties and the same rows resolve the
+/// same way on every launch.
+fn session_server_for(
+    db: &DbPool,
+    character_name: &str,
+    current_server: Option<&str>,
+) -> SessionServerLookup {
+    // Only "the character has no row" is `NoRow`; a pool/prepare/SQL failure is
+    // `Failed`, because the caller then takes the chat-login tier (and those rows
+    // are not self-correcting) — a read error must not masquerade as an unknown
+    // character. Each failure is logged with its cause.
+    let conn = match db.get() {
+        Ok(c) => c,
+        Err(e) => {
+            startup_log!("[coordinator] session server lookup skipped: pool error: {e}");
+            return SessionServerLookup::Failed;
+        }
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT server_name FROM user_characters
+         WHERE character_name = ?1
+         ORDER BY (server_name = ?2) DESC, is_active DESC, updated_at DESC, id DESC
+         LIMIT 1",
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            startup_log!("[coordinator] session server lookup failed to prepare: {e}");
+            return SessionServerLookup::Failed;
+        }
+    };
+    match stmt.query_row(
+        rusqlite::params![character_name, current_server.unwrap_or("")],
+        |row| row.get(0),
+    ) {
+        Ok(server) => SessionServerLookup::Row(server),
+        Err(rusqlite::Error::QueryReturnedNoRows) => SessionServerLookup::NoRow,
+        Err(e) => {
+            startup_log!("[coordinator] session server lookup failed: {e}");
+            SessionServerLookup::Failed
+        }
+    }
+}
+
+/// `character -> server` from every `Chat-*.log` in `dir`.
+///
+/// A Player.log login line has no server; the chat log's login line
+/// (`chat_parser::parse_chat_login_line`) is the only log that names one. Files
+/// are visited oldest-name-first (`Chat-YY-MM-DD.log` sorts chronologically) and
+/// the last login line wins, so the answer is a function of the log files alone.
+/// Missing directory / unreadable file: logged and skipped — the caller keeps
+/// its pre-existing fallback.
+fn chat_session_servers(dir: &std::path::Path) -> std::collections::HashMap<String, String> {
+    use std::io::BufRead;
+
+    let mut servers = std::collections::HashMap::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) => {
+            startup_log!("Catch-up chat-login scan: cannot read {}: {e}", dir.display());
+            return servers;
+        }
+    };
+    let mut files: Vec<std::path::PathBuf> = entries
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with("Chat-") && n.ends_with(".log"))
+                .unwrap_or(false)
+        })
+        .collect();
+    files.sort();
+    for path in files {
+        let Ok(file) = std::fs::File::open(&path) else {
+            startup_log!("Catch-up chat-login scan: cannot open {}", path.display());
+            continue;
+        };
+        for line in std::io::BufReader::new(file).lines() {
+            let Ok(line) = line else { continue };
+            if let Some(info) = crate::chat_parser::parse_chat_login_line(&line) {
+                servers.insert(info.character_name, info.server_name);
+            }
+        }
+    }
+    servers
+}
+
 #[cfg(test)]
 mod harvest_almanac_tests {
     use super::parse_harvest_almanac_content;
@@ -3992,3 +4263,305 @@ mod milking_timestamp_tests {
         }
     }
 }
+
+/// Server resolution for a Player.log session: the `user_characters` row when the
+/// character has one, else its own chat login line (see `apply_catch_up_login`).
+#[cfg(test)]
+mod session_identity_tests {
+    use super::{
+        apply_catch_up_login, chat_session_servers, session_server_for, SessionServerLookup,
+        SessionServerSource,
+    };
+    use crate::db::DbPool;
+    use crate::game_state::GameStateManager;
+    use crate::player_event_parser::PlayerEvent;
+
+    /// Write a temp `Chat-*.log` set and return the dir holding it.
+    fn write_chat_dir(files: &[(&str, &[&str])]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "glogger_chat_scan_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, lines) in files {
+            std::fs::write(dir.join(name), format!("{}\n", lines.join("\n"))).unwrap();
+        }
+        dir
+    }
+
+    /// One `SkillsLoaded` dump for `raw` levels of Combat — same shape as
+    /// `game_state::tests::identity_switch_keeps_each_sessions_skills`.
+    fn skills_loaded(raw: u32) -> Vec<PlayerEvent> {
+        vec![PlayerEvent::SkillsLoaded {
+            timestamp: "12:00:00".to_string(),
+            skills: vec![crate::player_event_parser::SkillSnapshot {
+                skill_type: "Combat".to_string(),
+                raw,
+                bonus: 0,
+                xp: 0,
+                tnl: 0,
+                max: 100,
+            }],
+        }]
+    }
+
+    /// A pool holding only the picker's row for `TestPlayer / Dreva` (what a user
+    /// who chose that character leaves behind).
+    const PICKER_ROW: &str =
+        "INSERT INTO user_characters (character_name, server_name, source, is_active)
+         VALUES ('TestPlayer', 'Dreva', 'manual', 1)";
+
+    /// A temp pool seeded with a `user_characters` INSERT.
+    fn seed_pool(insert: &str) -> (DbPool, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "glogger_catch_up_login_test_{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let pool = crate::db::init_pool(path.clone(), Some(0)).expect("init pool");
+        pool.get_write().unwrap().execute(insert, []).unwrap();
+        (pool, path)
+    }
+
+    /// Fresh game state seeded like the coordinator's (settings' character+server).
+    fn game_state(character: &str, server: &str) -> GameStateManager {
+        use std::sync::Arc;
+
+        let mut gs = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
+            crate::game_data::GameData::empty(),
+        )));
+        gs.set_active_character_name(character);
+        gs.set_active_server_name(server);
+        gs
+    }
+
+    /// Two servers for the selected character (the picker's active one older than
+    /// the other's `updated_at`) plus one row for an alt on a server no other row
+    /// uses — the three tie-breakers in the resolver, in different orders.
+    fn seed() -> (DbPool, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "glogger_session_server_test_{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let pool = crate::db::init_pool(path.clone(), Some(0)).expect("init pool");
+        {
+            let conn = pool.get_write().unwrap();
+            conn.execute(
+                "INSERT INTO user_characters (character_name, server_name, source, is_active, updated_at)
+                 VALUES ('TestPlayer', 'Dreva', 'login', 1, '2026-10-01 00:00:00'),
+                        ('TestPlayer', 'Legacy', 'login', 0, '2026-10-14 00:00:00'),
+                        ('OtherAlt', 'OtherAltServer', 'login', 0, '2026-10-02 00:00:00')",
+                [],
+            )
+            .unwrap();
+        }
+        (pool, path)
+    }
+
+    #[test]
+    fn session_server() {
+        let (db, path) = seed();
+        let row = |server: &str| SessionServerLookup::Row(server.to_string());
+
+        // (a) The server already in use wins, even though another row is newer.
+        assert_eq!(
+            session_server_for(&db, "TestPlayer", Some("Dreva")),
+            row("Dreva")
+        );
+        // (b) Same, the other way round: rows stay where they already are.
+        assert_eq!(
+            session_server_for(&db, "TestPlayer", Some("Legacy")),
+            row("Legacy")
+        );
+        // (c) An alt resolves through its own row, not through the server in
+        // use: no other row uses `OtherAltServer`, so a dropped
+        // `WHERE character_name = ?1` would answer 'Dreva' here.
+        assert_eq!(
+            session_server_for(&db, "OtherAlt", Some("Dreva")),
+            row("OtherAltServer")
+        );
+        // (d) Unknown character → the caller keeps the server it has.
+        assert_eq!(
+            session_server_for(&db, "Unknown", Some("Dreva")),
+            SessionServerLookup::NoRow
+        );
+        // (e) No server in use yet: the picker's active row wins over the
+        // more recently updated one.
+        assert_eq!(
+            session_server_for(&db, "TestPlayer", None),
+            row("Dreva")
+        );
+        // (f) A read that cannot run is not an unknown character: a failing
+        // statement must answer `Failed`, so the caller never falls through to
+        // the chat-login tier on an error. `DROP TABLE` reproduces one: the
+        // startup line it prints matches the query arm's wording
+        // (`session server lookup failed: no such table: user_characters`, not
+        // the prepare arm's `… failed to prepare: …`), so that is the arm this
+        // case covers — the pool and prepare arms are not reachable from here.
+        db.get_write()
+            .unwrap()
+            .execute("DROP TABLE user_characters", [])
+            .unwrap();
+        assert_eq!(
+            session_server_for(&db, "TestPlayer", Some("Dreva")),
+            SessionServerLookup::Failed
+        );
+
+        // Drop the pool first: Windows won't delete a file with an open handle.
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn chat_session_servers_reads_oldest_file_first() {
+        // `Chat-YY-MM-DD.log` sorts chronologically; the newer file is created
+        // *first* here so directory order cannot decide the answer. `notes.txt`
+        // holds a name that would show up if the glob were wider.
+        let dir = write_chat_dir(&[
+            (
+                "Chat-26-03-24.log",
+                &[
+                    "26-03-24 09:00:00\t**************************************** Logged In As TestPlayer. Server Legacy. Timezone Offset -07:00:00.",
+                    "26-03-24 09:00:00\t**************************************** Logged In As OtherAlt. Server OtherAltServer. Timezone Offset -07:00:00.",
+                ],
+            ),
+            (
+                "Chat-26-03-22.log",
+                &["26-03-22 18:12:49\t**************************************** Logged In As TestPlayer. Server Dreva. Timezone Offset -07:00:00."],
+            ),
+            (
+                "notes.txt",
+                &["26-03-25 09:00:00\t**************************************** Logged In As TestPlayer. Server NotALog. Timezone Offset -07:00:00."],
+            ),
+        ]);
+
+        let map = chat_session_servers(&dir);
+        assert_eq!(map.len(), 2, "notes.txt is not a chat log: {map:?}");
+        assert_eq!(map.get("TestPlayer").map(String::as_str), Some("Legacy"));
+        assert_eq!(
+            map.get("OtherAlt").map(String::as_str),
+            Some("OtherAltServer")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn chat_session_servers_missing_dir_is_empty() {
+        let missing = std::env::temp_dir()
+            .join("glogger_chat_scan_absent")
+            .join("nope");
+        assert!(chat_session_servers(&missing).is_empty());
+    }
+
+    #[test]
+    fn catch_up_login_takes_the_server_from_the_chat_log() {
+        // Real-format chat login lines, read through the real scanner.
+        let chat_dir = write_chat_dir(&[(
+            "Chat-26-10-15.log",
+            &[
+                "26-10-15 07:00:01\t**************************************** Logged In As TestPlayer. Server Dreva. Timezone Offset -05:00:00.",
+                "26-10-15 07:05:01\t**************************************** Logged In As OtherAlt. Server OtherAltServer. Timezone Offset -05:00:00.",
+            ],
+        )]);
+        let map = chat_session_servers(&chat_dir);
+        assert_eq!(map.get("OtherAlt").map(String::as_str), Some("OtherAltServer"));
+
+        // The picker's row, and nothing at all for the alt.
+        let (pool, db_path) = seed_pool(PICKER_ROW);
+        let mut gs = game_state("TestPlayer", "Dreva");
+
+        assert_eq!(
+            apply_catch_up_login(&mut gs, &pool, &map, "TestPlayer"),
+            SessionServerSource::InUse
+        );
+        gs.process_events_batch(&skills_loaded(7), &pool);
+
+        // The alt has no `user_characters` row: without the chat tier it borrows
+        // the selected character's server (`Dreva`) and replaces its rows.
+        assert_eq!(
+            apply_catch_up_login(&mut gs, &pool, &map, "OtherAlt"),
+            SessionServerSource::ChatLog
+        );
+        gs.process_events_batch(&skills_loaded(99), &pool);
+
+        let level = |character: &str, server: &str| -> Option<i64> {
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT level FROM game_state_skills
+                     WHERE character_name = ?1 AND server_name = ?2 AND skill_name = 'Combat'",
+                    rusqlite::params![character, server],
+                    |row| row.get(0),
+                )
+                .ok()
+        };
+        assert_eq!(level("TestPlayer", "Dreva"), Some(7));
+        assert_eq!(level("OtherAlt", "OtherAltServer"), Some(99));
+        assert_eq!(
+            level("OtherAlt", "Dreva"),
+            None,
+            "no row under the borrowed server"
+        );
+
+        // A repeated login line for the same character resolves the same way.
+        assert_eq!(
+            apply_catch_up_login(&mut gs, &pool, &map, "OtherAlt"),
+            SessionServerSource::ChatLog
+        );
+        assert_eq!(gs.get_active_server(), Some("OtherAltServer"));
+
+        // Drop the pool first: Windows won't delete a file with an open handle.
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_dir_all(&chat_dir);
+    }
+
+    #[test]
+    fn catch_up_login_unknown_character_keeps_the_server_in_use() {
+        let (pool, db_path) = seed_pool(PICKER_ROW);
+        let mut gs = game_state("TestPlayer", "Dreva");
+
+        let source =
+            apply_catch_up_login(&mut gs, &pool, &std::collections::HashMap::new(), "Ghost");
+
+        assert_eq!(source, SessionServerSource::None);
+        assert_eq!(gs.get_active_server(), Some("Dreva"));
+        assert_eq!(gs.get_active_character(), Some("Ghost"));
+
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn catch_up_login_never_borrows_another_characters_marker() {
+        // The alt has a row (and the scan knows its server); TestPlayer has none.
+        let (pool, db_path) = seed_pool(
+            "INSERT INTO user_characters (character_name, server_name, source, is_active)
+             VALUES ('OtherAlt', 'OtherAltServer', 'login', 0)",
+        );
+        let mut gs = game_state("TestPlayer", "Dreva");
+        // TestPlayer must not inherit the only entry in the map.
+        let map = std::collections::HashMap::from([(
+            "OtherAlt".to_string(),
+            "OtherAltServer".to_string(),
+        )]);
+
+        let source = apply_catch_up_login(&mut gs, &pool, &map, "TestPlayer");
+
+        assert_eq!(source, SessionServerSource::None);
+        assert_eq!(gs.get_active_server(), Some("Dreva"));
+
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
+    }
+}
+

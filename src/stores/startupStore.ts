@@ -1,4 +1,4 @@
-import { defineStore } from "pinia";
+import { defineStore, acceptHMRUpdate } from "pinia";
 import { ref, computed, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -342,8 +342,10 @@ export const useStartupStore = defineStore("startup", () => {
     }
 
     // Refresh settings from backend — the catch-up may have updated
-    // the active character/server in the backend settings.
-    await settingsStore.initialize();
+    // the active character/server in the backend settings. Forced: the splash
+    // phase already loaded them, and the catch-up's per-session attribution
+    // writes the log's newest identity at the end of the poll.
+    await settingsStore.initialize(true);
 
     // ── Task 3: Load character data from reports ────────────────────────
     log("Loading character data from reports");
@@ -440,3 +442,7 @@ export const useStartupStore = defineStore("startup", () => {
     goToPhase,
   };
 });
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useStartupStore, import.meta.hot))
+}

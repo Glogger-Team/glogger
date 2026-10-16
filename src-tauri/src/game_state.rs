@@ -124,20 +124,20 @@ impl GameStateManager {
         self.live_mode
     }
 
-    /// Debug: get active character name
+    /// The ingest identity's character: the identity every log-derived write is
+    /// keyed to (`DataIngestCoordinator::active_character_server`,
+    /// `adopt_player_log_session`), and what the catch-up sync copies into
+    /// settings. `None` only before any identity exists — `process_events_batch`
+    /// drops batches while it is.
     pub fn get_active_character(&self) -> Option<&str> {
         self.active_character.as_deref()
     }
 
-    /// Debug: get active server name
+    /// The ingest identity's server — the other half of every row's key.
+    /// `None` until one is seeded from settings, adopted from a session, or
+    /// learned from the chat log's marker.
     pub fn get_active_server(&self) -> Option<&str> {
         self.active_server.as_deref()
-    }
-
-    /// Clear the active character so that events are silently dropped.
-    /// Used during catch-up replay to skip events for non-selected characters.
-    pub fn clear_active_character(&mut self) {
-        self.active_character = None;
     }
 
     /// Update just the character name without touching the database or server.
@@ -1546,5 +1546,77 @@ mod tests {
         // A replay/reparse base date still wins over the anchor.
         manager.set_base_date(chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap());
         assert_eq!(manager.to_utc("23:31:15"), "2026-10-01 23:31:15");
+    }
+
+    /// Two Player.log sessions in one catch-up: each session's full-state
+    /// `SkillsLoaded` dump must land under the identity in force when it was
+    /// replayed. `SkillsLoaded` deletes the character+server slice before
+    /// inserting, so a session replayed under the *other* character's identity
+    /// silently replaced its rows (measured before the per-session
+    /// attribution: TestPlayer ended up with OtherAlt's skill load).
+    ///
+    /// Contract guard, not a regression pin: this drives `GameStateManager`
+    /// directly, and none of those calls changed — it passes on the pre-change
+    /// code too. What routes a session to its own identity is the coordinator's
+    /// `adopt_player_log_session` (covered by the catch-up smoke); what this
+    /// pins is that the pair-scoped dump keeps two sessions' rows apart once the
+    /// identity is right.
+    #[test]
+    fn identity_switch_keeps_each_sessions_skills() {
+        use std::sync::Arc;
+
+        let db_path = std::env::temp_dir().join(format!(
+            "glogger_session_identity_test_{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
+
+        let mut manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
+            crate::game_data::GameData::empty(),
+        )));
+        manager.set_active_character_name("TestPlayer");
+        manager.set_active_server_name("Dreva");
+
+        let load = |raw: u32| {
+            vec![PlayerEvent::SkillsLoaded {
+                timestamp: "12:00:00".to_string(),
+                skills: vec![crate::player_event_parser::SkillSnapshot {
+                    skill_type: "Combat".to_string(),
+                    raw,
+                    bonus: 0,
+                    xp: 0,
+                    tnl: 0,
+                    max: 100,
+                }],
+            }]
+        };
+
+        manager.process_events_batch(&load(7), &pool);
+
+        // Second session: the coordinator adopted the log's own login line.
+        manager.set_active_character_name("OtherAlt");
+        manager.set_active_server_name("Dreva");
+        manager.process_events_batch(&load(99), &pool);
+
+        let level = |character: &str| -> i64 {
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT level FROM game_state_skills
+                     WHERE character_name = ?1 AND server_name = 'Dreva' AND skill_name = 'Combat'",
+                    rusqlite::params![character],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(level("TestPlayer"), 7, "first session's dump survived");
+        assert_eq!(level("OtherAlt"), 99, "second session landed under its own identity");
+
+        // Drop the pool first: Windows won't delete a file with an open handle.
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
     }
 }
