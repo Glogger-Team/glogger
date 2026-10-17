@@ -6,6 +6,11 @@ argumentHint: "[target] [focus]"
 Run this repository's code-review loop — `AGENTS.md` → **Code review loop** — end to end. Do not ask
 which target: take it from the argument when one names one, else derive it; say what you chose, and go.
 
+The repo-agnostic half of those rules — the freeze invariant, facts-once, the three intake categories,
+the report contract and the closing rule — is also a user-level skill, `skill://frozen-review`. This file
+owns what is *glogger's*: the target grammar above, the fact rows, the gates and the accepted-drift
+ledger. Read the skill for the long form where it is available; this file stays executable on its own.
+
 ## 1. Resolve the frozen target (first, before anything else)
 
 **The argument comes first.** Whatever the caller typed after `/frozen` arrives appended verbatim at the
