@@ -99,16 +99,23 @@ if (!claim) {
 }
 
 // Every exemption must be named where the standard is written down, so the
-// list can only grow deliberately.
+// list can only grow deliberately. Scoped to the two places that *are* the
+// standard — TODO's sweep line and the data-tables bullet — not the whole file:
+// a grid whose name merely appears in the accepted-drift ledger has no raw-table
+// reason written down, and must not pass as documented.
 const uxStandards = readFileSync(join(ROOT, 'docs/architecture/ux-standards.md'), 'utf8')
 const sweepLine = todo.split('\n').find((line) => line.includes('Table sweep done')) ?? ''
-const standardsText = `${sweepLine}\n${uxStandards}`
+const dataTablesRule = uxStandards.split('\n').find((line) => line.startsWith('- **Data tables:**')) ?? ''
+if (!dataTablesRule) {
+  violations.push('docs/architecture/ux-standards.md: the "- **Data tables:**" rule line is missing — restore it or update this check')
+}
+const standardsText = `${sweepLine}\n${dataTablesRule}`
 for (const file of RAW_TABLE_EXEMPT.keys()) {
   const name = basename(file, '.vue')
   if (!standardsText.includes(name)) {
     violations.push(
-      `exemption ${file} is named in neither docs/TODO.md's sweep line nor ` +
-        `docs/architecture/ux-standards.md — document the reason there before exempting it here`,
+      `exemption ${file} is named in neither docs/TODO.md's sweep line nor the ` +
+        `"- **Data tables:**" rule in docs/architecture/ux-standards.md — document the reason there before exempting it here`,
     )
   }
 }
