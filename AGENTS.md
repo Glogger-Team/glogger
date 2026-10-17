@@ -50,12 +50,21 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 | Rust check | `cd src-tauri && cargo check` | Faster feedback |
 | Rust tests | `cd src-tauri && cargo test --lib`|709 tests, 57 files|
 |TOS/CoC hard lines|`pwsh scripts/check-glogger-constraints.ps1`|Game-interaction limits gate: local pre-push hook (install per clone: `scripts/setup-hooks.sh`) + the release workflow's `validate` job|
-|Grid standards|`npm run check:grids`|Fails on a raw `<table>` outside the documented exemptions, a stale exemption, or a `DataTable` census that disagrees with `docs/TODO.md` (`scripts/check-grid-standards.mjs`) — run it when touching a table or the census|
+|Grid standards|`npm run check:grids`|Fails on a raw `<table>` outside the documented exemptions, a stale exemption, or a `DataTable` census that disagrees with `docs/TODO.md` (`scripts/check-grid-standards.mjs`) — run it when touching a table or the census, and hand its output to a review round (see *Code review loop*)|
 | Full Rust tests | `cd src-tauri && cargo test` | No `src-tauri/tests/` dir exists; everything is in-lib |
 | Survey replay | `npm run survey-test` | `--ignored` accuracy report, minutes-scale, needs `test_data/` + `docs/CDN-full-examples/` |
 | Version bump | `npm run version:bump patch\|minor\|major\|x.y.z`|See version section|
 | Release | `npm run release patch\|minor\|major\|x.y.z`|On `main`, clean tree: bumps, writes `RELEASE_NOTES.md`, commits, tags `v<semver>`, pushes; CI publishes the release with those notes|
 | Changelog | `npm run changelog` | Git-log notes since the last tag; `npm run release` writes them to `RELEASE_NOTES.md` (publishable to the GitHub Release + `latest.json`). `--notes <file>` overrides |
+
+## Code review loop
+
+`/review` (a harness command, not repo tooling) does not review anything itself: it freezes a diff and dictates how the work is distributed. `agentCount` is derived from that snapshot — `< 100` changed lines or `<= 2` files → 1, `< 500` → `min(2, files)`, `< 2000` → `min(4, ceil(files/3))`, `< 5000` → `min(8, ceil(files/2))`, else `min(16, files)` — and `skipDiff` (raw diff over 50 000 chars, or over 20 files) replaces the inlined diff with `max(5, floor(100/files))` lines per file and tells reviewers to run `git diff`/`git show` for their own files instead. Modes, when a UI is available: base branch (PR-style, `mergeBase(base, HEAD)..HEAD`), uncommitted, one commit, a PR (`pr://owner/repo/N` as an argument skips the menu), custom instructions (offered only when no focus text was passed); with no UI it emits the headless form — exactly 1 reviewer over recent changes plus `Focus: <args>`. `/annotate code-review [focus]` runs the same diff pipeline to collect line notes first and hands them to `/review` as the operator focus.
+
+- **Freeze the range and hand over the gates.** Name the exact `<base>..HEAD`, and paste the machine-read output the round is about (`npm run check:grids`, `npm run build`, `cargo test --lib`). A reviewer that re-derives a number spends its budget on arithmetic the repo already does — and its number will disagree with the gate's.
+- **Intake is three categories.** (1) behaviour nobody intended, (2) a claim the code or its docs make that the code does not honour, (3) a gate whose documentation is stronger than its check. Anything else is out of scope for the round: say so in the request, and bulk-rule already-decided differences where they can be cited from the request — the accepted-drift ledger in `docs/architecture/ux-standards.md` is the worked example, including its "do not re-file them in a review" line.
+- **One fix batch, then gates only.** Re-run the gates on the batch's tree and stop there: pointing a reviewer back at its own fix re-files decided steps. If a batch does need eyes, review the *delta* range, never the series.
+- **Scale the round to the delta.** A high `agentCount` is the tool's heuristic over changed lines, not a risk assessment — 8 reviewers is what a 2 800-line series earns by arithmetic. A single-reviewer delta pass over the fix commits still returned four real items in Session 45, all of them in the new docs and gate rather than in the code.
 
 ## Code Conventions & Common Patterns
 
