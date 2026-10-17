@@ -98,28 +98,20 @@
             <div v-if="vendorItems.length" class="flex flex-col gap-1.5">
               <div class="text-[0.65rem] uppercase tracking-widest text-text-dim border-b border-surface-card pb-0.5">Sells Items ({{ vendorItems.length }})</div>
               <div class="max-h-80 overflow-y-auto border border-surface-dark">
-                <table class="w-full text-xs border-collapse">
-                  <thead class="sticky top-0 bg-surface-base">
-                    <tr class="text-left text-text-dim border-b border-border-default">
-                      <th class="py-1 px-2 font-normal">Item</th>
-                      <th class="py-1 px-2 font-normal text-right">Value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr
-                      v-for="item in vendorItems"
-                      :key="item.item_id"
-                      class="border-b border-[#151515] hover:bg-surface-base">
-                      <td class="py-0.5 px-2">
-                        <ItemInline :reference="String(item.item_id)" />
-                      </td>
-                      <td class="py-0.5 px-2 text-right text-text-muted font-mono">
-                        <template v-if="item.value">{{ Math.ceil(item.value * 1.5) }}c</template>
-                        <span v-else class="text-text-dim">--</span>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
+                <DataTable
+                  :columns="vendorColumns"
+                  :rows="(vendorItems as unknown as Record<string, unknown>[])"
+                  compact>
+                  <template #cell-item_id="{ row }">
+                    <ItemInline :reference="String(row.item_id)" />
+                  </template>
+                  <template #cell-value="{ row }">
+                    <span class="text-text-muted font-mono">
+                      <template v-if="row.value">{{ Math.ceil((row.value as number) * 1.5) }}c</template>
+                      <span v-else class="text-text-dim">--</span>
+                    </span>
+                  </template>
+                </DataTable>
               </div>
             </div>
 
@@ -138,6 +130,7 @@
 import PaneLayout from "../Shared/PaneLayout.vue";
 import NpcDetailPanel from "../Character/NpcDetailPanel.vue";
 import ItemInline from "../Shared/Item/ItemInline.vue";
+import DataTable, { type ColumnDef } from "../Shared/DataTable.vue";
 import { ref, watch, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useGameDataStore } from "../../stores/gameDataStore";
@@ -191,6 +184,11 @@ const selectedVendorStatus = computed(() => {
 const selectedArea = ref<string>("All Areas");
 const selected = ref<NpcInfo | null>(null);
 const vendorItems = ref<VendorItemSummary[]>([]);
+
+const vendorColumns: ColumnDef[] = [
+  { key: 'item_id', label: 'Item' },
+  { key: 'value', label: 'Value', align: 'right', numeric: true },
+];
 const selectedIndex = ref(0);
 const listRef = ref<HTMLElement | null>(null);
 

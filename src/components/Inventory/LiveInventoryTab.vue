@@ -54,33 +54,27 @@
     <div v-if="store.isLivePopulated" class="flex gap-4 flex-1 min-h-0">
       <!-- Item table -->
       <div class="flex-1 overflow-auto">
-        <table class="w-full text-sm border-collapse">
-          <thead class="sticky top-0 bg-surface-base z-10">
-            <tr class="text-left text-text-muted text-xs border-b border-border-default">
-              <th class="py-1.5 px-2 w-12">Slot</th>
-              <th class="py-1.5 px-2">Item</th>
-              <th class="py-1.5 px-2 w-20 text-right">Qty</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="item in filteredItems"
-              :key="item.instance_id"
-              class="border-b border-border-default/30 hover:bg-surface-elevated/50 transition-colors"
-              :class="{ 'border-l-2 border-l-accent-gold/60': item.is_new }"
-            >
-              <td class="py-1 px-2 text-text-muted text-xs font-mono">
-                {{ item.slot_index >= 0 ? item.slot_index : '-' }}
-              </td>
-              <td class="py-1 px-2">
-                <ItemInline :reference="item.item_name" />
-              </td>
-              <td class="py-1 px-2 text-right font-mono text-text-primary">
-                {{ item.stack_size > 0 ? item.stack_size.toLocaleString() : '-' }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <DataTable
+          :columns="columns"
+          :rows="(filteredItems as unknown as Record<string, unknown>[])"
+          :hoverable="false"
+          :sticky-header="true"
+          :row-class="rowClassFn"
+          compact>
+          <template #cell-slot_index="{ value }">
+            <span class="text-text-muted text-xs font-mono">
+              {{ (value as number) >= 0 ? (value as number) : '-' }}
+            </span>
+          </template>
+          <template #cell-item_name="{ value }">
+            <ItemInline :reference="(value as string)" />
+          </template>
+          <template #cell-stack_size="{ value }">
+            <span class="font-mono text-text-primary">
+              {{ (value as number) > 0 ? (value as number).toLocaleString() : '-' }}
+            </span>
+          </template>
+        </DataTable>
       </div>
 
       <!-- Activity feed -->
@@ -113,15 +107,31 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue'
-import { useGameStateStore } from '../../stores/gameStateStore'
+import { useGameStateStore, type LiveInventoryItem } from '../../stores/gameStateStore'
 import { useCoordinatorStore } from '../../stores/coordinatorStore'
 import EmptyState from '../Shared/EmptyState.vue'
+import DataTable from '../Shared/DataTable.vue'
 import ItemInline from '../Shared/Item/ItemInline.vue'
 
 const store = useGameStateStore()
 const coordinator = useCoordinatorStore()
 
 const searchQuery = ref('')
+
+const columns = [
+  { key: 'slot_index', label: 'Slot', width: '3rem' },
+  { key: 'item_name', label: 'Item' },
+  { key: 'stack_size', label: 'Qty', align: 'right' as const, numeric: true, width: '5rem' },
+]
+
+/** Per-row styling now that DataTable owns the <tr>: the freshly-looted left
+ * accent plus the original hover token (DataTable's default hover would swap
+ * surface-elevated/50 for surface-row-hover). */
+function rowClassFn(row: Record<string, unknown>): string {
+  const classes = ['transition-colors', 'hover:bg-surface-elevated/50']
+  if ((row as unknown as LiveInventoryItem).is_new) classes.push('border-l-2 border-l-accent-gold/60')
+  return classes.join(' ')
+}
 
 async function startTailing() {
   try {

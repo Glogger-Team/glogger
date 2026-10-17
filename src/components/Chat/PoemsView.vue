@@ -54,35 +54,31 @@
           <template v-else><span class="italic">No poems match "{{ searchQuery }}".</span></template>
         </div>
 
-        <table v-else class="w-full border-collapse text-sm">
-          <thead class="sticky top-0 bg-surface-base z-10">
-            <tr class="text-left text-text-dim border-b border-border-default">
-              <th class="px-6 py-2 font-medium">Title</th>
-              <th class="px-4 py-2 font-medium whitespace-nowrap">Author</th>
-              <th class="px-4 py-2 font-medium whitespace-nowrap">Recorded</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="(poem, idx) in filteredPoems"
-              :key="poem.id"
-              @click="openPoem(idx)"
-              class="border-b border-border-default cursor-pointer transition-colors hover:bg-surface-elevated"
-            >
-              <td class="px-6 py-2.5 max-w-0">
-                <div v-if="poem.title" class="text-text-primary font-medium truncate" v-html="renderInline(poem.title)"></div>
-                <div v-else class="text-text-dim font-medium italic truncate">(untitled)</div>
-                <div v-if="preview(poem.content)" class="text-text-dim text-xs truncate mt-0.5">
-                  {{ preview(poem.content) }}
-                </div>
-              </td>
-              <td class="px-4 py-2.5 text-accent-blue whitespace-nowrap align-top">{{ poem.author }}</td>
-              <td class="px-4 py-2.5 text-text-dim font-mono text-xs whitespace-nowrap align-top">
-                {{ formatTs(poem.recorded_at) }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <DataTable
+          v-else
+          :columns="columns"
+          :rows="(filteredPoems as unknown as Record<string, unknown>[])"
+          :hoverable="false"
+          :sticky-header="true"
+          :row-class="rowClassFn"
+          row-clickable
+          @row-click="({ index }) => openPoem(index)">
+          <template #cell-title="{ row }">
+            <div v-if="row.title" class="text-text-primary font-medium truncate" v-html="renderInline(row.title as string)"></div>
+            <div v-else class="text-text-dim font-medium italic truncate">(untitled)</div>
+            <div v-if="preview(row.content as string)" class="text-text-dim text-xs truncate mt-0.5">
+              {{ preview(row.content as string) }}
+            </div>
+          </template>
+          <template #cell-author="{ value }">
+            <span class="text-accent-blue whitespace-nowrap">{{ value as string }}</span>
+          </template>
+          <template #cell-recorded_at="{ value }">
+            <span class="text-text-dim font-mono text-xs whitespace-nowrap">
+              {{ formatTs(value as string) }}
+            </span>
+          </template>
+        </DataTable>
       </div>
     </template>
 
@@ -146,6 +142,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { formatDateTimeFull as formatTs } from '../../composables/useTimestamp'
+import DataTable from '../Shared/DataTable.vue'
 
 interface Poem {
   id: number
@@ -153,6 +150,18 @@ interface Poem {
   title: string
   content: string
   recorded_at: string
+}
+
+const columns = [
+  { key: 'title', label: 'Title' },
+  { key: 'author', label: 'Author' },
+  { key: 'recorded_at', label: 'Recorded' },
+]
+
+/** Keep the original hover token (DataTable's default would use
+ * surface-row-hover) — row-click/cursor-pointer come from `row-clickable`. */
+function rowClassFn(): string {
+  return 'transition-colors hover:bg-surface-elevated'
 }
 
 const poems = ref<Poem[]>([])

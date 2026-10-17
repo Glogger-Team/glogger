@@ -34,69 +34,51 @@
 
     <!-- Table -->
     <div class="overflow-auto flex-1 min-h-0">
-      <table class="w-full text-sm border-collapse">
-        <thead class="sticky top-0 bg-surface-base z-10">
-          <tr class="text-left text-text-secondary border-b border-border-default">
-            <th class="py-1.5 px-2 cursor-pointer hover:text-text-primary" @click="toggleSort('item_name')">
-              Item {{ sortIcon('item_name') }}
-            </th>
-            <th class="py-1.5 px-2 cursor-pointer hover:text-text-primary text-right" @click="toggleSort('stack_size')">
-              Qty {{ sortIcon('stack_size') }}
-            </th>
-            <th class="py-1.5 px-2 cursor-pointer hover:text-text-primary" @click="toggleSort('location')">
-              Location {{ sortIcon('location') }}
-            </th>
-            <th class="py-1.5 px-2 cursor-pointer hover:text-text-primary" @click="toggleSort('rarity')">
-              Rarity {{ sortIcon('rarity') }}
-            </th>
-            <th class="py-1.5 px-2 cursor-pointer hover:text-text-primary" @click="toggleSort('slot')">
-              Slot {{ sortIcon('slot') }}
-            </th>
-            <th class="py-1.5 px-2 cursor-pointer hover:text-text-primary text-right" @click="toggleSort('level')">
-              Lvl {{ sortIcon('level') }}
-            </th>
-            <th class="py-1.5 px-2 cursor-pointer hover:text-text-primary text-right" @click="toggleSort('value')">
-              Value {{ sortIcon('value') }}
-            </th>
-            <th class="py-1.5 px-2">Mods</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="item in filtered"
-            :key="item.id"
-            class="border-b border-border-default/50 hover:bg-surface-elevated/50">
-            <td class="py-1 px-2">
-              <div class="flex flex-col">
-                <ItemInline :reference="String(item.type_id)" />
-                <span v-if="item.crafter" class="text-xs text-text-muted">
-                  Crafted by {{ item.crafter }}
-                </span>
-              </div>
-            </td>
-            <td class="py-1 px-2 text-right text-text-primary">{{ item.stack_size }}</td>
-            <td class="py-1 px-2 text-text-secondary text-xs">{{ formatVault(getLocation(item)) }}</td>
-            <td class="py-1 px-2">
-              <span v-if="item.rarity" :class="rarityClass(item.rarity)" class="text-xs font-medium">
-                {{ item.rarity }}
-              </span>
-            </td>
-            <td class="py-1 px-2 text-text-secondary text-xs">{{ item.slot ?? '' }}</td>
-            <td class="py-1 px-2 text-right text-text-secondary">{{ item.level ?? '' }}</td>
-            <td class="py-1 px-2 text-right text-accent-gold">
-              <template v-if="item.value">
-                {{ formatNumber(item.value * item.stack_size) }}
-              </template>
-            </td>
-            <td class="py-1 px-2">
-              <ItemPowerList :json="item.tsys_powers" />
-              <span v-if="item.tsys_imbue_power" class="text-xs text-blue-300">
-                Imbue: {{ item.tsys_imbue_power }} (T{{ item.tsys_imbue_power_tier }})
-              </span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <DataTable
+        :columns="columns"
+        :rows="(filtered as unknown as Record<string, unknown>[])"
+        :sort-key="sortKey"
+        :sort-dir="sortAsc ? 'asc' : 'desc'"
+        compact
+        empty-text="No items match the current filters."
+        @sort="handleSort">
+        <template #cell-item_name="{ row }">
+          <div class="flex flex-col">
+            <ItemInline :reference="String(row.type_id)" />
+            <span v-if="row.crafter" class="text-xs text-text-muted">
+              Crafted by {{ row.crafter }}
+            </span>
+          </div>
+        </template>
+        <template #cell-stack_size="{ value }">
+          <span class="text-text-primary">{{ value }}</span>
+        </template>
+        <template #cell-location="{ row }">
+          <span class="text-text-secondary text-xs">{{ formatVault(getLocation(row as unknown as SnapshotItem)) }}</span>
+        </template>
+        <template #cell-rarity="{ row }">
+          <span v-if="row.rarity" :class="rarityClass(row.rarity as string)" class="text-xs font-medium">
+            {{ row.rarity }}
+          </span>
+        </template>
+        <template #cell-slot="{ value }">
+          <span class="text-text-secondary text-xs">{{ value ?? '' }}</span>
+        </template>
+        <template #cell-level="{ value }">
+          <span class="text-text-secondary">{{ value ?? '' }}</span>
+        </template>
+        <template #cell-value="{ row }">
+          <span v-if="row.value" class="text-accent-gold">
+            {{ formatNumber((row.value as number) * (row.stack_size as number)) }}
+          </span>
+        </template>
+        <template #cell-mods="{ row }">
+          <ItemPowerList :json="row.tsys_powers as string | null" />
+          <span v-if="row.tsys_imbue_power" class="text-xs text-blue-300">
+            Imbue: {{ row.tsys_imbue_power }} (T{{ row.tsys_imbue_power_tier }})
+          </span>
+        </template>
+      </DataTable>
     </div>
   </div>
 </template>
@@ -104,12 +86,24 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import type { SnapshotItem } from '../../types/database'
+import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 import ItemInline from '../Shared/Item/ItemInline.vue'
 import ItemPowerList from './ItemPowerList.vue'
 
 const props = defineProps<{
   items: SnapshotItem[]
 }>()
+
+const columns: ColumnDef[] = [
+  { key: 'item_name', label: 'Item', sortable: true },
+  { key: 'stack_size', label: 'Qty', sortable: true, align: 'right' },
+  { key: 'location', label: 'Location', sortable: true },
+  { key: 'rarity', label: 'Rarity', sortable: true },
+  { key: 'slot', label: 'Slot', sortable: true },
+  { key: 'level', label: 'Lvl', sortable: true, align: 'right' },
+  { key: 'value', label: 'Value', sortable: true, align: 'right' },
+  { key: 'mods', label: 'Mods' },
+]
 
 const filterText = ref('')
 const filterVault = ref('')
@@ -201,9 +195,10 @@ function toggleSort(key: SortKey) {
   }
 }
 
-function sortIcon(key: string): string {
-  if (sortKey.value !== key) return ''
-  return sortAsc.value ? '\u25B2' : '\u25BC'
+// Keeps the file's own comparator/default-direction semantics; DataTable only
+// reports the clicked column and renders the arrow from sortKey/sortAsc.
+function handleSort(payload: { key: string; dir: 'asc' | 'desc' }) {
+  toggleSort(payload.key as SortKey)
 }
 
 function formatNumber(n: number): string {

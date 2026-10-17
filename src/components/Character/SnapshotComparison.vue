@@ -5,33 +5,28 @@
     </div>
 
     <div v-else class="overflow-auto max-h-[60vh]">
-      <table class="w-full text-sm border-collapse">
-        <thead class="sticky top-0 bg-surface-base">
-          <tr class="text-left text-text-secondary border-b border-border-default">
-            <th class="py-1.5 px-2">Skill</th>
-            <th class="py-1.5 px-2 text-right">Old Level</th>
-            <th class="py-1.5 px-2 text-right">New Level</th>
-            <th class="py-1.5 px-2 text-right">Change</th>
-            <th class="py-1.5 px-2 text-right">XP Change</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="diff in sortedDiffs"
-            :key="diff.skill_name"
-            class="border-b border-border-default/50 hover:bg-surface-elevated/50">
-            <td class="py-1 px-2 text-text-primary">{{ diff.skill_name }}</td>
-            <td class="py-1 px-2 text-right text-text-muted">{{ diff.old_level }}</td>
-            <td class="py-1 px-2 text-right text-text-primary">{{ diff.new_level }}</td>
-            <td class="py-1 px-2 text-right" :class="changeColor(diff.level_change)">
-              {{ diff.level_change > 0 ? `+${diff.level_change}` : diff.level_change || '-' }}
-            </td>
-            <td class="py-1 px-2 text-right text-text-secondary">
-              {{ formatXpChange(diff) }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <DataTable
+        :columns="columns"
+        :rows="(sortedDiffs as unknown as Record<string, unknown>[])"
+        compact>
+        <template #cell-skill_name="{ value }">
+          <span class="text-text-primary">{{ value }}</span>
+        </template>
+        <template #cell-old_level="{ value }">
+          <span class="text-text-muted">{{ value }}</span>
+        </template>
+        <template #cell-new_level="{ value }">
+          <span class="text-text-primary">{{ value }}</span>
+        </template>
+        <template #cell-level_change="{ row }">
+          <span :class="changeColor(row.level_change as number)">
+            {{ (row.level_change as number) > 0 ? `+${row.level_change}` : row.level_change || '-' }}
+          </span>
+        </template>
+        <template #cell-xp_change="{ row }">
+          <span class="text-text-secondary">{{ formatXpChange(row as unknown as SkillDiff) }}</span>
+        </template>
+      </DataTable>
     </div>
   </div>
 </template>
@@ -39,10 +34,19 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { SkillDiff } from '../../types/database'
+import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 
 const props = defineProps<{
   diffs: SkillDiff[]
 }>()
+
+const columns: ColumnDef[] = [
+  { key: 'skill_name', label: 'Skill' },
+  { key: 'old_level', label: 'Old Level', align: 'right' },
+  { key: 'new_level', label: 'New Level', align: 'right' },
+  { key: 'level_change', label: 'Change', align: 'right' },
+  { key: 'xp_change', label: 'XP Change', align: 'right' },
+]
 
 const sortedDiffs = computed(() => {
   return [...props.diffs].sort((a, b) => {

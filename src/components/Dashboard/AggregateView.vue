@@ -36,27 +36,24 @@
       <!-- Per-Character Wealth Breakdown -->
       <div v-if="aggregateStore.wealth.per_character.length > 1" class="card p-4">
         <h3 class="text-text-secondary text-sm font-bold uppercase tracking-wide mb-3 mt-0">Wealth by Character</h3>
-        <table class="w-full text-sm">
-          <thead>
-            <tr class="text-text-muted text-xs text-left border-b border-border-default">
-              <th class="py-1.5 font-normal">Character</th>
-              <th class="py-1.5 font-normal text-right">Currencies</th>
-              <th class="py-1.5 font-normal text-right">Inventory Value</th>
-              <th class="py-1.5 font-normal text-right">Total</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="char in aggregateStore.wealth.per_character"
-              :key="char.character_name"
-              class="border-b border-border-default/30">
-              <td class="py-1.5 text-text-primary">{{ char.character_name }}</td>
-              <td class="py-1.5 text-right text-accent-gold">{{ Math.round(char.currency_total).toLocaleString() }}g</td>
-              <td class="py-1.5 text-right text-accent-green">{{ char.market_value_total.toLocaleString() }}g</td>
-              <td class="py-1.5 text-right text-text-primary font-bold">{{ (Math.round(char.currency_total) + char.market_value_total).toLocaleString() }}g</td>
-            </tr>
-          </tbody>
-        </table>
+        <DataTable
+          :columns="wealthColumns"
+          :rows="(aggregateStore.wealth.per_character as unknown as Record<string, unknown>[])"
+          compact
+          :hoverable="false">
+          <template #cell-character_name="{ row }">
+            <span class="text-text-primary">{{ row.character_name }}</span>
+          </template>
+          <template #cell-currency_total="{ row }">
+            <span class="text-accent-gold">{{ Math.round(row.currency_total as number).toLocaleString() }}g</span>
+          </template>
+          <template #cell-market_value_total="{ row }">
+            <span class="text-accent-green">{{ (row.market_value_total as number).toLocaleString() }}g</span>
+          </template>
+          <template #cell-total="{ row }">
+            <span class="text-text-primary font-bold">{{ (Math.round(row.currency_total as number) + (row.market_value_total as number)).toLocaleString() }}g</span>
+          </template>
+        </DataTable>
       </div>
 
       <!-- Aggregate Inventory -->
@@ -74,31 +71,25 @@
           variant="compact"
           :primary="invSearch ? 'No matching items' : 'No inventory data across characters'" />
 
-        <table v-else class="w-full text-sm">
-          <thead>
-            <tr class="text-text-muted text-xs text-left border-b border-border-default">
-              <th class="py-1.5 font-normal">Item</th>
-              <th class="py-1.5 font-normal text-right">Total</th>
-              <th class="py-1.5 font-normal text-right">Characters</th>
-              <th class="py-1.5 font-normal">Breakdown</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="item in filteredInventory"
-              :key="item.item_name"
-              class="border-b border-border-default/30">
-              <td class="py-1.5 text-text-primary">{{ item.item_name }}</td>
-              <td class="py-1.5 text-right text-accent-gold">{{ item.total_stack_size.toLocaleString() }}</td>
-              <td class="py-1.5 text-right text-text-muted">{{ item.character_count }}</td>
-              <td class="py-1.5 text-text-muted text-xs">
-                <span v-for="(c, i) in item.characters" :key="c.character_name">
-                  {{ c.character_name }}: {{ c.stack_size }}<span v-if="i < item.characters.length - 1">, </span>
-                </span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <DataTable
+          v-else
+          :columns="inventoryColumns"
+          :rows="(inventoryRows as unknown as Record<string, unknown>[])"
+          compact
+          :hoverable="false">
+          <template #cell-item_name="{ row }">
+            <span class="text-text-primary">{{ row.item_name }}</span>
+          </template>
+          <template #cell-total_stack_size="{ row }">
+            <span class="text-accent-gold">{{ (row.total_stack_size as number).toLocaleString() }}</span>
+          </template>
+          <template #cell-character_count="{ row }">
+            <span class="text-text-muted">{{ row.character_count }}</span>
+          </template>
+          <template #cell-breakdown="{ row }">
+            <span class="text-text-muted">{{ row.breakdown_text }}</span>
+          </template>
+        </DataTable>
 
         <div v-if="filteredInventory.length > 0" class="text-text-muted text-xs mt-2">
           {{ filteredInventory.length }} of {{ aggregateStore.inventory.length }} items shown
@@ -158,8 +149,23 @@ import { ref, computed, onMounted } from 'vue'
 import { useAggregateStore, type AggregateSkillSummary } from '../../stores/aggregateStore'
 import EmptyState from '../Shared/EmptyState.vue'
 import SkeletonLoader from '../Shared/SkeletonLoader.vue'
+import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 
 const aggregateStore = useAggregateStore()
+
+const wealthColumns: ColumnDef[] = [
+  { key: 'character_name', label: 'Character' },
+  { key: 'currency_total', label: 'Currencies', align: 'right', numeric: true },
+  { key: 'market_value_total', label: 'Inventory Value', align: 'right', numeric: true },
+  { key: 'total', label: 'Total', align: 'right', numeric: true },
+]
+
+const inventoryColumns: ColumnDef[] = [
+  { key: 'item_name', label: 'Item' },
+  { key: 'total_stack_size', label: 'Total', align: 'right', numeric: true },
+  { key: 'character_count', label: 'Characters', align: 'right' },
+  { key: 'breakdown', label: 'Breakdown' },
+]
 
 const invSearch = ref('')
 const skillSearch = ref('')
@@ -172,6 +178,13 @@ const filteredInventory = computed(() => {
   const q = invSearch.value.toLowerCase()
   return aggregateStore.inventory.filter(i => i.item_name.toLowerCase().includes(q))
 })
+
+const inventoryRows = computed(() =>
+  filteredInventory.value.map(i => ({
+    ...i,
+    breakdown_text: i.characters.map(c => `${c.character_name}: ${c.stack_size}`).join(', '),
+  })),
+)
 
 const skillCharacterNames = computed(() => {
   const names = new Set<string>()

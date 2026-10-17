@@ -168,35 +168,29 @@
         v-else-if="crossCharFiltered.length === 0"
         variant="compact"
         :primary="`No items matching &quot;${searchQuery}&quot;`" />
-      <table v-else class="w-full border-collapse text-xs">
-        <thead class="sticky top-0 z-10 bg-surface-base border-b border-border-default">
-          <tr>
-            <th class="text-[10px] uppercase tracking-wider text-text-muted font-semibold px-3 py-1.5 text-left">Item</th>
-            <th class="text-[10px] uppercase tracking-wider text-text-muted font-semibold px-3 py-1.5 text-right tabular-nums">Total Qty</th>
-            <th class="text-[10px] uppercase tracking-wider text-text-muted font-semibold px-3 py-1.5 text-right">Characters</th>
-          </tr>
-        </thead>
-        <tbody>
-          <template v-for="row in crossCharFiltered" :key="row.name">
-            <tr
-              class="border-b border-border-default/50 hover:bg-surface-row-hover cursor-pointer"
-              @click="toggleCrossCharRow(row.name)">
-              <td class="px-3 py-2">
-                <ItemInline :reference="row.name" :type-id="row.typeId" />
-              </td>
-              <td class="px-3 py-2 text-right tabular-nums font-medium text-text-primary">{{ row.total.toLocaleString() }}</td>
-              <td class="px-3 py-2 text-right text-text-muted">{{ row.characterCount }} {{ row.characterCount === 1 ? 'character' : 'characters' }}</td>
-            </tr>
-            <template v-if="expandedCrossChar.has(row.name)">
-              <tr v-for="(e, i) in row.entries" :key="`${row.name}-${e.character}-${e.location}-${i}`" class="bg-surface-inset/30">
-                <td class="px-3 py-1 pl-8 text-text-secondary">{{ e.character }}</td>
-                <td class="px-3 py-1 text-right tabular-nums text-text-secondary">{{ e.qty.toLocaleString() }}</td>
-                <td class="px-3 py-1 text-right text-text-muted">{{ formatVault(e.location) }}</td>
-              </tr>
-            </template>
-          </template>
-        </tbody>
-      </table>
+      <DataTable
+        v-else
+        :columns="crossCharColumns"
+        :rows="(crossCharDisplayRows as unknown as Record<string, unknown>[])"
+        :hoverable="false"
+        :row-class="crossCharRowClass"
+        row-clickable
+        @row-click="onCrossCharRowClick">
+        <template #cell-item="{ row }">
+          <ItemInline v-if="row.kind === 'item'" :reference="row.name as string" :type-id="row.typeId as number" />
+          <span v-else class="pl-5 text-text-secondary">{{ row.charName }}</span>
+        </template>
+        <template #cell-total="{ row }">
+          <span v-if="row.kind === 'item'" class="font-medium text-text-primary">{{ (row.qty as number).toLocaleString() }}</span>
+          <span v-else class="text-text-secondary">{{ (row.qty as number).toLocaleString() }}</span>
+        </template>
+        <template #cell-characters="{ row }">
+          <span v-if="row.kind === 'item'" class="text-text-muted">
+            {{ row.characterCount }} {{ (row.characterCount as number) === 1 ? 'character' : 'characters' }}
+          </span>
+          <span v-else class="text-text-muted">{{ formatVault(row.location as string) }}</span>
+        </template>
+      </DataTable>
     </div>
 
     <!-- Content -->
@@ -211,39 +205,30 @@
 
       <!-- Totals mode: consolidated by item name -->
       <template v-else-if="groupMode === 'totals'">
-        <table class="w-full border-collapse text-xs">
-          <thead class="sticky top-0 z-10 bg-surface-base border-b border-border-default">
-            <tr>
-              <th class="text-[10px] uppercase tracking-wider text-text-muted font-semibold px-3 py-1.5 text-left cursor-pointer" @click="toggleTotalSort('name')">
-                Item {{ totalSort === 'name' ? (totalSortAsc ? '\u25B2' : '\u25BC') : '' }}
-              </th>
-              <th class="text-[10px] uppercase tracking-wider text-text-muted font-semibold px-3 py-1.5 text-right tabular-nums cursor-pointer" @click="toggleTotalSort('qty')">
-                Total Qty {{ totalSort === 'qty' ? (totalSortAsc ? '\u25B2' : '\u25BC') : '' }}
-              </th>
-              <th class="text-[10px] uppercase tracking-wider text-text-muted font-semibold px-3 py-1.5 text-right">Locations</th>
-            </tr>
-          </thead>
-          <tbody>
-            <template v-for="row in sortedTotals" :key="row.name">
-              <tr
-                class="border-b border-border-default/50 hover:bg-surface-row-hover cursor-pointer"
-                @click="toggleTotalRow(row.name)">
-                <td class="px-3 py-2">
-                  <ItemInline :reference="row.name" :type-id="row.typeId" />
-                </td>
-                <td class="px-3 py-2 text-right tabular-nums font-medium text-text-primary">{{ row.total.toLocaleString() }}</td>
-                <td class="px-3 py-2 text-right text-text-muted">{{ row.locations.length }} {{ row.locations.length === 1 ? 'location' : 'locations' }}</td>
-              </tr>
-              <template v-if="expandedTotals.has(row.name)">
-                <tr v-for="loc in row.locations" :key="`${row.name}-${loc.vault}`" class="bg-surface-inset/30">
-                  <td class="px-3 py-1 pl-8 text-text-muted">{{ formatVault(loc.vault) }}</td>
-                  <td class="px-3 py-1 text-right tabular-nums text-text-secondary">{{ loc.qty.toLocaleString() }}</td>
-                  <td></td>
-                </tr>
-              </template>
-            </template>
-          </tbody>
-        </table>
+        <DataTable
+          :columns="totalColumns"
+          :rows="(totalDisplayRows as unknown as Record<string, unknown>[])"
+          :sort-key="totalSort"
+          :sort-dir="totalSortAsc ? 'asc' : 'desc'"
+          :hoverable="false"
+          :row-class="totalRowClass"
+          row-clickable
+          @sort="handleTotalSort"
+          @row-click="onTotalRowClick">
+          <template #cell-name="{ row }">
+            <ItemInline v-if="row.kind === 'item'" :reference="row.name as string" :type-id="row.typeId as number" />
+            <span v-else class="pl-5 text-text-muted">{{ row.locationLabel }}</span>
+          </template>
+          <template #cell-qty="{ row }">
+            <span v-if="row.kind === 'item'" class="font-medium text-text-primary">{{ (row.qty as number).toLocaleString() }}</span>
+            <span v-else class="text-text-secondary">{{ (row.qty as number).toLocaleString() }}</span>
+          </template>
+          <template #cell-locations="{ row }">
+            <span v-if="row.kind === 'item'" class="text-text-muted">
+              {{ row.locationCount }} {{ (row.locationCount as number) === 1 ? 'location' : 'locations' }}
+            </span>
+          </template>
+        </DataTable>
       </template>
 
       <!-- Grouped by location/zone -->
@@ -273,6 +258,7 @@ import { useViewPrefs } from '../../composables/useViewPrefs'
 import { formatDateTimeFull } from '../../composables/useTimestamp'
 import type { SnapshotItem } from '../../types/database'
 import EmptyState from '../Shared/EmptyState.vue'
+import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 import ItemInline from '../Shared/Item/ItemInline.vue'
 import InventoryTable from './InventoryTable.vue'
 import InventorySmallGrid from './InventorySmallGrid.vue'
@@ -368,6 +354,62 @@ const expandedCrossChar = reactive(new Set<string>())
 function toggleCrossCharRow(name: string) {
   if (expandedCrossChar.has(name)) expandedCrossChar.delete(name)
   else expandedCrossChar.add(name)
+}
+
+// Flattened row model for the shared DataTable: one row per item plus one row
+// per expanded character/location entry.
+interface CrossCharDisplayRow {
+  kind: 'item' | 'entry'
+  name: string
+  typeId: number
+  qty: number
+  characterCount: number
+  charName: string
+  location: string
+}
+
+const crossCharColumns: ColumnDef[] = [
+  { key: 'item', label: 'Item' },
+  { key: 'total', label: 'Total Qty', numeric: true },
+  { key: 'characters', label: 'Characters', align: 'right' },
+]
+
+const crossCharDisplayRows = computed<CrossCharDisplayRow[]>(() => {
+  const out: CrossCharDisplayRow[] = []
+  for (const row of crossCharFiltered.value) {
+    out.push({
+      kind: 'item',
+      name: row.name,
+      typeId: row.typeId,
+      qty: row.total,
+      characterCount: row.characterCount,
+      charName: '',
+      location: '',
+    })
+    if (!expandedCrossChar.has(row.name)) continue
+    for (const entry of row.entries) {
+      out.push({
+        kind: 'entry',
+        name: row.name,
+        typeId: row.typeId,
+        qty: entry.qty,
+        characterCount: 0,
+        charName: entry.character,
+        location: entry.location,
+      })
+    }
+  }
+  return out
+})
+
+// Only item rows are interactive/hoverable, matching the original markup;
+// hover lives in rowClass because `hoverable` applies table-wide.
+function crossCharRowClass(row: Record<string, unknown>): string {
+  return row.kind === 'item' ? 'hover:bg-surface-row-hover cursor-pointer' : 'bg-surface-inset/30'
+}
+
+function onCrossCharRowClick(payload: { row: Record<string, unknown> }) {
+  if (payload.row.kind === 'item') toggleCrossCharRow(payload.row.name as string)
 }
 
 // While searching all characters, auto-expand matches so the owning character
@@ -628,6 +670,65 @@ const sortedTotals = computed(() => {
   else rows.sort((a, b) => dir * (a.total - b.total))
   return rows
 })
+
+// Flattened row model for the shared DataTable: one row per item plus one row
+// per expanded storage location. Column keys double as sort keys.
+interface TotalDisplayRow {
+  kind: 'item' | 'location'
+  name: string
+  typeId: number
+  qty: number
+  locationCount: number
+  locationLabel: string
+}
+
+const totalColumns: ColumnDef[] = [
+  { key: 'name', label: 'Item', sortable: true },
+  { key: 'qty', label: 'Total Qty', sortable: true, numeric: true },
+  { key: 'locations', label: 'Locations', align: 'right' },
+]
+
+const totalDisplayRows = computed<TotalDisplayRow[]>(() => {
+  const out: TotalDisplayRow[] = []
+  for (const row of sortedTotals.value) {
+    out.push({
+      kind: 'item',
+      name: row.name,
+      typeId: row.typeId,
+      qty: row.total,
+      locationCount: row.locations.length,
+      locationLabel: '',
+    })
+    if (!expandedTotals.has(row.name)) continue
+    for (const loc of row.locations) {
+      out.push({
+        kind: 'location',
+        name: row.name,
+        typeId: row.typeId,
+        qty: loc.qty,
+        locationCount: 0,
+        locationLabel: formatVault(loc.vault),
+      })
+    }
+  }
+  return out
+})
+
+// Only item rows are interactive/hoverable, matching the original markup;
+// hover lives in rowClass because `hoverable` applies table-wide.
+function totalRowClass(row: Record<string, unknown>): string {
+  return row.kind === 'item' ? 'hover:bg-surface-row-hover cursor-pointer' : 'bg-surface-inset/30'
+}
+
+function onTotalRowClick(payload: { row: Record<string, unknown> }) {
+  if (payload.row.kind === 'item') toggleTotalRow(payload.row.name as string)
+}
+
+// DataTable only reports the clicked column; the comparator and per-column
+// default directions stay here.
+function handleTotalSort(payload: { key: string; dir: 'asc' | 'desc' }) {
+  toggleTotalSort(payload.key as 'name' | 'qty')
+}
 
 // ── Snapshot management ─────────────────────────────────────────────────────
 

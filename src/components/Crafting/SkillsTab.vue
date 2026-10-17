@@ -172,40 +172,28 @@
             </div>
 
             <div class="overflow-y-auto flex-1 min-h-0 pr-1.5">
-              <table class="w-full text-xs">
-                <thead class="sticky top-0 bg-surface-dark z-10">
-                  <tr class="text-text-dim border-b border-border-light">
-                    <th class="text-left py-1 font-medium">Recipe</th>
-                    <th class="text-right py-1 font-medium w-16">Level</th>
-                    <th class="text-right py-1 font-medium w-20">Crafts</th>
-                    <th class="text-right py-1 font-medium w-16">XP</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr
-                    v-for="recipe in filteredRecipes"
-                    :key="recipe.id"
-                    class="border-b border-surface-dark"
-                    :class="{ 'opacity-40': recipe.completions === 0 }">
-                    <td class="py-1">
-                      <RecipeInline :reference="recipe.name" />
-                    </td>
-                    <td class="text-right py-1 text-text-muted font-mono">
-                      {{ recipe.skill_level_req ?? '—' }}
-                    </td>
-                    <td class="text-right py-1 font-mono" :class="recipe.completions > 0 ? 'text-text-primary font-semibold' : 'text-text-muted'">
-                      {{ recipe.completions > 0 ? recipe.completions.toLocaleString() : '—' }}
-                    </td>
-                    <td class="text-right py-1 text-text-muted font-mono">
-                      {{ recipe.reward_skill_xp ?? '—' }}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-
-              <div v-if="filteredRecipes.length === 0" class="text-text-dim text-xs italic py-2">
-                No recipes match the current filters.
-              </div>
+              <DataTable
+                :columns="recipeColumns"
+                :rows="(filteredRecipes as unknown as Record<string, unknown>[])"
+                empty-text="No recipes match the current filters."
+                :row-class="recipeRowClass">
+                <template #cell-name="{ value }">
+                  <RecipeInline :reference="(value as string)" />
+                </template>
+                <template #cell-skill_level_req="{ value }">
+                  <span class="text-text-muted font-mono">{{ value ?? '—' }}</span>
+                </template>
+                <template #cell-completions="{ value }">
+                  <span
+                    class="font-mono"
+                    :class="(value as number) > 0 ? 'text-text-primary font-semibold' : 'text-text-muted'">
+                    {{ (value as number) > 0 ? (value as number).toLocaleString() : '—' }}
+                  </span>
+                </template>
+                <template #cell-reward_skill_xp="{ value }">
+                  <span class="text-text-muted font-mono">{{ value ?? '—' }}</span>
+                </template>
+              </DataTable>
             </div>
           </div>
         </div>
@@ -225,6 +213,7 @@ import EmptyState from "../Shared/EmptyState.vue";
 import PaneLayout from "../Shared/PaneLayout.vue";
 import SkeletonLoader from "../Shared/SkeletonLoader.vue";
 import SkillInline from "../Shared/Skill/SkillInline.vue";
+import DataTable, { type ColumnDef } from "../Shared/DataTable.vue";
 import RecipeInline from "../Shared/Recipe/RecipeInline.vue";
 import ItemInline from "../Shared/Item/ItemInline.vue";
 import { useMarketStore } from "../../stores/marketStore";
@@ -506,6 +495,17 @@ const filteredRecipes = computed(() => {
 
   return recipes;
 });
+
+const recipeColumns: ColumnDef[] = [
+  { key: "name", label: "Recipe", align: "left" },
+  { key: "skill_level_req", label: "Level", align: "right", width: "4rem" },
+  { key: "completions", label: "Crafts", align: "right", width: "5rem", numeric: true },
+  { key: "reward_skill_xp", label: "XP", align: "right", width: "4rem" },
+];
+
+function recipeRowClass(row: Record<string, unknown>): string {
+  return (row.completions as number) === 0 ? "opacity-40" : "";
+}
 
 onMounted(() => loadSkills());
 

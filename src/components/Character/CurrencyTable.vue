@@ -2,33 +2,34 @@
   <div class="flex flex-col gap-2 min-h-0 h-full">
     <h3 class="section-heading shrink-0">Currencies</h3>
     <div class="overflow-auto flex-1 min-h-0">
-    <table class="w-full text-sm border-collapse">
-      <thead class="sticky top-0 bg-surface-base">
-        <tr class="text-left text-text-secondary border-b border-border-default">
-          <th class="py-1.5 px-2">Currency</th>
-          <th class="py-1.5 px-2 text-right">Amount</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr
-          v-for="c in currencies"
-          :key="c.currency_key"
-          class="border-b border-border-default/50 hover:bg-surface-elevated/50">
-          <td class="py-1 px-2 text-text-primary">{{ formatKey(c.currency_key) }}</td>
-          <td class="py-1 px-2 text-right text-accent-gold">{{ c.amount.toLocaleString() }}</td>
-        </tr>
-      </tbody>
-    </table>
+      <DataTable
+        :columns="columns"
+        :rows="(currencies as unknown as Record<string, unknown>[])"
+        compact
+        empty-text="No currencies.">
+        <template #cell-currency_key="{ row }">
+          <span class="text-text-primary">{{ formatKey(row.currency_key as string) }}</span>
+        </template>
+        <template #cell-amount="{ row }">
+          <span class="text-accent-gold">{{ (row.amount as number).toLocaleString() }}</span>
+        </template>
+      </DataTable>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import type { SnapshotCurrency } from '../../types/database'
+import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 
 defineProps<{
   currencies: SnapshotCurrency[]
 }>()
+
+const columns: ColumnDef[] = [
+  { key: 'currency_key', label: 'Currency' },
+  { key: 'amount', label: 'Amount', align: 'right' },
+]
 
 function formatKey(key: string): string {
   return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())

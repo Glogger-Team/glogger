@@ -1,9 +1,43 @@
 # glogger — Session Handoff
 
-**Date:** 2026-10-16 (Session 44 — gift counts for capped NPCs come from the note, not from `is_gift`; "gifts do nothing" for NPCs with no CDN gift data)
+**Date:** 2026-10-17 (Session 45 — UI standardization: every real data grid migrated to the shared `DataTable`; the component gained `rowClickable`/`rowClick` and a working `compact` size)
 **Machine:** Windows 11 (primary dev box)
-**Branch:** `main` — uncommitted working tree (10 files: `game_state.rs`, `game_data/npcs.rs`, `game_data/mod.rs`, `db/statehelm_commands.rs`, `useStatehelmTracker.ts`, `StatehelmView.vue`, `StatehelmSummaryWidget.vue`, `docs/features/statehelm-gift-backfill.md`, `docs/features/screens/character/character-statehelm.md`, this file). No version bump.
-**Status:** ✅ Implemented + verified: `cargo test --lib` **709 passed** (6 ignored, 715 total; +6 this session), `npm run build` (vue-tsc + vite) clean, and a live `tauri dev` run on the real profile (header `7 of 200 gift slots used`, `Gifted this week: Hamilton 5/5 · Sourgum 2/5`, the 40-card filter, and — once the CDN data is loaded — no gift rows from Gossamyr's card-reading `ProcessDeltaFavor(33081, …)` lines).
+**Branch:** `main` — uncommitted working tree (29 files: 25 `.vue` — 24 screens migrated plus `Shared/DataTable.vue` — and `docs/architecture/shared-components.md`, `docs/architecture/ux-standards.md`, `docs/TODO.md`, this file). No version bump. Frontend-only — no Rust diff, so `cargo test --lib` is unchanged from v1.3.1's 709.
+**Status:** ✅ Implemented + verified: `npm run build` (vue-tsc + vite) clean, plus a live smoke over WebView2 CDP on the real `glogger.Dev` profile driving the app through its own injected navigation (`navigateToView({ view, subTab })`) — eight migrated tables observed rendering real rows, header-click sort flipping order and back, a `rowClick` drilling into the poem detail, and zero console errors. `DataTable` now covers **37 instances across 30 files** (was 6/5); raw `<table>` is down to 16 instances in 10 app files, every one of them a non-grid (label/value, pivot with runtime columns, nested sub-table, or a monospace debug dump).
+
+## Session 45 — Every data grid on the shared `DataTable`; two API gaps it exposed
+
+**Date:** 2026-10-17.
+**Status:** ✅ `npm run build` (vue-tsc + vite) clean; live CDP smoke over the real profile (see Verification). No Rust change.
+
+### What changed
+
+- **Wart fixed in `DataTable.vue`:** the root table carried `:class="compact ? 'text-xs' : 'text-xs'"` — a dead ternary, so `compact` only ever tightened padding. It is now `compact ? 'text-[11px]' : 'text-xs'`, i.e. `compact` genuinely means "denser", and the default rendering of the five pre-existing consumers is unchanged (they all pass `compact` anyway — the repo's house style for data grids, and what `ux-standards.md` asks for: `py-1`–`py-1.5` row heights).
+- **`rowClickable` + `rowClick` added.** Three tables in the Surveying/DataBrowser group are click-to-drill/select (`AnalyticsOverviewView`, `CrossZoneComparison`, `AbilityTierTable`), and `PoemsView` and `MaterialTable` expand a row. Without a row-level surface the only option was per-cell `#cell-*` click wrappers, which shrink the hit area from the whole row to the cell's text. `DataTable` now emits `rowClick({ row, index })` from the `<tr>` and takes `rowClickable?: boolean` for the `cursor-pointer` affordance; per-row highlight stays in `rowClass`. Documented in `docs/architecture/shared-components.md`.
+- **23 screens migrated** (25 instances): Character (`InventoryTable`, `SkillTable`, `StatsTable`, `CurrencyTable`, `SnapshotComparison`, `InventoryView` ×2), Crafting (`HistoryTab`, `LevelingTab`, `MaterialTable`, `ProjectMaterialsPanel`, `RecipeBookTab`, `ShoppingList` ×2, `SkillsTab`), Surveying (`AnalyticsOverviewView`, `CrossZoneComparison`, `LootOverviewPanel`, `ZoneRewardsCard`), DataBrowser (`NpcBrowser`, `AbilityTierTable`), Inventory (`LiveInventoryTab`), Market (`MarketView` ×2), Chat (`PoemsView`), Dashboard (`MushroomFarmingWidget`, `AggregateView` ×2).
+- **Sorting stayed in the parents.** `DataTable` only flips the arrow and emits `{key, dir}`; every migration kept its own comparator, including the asymmetric defaults (`InventoryTable`: desc for stack/level/value, asc for name/location/rarity/slot; `SkillTable`: level desc on first click) and the dynamic-column cases (`AbilityTierTable`, `RecipeBookTab`, `ProjectMaterialsPanel`, `LootOverviewPanel` build `columns` as a `computed<ColumnDef[]>` from the same `v-if`s the `<th>`s had).
+- **Parent/child rows flattened.** `InventoryView` (all-characters + totals modes) and `MaterialTable` rendered an expanded child row as a second `<tr>` in the same `<tbody>`; `DataTable` renders one flat array, so both now build a tagged row list (`kind: 'item' | 'entry'`, `_kind: 'breakdown'`) and use slots + `rowClass` to keep the indent, muted colours and conditional styling. Clicks are guarded to parent rows.
+- **`ux-standards.md` gained the rule** (Visual Consistency Checklist): a header-row + data-row grid MUST use `DataTable`; the exceptions are named (label/value, runtime-column pivots, nested sub-tables, debug dumps).
+
+### Left alone on purpose (still raw `<table>`)
+
+`ComputedStatsCard`, `PlayerAttributesCard`, `ReportStatsSection` (label/value with a `colspan` section row — a grid cannot express it), `DeathsView` (a sub-table per expanded row), `BreweryRecipeDetail` (columns *are* the recipe's `variable_slots`), `StallRevenueTab` (pivot with sticky row labels + `tfoot`), `ArenaWidget` (columns generated per fighter, per-cell colour ramp + `:title`), `AggregateView`'s skills-across-characters table (one column per character name), and the monospace debug dumps (`Settings/GameStateDebug`, dev-panel `GameStateTab`).
+
+### Verification
+
+- **`npm run build`** (`vue-tsc --noEmit` && `vite build`) clean, twice — the second run after `AggregateView` was added.
+- **Live smoke** (`npm run tauri dev` with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222`, real `glogger.Dev` DB + CDN v486, character TwinkleofToes/Dreva) attached with `browser.open({ app: { cdp_url: 'http://127.0.0.1:9222' } })`:
+  - Tables rendering real rows with the expected headers: `Stat|Value` (69), `Skill ▲|Level|Bonus|XP Progress` (149 — the ▲ is the component's arrow), `Currency|Amount` (14), `Item ▲|Qty|Location|Rarity|Slot|Lvl|Value|Mods` (153 and 76), `Recipe|Level|Crafts|XP` (209), `Title|Author|Recorded` (160), Stall Tracker's `DATE ▼|BUYER|ITEM|QTY|UNIT|TOTAL` (242).
+  - **Sort:** clicking the `Qty` header on Storage reordered row 1 `Ratkin Shaman's Belt…` → `Great Phlogiston 1000`, and clicking again restored the original order.
+  - **`rowClick`:** clicking the first poem row opened the detail (`← Back 1 / 160 … Ooops by DemonSLAYer … Roses are red,`).
+  - **Console:** `tab.errors()` empty after the whole tour.
+- The DOM-only "click every button with this label" driving I started with was unreliable (keep-alive panes keep hidden screens mounted, and labels repeat across screens) — driving `navigateToView({ view, subTab })` off `Symbol(view-navigation)` in the nav button's Vue instance is the deterministic way in. Worth reusing.
+
+### Gotchas
+
+- **An inline TS type literal inside a template expression breaks `vue-tsc`.** `v-for="(c, i) in (row.characters as { character_name: string }[])"` failed with `TS1005: ',' expected` at the attribute; the fix is to shape the rows in `computed` instead (here: a `breakdown_text` field). Casts like `as number` / `as string` inside slots are fine — `RecipeTable.vue` and `StallInventoryTab.vue` are the reference idioms for `(row.x as number).toLocaleString()` and `(value as string)`.
+- **`compact` is the house default for data grids** (all five older consumers pass it), so a table that used `text-sm` shrinks to 11px when it moves onto the component. Padding was the tie-breaker in every judgment call: `compact`'s `px-2 py-1` matches what the raw tables used far more often than the default's `px-3 py-2`.
+- Header typography is component-owned now (10px uppercase muted semibold, `bg-surface-base`, `border-border-default/50` rows), so screens whose hand-rolled headers were plain `font-normal` text look slightly different even though every label, column order and width is preserved.
 
 ## Session 44 — A capped NPC's gift count is the note's, not the delta's
 

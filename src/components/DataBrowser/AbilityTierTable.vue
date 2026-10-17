@@ -7,62 +7,63 @@
 
     <!-- Compact table -->
     <div class="overflow-x-auto">
-      <table class="w-full text-xs border-collapse">
-        <thead>
-          <tr class="text-text-muted text-[0.65rem]">
-            <th class="text-left px-1.5 py-1 border-b border-surface-card font-normal">Tier</th>
-            <th class="text-left px-1.5 py-1 border-b border-surface-card font-normal">Level</th>
-            <th v-if="showDamage" class="text-right px-1.5 py-1 border-b border-surface-card font-normal">Damage</th>
-            <th v-if="showPowerCost" class="text-right px-1.5 py-1 border-b border-surface-card font-normal">Power</th>
-            <th v-if="showManaCost" class="text-right px-1.5 py-1 border-b border-surface-card font-normal">Mana</th>
-            <th v-if="showArmorCost" class="text-right px-1.5 py-1 border-b border-surface-card font-normal">Armor</th>
-            <th v-if="showHealthCost" class="text-right px-1.5 py-1 border-b border-surface-card font-normal">Health</th>
-            <th v-if="showRange" class="text-right px-1.5 py-1 border-b border-surface-card font-normal">Range</th>
-            <th v-if="showCooldown" class="text-right px-1.5 py-1 border-b border-surface-card font-normal">CD</th>
-            <th v-if="showRageCost" class="text-right px-1.5 py-1 border-b border-surface-card font-normal">Rage</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="(tier, idx) in tiers"
-            :key="tier.id"
-            class="hover:bg-surface-row-hover cursor-pointer"
-            :class="{ 'bg-surface-card': expandedTier === tier.id }"
-            @click="toggleExpand(tier.id)">
-            <td class="px-1.5 py-1 border-b border-surface-dark text-text-primary">
-              {{ idx + 1 }}
-            </td>
-            <td class="px-1.5 py-1 border-b border-surface-dark text-text-secondary font-mono">
-              {{ tier.level ?? 0 }}
-            </td>
-            <td v-if="showDamage" class="text-right px-1.5 py-1 border-b border-surface-dark text-text-secondary font-mono">
-              <span v-if="tier.pve?.damage != null">{{ tier.pve.damage }}</span>
-            </td>
-            <td v-if="showPowerCost" class="text-right px-1.5 py-1 border-b border-surface-dark font-mono text-[#c0a040]">
-              <span v-if="tier.power_cost != null">{{ tier.power_cost }}</span>
-              <span v-else-if="tier.pve?.power_cost != null">{{ tier.pve.power_cost }}</span>
-            </td>
-            <td v-if="showManaCost" class="text-right px-1.5 py-1 border-b border-surface-dark font-mono text-[#6090c0]">
-              <span v-if="tier.mana_cost != null">{{ tier.mana_cost }}</span>
-            </td>
-            <td v-if="showArmorCost" class="text-right px-1.5 py-1 border-b border-surface-dark font-mono text-text-muted">
-              <span v-if="tier.armor_cost != null">{{ tier.armor_cost }}</span>
-            </td>
-            <td v-if="showHealthCost" class="text-right px-1.5 py-1 border-b border-surface-dark font-mono text-accent-red">
-              <span v-if="tier.health_cost != null">{{ tier.health_cost }}</span>
-            </td>
-            <td v-if="showRange" class="text-right px-1.5 py-1 border-b border-surface-dark text-text-secondary font-mono">
-              <span v-if="tier.range != null">{{ tier.range }}m</span>
-            </td>
-            <td v-if="showCooldown" class="text-right px-1.5 py-1 border-b border-surface-dark text-text-secondary font-mono">
-              <span v-if="tier.reset_time != null">{{ tier.reset_time }}s</span>
-            </td>
-            <td v-if="showRageCost" class="text-right px-1.5 py-1 border-b border-surface-dark font-mono text-[#c06060]">
-              <span v-if="tier.pve?.rage_cost != null">{{ tier.pve.rage_cost }}</span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <DataTable
+        :columns="columns"
+        :rows="(tiers as unknown as Record<string, unknown>[])"
+        :row-class="tierRowClass"
+        compact
+        row-clickable
+        @row-click="onTierRowClick">
+        <template #cell-tier_index="{ row }">
+          <span class="text-text-primary">{{ tierIndexById.get(asTier(row).id) }}</span>
+        </template>
+        <template #cell-level="{ row }">
+          <span class="text-text-secondary font-mono">{{ asTier(row).level ?? 0 }}</span>
+        </template>
+        <template #cell-damage="{ row }">
+          <span
+            v-if="asTier(row).pve?.damage != null"
+            class="text-text-secondary font-mono">{{ asTier(row).pve?.damage }}</span>
+        </template>
+        <template #cell-power_cost="{ row }">
+          <span
+            v-if="asTier(row).power_cost != null"
+            class="font-mono text-[#c0a040]">{{ asTier(row).power_cost }}</span>
+          <span
+            v-else-if="asTier(row).pve?.power_cost != null"
+            class="font-mono text-[#c0a040]">{{ asTier(row).pve?.power_cost }}</span>
+        </template>
+        <template #cell-mana_cost="{ row }">
+          <span
+            v-if="asTier(row).mana_cost != null"
+            class="font-mono text-[#6090c0]">{{ asTier(row).mana_cost }}</span>
+        </template>
+        <template #cell-armor_cost="{ row }">
+          <span
+            v-if="asTier(row).armor_cost != null"
+            class="font-mono text-text-muted">{{ asTier(row).armor_cost }}</span>
+        </template>
+        <template #cell-health_cost="{ row }">
+          <span
+            v-if="asTier(row).health_cost != null"
+            class="font-mono text-accent-red">{{ asTier(row).health_cost }}</span>
+        </template>
+        <template #cell-range="{ row }">
+          <span
+            v-if="asTier(row).range != null"
+            class="text-text-secondary font-mono">{{ asTier(row).range }}m</span>
+        </template>
+        <template #cell-reset_time="{ row }">
+          <span
+            v-if="asTier(row).reset_time != null"
+            class="text-text-secondary font-mono">{{ asTier(row).reset_time }}s</span>
+        </template>
+        <template #cell-rage_cost="{ row }">
+          <span
+            v-if="asTier(row).pve?.rage_cost != null"
+            class="font-mono text-[#c06060]">{{ asTier(row).pve?.rage_cost }}</span>
+        </template>
+      </DataTable>
     </div>
 
     <!-- Expanded tier detail -->
@@ -95,6 +96,7 @@ import { ref, computed, watch } from 'vue'
 import { useGameDataStore } from '../../stores/gameDataStore'
 import type { AbilityInfo, EntitySources } from '../../types/gameData'
 import SourcesPanel from '../Shared/SourcesPanel.vue'
+import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 
 const props = defineProps<{
   tiers: AbilityInfo[]
@@ -118,6 +120,40 @@ const showHealthCost = computed(() => props.tiers.some(t => t.health_cost != nul
 const showRange = computed(() => props.tiers.some(t => t.range != null))
 const showCooldown = computed(() => props.tiers.some(t => t.reset_time != null))
 const showRageCost = computed(() => props.tiers.some(t => t.pve?.rage_cost != null))
+
+// Same visibility rule as the previous per-`<th>`/`<td>` `v-if`s: a column only
+// appears when at least one tier has data for it.
+const columns = computed<ColumnDef[]>(() => {
+  const cols: ColumnDef[] = [
+    { key: 'tier_index', label: 'Tier' },
+    { key: 'level', label: 'Level' },
+  ]
+  if (showDamage.value) cols.push({ key: 'damage', label: 'Damage', align: 'right', numeric: true })
+  if (showPowerCost.value) cols.push({ key: 'power_cost', label: 'Power', align: 'right', numeric: true })
+  if (showManaCost.value) cols.push({ key: 'mana_cost', label: 'Mana', align: 'right', numeric: true })
+  if (showArmorCost.value) cols.push({ key: 'armor_cost', label: 'Armor', align: 'right', numeric: true })
+  if (showHealthCost.value) cols.push({ key: 'health_cost', label: 'Health', align: 'right', numeric: true })
+  if (showRange.value) cols.push({ key: 'range', label: 'Range', align: 'right', numeric: true })
+  if (showCooldown.value) cols.push({ key: 'reset_time', label: 'CD', align: 'right', numeric: true })
+  if (showRageCost.value) cols.push({ key: 'rage_cost', label: 'Rage', align: 'right', numeric: true })
+  return cols
+})
+
+// 1-based tier position, keyed by ability id: the row slot only carries
+// `row`/`value`, so the index has to come from the tiers array itself.
+const tierIndexById = computed(() => new Map(props.tiers.map((t, i) => [t.id, i + 1] as const)))
+
+function asTier(row: Record<string, unknown>): AbilityInfo {
+  return row as unknown as AbilityInfo
+}
+
+function tierRowClass(row: Record<string, unknown>): string {
+  return expandedTier.value === asTier(row).id ? 'bg-surface-card' : ''
+}
+
+function onTierRowClick(payload: { row: Record<string, unknown>; index: number }) {
+  toggleExpand(asTier(payload.row).id)
+}
 
 function toggleExpand(id: number) {
   expandedTier.value = expandedTier.value === id ? null : id

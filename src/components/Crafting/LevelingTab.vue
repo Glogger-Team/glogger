@@ -336,32 +336,21 @@
           <div class="text-text-muted text-[0.65rem] mb-1">
             {{ aggregatedMaterials.length }} items needed
           </div>
-          <table class="w-full text-xs">
-            <thead>
-              <tr class="text-text-dim border-b border-border-light">
-                <th class="text-left py-1 font-medium">Item</th>
-                <th class="text-right py-1 font-medium w-14">Qty</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="mat in aggregatedMaterials"
-                :key="mat.key"
-                class="border-b border-surface-dark">
-                <td class="py-0.5">
-                  <template v-if="mat.is_dynamic">
-                    <span class="text-accent-gold/60 text-[0.65rem] mr-1">&#9670;</span>
-                    <span class="text-text-secondary text-[0.65rem]">{{ mat.item_name }}</span>
-                  </template>
-                  <ItemInline v-else-if="mat.item_id !== null" :reference="mat.item_name" />
-                  <span v-else class="text-text-muted text-[0.65rem]">{{ mat.item_name }}</span>
-                </td>
-                <td class="text-right py-0.5 font-mono text-text-primary text-[0.65rem]">
-                  {{ Math.ceil(mat.expected_quantity).toLocaleString() }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <DataTable
+            :columns="materialColumns"
+            :rows="(aggregatedMaterials as unknown as Record<string, unknown>[])">
+            <template #cell-item_name="{ row }">
+              <template v-if="row.is_dynamic">
+                <span class="text-accent-gold/60 text-[0.65rem] mr-1">&#9670;</span>
+                <span class="text-text-secondary text-[0.65rem]">{{ row.item_name }}</span>
+              </template>
+              <ItemInline v-else-if="row.item_id !== null" :reference="(row.item_name as string)" />
+              <span v-else class="text-text-muted text-[0.65rem]">{{ row.item_name }}</span>
+            </template>
+            <template #cell-expected_quantity="{ value }">
+              <span class="font-mono text-text-primary text-[0.65rem]">{{ Math.ceil(value as number).toLocaleString() }}</span>
+            </template>
+          </DataTable>
         </template>
       </div>
     </div>
@@ -378,6 +367,7 @@ import { useGameStateStore } from "../../stores/gameStateStore";
 import type { RecipeInfo } from "../../types/gameData/recipes";
 import type { FlattenedMaterial } from "../../types/crafting";
 import { xpDropOffMultiplier } from "../../utils/craftingXp";
+import DataTable, { type ColumnDef } from "../Shared/DataTable.vue";
 import EmptyState from "../Shared/EmptyState.vue";
 import SkeletonLoader from "../Shared/SkeletonLoader.vue";
 import ItemInline from "../Shared/Item/ItemInline.vue";
@@ -455,6 +445,11 @@ const allRecipes = ref<EnrichedRecipe[]>([]);
 
 // Aggregated materials for the plan
 const aggregatedMaterials = ref<FlattenedMaterial[]>([]);
+
+const materialColumns: ColumnDef[] = [
+  { key: "item_name", label: "Item", align: "left" },
+  { key: "expected_quantity", label: "Qty", align: "right", width: "3.5rem", numeric: true },
+];
 
 // Game state XP (for "use current" button)
 const gameStateXp = ref<number | null>(null);

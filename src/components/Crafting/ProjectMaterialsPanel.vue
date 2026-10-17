@@ -197,49 +197,39 @@
                 </span>
               </div>
             </template>
-            <table class="w-full text-xs">
-              <thead>
-                <tr class="text-text-dim border-b border-border-light">
-                  <th class="text-left py-1 font-medium">Item</th>
-                  <th class="text-right py-1 font-medium w-20">Qty</th>
-                  <th v-if="pricingMode" class="text-right py-1 font-medium w-20">They Give</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="mat in sortedMaterials"
-                  :key="mat.key"
-                  class="border-b border-surface-dark"
-                  :class="{ 'bg-accent-green/5': pricingMode && (customerProvides[mat.key] ?? 0) > 0 }">
-                  <td class="py-1">
-                    <template v-if="mat.is_dynamic">
-                      <span class="text-accent-gold/60 text-[0.65rem] mr-1">&#9670;</span>
-                      <span class="text-text-secondary">{{ mat.item_name }}</span>
-                    </template>
-                    <ItemInline v-else-if="mat.item_id !== null" :reference="mat.item_name" />
-                    <span v-else class="text-text-muted italic">{{ mat.item_name }}</span>
-                  </td>
-                  <td class="text-right py-1 text-text-primary font-mono whitespace-nowrap">
-                    {{ mat.expected_quantity }}
-                    <span
-                      v-if="mat.chance_to_consume < 1"
-                      class="text-accent-gold cursor-help"
-                      :title="`~${Math.round(mat.chance_to_consume * 100)}% chance to consume per use${consumeBufferPct > 0 ? ` (incl. +${consumeBufferPct}% safety buffer)` : ''}. Raw quantity: ${mat.quantity}`">
-                      *
-                    </span>
-                  </td>
-                  <td v-if="pricingMode" class="text-right py-1">
-                    <input
-                      :value="customerProvides[mat.key] ?? 0"
-                      type="number"
-                      min="0"
-                      :max="Math.ceil(mat.expected_quantity)"
-                      class="input w-14 text-xs text-right py-0"
-                      @change="onCustomerProvidesChange(mat.key, mat.expected_quantity, $event)" />
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            <DataTable
+              :columns="materialColumns"
+              :rows="(sortedMaterials as unknown as Record<string, unknown>[])"
+              :row-class="materialRowClass">
+              <template #cell-item_name="{ row }">
+                <template v-if="row.is_dynamic">
+                  <span class="text-accent-gold/60 text-[0.65rem] mr-1">&#9670;</span>
+                  <span class="text-text-secondary">{{ row.item_name }}</span>
+                </template>
+                <ItemInline v-else-if="row.item_id !== null" :reference="(row.item_name as string)" />
+                <span v-else class="text-text-muted italic">{{ row.item_name }}</span>
+              </template>
+              <template #cell-expected_quantity="{ row }">
+                <span class="text-text-primary font-mono whitespace-nowrap">
+                  {{ row.expected_quantity }}
+                  <span
+                    v-if="(row.chance_to_consume as number) < 1"
+                    class="text-accent-gold cursor-help"
+                    :title="`~${Math.round((row.chance_to_consume as number) * 100)}% chance to consume per use${consumeBufferPct > 0 ? ` (incl. +${consumeBufferPct}% safety buffer)` : ''}. Raw quantity: ${row.quantity}`">
+                    *
+                  </span>
+                </span>
+              </template>
+              <template #cell-customer_provides="{ row }">
+                <input
+                  :value="customerProvides[row.key as string] ?? 0"
+                  type="number"
+                  min="0"
+                  :max="Math.ceil(row.expected_quantity as number)"
+                  class="input w-14 text-xs text-right py-0"
+                  @change="onCustomerProvidesChange(row.key as string, row.expected_quantity as number, $event)" />
+              </template>
+            </DataTable>
           </AccordionSection>
         </div>
 
@@ -346,6 +336,7 @@ import { useCraftingStore } from "../../stores/craftingStore";
 import type { CraftingProject, CraftingProjectEntry, FlattenedMaterial, IntermediateCraft, MaterialNeed } from "../../types/crafting";
 import type { PriceCalculation } from "../../composables/usePriceCalculator";
 import { formatGold } from "../../composables/useRecipeCost";
+import DataTable, { type ColumnDef } from "../Shared/DataTable.vue";
 import EmptyState from "../Shared/EmptyState.vue";
 import AccordionSection from "../Shared/AccordionSection.vue";
 import LoadingSpinner from "../Shared/LoadingSpinner.vue";
@@ -427,6 +418,25 @@ const sortedMaterials = computed(() => {
       return a.item_name.localeCompare(b.item_name);
     });
 });
+
+/** "They Give" column only exists while pricing mode is on, mirroring the original header `v-if`. */
+const materialColumns = computed<ColumnDef[]>(() => {
+  const cols: ColumnDef[] = [
+    { key: "item_name", label: "Item", align: "left" },
+    { key: "expected_quantity", label: "Qty", align: "right", width: "5rem", numeric: true },
+  ];
+  if (props.pricingMode) {
+    cols.push({ key: "customer_provides", label: "They Give", align: "right", width: "5rem" });
+  }
+  return cols;
+});
+
+/** Highlight materials the customer is providing. */
+function materialRowClass(row: Record<string, unknown>): string {
+  return props.pricingMode && (props.customerProvides[row.key as string] ?? 0) > 0
+    ? "bg-accent-green/5"
+    : "";
+}
 
 interface CraftableItem {
   item_id: number

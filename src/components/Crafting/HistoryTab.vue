@@ -36,42 +36,27 @@
           </select>
         </div>
 
-        <table class="w-full text-xs">
-          <thead>
-            <tr class="text-text-dim border-b border-border-light">
-              <th class="text-left py-1 font-medium w-8">#</th>
-              <th class="text-left py-1 font-medium">Recipe</th>
-              <th class="text-left py-1 font-medium w-28">Skill</th>
-              <th class="text-right py-1 font-medium w-16">Level</th>
-              <th class="text-right py-1 font-medium w-20">Crafts</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="(recipe, idx) in filteredRecipes"
-              :key="recipe.recipe_key"
-              class="border-b border-surface-dark">
-              <td class="py-1 text-text-muted">{{ idx + 1 }}</td>
-              <td class="py-1">
-                <RecipeInline :reference="recipe.recipe_name" />
-              </td>
-              <td class="py-1">
-                <SkillInline v-if="recipe.reward_skill" :reference="recipe.reward_skill" />
-                <span v-else class="text-text-muted">—</span>
-              </td>
-              <td class="text-right py-1 text-text-muted">
-                {{ recipe.skill_level_req ?? '—' }}
-              </td>
-              <td class="text-right py-1 text-text-primary font-mono font-semibold">
-                {{ recipe.completions.toLocaleString() }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-
-        <div v-if="filteredRecipes.length === 0" class="text-text-dim text-xs italic">
-          No recipes found{{ filterSkill ? ` for ${filterSkill}` : '' }}.
-        </div>
+        <DataTable
+          :columns="columns"
+          :rows="recipeRows"
+          :empty-text="emptyText">
+          <template #cell-idx="{ value }">
+            <span class="text-text-muted">{{ value }}</span>
+          </template>
+          <template #cell-recipe_name="{ value }">
+            <RecipeInline :reference="(value as string)" />
+          </template>
+          <template #cell-reward_skill="{ value }">
+            <SkillInline v-if="value" :reference="(value as string)" />
+            <span v-else class="text-text-muted">—</span>
+          </template>
+          <template #cell-skill_level_req="{ value }">
+            <span class="text-text-muted">{{ value ?? '—' }}</span>
+          </template>
+          <template #cell-completions="{ value }">
+            <span class="text-text-primary font-mono font-semibold">{{ (value as number).toLocaleString() }}</span>
+          </template>
+        </DataTable>
 
         <div v-if="hasMoreRecipes" class="flex justify-center">
           <button
@@ -105,6 +90,7 @@
 import { ref, computed, onMounted } from "vue";
 import { useCraftingStore } from "../../stores/craftingStore";
 import type { CraftingHistoryRecipe, SkillCraftingStats } from "../../types/crafting";
+import DataTable, { type ColumnDef } from "../Shared/DataTable.vue";
 import EmptyState from "../Shared/EmptyState.vue";
 import SkeletonLoader from "../Shared/SkeletonLoader.vue";
 import DataTableSkeleton from "../Shared/DataTableSkeleton.vue";
@@ -143,6 +129,24 @@ const filteredRecipes = computed(() => {
 });
 
 const hasMoreRecipes = computed(() => allFilteredRecipes.value.length > 50);
+
+const columns: ColumnDef[] = [
+  { key: "idx", label: "#", align: "left", width: "2rem" },
+  { key: "recipe_name", label: "Recipe", align: "left" },
+  { key: "reward_skill", label: "Skill", align: "left", width: "7rem" },
+  { key: "skill_level_req", label: "Level", align: "right", width: "4rem" },
+  { key: "completions", label: "Crafts", align: "right", width: "5rem", numeric: true },
+];
+
+/** Rows carry a 1-based display index so the first column can render it. */
+const recipeRows = computed(
+  () =>
+    filteredRecipes.value.map((r, i) => ({ ...r, idx: i + 1 })) as unknown as Record<string, unknown>[],
+);
+
+const emptyText = computed(() =>
+  filterSkill.value ? `No recipes found for ${filterSkill.value}.` : "No recipes found.",
+);
 
 const totalCrafted = computed(() => history.value.filter((r) => r.completions > 0).length);
 

@@ -12,51 +12,36 @@
       </span>
     </header>
 
-    <table v-if="items.length > 0" class="w-full text-xs border-collapse">
-      <thead>
-        <tr class="text-[10px] uppercase tracking-wide text-text-secondary font-semibold border-b border-border-default">
-          <th class="text-left py-1 px-2">Item</th>
-          <th class="text-right py-1 px-2">Total</th>
-          <th class="text-right py-1 px-2">Primary</th>
-          <th class="text-right py-1 px-2">Bonus</th>
-          <th class="text-right py-1 px-2">Drops</th>
-          <th class="text-right py-1 px-2">Avg/Drop</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr
-          v-for="item in items"
-          :key="item.item_name"
-          class="border-b border-border-default/40 hover:bg-surface-elevated/50"
-        >
-          <td class="py-1 px-2">
-            <ItemInline :reference="item.item_name" />
-          </td>
-          <td class="text-right py-1 px-2 text-accent-gold font-semibold tabular-nums">
-            {{ item.total_qty.toLocaleString() }}
-          </td>
-          <td class="text-right py-1 px-2 text-text-primary tabular-nums">
-            {{ item.primary_qty.toLocaleString() }}
-          </td>
-          <td
-            class="text-right py-1 px-2 tabular-nums"
-            :class="item.bonus_qty > 0 ? 'text-accent-gold' : 'text-text-dim'"
-          >
-            {{ item.bonus_qty.toLocaleString() }}
-          </td>
-          <td class="text-right py-1 px-2 text-text-secondary tabular-nums">
-            {{ item.times_received.toLocaleString() }}
-          </td>
-          <td class="text-right py-1 px-2 text-text-muted tabular-nums">
-            {{ item.times_received > 0 ? (item.total_qty / item.times_received).toFixed(1) : '—' }}
-          </td>
-        </tr>
-      </tbody>
-    </table>
-
-    <div v-else class="text-text-dim italic text-xs">
-      No loot data recorded.
-    </div>
+    <DataTable
+      :columns="columns"
+      :rows="(items as unknown as Record<string, unknown>[])"
+      compact
+      empty-text="No loot data recorded.">
+      <template #cell-item_name="{ row }">
+        <ItemInline :reference="row.item_name as string" />
+      </template>
+      <template #cell-total_qty="{ row }">
+        <span class="text-accent-gold font-semibold">{{ (row.total_qty as number).toLocaleString() }}</span>
+      </template>
+      <template #cell-primary_qty="{ row }">
+        <span class="text-text-primary">{{ (row.primary_qty as number).toLocaleString() }}</span>
+      </template>
+      <template #cell-bonus_qty="{ row }">
+        <span :class="(row.bonus_qty as number) > 0 ? 'text-accent-gold' : 'text-text-dim'">
+          {{ (row.bonus_qty as number).toLocaleString() }}
+        </span>
+      </template>
+      <template #cell-times_received="{ row }">
+        <span class="text-text-secondary">{{ (row.times_received as number).toLocaleString() }}</span>
+      </template>
+      <template #cell-avg_per_drop="{ row }">
+        <span class="text-text-muted">
+          {{ (row.times_received as number) > 0
+            ? ((row.total_qty as number) / (row.times_received as number)).toFixed(1)
+            : '—' }}
+        </span>
+      </template>
+    </DataTable>
   </section>
 </template>
 
@@ -68,6 +53,7 @@
 // logic — this component just renders.
 import { computed } from 'vue'
 import type { ItemSummary } from '../../stores/surveyTrackerStore'
+import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 import ItemInline from '../Shared/Item/ItemInline.vue'
 import { formatGold } from '../../composables/useRecipeCost'
 
@@ -85,4 +71,13 @@ const categoryTextClass = computed(() => {
   if (props.category === 'mining') return 'text-accent-red'
   return 'text-text-primary'
 })
+
+const columns: ColumnDef[] = [
+  { key: 'item_name', label: 'Item' },
+  { key: 'total_qty', label: 'Total', align: 'right', numeric: true },
+  { key: 'primary_qty', label: 'Primary', align: 'right', numeric: true },
+  { key: 'bonus_qty', label: 'Bonus', align: 'right', numeric: true },
+  { key: 'times_received', label: 'Drops', align: 'right', numeric: true },
+  { key: 'avg_per_drop', label: 'Avg/Drop', align: 'right', numeric: true },
+]
 </script>

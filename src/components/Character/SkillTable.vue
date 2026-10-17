@@ -13,36 +13,32 @@
     </div>
 
     <div class="overflow-auto flex-1 min-h-0">
-      <table class="w-full text-sm border-collapse">
-        <thead class="sticky top-0 bg-surface-base">
-          <tr class="text-left text-text-secondary border-b border-border-default">
-            <th class="py-1.5 px-2 cursor-pointer hover:text-text-primary" @click="toggleSort('skill_name')">
-              Skill {{ sortIcon('skill_name') }}
-            </th>
-            <th class="py-1.5 px-2 cursor-pointer hover:text-text-primary text-right" @click="toggleSort('level')">
-              Level {{ sortIcon('level') }}
-            </th>
-            <th class="py-1.5 px-2 text-right">Bonus</th>
-            <th class="py-1.5 px-2 text-right">XP Progress</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="skill in filtered"
-            :key="skill.skill_name"
-            class="border-b border-border-default/50 hover:bg-surface-elevated/50">
-            <td class="py-1 px-2 text-text-primary">{{ skill.skill_name }}</td>
-            <td class="py-1 px-2 text-right text-accent-gold">{{ skill.level }}</td>
-            <td class="py-1 px-2 text-right text-text-muted">
-              {{ skill.bonus_levels > 0 ? `+${skill.bonus_levels}` : '' }}
-            </td>
-            <td class="py-1 px-2 text-right text-text-secondary">
-              <template v-if="skill.xp_needed_for_next === -1">MAX</template>
-              <template v-else>{{ formatNumber(skill.xp_toward_next) }} / {{ formatNumber(skill.xp_needed_for_next) }}</template>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <DataTable
+        :columns="columns"
+        :rows="(filtered as unknown as Record<string, unknown>[])"
+        :sort-key="sortKey"
+        :sort-dir="sortAsc ? 'asc' : 'desc'"
+        compact
+        empty-text="No skills match the current filter."
+        @sort="handleSort">
+        <template #cell-skill_name="{ value }">
+          <span class="text-text-primary">{{ value }}</span>
+        </template>
+        <template #cell-level="{ value }">
+          <span class="text-accent-gold">{{ value }}</span>
+        </template>
+        <template #cell-bonus_levels="{ row }">
+          <span class="text-text-muted">
+            {{ (row.bonus_levels as number) > 0 ? `+${row.bonus_levels}` : '' }}
+          </span>
+        </template>
+        <template #cell-xp_needed_for_next="{ row }">
+          <span v-if="row.xp_needed_for_next === -1" class="text-text-secondary">MAX</span>
+          <span v-else class="text-text-secondary">
+            {{ formatNumber(row.xp_toward_next as number) }} / {{ formatNumber(row.xp_needed_for_next as number) }}
+          </span>
+        </template>
+      </DataTable>
     </div>
   </div>
 </template>
@@ -50,10 +46,18 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import type { SnapshotSkillLevel } from '../../types/database'
+import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 
 const props = defineProps<{
   skills: SnapshotSkillLevel[]
 }>()
+
+const columns: ColumnDef[] = [
+  { key: 'skill_name', label: 'Skill', sortable: true },
+  { key: 'level', label: 'Level', sortable: true, align: 'right' },
+  { key: 'bonus_levels', label: 'Bonus', align: 'right' },
+  { key: 'xp_needed_for_next', label: 'XP Progress', align: 'right' },
+]
 
 const filter = ref('')
 const sortKey = ref<'skill_name' | 'level'>('skill_name')
@@ -83,9 +87,10 @@ function toggleSort(key: 'skill_name' | 'level') {
   }
 }
 
-function sortIcon(key: string): string {
-  if (sortKey.value !== key) return ''
-  return sortAsc.value ? '▲' : '▼'
+// Keeps the file's own comparator/default-direction semantics; DataTable only
+// reports the clicked column and renders the arrow from sortKey/sortAsc.
+function handleSort(payload: { key: string; dir: 'asc' | 'desc' }) {
+  toggleSort(payload.key as 'skill_name' | 'level')
 }
 
 function formatNumber(n: number): string {

@@ -359,13 +359,13 @@ A sortable data table with built-in loading skeletons, empty state, and custom c
 </DataTable>
 ```
 
-**Props:** `columns: ColumnDef[]`, `rows: Record<string, unknown>[]`, `sortKey?: string`, `sortDir?: 'asc' | 'desc'` (default `'asc'`), `loading?: boolean` (default `false`), `emptyText?: string` (default `"No data"`), `emptyHint?: string`, `compact?: boolean` (default `false`), `hoverable?: boolean` (default `true`), `stickyHeader?: boolean` (default `true`), `skeletonRows?: number` (default `5`), `rowClass?: (row, index) => string`
+**Props:** `columns: ColumnDef[]`, `rows: Record<string, unknown>[]`, `sortKey?: string`, `sortDir?: 'asc' | 'desc'` (default `'asc'`), `loading?: boolean` (default `false`), `emptyText?: string` (default `"No data"`), `emptyHint?: string`, `compact?: boolean` (default `false` — tighter cell padding `px-2 py-1` and `text-[11px]` instead of `text-xs`), `hoverable?: boolean` (default `true`), `stickyHeader?: boolean` (default `true`), `skeletonRows?: number` (default `5`), `rowClickable?: boolean` (default `false` — adds `cursor-pointer` to rows), `rowClass?: (row, index) => string`
 
 **ColumnDef:** `{ key: string; label: string; sortable?: boolean; align?: 'left' | 'center' | 'right'; width?: string; numeric?: boolean }`
 
 **Slots:** `header-{key}` (custom header), `cell-{key}` (custom cell, receives `{ row, value }`)
 
-**Events:** `sort({ key, dir })`
+**Events:** `sort({ key, dir })`, `rowClick({ row, index })` (fires on any row click; pair with `rowClickable` for click-to-drill/select tables — keep per-row highlight logic in `rowClass`)
 
 ### FilterBar
 

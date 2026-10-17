@@ -1,76 +1,80 @@
 <template>
-  <table class="w-full text-xs">
-    <thead>
-      <tr class="text-text-dim border-b border-border-light">
-        <th class="text-left py-1 font-medium">Item</th>
-        <th class="text-right py-1 font-medium w-16">Need</th>
-        <th v-if="pricingMode" class="text-right py-1 font-medium w-20">They Give</th>
-        <th class="text-right py-1 font-medium w-16">Inv</th>
-        <th class="text-right py-1 font-medium w-16">Storage</th>
-        <th class="text-right py-1 font-medium w-20">Shortfall</th>
-      </tr>
-    </thead>
-    <tbody>
-      <template v-for="mat in items" :key="mat.is_dynamic ? `dyn-${mat.item_name}` : mat.item_id">
-        <tr
-          class="border-b border-surface-dark"
-          :class="[rowClass(mat), mat.is_dynamic && mat.dynamic_breakdown?.length ? 'cursor-pointer' : '']"
-          @click="mat.is_dynamic && mat.dynamic_breakdown?.length ? $emit('toggle-expanded', mat.item_name) : undefined">
-          <td class="py-1">
-            <template v-if="mat.is_dynamic">
-              <span
-                v-if="mat.dynamic_breakdown?.length"
-                class="text-text-muted text-[0.6rem] mr-1 inline-block transition-transform"
-                :class="expandedKeys.has(mat.item_name) ? 'rotate-90' : ''">&#9656;</span>
-              <span class="text-accent-gold/60 text-[0.65rem] mr-1">&#9670;</span>
-              <span class="text-text-secondary">{{ mat.item_name }}</span>
-            </template>
-            <ItemInline v-else :reference="mat.item_name" />
-          </td>
-          <td class="text-right py-1 font-mono text-text-primary">{{ mat.quantity_needed }}</td>
-          <td v-if="pricingMode" class="text-right py-1">
-            <input
-              :value="getCustomerProvides(mat)"
-              type="number"
-              min="0"
-              :max="Math.ceil(mat.quantity_needed)"
-              class="input w-14 text-xs text-right py-0"
-              @change="onCustomerProvidesChange(getMaterialKey(mat), mat.quantity_needed, $event)" />
-          </td>
-          <td class="text-right py-1 font-mono" :class="mat.inventory_have > 0 ? 'text-green-400' : 'text-text-muted'">
-            {{ mat.inventory_have }}
-          </td>
-          <td class="text-right py-1 font-mono" :class="mat.storage_have > 0 ? 'text-green-400' : 'text-text-muted'">
-            {{ mat.storage_have }}
-          </td>
-          <td class="text-right py-1 font-mono font-semibold" :class="mat.shortfall > 0 ? 'text-accent-red' : 'text-green-400'">
-            {{ mat.shortfall > 0 ? mat.shortfall : '&#10003;' }}
-          </td>
-        </tr>
-        <!-- Expandable breakdown for dynamic items -->
-        <tr
-          v-for="sub in (expandedKeys.has(mat.item_name) ? mat.dynamic_breakdown ?? [] : [])"
-          :key="`${mat.item_name}-${sub.item_id}`"
-          class="border-b border-surface-dark/50 bg-surface-dark/20">
-          <td class="py-0.5 pl-6">
-            <ItemInline :reference="String(sub.item_id)" />
-          </td>
-          <td class="text-right py-0.5"></td>
-          <td class="text-right py-0.5 font-mono text-[0.65rem]" :class="sub.inventory_qty > 0 ? 'text-green-400/70' : 'text-text-dim'">
-            {{ sub.inventory_qty }}
-          </td>
-          <td class="text-right py-0.5 font-mono text-[0.65rem]" :class="sub.storage_qty > 0 ? 'text-green-400/70' : 'text-text-dim'">
-            {{ sub.storage_qty }}
-          </td>
-          <td class="text-right py-0.5"></td>
-        </tr>
+  <DataTable
+    :columns="columns"
+    :rows="displayRows"
+    :row-class="displayRowClass"
+    @row-click="onRowClick">
+    <template #cell-item_name="{ row }">
+      <template v-if="row._kind === 'breakdown'">
+        <span class="inline-block pl-3">
+          <ItemInline :reference="String(row.item_id)" />
+        </span>
       </template>
-    </tbody>
-  </table>
+      <template v-else>
+        <template v-if="row.is_dynamic">
+          <span
+            v-if="(row.dynamic_breakdown as unknown[] | undefined)?.length"
+            class="text-text-muted text-[0.6rem] mr-1 inline-block transition-transform"
+            :class="expandedKeys.has(row.item_name as string) ? 'rotate-90' : ''">&#9656;</span>
+          <span class="text-accent-gold/60 text-[0.65rem] mr-1">&#9670;</span>
+          <span class="text-text-secondary">{{ row.item_name }}</span>
+        </template>
+        <ItemInline v-else :reference="(row.item_name as string)" />
+      </template>
+    </template>
+    <template #cell-customer_provides="{ row }">
+      <input
+        v-if="row._kind === 'material'"
+        :value="getCustomerProvides(row as unknown as MaterialNeed)"
+        type="number"
+        min="0"
+        :max="Math.ceil(row.quantity_needed as number)"
+        class="input w-14 text-xs text-right py-0"
+        @change="onCustomerProvidesChange(getMaterialKey(row as unknown as MaterialNeed), row.quantity_needed as number, $event)" />
+    </template>
+    <template #cell-inventory_have="{ row }">
+      <span
+        v-if="row._kind === 'breakdown'"
+        class="font-mono text-[0.65rem]"
+        :class="(row.inventory_qty as number) > 0 ? 'text-green-400/70' : 'text-text-dim'">
+        {{ row.inventory_qty }}
+      </span>
+      <span
+        v-else
+        class="font-mono"
+        :class="(row.inventory_have as number) > 0 ? 'text-green-400' : 'text-text-muted'">
+        {{ row.inventory_have }}
+      </span>
+    </template>
+    <template #cell-storage_have="{ row }">
+      <span
+        v-if="row._kind === 'breakdown'"
+        class="font-mono text-[0.65rem]"
+        :class="(row.storage_qty as number) > 0 ? 'text-green-400/70' : 'text-text-dim'">
+        {{ row.storage_qty }}
+      </span>
+      <span
+        v-else
+        class="font-mono"
+        :class="(row.storage_have as number) > 0 ? 'text-green-400' : 'text-text-muted'">
+        {{ row.storage_have }}
+      </span>
+    </template>
+    <template #cell-shortfall="{ row }">
+      <span
+        v-if="row._kind === 'material'"
+        class="font-mono font-semibold"
+        :class="(row.shortfall as number) > 0 ? 'text-accent-red' : 'text-green-400'">
+        {{ (row.shortfall as number) > 0 ? row.shortfall : '&#10003;' }}
+      </span>
+    </template>
+  </DataTable>
 </template>
 
 <script setup lang="ts">
+import { computed } from "vue";
 import type { MaterialNeed } from "../../types/crafting";
+import DataTable, { type ColumnDef } from "../Shared/DataTable.vue";
 import ItemInline from "../Shared/Item/ItemInline.vue";
 
 const props = defineProps<{
@@ -84,6 +88,42 @@ const emit = defineEmits<{
   'toggle-expanded': [key: string]
   'update-customer-provides': [key: string, quantity: number]
 }>();
+
+const columns = computed<ColumnDef[]>(() => {
+  const cols: ColumnDef[] = [
+    { key: "item_name", label: "Item", align: "left" },
+    { key: "quantity_needed", label: "Need", align: "right", width: "4rem", numeric: true },
+  ];
+  if (props.pricingMode) {
+    cols.push({ key: "customer_provides", label: "They Give", align: "right", width: "5rem" });
+  }
+  cols.push({ key: "inventory_have", label: "Inv", align: "right", width: "4rem", numeric: true });
+  cols.push({ key: "storage_have", label: "Storage", align: "right", width: "4rem", numeric: true });
+  cols.push({ key: "shortfall", label: "Shortfall", align: "right", width: "5rem", numeric: true });
+  return cols;
+});
+
+/**
+ * One row per material plus one row per expanded dynamic breakdown entry. DataTable renders
+ * exactly one `<tr>` per row, so the breakdown children are flattened into the row list and
+ * tagged `_kind: "breakdown"`, which the cell slots and `displayRowClass` switch on.
+ */
+const displayRows = computed<Record<string, unknown>[]>(() => {
+  const rows: Record<string, unknown>[] = [];
+  for (const mat of props.items) {
+    rows.push(asRow(mat, { _kind: "material" }));
+    if (props.expandedKeys.has(mat.item_name)) {
+      for (const sub of mat.dynamic_breakdown ?? []) {
+        rows.push(asRow(sub, { _kind: "breakdown" }));
+      }
+    }
+  }
+  return rows;
+});
+
+function asRow(source: object, extra: Record<string, unknown>): Record<string, unknown> {
+  return { ...source, ...extra } as unknown as Record<string, unknown>;
+}
 
 function getCustomerProvides(mat: MaterialNeed): number {
   if (!props.customerProvides) return 0;
@@ -101,8 +141,21 @@ function onCustomerProvidesChange(key: string, maxQty: number, event: Event) {
   emit('update-customer-provides', key, qty);
 }
 
-function rowClass(mat: MaterialNeed): string {
-  if (mat.shortfall === 0) return "opacity-60";
-  return "";
+/** Preserves the original row classes: dimmed once covered, pointer when expandable. */
+function displayRowClass(row: Record<string, unknown>): string {
+  if (row._kind === "breakdown") return "bg-surface-dark/20";
+  const mat = row as unknown as MaterialNeed;
+  const classes: string[] = [];
+  if (mat.shortfall === 0) classes.push("opacity-60");
+  if (mat.is_dynamic && mat.dynamic_breakdown?.length) classes.push("cursor-pointer");
+  return classes.join(" ");
+}
+
+/** Whole-row click toggles the breakdown, as the original row `@click` did. */
+function onRowClick({ row }: { row: Record<string, unknown> }) {
+  const mat = row as unknown as MaterialNeed;
+  if (row._kind === "material" && mat.is_dynamic && mat.dynamic_breakdown?.length) {
+    emit('toggle-expanded', mat.item_name);
+  }
 }
 </script>

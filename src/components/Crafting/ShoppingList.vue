@@ -15,29 +15,19 @@
         </span>
       </div>
 
-      <table class="w-full text-xs">
-        <thead>
-          <tr class="text-text-dim border-b border-border-light">
-            <th class="text-left py-1 font-medium">Item</th>
-            <th class="text-right py-1 font-medium w-16">Need</th>
-            <th class="text-right py-1 font-medium w-24">Est. Cost</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="item in vendorItems"
-            :key="item.item_id"
-            class="border-b border-surface-dark">
-            <td class="py-1">
-              <ItemInline :reference="item.item_name" />
-            </td>
-            <td class="text-right py-1 text-text-primary">{{ item.shortfall }}</td>
-            <td class="text-right py-1 text-accent-red">
-              {{ Math.round(item.cost!).toLocaleString() }}g
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <DataTable
+        :columns="vendorColumns"
+        :rows="(vendorItems as unknown as Record<string, unknown>[])">
+        <template #cell-item_name="{ value }">
+          <ItemInline :reference="(value as string)" />
+        </template>
+        <template #cell-shortfall="{ value }">
+          <span class="text-text-primary">{{ value }}</span>
+        </template>
+        <template #cell-cost="{ value }">
+          <span class="text-accent-red">{{ Math.round(value as number).toLocaleString() }}g</span>
+        </template>
+      </DataTable>
     </template>
 
     <!-- Items that need to be sourced elsewhere -->
@@ -49,30 +39,21 @@
         No price data available — set a market price or find these in-game.
       </p>
 
-      <table class="w-full text-xs">
-        <thead>
-          <tr class="text-text-dim border-b border-border-light">
-            <th class="text-left py-1 font-medium">Item</th>
-            <th class="text-right py-1 font-medium w-16">Need</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="item in sourceItems"
-            :key="item.item_id"
-            class="border-b border-surface-dark">
-            <td class="py-1">
-              <template v-if="item.is_dynamic">
-                <span class="text-accent-gold/60 text-[10px] mr-1">&#9670;</span>
-                <span class="text-text-secondary">{{ item.item_name }}</span>
-              </template>
-              <ItemInline v-else :reference="item.item_name" />
-              <span v-if="item.is_craftable" class="text-accent-gold/70 text-[10px] ml-1" title="Can be crafted">craftable</span>
-            </td>
-            <td class="text-right py-1 text-text-primary">{{ item.shortfall }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <DataTable
+        :columns="sourceColumns"
+        :rows="(sourceItems as unknown as Record<string, unknown>[])">
+        <template #cell-item_name="{ row }">
+          <template v-if="row.is_dynamic">
+            <span class="text-accent-gold/60 text-[10px] mr-1">&#9670;</span>
+            <span class="text-text-secondary">{{ row.item_name }}</span>
+          </template>
+          <ItemInline v-else :reference="(row.item_name as string)" />
+          <span v-if="row.is_craftable" class="text-accent-gold/70 text-[10px] ml-1" title="Can be crafted">craftable</span>
+        </template>
+        <template #cell-shortfall="{ value }">
+          <span class="text-text-primary">{{ value }}</span>
+        </template>
+      </DataTable>
     </template>
   </div>
 </template>
@@ -80,6 +61,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { MaterialNeed } from "../../types/crafting";
+import DataTable, { type ColumnDef } from "../Shared/DataTable.vue";
 import ItemInline from "../Shared/Item/ItemInline.vue";
 
 const props = withDefaults(defineProps<{
@@ -88,6 +70,17 @@ const props = withDefaults(defineProps<{
 }>(), {
   bare: false,
 });
+
+const vendorColumns: ColumnDef[] = [
+  { key: "item_name", label: "Item", align: "left" },
+  { key: "shortfall", label: "Need", align: "right", width: "4rem", numeric: true },
+  { key: "cost", label: "Est. Cost", align: "right", width: "6rem" },
+];
+
+const sourceColumns: ColumnDef[] = [
+  { key: "item_name", label: "Item", align: "left" },
+  { key: "shortfall", label: "Need", align: "right", width: "4rem", numeric: true },
+];
 
 interface ShoppingItem {
   item_id: number

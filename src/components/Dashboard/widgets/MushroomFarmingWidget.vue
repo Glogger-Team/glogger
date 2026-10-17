@@ -34,63 +34,48 @@
 
     <!-- Mushroom table -->
     <div class="overflow-y-auto max-h-80">
-      <table class="w-full text-sm">
-        <thead>
-          <tr class="text-text-dim text-xs border-b border-border">
-            <th class="text-left py-1 pr-2 cursor-pointer hover:text-text-secondary" @click="toggleSort('name')">
-              Mushroom {{ sortIndicator('name') }}
-            </th>
-            <th class="text-center py-1 px-2 cursor-pointer hover:text-text-secondary" @click="toggleSort('level')">
-              Lvl {{ sortIndicator('level') }}
-            </th>
-            <th class="text-center py-1 px-2 cursor-pointer hover:text-text-secondary" @click="toggleSort('growTime')">
-              Time {{ sortIndicator('growTime') }}
-            </th>
-            <th class="text-left py-1 px-2">Substrate</th>
-            <th class="text-left py-1 px-2">Moon</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="m in filteredMushrooms"
-            :key="m.name"
-            class="border-b border-border/50 hover:bg-surface-2"
-            :class="rowClass(m)">
-            <td class="py-1.5 pr-2">
-              <ItemInline :reference="m.name" />
-            </td>
-            <td class="text-center py-1.5 px-2 text-text-dim font-mono">{{ m.level }}</td>
-            <td class="text-center py-1.5 px-2 text-text-dim font-mono">{{ m.growTime }}h</td>
-            <td class="py-1.5 px-2">
-              <span class="text-accent-gold">{{ m.optimalSubstrate }}</span>
-              <span class="text-text-dim"> / {{ m.adequateSubstrate }}</span>
-            </td>
-            <td class="py-1.5 px-2">
-              <span
-                v-for="p in m.robustPhases"
-                :key="p"
-                class="mr-1"
-                :class="phase?.name === p ? 'text-value-positive' : 'text-text-dim'"
-                :title="phaseLabel(p) + ' (robust)'">
-                {{ phaseEmoji(p) }}
-              </span>
-              <span class="text-text-dim mx-0.5">|</span>
-              <span
-                v-for="p in m.poorPhases"
-                :key="p"
-                class="mr-1"
-                :class="phase?.name === p ? 'text-value-negative' : 'text-text-dim'"
-                :title="phaseLabel(p) + ' (poor)'">
-                {{ phaseEmoji(p) }}
-              </span>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <div v-if="filteredMushrooms.length === 0" class="text-xs text-text-dim italic">
-      No mushrooms match your filter.
+      <DataTable
+        :columns="columns"
+        :rows="(filteredMushrooms as unknown as Record<string, unknown>[])"
+        :sort-key="sortKey"
+        :sort-dir="sortAsc ? 'asc' : 'desc'"
+        compact
+        empty-text="No mushrooms match your filter."
+        :row-class="rowClass"
+        @sort="onSort">
+        <template #cell-name="{ row }">
+          <ItemInline :reference="(row.name as string)" />
+        </template>
+        <template #cell-level="{ value }">
+          <span class="text-text-dim font-mono">{{ value }}</span>
+        </template>
+        <template #cell-growTime="{ value }">
+          <span class="text-text-dim font-mono">{{ value }}h</span>
+        </template>
+        <template #cell-substrate="{ row }">
+          <span class="text-accent-gold">{{ row.optimalSubstrate }}</span>
+          <span class="text-text-dim"> / {{ row.adequateSubstrate }}</span>
+        </template>
+        <template #cell-moon="{ row }">
+          <span
+            v-for="p in (row.robustPhases as MoonPhaseName[])"
+            :key="p"
+            class="mr-1"
+            :class="phase?.name === p ? 'text-value-positive' : 'text-text-dim'"
+            :title="phaseLabel(p) + ' (robust)'">
+            {{ phaseEmoji(p) }}
+          </span>
+          <span class="text-text-dim mx-0.5">|</span>
+          <span
+            v-for="p in (row.poorPhases as MoonPhaseName[])"
+            :key="p"
+            class="mr-1"
+            :class="phase?.name === p ? 'text-value-negative' : 'text-text-dim'"
+            :title="phaseLabel(p) + ' (poor)'">
+            {{ phaseEmoji(p) }}
+          </span>
+        </template>
+      </DataTable>
     </div>
 
     <div class="text-xs text-text-dim flex items-center gap-1">
@@ -104,6 +89,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { useMoonPhase, ALL_PHASES, type MoonPhaseName } from '../../../composables/useMoonPhase'
+import DataTable from '../../Shared/DataTable.vue'
 import ItemInline from '../../Shared/Item/ItemInline.vue'
 
 const { phase, daysUntil } = useMoonPhase()
@@ -118,6 +104,14 @@ const filterOptions = [
   { value: 'poor' as const, label: 'Reduced Yield' },
 ]
 const sortAsc = ref(true)
+
+const columns = [
+  { key: 'name', label: 'Mushroom', sortable: true },
+  { key: 'level', label: 'Lvl', sortable: true, align: 'center' as const },
+  { key: 'growTime', label: 'Time', sortable: true, align: 'center' as const },
+  { key: 'substrate', label: 'Substrate', sortable: false },
+  { key: 'moon', label: 'Moon', sortable: false },
+]
 
 interface MushroomInfo {
   name: string
@@ -180,24 +174,16 @@ function isPoorNow(m: MushroomInfo): boolean {
   return !!phase.value && m.poorPhases.includes(phase.value.name)
 }
 
-function rowClass(m: MushroomInfo): string {
+function rowClass(row: Record<string, unknown>): string {
+  const m = row as unknown as MushroomInfo
   if (isRobustNow(m)) return 'bg-green-500/5'
   if (isPoorNow(m)) return 'bg-red-500/5'
   return ''
 }
 
-function toggleSort(key: 'name' | 'level' | 'growTime') {
-  if (sortKey.value === key) {
-    sortAsc.value = !sortAsc.value
-  } else {
-    sortKey.value = key
-    sortAsc.value = true
-  }
-}
-
-function sortIndicator(key: string): string {
-  if (sortKey.value !== key) return ''
-  return sortAsc.value ? '\u25B2' : '\u25BC'
+function onSort(payload: { key: string; dir: 'asc' | 'desc' }) {
+  sortKey.value = payload.key as 'name' | 'level' | 'growTime'
+  sortAsc.value = payload.dir === 'asc'
 }
 
 const filteredMushrooms = computed(() => {

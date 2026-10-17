@@ -7,44 +7,33 @@
       <span class="text-[10px] text-text-dim">{{ rows.length }} unique</span>
     </header>
 
-    <div v-if="rows.length === 0" class="text-text-dim text-xs italic py-2">
-      No loot attributed yet.
-    </div>
-
-    <div v-else class="flex-1 min-h-0 overflow-y-auto -mr-1 pr-1">
-      <table class="w-full text-xs border-collapse">
-        <thead class="sticky top-0 bg-surface-card">
-          <tr class="text-[10px] uppercase tracking-wide text-text-secondary font-semibold border-b border-border-default">
-            <th class="text-left py-1 px-1">Item</th>
-            <th class="text-right py-1 px-1">Qty</th>
-            <th v-if="hasBonus" class="text-right py-1 px-1">Split</th>
-            <th class="text-right py-1 px-1">Value</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="row in rows"
-            :key="row.item_name"
-            class="border-b border-border-default/40 hover:bg-surface-elevated/50"
-          >
-            <td class="py-1 px-1">
-              <ItemMinicard :reference="row.item_name" width="min" :bordered="false" />
-            </td>
-            <td class="text-right py-1 px-1 text-accent-gold font-semibold tabular-nums align-top pt-2">
-              {{ row.total_qty.toLocaleString() }}
-            </td>
-            <td v-if="hasBonus" class="text-right py-1 px-1 tabular-nums align-top pt-2">
-              <span v-if="row.bonus_qty > 0" class="text-text-dim">
-                {{ row.primary_qty }}<span class="text-text-muted"> + </span><span class="text-accent-gold">{{ row.bonus_qty }}</span>
-              </span>
-              <span v-else class="text-text-dim">—</span>
-            </td>
-            <td class="text-right py-1 px-1 tabular-nums align-top pt-2" :class="row.unit_value !== null ? 'text-text-secondary' : 'text-text-dim italic'">
-              {{ row.total_value !== null ? formatGold(row.total_value) : '—' }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
+    <div class="flex-1 min-h-0 overflow-y-auto -mr-1 pr-1">
+      <DataTable
+        :columns="columns"
+        :rows="(rows as unknown as Record<string, unknown>[])"
+        compact
+        empty-text="No loot attributed yet.">
+        <template #cell-item_name="{ row }">
+          <ItemMinicard
+            :reference="row.item_name as string"
+            width="min"
+            :bordered="false" />
+        </template>
+        <template #cell-total_qty="{ row }">
+          <span class="text-accent-gold font-semibold">{{ (row.total_qty as number).toLocaleString() }}</span>
+        </template>
+        <template #cell-bonus_qty="{ row }">
+          <span v-if="(row.bonus_qty as number) > 0" class="text-text-dim">
+            {{ row.primary_qty }}<span class="text-text-muted"> + </span><span class="text-accent-gold">{{ row.bonus_qty }}</span>
+          </span>
+          <span v-else class="text-text-dim">—</span>
+        </template>
+        <template #cell-total_value="{ row }">
+          <span :class="row.unit_value !== null ? 'text-text-secondary' : 'text-text-dim italic'">
+            {{ row.total_value !== null ? formatGold(row.total_value as number) : '—' }}
+          </span>
+        </template>
+      </DataTable>
     </div>
   </section>
 </template>
@@ -55,6 +44,7 @@
 // plus quantity, primary/bonus split, and total value.
 import { computed } from 'vue'
 import type { LootSummaryRow } from '../../stores/surveyTrackerStore'
+import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 import ItemMinicard from '../Shared/Item/ItemMinicard.vue'
 import { formatGold } from '../../composables/useRecipeCost'
 
@@ -63,4 +53,16 @@ const props = defineProps<{
 }>()
 
 const hasBonus = computed(() => props.rows.some(r => r.bonus_qty > 0))
+
+// `Split` only appears when at least one row has bonus loot, mirroring the
+// previous per-`<th>` `v-if`.
+const columns = computed<ColumnDef[]>(() => {
+  const cols: ColumnDef[] = [
+    { key: 'item_name', label: 'Item' },
+    { key: 'total_qty', label: 'Qty', align: 'right', numeric: true },
+  ]
+  if (hasBonus.value) cols.push({ key: 'bonus_qty', label: 'Split', align: 'right', numeric: true })
+  cols.push({ key: 'total_value', label: 'Value', align: 'right', numeric: true })
+  return cols
+})
 </script>

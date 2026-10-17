@@ -92,54 +92,38 @@
             <SkeletonLoader variant="text" :lines="10" />
           </div>
 
-          <div v-else-if="displayRecipes.length === 0" class="p-6 text-text-muted text-xs text-center">
-            {{ emptyMessage }}
-          </div>
-
-          <table v-else class="w-full text-xs">
-            <thead class="sticky top-0 bg-surface-dark z-10">
-              <tr class="text-text-dim border-b border-border-light">
-                <th v-if="filterMode === 'combined'" class="text-left py-1.5 px-2 font-medium w-24">Status</th>
-                <th class="text-left py-1.5 px-2 font-medium">Recipe</th>
-                <th class="text-right py-1.5 px-2 font-medium w-16">Level</th>
-                <th class="text-right py-1.5 px-2 font-medium w-20">Crafts</th>
-                <th class="text-right py-1.5 px-2 font-medium w-16">XP</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="row in displayRecipes"
-                :key="row.recipe.id"
-                class="border-b border-surface-dark hover:bg-surface-elevated/40"
-                :class="row.isKnown
-                  ? 'border-l-2 border-l-green-500/50'
-                  : 'border-l-2 border-l-red-500/40'">
-                <td v-if="filterMode === 'combined'" class="py-1 px-2">
-                  <span
-                    class="inline-block px-1.5 py-0.5 rounded text-[0.6rem] font-semibold uppercase tracking-wide"
-                    :class="row.isKnown
-                      ? 'bg-green-500/15 text-green-400'
-                      : 'bg-red-500/15 text-red-400'">
-                    {{ row.isKnown ? 'Unlocked' : 'Missing' }}
-                  </span>
-                </td>
-                <td class="py-1 px-2">
-                  <RecipeInline :reference="row.recipe.name" />
-                </td>
-                <td class="text-right py-1 px-2 text-text-muted font-mono">
-                  {{ row.recipe.skill_level_req ?? '—' }}
-                </td>
-                <td
-                  class="text-right py-1 px-2 font-mono"
-                  :class="row.completions > 0 ? 'text-text-primary font-semibold' : 'text-text-muted'">
-                  {{ row.isKnown ? row.completions.toLocaleString() : '—' }}
-                </td>
-                <td class="text-right py-1 px-2 text-text-muted font-mono">
-                  {{ row.recipe.reward_skill_xp ?? '—' }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <DataTable
+            v-else
+            :columns="columns"
+            :rows="recipeRows"
+            :empty-text="emptyMessage"
+            :row-class="rowClassFn">
+            <template #cell-isKnown="{ value }">
+              <span
+                class="inline-block px-1.5 py-0.5 rounded text-[0.6rem] font-semibold uppercase tracking-wide"
+                :class="value
+                  ? 'bg-green-500/15 text-green-400'
+                  : 'bg-red-500/15 text-red-400'">
+                {{ value ? 'Unlocked' : 'Missing' }}
+              </span>
+            </template>
+            <template #cell-name="{ value }">
+              <RecipeInline :reference="(value as string)" />
+            </template>
+            <template #cell-skill_level_req="{ value }">
+              <span class="text-text-muted font-mono">{{ value ?? '—' }}</span>
+            </template>
+            <template #cell-completions="{ row }">
+              <span
+                class="font-mono"
+                :class="(row.completions as number) > 0 ? 'text-text-primary font-semibold' : 'text-text-muted'">
+                {{ row.isKnown ? (row.completions as number).toLocaleString() : '—' }}
+              </span>
+            </template>
+            <template #cell-reward_skill_xp="{ value }">
+              <span class="text-text-muted font-mono">{{ value ?? '—' }}</span>
+            </template>
+          </DataTable>
         </div>
 
         <!-- Footer count -->
@@ -157,6 +141,7 @@ import { ref, computed, onMounted, watch } from "vue";
 import { useGameDataStore } from "../../stores/gameDataStore";
 import { useGameStateStore } from "../../stores/gameStateStore";
 import type { RecipeInfo } from "../../types/gameData/recipes";
+import DataTable, { type ColumnDef } from "../Shared/DataTable.vue";
 import EmptyState from "../Shared/EmptyState.vue";
 import SkeletonLoader from "../Shared/SkeletonLoader.vue";
 import RecipeInline from "../Shared/Recipe/RecipeInline.vue";
@@ -264,6 +249,35 @@ const emptyMessage = computed(() => {
   if (filterMode.value === "missing") return "You've unlocked every recipe in this skill. 🎉";
   return "No recipes to show.";
 });
+
+/** Status column only exists in combined mode, mirroring the original header `v-if`. */
+const columns = computed<ColumnDef[]>(() => {
+  const cols: ColumnDef[] = [];
+  if (filterMode.value === "combined") {
+    cols.push({ key: "isKnown", label: "Status", align: "left", width: "6rem" });
+  }
+  cols.push({ key: "name", label: "Recipe", align: "left" });
+  cols.push({ key: "skill_level_req", label: "Level", align: "right", width: "4rem" });
+  cols.push({ key: "completions", label: "Crafts", align: "right", width: "5rem", numeric: true });
+  cols.push({ key: "reward_skill_xp", label: "XP", align: "right", width: "4rem" });
+  return cols;
+});
+
+/** Flatten the enriched rows so every column key is a plain row field. */
+const recipeRows = computed(
+  () =>
+    displayRecipes.value.map((r) => ({
+      name: r.recipe.name,
+      isKnown: r.isKnown,
+      completions: r.completions,
+      skill_level_req: r.recipe.skill_level_req,
+      reward_skill_xp: r.recipe.reward_skill_xp,
+    })) as unknown as Record<string, unknown>[],
+);
+
+function rowClassFn(row: Record<string, unknown>): string {
+  return row.isKnown ? "border-l-2 border-l-green-500/50" : "border-l-2 border-l-red-500/40";
+}
 
 // ── Loading ──────────────────────────────────────────────────────────────────
 

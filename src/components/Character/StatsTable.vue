@@ -13,23 +13,18 @@
     </div>
 
     <div class="overflow-auto flex-1 min-h-0">
-      <table class="w-full text-sm border-collapse">
-        <thead class="sticky top-0 bg-surface-base">
-          <tr class="text-left text-text-secondary border-b border-border-default">
-            <th class="py-1.5 px-2">Stat</th>
-            <th class="py-1.5 px-2 text-right">Value</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="stat in filtered"
-            :key="stat.stat_key"
-            class="border-b border-border-default/50 hover:bg-surface-elevated/50">
-            <td class="py-1 px-2 text-text-primary">{{ formatStatKey(stat.stat_key) }}</td>
-            <td class="py-1 px-2 text-right text-accent-gold">{{ formatValue(stat.value) }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <DataTable
+        :columns="columns"
+        :rows="(filtered as unknown as Record<string, unknown>[])"
+        compact
+        empty-text="No stats match the current filter.">
+        <template #cell-stat_key="{ row }">
+          <span class="text-text-primary">{{ formatStatKey(row.stat_key as string) }}</span>
+        </template>
+        <template #cell-value="{ row }">
+          <span class="text-accent-gold">{{ formatValue(row.value as number) }}</span>
+        </template>
+      </DataTable>
     </div>
   </div>
 </template>
@@ -37,10 +32,16 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import type { SnapshotStat } from '../../types/database'
+import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 
 const props = defineProps<{
   stats: SnapshotStat[]
 }>()
+
+const columns: ColumnDef[] = [
+  { key: 'stat_key', label: 'Stat' },
+  { key: 'value', label: 'Value', align: 'right' },
+]
 
 const filter = ref('')
 

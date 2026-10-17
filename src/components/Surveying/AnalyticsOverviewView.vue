@@ -46,44 +46,39 @@
         </h3>
         <span class="text-[10px] text-text-dim">sorted by most-used · click to drill in</span>
       </header>
-      <table class="w-full text-xs border-collapse">
-        <thead>
-          <tr class="text-[10px] uppercase tracking-wide text-text-secondary font-semibold border-b border-border-default">
-            <th class="text-left py-1.5 px-2">Survey Type</th>
-            <th class="text-left py-1.5 px-2">Zone</th>
-            <th class="text-left py-1.5 px-2">Kind</th>
-            <th class="text-right py-1.5 px-2">Done</th>
-            <th class="text-right py-1.5 px-2">Items</th>
-            <th class="text-right py-1.5 px-2">Avg/Use</th>
-            <th class="text-right py-1.5 px-2">Bonus Rate</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="t in analytics.survey_types"
-            :key="`${t.map_internal_name}::${t.area ?? ''}`"
-            class="border-b border-border-default/40 hover:bg-surface-elevated/50 cursor-pointer"
-            @click="$emit('select-type', { map: t.map_internal_name, area: t.area })"
-          >
-            <td class="py-1 px-2 text-text-primary font-semibold">{{ t.map_display_name }}</td>
-            <td class="py-1 px-2 text-text-secondary">
-              <AreaInline v-if="t.area" :reference="t.area" />
-              <span v-else class="text-text-dim">—</span>
-            </td>
-            <td class="py-1 px-2 text-text-secondary">{{ t.kind }}</td>
-            <td class="text-right py-1 px-2 text-text-primary tabular-nums">{{ t.total_uses }}</td>
-            <td class="text-right py-1 px-2 text-accent-gold font-semibold tabular-nums">
-              {{ t.total_loot_qty.toLocaleString() }}
-            </td>
-            <td class="text-right py-1 px-2 text-text-muted tabular-nums">
-              {{ t.avg_loot_per_use !== null ? t.avg_loot_per_use.toFixed(1) : '—' }}
-            </td>
-            <td class="text-right py-1 px-2 tabular-nums" :class="typeBonusRateClass(t)">
-              {{ typeBonusRate(t) }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <DataTable
+        :columns="columns"
+        :rows="(analytics.survey_types as unknown as Record<string, unknown>[])"
+        compact
+        row-clickable
+        @row-click="selectTypeRow">
+        <template #cell-map_display_name="{ row }">
+          <span class="text-text-primary font-semibold">{{ row.map_display_name }}</span>
+        </template>
+        <template #cell-area="{ row }">
+          <AreaInline v-if="row.area" :reference="row.area as string" />
+          <span v-else class="text-text-dim">—</span>
+        </template>
+        <template #cell-kind="{ row }">
+          <span class="text-text-secondary">{{ row.kind }}</span>
+        </template>
+        <template #cell-total_uses="{ row }">
+          <span class="text-text-primary">{{ row.total_uses }}</span>
+        </template>
+        <template #cell-total_loot_qty="{ row }">
+          <span class="text-accent-gold font-semibold">{{ (row.total_loot_qty as number).toLocaleString() }}</span>
+        </template>
+        <template #cell-avg_loot_per_use="{ row }">
+          <span class="text-text-muted">
+            {{ row.avg_loot_per_use !== null ? (row.avg_loot_per_use as number).toFixed(1) : '—' }}
+          </span>
+        </template>
+        <template #cell-bonus_rate="{ row }">
+          <span :class="typeBonusRateClass(row as unknown as SurveyTypeSummary)">
+            {{ typeBonusRate(row as unknown as SurveyTypeSummary) }}
+          </span>
+        </template>
+      </DataTable>
     </section>
   </div>
 </template>
@@ -97,6 +92,7 @@ import type { SurveyAnalytics, SurveyTypeSummary } from '../../stores/surveyTrac
 import StatCard from './StatCard.vue'
 import CrossZoneComparison from './CrossZoneComparison.vue'
 import AreaInline from '../Shared/Area/AreaInline.vue'
+import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 
 const props = defineProps<{
   analytics: SurveyAnalytics
@@ -109,6 +105,22 @@ const emit = defineEmits<{
 
 function emitZone(area: string) {
   emit('select-zone', area)
+}
+
+const columns: ColumnDef[] = [
+  { key: 'map_display_name', label: 'Survey Type' },
+  { key: 'area', label: 'Zone' },
+  { key: 'kind', label: 'Kind' },
+  { key: 'total_uses', label: 'Done', align: 'right', numeric: true },
+  { key: 'total_loot_qty', label: 'Items', align: 'right', numeric: true },
+  { key: 'avg_loot_per_use', label: 'Avg/Use', align: 'right', numeric: true },
+  { key: 'bonus_rate', label: 'Bonus Rate', align: 'right', numeric: true },
+]
+
+// Row-click drill-in from the all-survey-types table.
+function selectTypeRow(payload: { row: Record<string, unknown>; index: number }) {
+  const t = payload.row as unknown as SurveyTypeSummary
+  emit('select-type', { map: t.map_internal_name, area: t.area })
 }
 
 const motherlodeCount = computed(() =>

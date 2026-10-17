@@ -1,6 +1,6 @@
 <template>
   <div class="w-full overflow-auto">
-    <table class="w-full border-collapse" :class="compact ? 'text-xs' : 'text-xs'">
+    <table class="w-full border-collapse" :class="compact ? 'text-[11px]' : 'text-xs'">
       <thead v-if="!loading || rows.length > 0" :class="stickyHeader ? 'sticky top-0 z-10' : ''" class="bg-surface-base border-b border-border-default">
         <tr>
           <th
@@ -53,8 +53,10 @@
           class="border-b border-border-default/50"
           :class="[
             hoverable ? 'hover:bg-surface-row-hover' : '',
+            rowClickable ? 'cursor-pointer' : '',
             rowClassFn ? rowClassFn(row, index) : '',
-          ]">
+          ]"
+          @click="emit('rowClick', { row, index })">
           <td
             v-for="col in columns"
             :key="col.key"
@@ -98,6 +100,7 @@ const props = withDefaults(defineProps<{
   hoverable?: boolean
   stickyHeader?: boolean
   skeletonRows?: number
+  rowClickable?: boolean
   rowClass?: (row: Record<string, unknown>, index: number) => string
 }>(), {
   sortDir: 'asc',
@@ -107,10 +110,12 @@ const props = withDefaults(defineProps<{
   hoverable: true,
   stickyHeader: true,
   skeletonRows: 5,
+  rowClickable: false,
 })
 
 const emit = defineEmits<{
   sort: [payload: { key: string; dir: 'asc' | 'desc' }]
+  rowClick: [payload: { row: Record<string, unknown>; index: number }]
 }>()
 
 const rowClassFn = props.rowClass

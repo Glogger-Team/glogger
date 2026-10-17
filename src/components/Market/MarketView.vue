@@ -181,69 +181,66 @@
         primary="No stall prices captured yet"
         secondary="Browse another player's stall in game — a capture panel will appear. Or scan the stall window from that panel." />
       <div v-else class="overflow-y-auto max-h-80 border border-border-default rounded">
-        <table class="w-full text-xs">
-          <thead class="sticky top-0 bg-surface-elevated">
-            <tr class="text-left text-text-secondary">
-              <th class="px-2 py-1.5 font-medium">Item</th>
-              <th class="px-2 py-1.5 font-medium text-right">Qty</th>
-              <th class="px-2 py-1.5 font-medium text-right">Price</th>
-              <th class="px-2 py-1.5 font-medium">Stall</th>
-              <th class="px-2 py-1.5 font-medium">Seen</th>
-              <th class="px-2 py-1.5 font-medium">Source</th>
-              <th class="px-2 py-1.5"></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="obs in stallPriceStore.observations"
-              :key="obs.id"
-              class="border-t border-border-default">
-              <td class="px-2 py-1.5">
-                <ItemInline v-if="obs.item_type_id != null" :reference="obs.item_name" />
-                <span v-else class="text-amber-400" :title="'Unresolved item name — click Set price to fix'">
-                  {{ obs.item_name }} (unresolved)
-                </span>
-              </td>
-              <td class="px-2 py-1.5 text-right tabular-nums">{{ obs.quantity }}</td>
-              <td class="px-2 py-1.5 text-right tabular-nums">
-                <template v-if="obs.source === 'purchase' && obs.price_unit === 0">
-                  <input
-                    v-model.number="stallPriceEdit[obs.id]"
-                    type="number"
-                    min="1"
-                    class="input w-20 text-xs py-0.5"
-                    placeholder="price?"
-                    @keydown.enter="setPurchasePrice(obs)" />
-                  <button
-                    class="btn btn-secondary text-[10px] py-0.5 px-1.5 ml-1"
-                    @click="setPurchasePrice(obs)">
-                    Set
-                  </button>
-                </template>
-                <template v-else>{{ obs.price_unit.toLocaleString() }}g</template>
-              </td>
-              <td class="px-2 py-1.5 text-text-secondary truncate max-w-40" :title="obs.stall_label">
-                {{ obs.stall_label }}<span v-if="obs.owner_name" class="text-text-dim"> ({{ obs.owner_name }})</span>
-              </td>
-              <td class="px-2 py-1.5 text-text-dim whitespace-nowrap">{{ formatRelative(obs.observed_at) }}</td>
-              <td class="px-2 py-1.5">
-                <span
-                  class="px-1.5 py-0.5 rounded-sm text-[10px] uppercase tracking-wide"
-                  :class="obs.source === 'purchase' ? 'bg-sky-900/40 text-sky-300' : 'bg-emerald-900/40 text-emerald-300'">
-                  {{ obs.source }}
-                </span>
-              </td>
-              <td class="px-2 py-1.5 text-right">
-                <button
-                  class="text-text-muted hover:text-red-400 bg-transparent border-none cursor-pointer text-xs"
-                  title="Delete observation"
-                  @click="deleteObservation(obs)">
-                  &times;
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <DataTable
+          :columns="observationColumns"
+          :rows="(stallPriceStore.observations as unknown as Record<string, unknown>[])"
+          :hoverable="false"
+          :sticky-header="true"
+          compact>
+          <template #cell-item_name="{ row }">
+            <ItemInline
+              v-if="obsOf(row).item_type_id != null"
+              :reference="obsOf(row).item_name" />
+            <span
+              v-else
+              class="text-amber-400"
+              :title="'Unresolved item name — click Set price to fix'">
+              {{ obsOf(row).item_name }} (unresolved)
+            </span>
+          </template>
+          <template #cell-price_unit="{ row }">
+            <template v-if="obsOf(row).source === 'purchase' && obsOf(row).price_unit === 0">
+              <input
+                v-model.number="stallPriceEdit[obsOf(row).id]"
+                type="number"
+                min="1"
+                class="input w-20 text-xs py-0.5"
+                placeholder="price?"
+                @keydown.enter="setPurchasePrice(obsOf(row))" />
+              <button
+                class="btn btn-secondary text-[10px] py-0.5 px-1.5 ml-1"
+                @click="setPurchasePrice(obsOf(row))">
+                Set
+              </button>
+            </template>
+            <template v-else>{{ obsOf(row).price_unit.toLocaleString() }}g</template>
+          </template>
+          <template #cell-stall_label="{ row }">
+            <span
+              class="block max-w-40 truncate text-text-secondary"
+              :title="obsOf(row).stall_label">
+              {{ obsOf(row).stall_label }}<span v-if="obsOf(row).owner_name" class="text-text-dim"> ({{ obsOf(row).owner_name }})</span>
+            </span>
+          </template>
+          <template #cell-observed_at="{ row }">
+            <span class="text-text-dim whitespace-nowrap">{{ formatRelative(obsOf(row).observed_at) }}</span>
+          </template>
+          <template #cell-source="{ row }">
+            <span
+              class="px-1.5 py-0.5 rounded-sm text-[10px] uppercase tracking-wide"
+              :class="obsOf(row).source === 'purchase' ? 'bg-sky-900/40 text-sky-300' : 'bg-emerald-900/40 text-emerald-300'">
+              {{ obsOf(row).source }}
+            </span>
+          </template>
+          <template #cell-actions="{ row }">
+            <button
+              class="text-text-muted hover:text-red-400 bg-transparent border-none cursor-pointer text-xs"
+              title="Delete observation"
+              @click="deleteObservation(obsOf(row))">
+              &times;
+            </button>
+          </template>
+        </DataTable>
       </div>
     </AccordionSection>
 
@@ -301,103 +298,85 @@
         :primary="search ? 'No matching market values' : 'No market values set'"
         :secondary="search ? undefined : 'Use item tooltips or the Add section above to set prices.'" />
 
-      <table v-else class="w-full border-collapse text-xs">
-        <thead class="sticky top-0 z-10 bg-surface-base border-b border-border-default">
-          <tr>
-            <th class="w-8 px-2 py-1">
-              <input
-                type="checkbox"
-                class="accent-accent-gold cursor-pointer"
-                :checked="allFilteredSelected"
-                :indeterminate="someFilteredSelected && !allFilteredSelected"
-                @change="toggleSelectAll" />
-            </th>
-            <th
-              class="text-[10px] uppercase tracking-wider text-text-muted font-semibold text-left px-2 py-1 cursor-pointer hover:text-text-primary select-none"
-              @click="toggleSort('item_name')">
-              Item
-              <span v-if="sortField === 'item_name'" class="ml-0.5">{{ sortAsc ? '\u25B2' : '\u25BC' }}</span>
-            </th>
-            <th
-              class="text-[10px] uppercase tracking-wider text-text-muted font-semibold text-right px-2 py-1 cursor-pointer hover:text-text-primary select-none w-30"
-              @click="toggleSort('market_value')">
-              Price
-              <span v-if="sortField === 'market_value'" class="ml-0.5">{{ sortAsc ? '\u25B2' : '\u25BC' }}</span>
-            </th>
-            <th class="text-[10px] uppercase tracking-wider text-text-muted font-semibold text-left px-2 py-1">
-              Notes
-            </th>
-            <th
-              class="text-[10px] uppercase tracking-wider text-text-muted font-semibold text-left px-2 py-1 cursor-pointer hover:text-text-primary select-none w-30"
-              @click="toggleSort('updated_at')">
-              Updated
-              <span v-if="sortField === 'updated_at'" class="ml-0.5">{{ sortAsc ? '\u25B2' : '\u25BC' }}</span>
-            </th>
-            <th class="w-25 px-2 py-1"></th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="val in filteredValues"
-            :key="val.item_type_id"
-            class="border-b border-border-default/50 hover:bg-surface-row-hover"
-            :class="{ 'bg-accent-gold/5': selectedIds.has(val.item_type_id) }">
-            <td class="px-2 py-1">
-              <input
-                type="checkbox"
-                class="accent-accent-gold cursor-pointer"
-                :checked="selectedIds.has(val.item_type_id)"
-                @change="toggleSelect(val.item_type_id)" />
-            </td>
-            <td class="px-2 py-1 text-text-primary">
-              <ItemInline :reference="val.item_name" />
-            </td>
-            <td class="px-2 py-1 text-right tabular-nums">
-              <span v-if="editingId !== val.item_type_id" class="text-accent-gold">
-                {{ val.market_value.toLocaleString() }}g
-              </span>
-              <input
-                v-else
-                v-model.number="editPrice"
-                type="number"
-                min="0"
-                class="w-24 bg-surface-dark border border-border-default rounded px-1.5 py-0.5 text-xs text-text-primary text-right tabular-nums"
-                @keydown.enter="saveEdit(val)"
-                @keydown.escape="editingId = null" />
-            </td>
-            <td class="px-2 py-1 text-text-dim">{{ val.notes ?? '' }}</td>
-            <td class="px-2 py-1 text-text-dim">{{ formatDate(val.updated_at) }}</td>
-            <td class="px-2 py-1 text-right">
-              <div class="flex items-center justify-end gap-1">
-                <button
-                  v-if="editingId !== val.item_type_id"
-                  class="text-text-muted hover:text-text-primary bg-transparent border-none cursor-pointer text-xs px-1.5 py-0.5 rounded hover:bg-surface-elevated"
-                  @click="startEdit(val)">
-                  Edit
-                </button>
-                <button
-                  v-if="editingId === val.item_type_id"
-                  class="text-accent-green hover:text-green-400 bg-transparent border-none cursor-pointer text-xs px-1.5 py-0.5 rounded hover:bg-surface-elevated"
-                  @click="saveEdit(val)">
-                  Save
-                </button>
-                <button
-                  v-if="editingId === val.item_type_id"
-                  class="text-text-muted hover:text-text-primary bg-transparent border-none cursor-pointer text-xs px-1.5 py-0.5 rounded hover:bg-surface-elevated"
-                  @click="editingId = null">
-                  Cancel
-                </button>
-                <button
-                  v-if="editingId !== val.item_type_id"
-                  class="text-text-muted hover:text-red-400 bg-transparent border-none cursor-pointer text-xs px-1.5 py-0.5 rounded hover:bg-surface-elevated"
-                  @click="deleteValue(val.item_type_id)">
-                  Del
-                </button>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <DataTable
+        v-else
+        :columns="marketColumns"
+        :rows="(filteredValues as unknown as Record<string, unknown>[])"
+        :sort-key="sortField"
+        :sort-dir="sortAsc ? 'asc' : 'desc'"
+        :hoverable="true"
+        :sticky-header="true"
+        :row-class="marketRowClass"
+        compact
+        @sort="onSort">
+        <template #header-select>
+          <input
+            type="checkbox"
+            class="accent-accent-gold cursor-pointer"
+            :checked="allFilteredSelected"
+            :indeterminate="someFilteredSelected && !allFilteredSelected"
+            @change="toggleSelectAll" />
+        </template>
+        <template #cell-select="{ row }">
+          <input
+            type="checkbox"
+            class="accent-accent-gold cursor-pointer"
+            :checked="selectedIds.has(valOf(row).item_type_id)"
+            @change="toggleSelect(valOf(row).item_type_id)" />
+        </template>
+        <template #cell-item_name="{ value }">
+          <span class="text-text-primary">
+            <ItemInline :reference="(value as string)" />
+          </span>
+        </template>
+        <template #cell-market_value="{ row }">
+          <span v-if="editingId !== valOf(row).item_type_id" class="text-accent-gold">
+            {{ valOf(row).market_value.toLocaleString() }}g
+          </span>
+          <input
+            v-else
+            v-model.number="editPrice"
+            type="number"
+            min="0"
+            class="w-24 bg-surface-dark border border-border-default rounded px-1.5 py-0.5 text-xs text-text-primary text-right tabular-nums"
+            @keydown.enter="saveEdit(valOf(row))"
+            @keydown.escape="editingId = null" />
+        </template>
+        <template #cell-notes="{ value }">
+          <span class="text-text-dim">{{ (value as string | null) ?? '' }}</span>
+        </template>
+        <template #cell-updated_at="{ row }">
+          <span class="text-text-dim">{{ formatDate(valOf(row).updated_at) }}</span>
+        </template>
+        <template #cell-actions="{ row }">
+          <div class="flex items-center justify-end gap-1">
+            <button
+              v-if="editingId !== valOf(row).item_type_id"
+              class="text-text-muted hover:text-text-primary bg-transparent border-none cursor-pointer text-xs px-1.5 py-0.5 rounded hover:bg-surface-elevated"
+              @click="startEdit(valOf(row))">
+              Edit
+            </button>
+            <button
+              v-if="editingId === valOf(row).item_type_id"
+              class="text-accent-green hover:text-green-400 bg-transparent border-none cursor-pointer text-xs px-1.5 py-0.5 rounded hover:bg-surface-elevated"
+              @click="saveEdit(valOf(row))">
+              Save
+            </button>
+            <button
+              v-if="editingId === valOf(row).item_type_id"
+              class="text-text-muted hover:text-text-primary bg-transparent border-none cursor-pointer text-xs px-1.5 py-0.5 rounded hover:bg-surface-elevated"
+              @click="editingId = null">
+              Cancel
+            </button>
+            <button
+              v-if="editingId !== valOf(row).item_type_id"
+              class="text-text-muted hover:text-red-400 bg-transparent border-none cursor-pointer text-xs px-1.5 py-0.5 rounded hover:bg-surface-elevated"
+              @click="deleteValue(valOf(row).item_type_id)">
+              Del
+            </button>
+          </div>
+        </template>
+      </DataTable>
     </div>
 
     <!-- Import dialog -->
@@ -517,6 +496,7 @@ import { useMarketStore, type MarketValue, type ImportMarketValuesResult } from 
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useGameDataStore } from '../../stores/gameDataStore'
 import type { ItemInfo } from '../../types/gameData'
+import DataTable from '../Shared/DataTable.vue'
 import EmptyState from '../Shared/EmptyState.vue'
 import AccordionSection from '../Shared/AccordionSection.vue'
 import ItemInline from '../Shared/Item/ItemInline.vue'
@@ -533,6 +513,25 @@ const stallPriceStore = useStallPriceStore()
 const search = ref('')
 const sortField = ref<'item_name' | 'market_value' | 'updated_at'>('item_name')
 const sortAsc = ref(true)
+
+const marketColumns = [
+  { key: 'select', label: '', width: '2rem' },
+  { key: 'item_name', label: 'Item', sortable: true },
+  { key: 'market_value', label: 'Price', sortable: true, align: 'right' as const, numeric: true, width: '7.5rem' },
+  { key: 'notes', label: 'Notes' },
+  { key: 'updated_at', label: 'Updated', sortable: true, width: '7.5rem' },
+  { key: 'actions', label: '', align: 'right' as const, width: '6.25rem' },
+]
+
+/** DataTable hands rows back as Record<string, unknown>; recover the typed row. */
+function valOf(row: Record<string, unknown>): MarketValue {
+  return row as unknown as MarketValue
+}
+
+/** Row highlight for selected entries (was a per-row :class). */
+function marketRowClass(row: Record<string, unknown>): string {
+  return selectedIds.value.has(valOf(row).item_type_id) ? 'bg-accent-gold/5' : ''
+}
 
 // Add form
 const addName = ref('')
@@ -717,13 +716,10 @@ const bulkAdjustPreview = computed(() => {
   return { before, after }
 })
 
-function toggleSort(field: 'item_name' | 'market_value' | 'updated_at') {
-  if (sortField.value === field) {
-    sortAsc.value = !sortAsc.value
-  } else {
-    sortField.value = field
-    sortAsc.value = true
-  }
+/** DataTable toggles the arrow; the comparator stays in `filteredValues`. */
+function onSort(payload: { key: string; dir: 'asc' | 'desc' }) {
+  sortField.value = payload.key as 'item_name' | 'market_value' | 'updated_at'
+  sortAsc.value = payload.dir === 'asc'
 }
 
 function formatDate(dateStr: string): string {
@@ -867,6 +863,21 @@ onMounted(() => {
 })
 
 // ── Stall price observations ────────────────────────────────────────────────
+
+const observationColumns = [
+  { key: 'item_name', label: 'Item' },
+  { key: 'quantity', label: 'Qty', align: 'right' as const, numeric: true },
+  { key: 'price_unit', label: 'Price', align: 'right' as const, numeric: true },
+  { key: 'stall_label', label: 'Stall' },
+  { key: 'observed_at', label: 'Seen' },
+  { key: 'source', label: 'Source' },
+  { key: 'actions', label: '', align: 'right' as const },
+]
+
+/** DataTable hands rows back as Record<string, unknown>; recover the typed row. */
+function obsOf(row: Record<string, unknown>): StallPriceObservation {
+  return row as unknown as StallPriceObservation
+}
 
 /** Per-row price edit inputs for purchase-sentinel rows. */
 const stallPriceEdit = ref<Record<number, number | undefined>>({})
