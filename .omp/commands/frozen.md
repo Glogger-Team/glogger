@@ -1,12 +1,30 @@
 ---
-description: Review the current work here — derives the frozen range, measures the facts once, fans out, reports only
-argumentHint: "[extra focus]"
+description: Review the current work here — takes its target from the argument or derives the frozen range, measures the facts once, fans out, reports only
+argumentHint: "[target] [focus]"
 ---
 
 Run this repository's code-review loop — `AGENTS.md` → **Code review loop** — end to end. Do not ask
-which target: derive it, say what you chose, and go.
+which target: take it from the argument when one names one, else derive it; say what you chose, and go.
 
 ## 1. Resolve the frozen target (first, before anything else)
+
+**The argument comes first.** Whatever the caller typed after `/frozen` arrives appended verbatim at the
+end of this body ("Target revision and operator focus, if any, follow:"). Read it before deriving:
+
+- a first token that names a **range** (`A..B`) is the target exactly as written;
+- a first token that names a **tag** (`git tag --list <token>` names it) is the range that starts after
+  it — `v1.3.2` → `v1.3.2..HEAD`, the same convention as the derived form below;
+- a first token that names a **commit** is exactly that commit: freeze `git show <token>` and report the
+  range as `<token>^..<token>` (the fix-batch case);
+- the bare word `worktree` forces the working tree (`git diff HEAD`);
+- **anything else is focus only**, and the target is derived below.
+
+Bare `/frozen` derives, exactly as before; so a delta pass is
+`/frozen b77e4bd verify the fix against the rest of the range` and a whole-range pass is bare `/frozen`.
+This file must stay free of argument-placeholder tokens: the harness appends the caller's string only
+while the body contains no placeholder, so one would silently swallow every word after the first.
+
+When no target came from the argument:
 
 - `git status --porcelain` non-empty → the target is the **working tree** (`git diff HEAD`, staged +
   unstaged). Reviewers read the files as they are, and the report calls it uncommitted.
@@ -45,4 +63,4 @@ ship-with-fixes / blocked — and an explicit fix-now vs backlog split. Intake i
 `AGENTS.md`, and the accepted-drift ledger in `docs/architecture/ux-standards.md` is decided: do not
 re-file it. Fixes are a later turn's work — this round reports, and changes nothing.
 
-Operator focus, if any, follows:
+Target revision and operator focus, if any, follow:
