@@ -7,7 +7,7 @@ Tracks weekly gift progress for Statehelm NPCs. Each NPC accepts up to 5 gifts p
 Gift events are detected from `ProcessDeltaFavor` log lines where `is_gift` is `True`. These are already parsed by `PlayerEventParser` as `FavorChanged` events with the `is_gift` flag. When a gift is detected:
 
 1. The favor delta is applied to `game_state_favor` (existing behavior)
-2. A separate row is inserted into `game_state_gift_log` with the NPC key, timestamp, and favor delta
+2. A separate row is inserted into `game_state_gift_log` with the NPC key, timestamp, and favor delta — but only for a *spent* gift. The arm skips the row when the game's own signals say the favor was not a gift the player gave: `npc_id == 0` (scripted payout), no CDN gift data for the NPC (gifting cannot move that reputation), or a gift-capped area (the cap note owns the count)
 3. The frontend composable watches the favor activity feed for real-time updates
 
 ## NPC Selection
@@ -20,12 +20,12 @@ The weekly cap is a Statehelm-region rule (the game's own note: "Statehelm
 townsfolk are more sophisticated than villagers elsewhere…"), and it applies in
 the sewers too. No CDN field marks the cap, so the area is the signal — and the
 **only** signal. `preferences` is a *favourites* list, not a giftability flag:
-the CDN omits it for NPCs that still report gift favor (Gossamyr the Great —
-storage, `AreaStatehelm` — Captain Gregory, Slim Ostren and Fenna all carry
-none, yet the game's `ProcessDeltaFavor(…, True)` lines for Gossamyr and Fenna
-land in `game_state_gift_log`), so gating on it hid Statehelm's own storage
-NPCs. Fully data-driven — new Statehelm NPCs in future CDN updates appear
-automatically.
+the CDN omits it for NPCs that still emit `ProcessDeltaFavor(…, True)` lines
+(Gossamyr the Great — storage, `AreaStatehelm` — Captain Gregory, Slim Ostren
+and Fenna all carry none). Those lines are card readings and scripted payouts,
+not gifts the player spent — the exact rows this tracker now refuses to write —
+so gating on it hid Statehelm's own storage NPCs. Fully data-driven — new
+Statehelm NPCs in future CDN updates appear automatically.
 
 ## Weekly Reset
 
@@ -47,14 +47,14 @@ invariants, the archive limits (Settings → General) and the dating rule.
 
 ## Manual Adjustment
 
-Users can manually increment/decrement gift counts per NPC using +/- buttons on each card. Manual additions insert a row with `favor_delta = 0.0`; removals delete the most recent gift log entry for that NPC within the current week. A manual change is reconciled back to the game's own count the next time a cap note for that NPC is read (live, at startup, or via Rescan logs).
+Users can manually increment/decrement gift counts per NPC using +/- buttons on each card — those render only for NPCs whose gifts can move their reputation (`giftTracking`, i.e. CDN gift data present). Manual additions insert a row with `favor_delta = 0.0`; removals delete the most recent gift log entry for that NPC within the current week. For a tracked NPC, a manual change is reconciled back to the game's own count the next time a cap note for that NPC is read (live, at startup, or via Rescan logs); a tasteless NPC's notes and backfill entries are skipped, so nothing trims its rows — but its gift block is hidden anyway.
 
 ## NPC Card Info
 
 Each card displays:
 - **NPC name** (clickable via `NpcInline`)
 - **Favor tier** badge (from `game_state_favor`)
-- **Gift progress** — dot indicators and count (X / 5)
+- **Gift progress** — dot indicators and count (X / 5), only when the NPC has CDN gift data (`giftTracking`); otherwise no counter, no dots, no ± buttons
 - **Training** — skills the NPC trains (via `SkillInline`)
 - **Storage** — whether they offer storage and at which tiers space increases
 - **Vendor** — buying caps per favor tier and item types
@@ -64,13 +64,14 @@ Each card displays:
 
 - **Hide above tier** — dropdown to hide NPCs at or above a chosen favor tier (e.g., hide Soul Mates)
 - **Trainers / Vendors / Storage** — checkbox filters (additive: show NPCs matching any checked service)
-- **Hide maxed gifts** — hide NPCs that already received 5 gifts this week
+- **Hide maxed gifts** — hide *tracked* NPCs that already received 5 gifts this week (meaningless for NPCs whose gifts do nothing, so those are kept)
+- **Only NPCs whose gifts matter** — opt-in: keep only NPCs with CDN gift data (`giftTracking`), the same set the header's gift total counts
 
 ## Data Sources
 
 | Data | Source |
 |------|--------|
-| Gift events | `game_state_gift_log` (DB), populated from `FavorChanged` events where `is_gift = true` |
+| Gift events | `game_state_gift_log` (DB), populated from `FavorChanged` events where `is_gift = true` and the game's signals say a gift was actually spent |
 | NPC list & preferences | CDN via `gameDataStore.npcsByKey` |
 | NPC services | CDN `services` array, parsed via `parseServices()` |
 | Favor tiers | `game_state_favor` (DB) via `gameStateStore.favorByNpc` |

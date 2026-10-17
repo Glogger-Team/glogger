@@ -2,13 +2,13 @@
 
 **Date:** 2026-10-16 (Session 44 — gift counts for capped NPCs come from the note, not from `is_gift`; "gifts do nothing" for NPCs with no CDN gift data)
 **Machine:** Windows 11 (primary dev box)
-**Branch:** `main` — uncommitted working tree (8 files: `game_state.rs`, `game_data/npcs.rs`, `game_data/mod.rs`, `db/statehelm_commands.rs`, `useStatehelmTracker.ts`, `StatehelmView.vue`, the Statehelm feature doc, this file). No version bump.
-**Status:** ✅ Implemented + verified: `cargo test --lib` **708 passed** (6 ignored, 714 total; +5 this session), `npm run build` (vue-tsc + vite) clean, and a live `tauri dev` run on the real profile (the catch-up wrote Gossamyr's note row at its own line time and logged nothing for his card reading).
+**Branch:** `main` — uncommitted working tree (10 files: `game_state.rs`, `game_data/npcs.rs`, `game_data/mod.rs`, `db/statehelm_commands.rs`, `useStatehelmTracker.ts`, `StatehelmView.vue`, `StatehelmSummaryWidget.vue`, `docs/features/statehelm-gift-backfill.md`, the Statehelm screen doc, this file). No version bump.
+**Status:** ✅ Implemented + verified: `cargo test --lib` **708 passed** (6 ignored, 714 total; +5 this session), `npm run build` (vue-tsc + vite) clean, and a live `tauri dev` run on the real profile (header `7 of 200 gift slots used`, `Gifted this week: Hamilton 5/5 · Sourgum 2/5`, the 40-card filter, and — once the CDN data is loaded — no gift rows from Gossamyr's card-reading `ProcessDeltaFavor(33081, …)` lines).
 
 ## Session 44 — A capped NPC's gift count is the note's, not the delta's
 
 **Date:** 2026-10-16.
-**Status:** ✅ `cargo test --lib` 706 passed / 0 failed / 6 ignored, `npm run build` clean.
+**Status:** ✅ `cargo test --lib` 708 passed / 0 failed / 6 ignored (714 total), `npm run build` clean.
 
 ### What changed
 
@@ -92,7 +92,9 @@ separate this out cleanly") turned into two rules, both from evidence:
   screen supplies it; a dialog closed immediately after choosing a gift lags by one until the next
   note. That is the price of never inventing a gift, and it self-heals.
 - **A `+` (manual) row is indistinguishable from a note row by shape:** `add_manual_gift` stamps
-  `chrono::Utc::now()` in the same format, so it survives until a note trims it. Observed live:
+  `chrono::Utc::now()` in the same format, so for a tracked NPC it survives until a note trims it.
+  Gossamyr has no CDN gift data, so no note or backfill trims his rows any more (the Session-44
+  gate) and the `+` no longer renders for him; the hidden rows simply persist. Observed live:
   `NPC_Gossamyr` at `2026-10-16 04:10:30` (`favor_delta = 0`) while the game's note that week read
   **0**, and no scanned log carries a Gossamyr note before the 10/17 session.
 - **`-1301` is Give Gift and it is in every NPC action menu** (26/27 captured; the exception is a

@@ -108,7 +108,10 @@ count to the game's number.
   still accumulates the favor (it *is* real favor, just not a gift the player
   spent); an NPC the CDN does not know keeps the old behavior. The note arm
   applies rule 2 as well (a tasteless NPC's cap note is ignored), and the
-  backfill applies it to the stored `npcs` row so both paths agree. Uncapped,
+  backfill applies it to the stored `npcs` row so both paths agree — given the
+  persisted `npcs` table matches the loaded CDN (a failed persist, or an ingest
+  before the CDN data is loaded, briefly falls back to the old behavior and
+  self-heals on the next persist). Uncapped,
   tasting NPCs have no note, so there the delta stays the only source. Pinned by
   `game_state::tests::gift_flagged_favor_is_only_logged_when_a_gift_was_spent`
   and `game_data::npcs::tests::gift_data_is_what_marks_an_npc_as_worth_tracking`.
@@ -196,8 +199,9 @@ Why these three, and why in that shape:
   (the `+` was also the path that planted Gossamyr's phantom row). They are
   excluded from the widget's skill-driven targets and from the header's
   `totalGiftsGiven` / `totalGiftsMax`, and the "Hide maxed gifts" filter skips
-  them. The ingest drops their rows too (see the invariants), so the number
-  cannot come back through the DB. An opt-in **"Only NPCs whose gifts matter"**
+  them. The ingest drops their rows too once the CDN data is loaded (see the
+  invariants), so the number cannot come back through the DB. An opt-in
+  **"Only NPCs whose gifts matter"**
   checkbox (next to "Hide maxed gifts") narrows the cards to the tracked set;
   the 28 tasteless cards stay visible by default, since the tab is also how the
   user finds NPCs like Gossamyr at all.
@@ -245,8 +249,11 @@ Why these three, and why in that shape:
   `Player-prev.log` — session login 10/16 01:02 — and the two archived sessions
   10/13, 10/14) carries a Gossamyr note anywhere but in the 10/17 session. Since
   the only writers of a space-format zero-delta row are `reconcile_gift_count`
-  and `add_manual_gift`, that row is a manual mark; the next cap note trims it
-  (delete-newest-extras), i.e. the game stays authoritative.
+  and `add_manual_gift`, that row is a manual mark. For a tracked NPC the next
+  cap note trims it (delete-newest-extras), i.e. the game stays authoritative —
+  but Gossamyr's own notes are skipped (no CDN gift data), so nothing trims his
+  stale rows; they are invisible (his card shows no gift block), and the `+`
+  that created them no longer renders for him.
 - **The cap itself is not in the CDN.** No NPC field marks the weekly gift cap
   (`ItemGifts` is a service tier list, not a limit), so the region is used as
   the signal: Statehelm city + sewers — `area_name` only. `preferences` is a

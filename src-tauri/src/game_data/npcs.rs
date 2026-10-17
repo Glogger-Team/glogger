@@ -230,10 +230,11 @@ mod tests {
         assert!(is_gift_capped_area(Some("AreaStatehelmCaves")));
         // The CDN's own casing is the same, but the rule must not depend on it.
         assert!(is_gift_capped_area(Some("areastatehelm")));
-        // Uncapped neighbours and missing areas stay gifts-counted-by-delta.
-        // (`AreaStatehelmCaves2` — "Statehelm Depths" — is deliberately not in
-        // the list: no NPC there has been observed showing the note, and the
-        // tracker's filter excludes it too.)
+        // Uncapped neighbours, missing areas, and `AreaStatehelmCaves2`
+        // ("Statehelm Depths" — deliberately not in the list: no NPC there has
+        // been observed showing the note, and the tracker's filter excludes it
+        // too) stay gifts-counted-by-delta.
+        assert!(!is_gift_capped_area(Some("AreaStatehelmCaves2")));
         assert!(!is_gift_capped_area(Some("AreaKurMountains")));
         assert!(!is_gift_capped_area(None));
     }
@@ -251,9 +252,12 @@ mod tests {
     }
 
     /// Either CDN gift field marks an NPC as worth gift tracking; neither one
-    /// means gifting cannot move their reputation. Real values: Selaxi carries
-    /// four preferences *and* five gift tiers, Kleave only tiers, Gossamyr
-    /// neither (and his accepted gift produced no favor line at all).
+    /// means gifting cannot move their reputation. The fixture deliberately
+    /// splits the two fields (Selaxi prefs-only, Kleave tiers-only) so each arm
+    /// is pinned on its own — no observed CDN entry is tiers-only (the v465
+    /// mirror: Selaxi has 4 `Preferences` and no `ItemGifts`, Kleave has 4 and
+    /// the five tiers), so the tiers arm stays defensive. Gossamyr has neither
+    /// (and his accepted gift produced no favor line at all).
     #[test]
     fn gift_data_is_what_marks_an_npc_as_worth_tracking() {
         let npcs = parse(

@@ -487,6 +487,56 @@ mod tests {
         let _ = std::fs::remove_file(&db_path);
     }
 
+    /// Both fallbacks of `stored_has_gift_tastes` keep the count: an NPC absent
+    /// from the `npcs` table resolves to its raw name (mirroring `resolve_npc`),
+    /// and a row whose `raw_json` is not readable means the CDN does not know
+    /// the NPC. Neither may be treated as tasteless — a regression there would
+    /// silently stop reconciling notes for every NPC missing from `npcs`.
+    #[test]
+    fn backfill_keeps_notes_for_unresolved_and_unreadable_npcs() {
+        let (pool, db_path) = temp_pool();
+        {
+            let conn = pool.get_write().unwrap();
+            conn.execute(
+                "INSERT INTO npcs (key, name, raw_json) VALUES ('NPC_Broken', 'Broken', 'not json')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let log = format!(
+            "[12:04:37] Logged in as character TestPlayer. Time UTC=10/14/2026 12:04:37. Timezone Offset -05:00:00\n{}\n{}\n",
+            note_line("12:20:00", "Broken", 2),
+            note_line("12:25:00", "Absent From Cdn", 1),
+        );
+        let path = write_log(&log);
+
+        let changed =
+            backfill_gifts_from_paths(std::slice::from_ref(&path), WEEK_START, "TestServer", &pool)
+                .unwrap();
+        assert_eq!(changed, 2, "both fallbacks keep the count");
+
+        let rows: Vec<(String, i64)> = pool
+            .get()
+            .unwrap()
+            .prepare("SELECT npc_key, COUNT(*) FROM game_state_gift_log GROUP BY npc_key ORDER BY npc_key")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("Absent From Cdn".to_string(), 1),
+                ("NPC_Broken".to_string(), 2),
+            ]
+        );
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
     #[test]
     fn scan_keeps_only_in_week_notes() {
         // Two sessions in one file: a pre-week note (Sunday 10/11) must be

@@ -1553,19 +1553,26 @@ mod tests {
         let _ = std::fs::remove_file(&db_path);
     }
 
-    /// The three ways a gift-flagged favor line is *not* a gift the player
-    /// spent, on verbatim log lines and the NPCs' real CDN fields:
+    /// A gift-flagged favor line is only logged as a gift when the game's own
+    /// signals say a gift was actually spent. Each simulated line is shaped so
+    /// exactly one rule fires, on verbatim log lines through the real parser:
     ///
-    /// - `npc_id == 0` — the game attributed it to no entity. Cheb's line is a
-    ///   repeatable quest payout (`ProcessCompleteQuest` → delta → `AddItem`),
-    ///   which is how 116 "gifts" landed in his log.
-    /// - No gift data in the CDN (`has_gift_tastes`) — Gossamyr the Great
-    ///   (`AreaStatehelm`, no `Preferences`, no `ItemGifts`) cannot gain
-    ///   reputation from any gift.
-    /// - A gift-capped area — his cap note owns the count.
+    /// - `npc_id == 0` — rule (a), alone: a tasting, uncapped NPC's id-0 line
+    ///   is dropped. The real shape is Cheb's repeatable quest payout
+    ///   (`ProcessCompleteQuest` → delta → `AddItem`), which is how 116
+    ///   "gifts" landed in his log.
+    /// - No gift data in the CDN (`has_gift_tastes`) — rule (b), alone: a
+    ///   tasteless, *uncapped* NPC with a nonzero id (synthetic — real Cheb
+    ///   lines carry id 0, which would also trip rule (a)).
+    /// - A gift-capped area (`is_gift_capped_area`) — rule (c), alone: a
+    ///   tasting NPC in `AreaStatehelm` (Corinth) emits no gift row; its cap
+    ///   note owns the count. The real shape is Gossamyr's card reading
+    ///   (rules (b)+(c) together).
     ///
-    /// All three still accrue favor, and Selaxi's real gift (four preferences,
-    /// five gift tiers) still logs.
+    /// Every dropped line still accrues favor, and two lines are still logged:
+    /// Selaxi's real gift (gift data, uncapped, nonzero id) and a nonzero id
+    /// the CDN does not know (NPC_Nobody) — the latter pins the "unknown NPC
+    /// keeps the old behavior" fallback.
     #[test]
     fn gift_flagged_favor_is_only_logged_when_a_gift_was_spent() {
         use std::sync::Arc;
@@ -1579,7 +1586,9 @@ mod tests {
         ));
         let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
 
-        // Real areas / gift fields for the three NPCs.
+        // Real areas / gift fields for the four NPCs. Selaxi's tier list is
+        // Kleave's real one — the fixture is synthetic, splitting the two CDN
+        // gift fields; see `gift_data_is_what_marks_an_npc_as_worth_tracking`.
         let mut data = crate::game_data::GameData::empty();
         data.npcs = crate::game_data::parse_npcs_json(
             r#"{
@@ -1589,7 +1598,11 @@ mod tests {
                    "ItemGifts": ["Friends", "CloseFriends", "BestFriends", "LikeFamily", "SoulMates"]
                  },
                  "NPC_Gossamyr": { "Name": "Gossamyr the Great", "AreaName": "AreaStatehelm" },
-                 "NPC_Cheb": { "Name": "Cheb", "AreaName": "AreaPovusCaves2" }
+                 "NPC_Cheb": { "Name": "Cheb", "AreaName": "AreaPovusCaves2" },
+                 "NPC_Corinth": {
+                   "Name": "Corinth", "AreaName": "AreaStatehelm",
+                   "Preferences": [ { "Name": "Magical Dust", "Desire": "Like", "Pref": 1.0 } ]
+                 }
                }"#,
         )
         .expect("parse npcs");
@@ -1609,13 +1622,24 @@ mod tests {
         let mut parser = crate::player_event_parser::PlayerEventParser::new();
         let mut events = Vec::new();
         for line in [
+            // Real gift (gift data, uncapped, nonzero id): logged.
             r#"[03:23:46] LocalPlayer: ProcessDeltaFavor(11080, "NPC_Selaxi", 24.57, True)"#,
+            // Rule (c) alone — tasting NPC in a gift-capped area: not logged.
+            r#"[02:20:00] LocalPlayer: ProcessDeltaFavor(41234, "NPC_Corinth", 25, True)"#,
+            // Rule (a) alone — id 0 on a tasting, uncapped NPC: not logged.
+            r#"[02:10:00] LocalPlayer: ProcessDeltaFavor(0, "NPC_Selaxi", 25, True)"#,
+            // Rules (b)+(c) — tasteless and capped (the real Gossamyr shape,
+            // his card reading): not logged.
             r#"[00:46:24] LocalPlayer: ProcessDeltaFavor(33081, "NPC_Gossamyr", 25, True)"#,
-            r#"[01:13:32] LocalPlayer: ProcessDeltaFavor(0, "NPC_Cheb", 25, True)"#,
+            // Rule (b) alone — tasteless, uncapped, nonzero id (synthetic; real
+            // Cheb lines carry id 0): not logged.
+            r#"[01:13:32] LocalPlayer: ProcessDeltaFavor(77777, "NPC_Cheb", 25, True)"#,
+            // Nonzero id the CDN does not know: keeps the old behavior.
+            r#"[02:30:00] LocalPlayer: ProcessDeltaFavor(99999, "NPC_Nobody", 25, True)"#,
         ] {
             events.extend(parser.process_line(line));
         }
-        assert_eq!(events.len(), 3, "all three lines must parse to favor events");
+        assert_eq!(events.len(), 6, "all six lines must parse to favor events");
         manager.process_events_batch(&events, &pool);
 
         let conn = pool.get().unwrap();
@@ -1626,10 +1650,10 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert_eq!(favors.len(), 3, "every payout is still favor: {favors:?}");
+        assert_eq!(favors.len(), 5, "every payout is still favor: {favors:?}");
         assert_eq!(
             favors.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
-            vec!["NPC_Cheb", "NPC_Gossamyr", "NPC_Selaxi"]
+            vec!["NPC_Cheb", "NPC_Corinth", "NPC_Gossamyr", "NPC_Nobody", "NPC_Selaxi"]
         );
 
         let gift_keys = |pool: &crate::db::DbPool| -> Vec<String> {
@@ -1646,9 +1670,10 @@ mod tests {
         };
         assert_eq!(
             gift_keys(&pool),
-            vec!["NPC_Selaxi".to_string()],
-            "only the spent gift is logged: not the quest payout, not the \
-             tasteless NPC's scripted payout"
+            vec!["NPC_Nobody".to_string(), "NPC_Selaxi".to_string()],
+            "only a spent gift and an NPC the CDN does not know are logged: \
+             not the id-0 payout, not Corinth's capped-area delta, not the \
+             tasteless NPCs' deltas"
         );
 
         // The note path applies the same rule: a tasteless NPC's cap note is
@@ -1672,7 +1697,11 @@ mod tests {
 
         assert_eq!(
             gift_keys(&pool),
-            vec!["NPC_Selaxi".to_string(), "NPC_Selaxi".to_string()],
+            vec![
+                "NPC_Nobody".to_string(),
+                "NPC_Selaxi".to_string(),
+                "NPC_Selaxi".to_string(),
+            ],
             "Gossamyr's note must not write rows; Selaxi's reconciles to the \
              game's count of 2"
         );
