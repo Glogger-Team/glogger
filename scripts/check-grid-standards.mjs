@@ -5,8 +5,8 @@
 //   1. a raw <table> appears in a .vue file that is not on the exemption list
 //   2. an exemption is stale (listed here, no raw <table> left in the file)
 //   3. docs/TODO.md's "**N instances across M files**" claim != the measured census
-//   4. an exempt file is not named in the docs (TODO's sweep line or the
-//      ux-standards data-tables bullet), so the list cannot grow silently
+//   4. an exempt file is not named in the "Data tables" rule in
+//      docs/architecture/ux-standards.md, so the list cannot grow silently
 //
 // The exemption list is the single machine-readable copy of the reasons
 // ux-standards.md gives for keeping a raw table; keep the two in sync.
@@ -85,11 +85,14 @@ for (const file of RAW_TABLE_EXEMPT.keys()) {
 
 const todoPath = join(ROOT, 'docs/TODO.md')
 const todo = readFileSync(todoPath, 'utf8')
-const claim = todo.match(/\*\*(\d+) instances across (\d+) files\*\*/)
+// Read the sweep line, not the whole file: docs/TODO.md also keeps the
+// superseded pre-sweep audit line ("**6 instances across 5 files** (not 10)").
+const sweepLine = todo.split('\n').find((line) => line.includes('Table sweep done')) ?? ''
+const claim = sweepLine.match(/\*\*(\d+) instances across (\d+) files\*\*/)
 if (!claim) {
   violations.push(
-    `docs/TODO.md: no "**N instances across M files**" claim found — restore the census ` +
-      `sentence or update this check (a silently missing claim would stop the drift check working)`,
+    `docs/TODO.md: no "**N instances across M files**" claim on the "Table sweep done" line — ` +
+      `restore the census sentence or update this check (a silently missing claim would stop the drift check working)`,
   )
 } else if (+claim[1] !== dataTableOccurrences || +claim[2] !== dataTableFiles.length) {
   violations.push(
@@ -99,23 +102,23 @@ if (!claim) {
 }
 
 // Every exemption must be named where the standard is written down, so the
-// list can only grow deliberately. Scoped to the two places that *are* the
-// standard — TODO's sweep line and the data-tables bullet — not the whole file:
-// a grid whose name merely appears in the accepted-drift ledger has no raw-table
-// reason written down, and must not pass as documented.
+// list can only grow deliberately. Scoped to the data-tables bullet alone — the
+// one line that gives raw-table *reasons*: a grid whose name merely appears in
+// the accepted-drift ledger has no such reason written down, and TODO's sweep
+// line is a status paragraph that names grids for unrelated reasons (the
+// migration census, and the `<DataTableSkeleton>` importers), so neither may
+// pass as documentation.
 const uxStandards = readFileSync(join(ROOT, 'docs/architecture/ux-standards.md'), 'utf8')
-const sweepLine = todo.split('\n').find((line) => line.includes('Table sweep done')) ?? ''
 const dataTablesRule = uxStandards.split('\n').find((line) => line.startsWith('- **Data tables:**')) ?? ''
 if (!dataTablesRule) {
   violations.push('docs/architecture/ux-standards.md: the "- **Data tables:**" rule line is missing — restore it or update this check')
 }
-const standardsText = `${sweepLine}\n${dataTablesRule}`
 for (const file of RAW_TABLE_EXEMPT.keys()) {
   const name = basename(file, '.vue')
-  if (!standardsText.includes(name)) {
+  if (!dataTablesRule.includes(name)) {
     violations.push(
-      `exemption ${file} is named in neither docs/TODO.md's sweep line nor the ` +
-        `"- **Data tables:**" rule in docs/architecture/ux-standards.md — document the reason there before exempting it here`,
+      `exemption ${file} is not named in the "- **Data tables:**" rule in ` +
+        `docs/architecture/ux-standards.md — document its raw-table reason there before exempting it here`,
     )
   }
 }
