@@ -487,11 +487,14 @@ mod tests {
         let _ = std::fs::remove_file(&db_path);
     }
 
-    /// Both fallbacks of `stored_has_gift_tastes` keep the count: an NPC absent
-    /// from the `npcs` table resolves to its raw name (mirroring `resolve_npc`),
-    /// and a row whose `raw_json` is not readable means the CDN does not know
-    /// the NPC. Neither may be treated as tasteless — a regression there would
-    /// silently stop reconciling notes for every NPC missing from `npcs`.
+    /// The two "keep the count" fallbacks around `stored_has_gift_tastes`: a row
+    /// whose `raw_json` is not readable keeps the count *inside* that function
+    /// (defensive — production always persists a serialized CDN entry, so such a
+    /// row is corrupt/foreign, not an unknown NPC), and an NPC absent from the
+    /// `npcs` table never reaches it: the caller's `unwrap_or_else` resolves the
+    /// note to its raw name with `tastes = true`, mirroring `resolve_npc`. Neither
+    /// may be treated as tasteless — a regression there would silently stop
+    /// reconciling notes for every NPC missing from `npcs`.
     #[test]
     fn backfill_keeps_notes_for_unresolved_and_unreadable_npcs() {
         let (pool, db_path) = temp_pool();

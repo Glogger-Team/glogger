@@ -1554,25 +1554,30 @@ mod tests {
     }
 
     /// A gift-flagged favor line is only logged as a gift when the game's own
-    /// signals say a gift was actually spent. Each simulated line is shaped so
-    /// exactly one rule fires, on verbatim log lines through the real parser:
+    /// signals say a gift was actually spent, on verbatim log lines through the
+    /// real parser. The arm is one disjunction (`id == 0 || capped ||
+    /// tasteless`, see the `FavorChanged` arm), so a line that trips two rules
+    /// pins neither on its own; each *rule* is isolated by at least one line
+    /// here:
     ///
-    /// - `npc_id == 0` — rule (a), alone: a tasting, uncapped NPC's id-0 line
-    ///   is dropped. The real shape is Cheb's repeatable quest payout
-    ///   (`ProcessCompleteQuest` → delta → `AddItem`), which is how 116
-    ///   "gifts" landed in his log.
-    /// - No gift data in the CDN (`has_gift_tastes`) — rule (b), alone: a
-    ///   tasteless, *uncapped* NPC with a nonzero id (synthetic — real Cheb
-    ///   lines carry id 0, which would also trip rule (a)).
-    /// - A gift-capped area (`is_gift_capped_area`) — rule (c), alone: a
-    ///   tasting NPC in `AreaStatehelm` (Corinth) emits no gift row; its cap
-    ///   note owns the count. The real shape is Gossamyr's card reading
-    ///   (rules (b)+(c) together).
+    /// - `npc_id == 0` — rule (a), alone on Selaxi's id-0 line: he is tasting
+    ///   and `AreaDesert1`, so (b) and (c) cannot fire in its place. The real
+    ///   shape is Cheb's repeatable quest payout (`ProcessCompleteQuest` → delta
+    ///   → `AddItem`), which is how 116 "gifts" landed in his log.
+    /// - No gift data in the CDN (`has_gift_tastes`) — rule (b), alone on Cheb's
+    ///   nonzero-id line: tasteless and *uncapped* (synthetic — real Cheb lines
+    ///   carry id 0, which trips (a) too).
+    /// - A gift-capped area (`is_gift_capped_area`) — rule (c), alone on
+    ///   Corinth's line: tasting, so (b) cannot drop him in (c)'s place, and his
+    ///   cap note owns the count. Gossamyr's card reading is the *real* shape but
+    ///   trips (b)+(c) together, so he cannot cover for Corinth — drop Corinth's
+    ///   line and deleting (c) leaves this test green (Gossamyr is still
+    ///   dropped, by (b)).
     ///
-    /// Every dropped line still accrues favor, and two lines are still logged:
-    /// Selaxi's real gift (gift data, uncapped, nonzero id) and a nonzero id
-    /// the CDN does not know (NPC_Nobody) — the latter pins the "unknown NPC
-    /// keeps the old behavior" fallback.
+    /// Every dropped line still accrues its full favor (pinned below), and two
+    /// lines are still logged: Selaxi's real gift (gift data, uncapped, nonzero
+    /// id) and a nonzero id the CDN does not know (NPC_Nobody) — the latter pins
+    /// the "unknown NPC keeps the old behavior" fallback.
     #[test]
     fn gift_flagged_favor_is_only_logged_when_a_gift_was_spent() {
         use std::sync::Arc;
@@ -1654,6 +1659,29 @@ mod tests {
         assert_eq!(
             favors.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
             vec!["NPC_Cheb", "NPC_Corinth", "NPC_Gossamyr", "NPC_Nobody", "NPC_Selaxi"]
+        );
+        // Row *existence* alone would not notice a regression that kept the row
+        // but zeroed the amount for a dropped line, so pin the accrued favor
+        // too. `delta` is an f32 (all lines pass 25 except Selaxi's real gift),
+        // and Selaxi's two lines accumulate into one row.
+        let delta_of = |key: &str| -> f64 {
+            favors
+                .iter()
+                .find(|(k, _)| k == key)
+                .unwrap_or_else(|| panic!("{key} must still accrue favor"))
+                .1
+        };
+        for key in ["NPC_Cheb", "NPC_Corinth", "NPC_Gossamyr", "NPC_Nobody"] {
+            assert_eq!(
+                delta_of(key),
+                25.0,
+                "{key}'s dropped line must still accrue its favor"
+            );
+        }
+        assert!(
+            (delta_of("NPC_Selaxi") - 49.57).abs() < 1e-3,
+            "Selaxi's two lines accumulate (24.57 + 25.0, f32), got {}",
+            delta_of("NPC_Selaxi")
         );
 
         let gift_keys = |pool: &crate::db::DbPool| -> Vec<String> {

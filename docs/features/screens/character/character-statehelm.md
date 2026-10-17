@@ -7,7 +7,7 @@ Tracks weekly gift progress for Statehelm NPCs. Each NPC accepts up to 5 gifts p
 Gift events are detected from `ProcessDeltaFavor` log lines where `is_gift` is `True`. These are already parsed by `PlayerEventParser` as `FavorChanged` events with the `is_gift` flag. When a gift is detected:
 
 1. The favor delta is applied to `game_state_favor` (existing behavior)
-2. A separate row is inserted into `game_state_gift_log` with the NPC key, timestamp, and favor delta — but only for a *spent* gift. The arm skips the row when the game's own signals say the favor was not a gift the player gave: `npc_id == 0` (scripted payout), no CDN gift data for the NPC (gifting cannot move that reputation), or a gift-capped area (the cap note owns the count)
+2. A separate row is inserted into `game_state_gift_log` with the NPC key, timestamp, and favor delta — but only for a *spent* gift. The arm skips the row when the game's own signals say the favor was not a gift the player gave: `npc_id == 0` (scripted payout), no CDN gift data for an NPC the CDN *knows* (gifting cannot move that reputation — an NPC the CDN does not know keeps the old behavior and is logged), or a gift-capped area (the cap note owns the count)
 3. The frontend composable watches the favor activity feed for real-time updates
 
 ## NPC Selection

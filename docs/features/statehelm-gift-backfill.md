@@ -109,9 +109,10 @@ count to the game's number.
   spent); an NPC the CDN does not know keeps the old behavior. The note arm
   applies rule 2 as well (a tasteless NPC's cap note is ignored), and the
   backfill applies it to the stored `npcs` row so both paths agree — given the
-  persisted `npcs` table matches the loaded CDN (a failed persist, or an ingest
-  before the CDN data is loaded, briefly falls back to the old behavior and
-  self-heals on the next persist). Uncapped,
+  persisted `npcs` table matches the loaded CDN. A mismatch only ever widens
+  behavior temporarily: a stale or failed persist makes the *live* arm treat the
+  NPC as unknown (old behavior) until the next persist, and a table with no rows
+  at all makes the backfill a no-op (see the NPC-keys invariant below). Uncapped,
   tasting NPCs have no note, so there the delta stays the only source. Pinned by
   `game_state::tests::gift_flagged_favor_is_only_logged_when_a_gift_was_spent`
   and `game_data::npcs::tests::gift_data_is_what_marks_an_npc_as_worth_tracking`.
@@ -199,8 +200,11 @@ Why these three, and why in that shape:
   (the `+` was also the path that planted Gossamyr's phantom row). They are
   excluded from the widget's skill-driven targets and from the header's
   `totalGiftsGiven` / `totalGiftsMax`, and the "Hide maxed gifts" filter skips
-  them. The ingest drops their rows too once the CDN data is loaded (see the
-  invariants), so the number cannot come back through the DB. An opt-in
+  them. The ingest no longer *writes* their rows once the CDN data is loaded (see
+  the invariants), and the header/widget sum only tracked NPCs, so the number
+  cannot come back through the DB. Stale rows the pre-gate `+` already planted
+  are not deleted by anything (no note, backfill, or reconcile touches an
+  untracked NPC) — they simply persist, invisible, like Gossamyr's. An opt-in
   **"Only NPCs whose gifts matter"**
   checkbox (next to "Hide maxed gifts") narrows the cards to the tracked set;
   the 28 tasteless cards stay visible by default, since the tab is also how the

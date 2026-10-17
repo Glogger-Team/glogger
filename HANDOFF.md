@@ -2,13 +2,13 @@
 
 **Date:** 2026-10-16 (Session 44 — gift counts for capped NPCs come from the note, not from `is_gift`; "gifts do nothing" for NPCs with no CDN gift data)
 **Machine:** Windows 11 (primary dev box)
-**Branch:** `main` — uncommitted working tree (10 files: `game_state.rs`, `game_data/npcs.rs`, `game_data/mod.rs`, `db/statehelm_commands.rs`, `useStatehelmTracker.ts`, `StatehelmView.vue`, `StatehelmSummaryWidget.vue`, `docs/features/statehelm-gift-backfill.md`, the Statehelm screen doc, this file). No version bump.
-**Status:** ✅ Implemented + verified: `cargo test --lib` **708 passed** (6 ignored, 714 total; +5 this session), `npm run build` (vue-tsc + vite) clean, and a live `tauri dev` run on the real profile (header `7 of 200 gift slots used`, `Gifted this week: Hamilton 5/5 · Sourgum 2/5`, the 40-card filter, and — once the CDN data is loaded — no gift rows from Gossamyr's card-reading `ProcessDeltaFavor(33081, …)` lines).
+**Branch:** `main` — uncommitted working tree (10 files: `game_state.rs`, `game_data/npcs.rs`, `game_data/mod.rs`, `db/statehelm_commands.rs`, `useStatehelmTracker.ts`, `StatehelmView.vue`, `StatehelmSummaryWidget.vue`, `docs/features/statehelm-gift-backfill.md`, `docs/features/screens/character/character-statehelm.md`, this file). No version bump.
+**Status:** ✅ Implemented + verified: `cargo test --lib` **709 passed** (6 ignored, 715 total; +6 this session), `npm run build` (vue-tsc + vite) clean, and a live `tauri dev` run on the real profile (header `7 of 200 gift slots used`, `Gifted this week: Hamilton 5/5 · Sourgum 2/5`, the 40-card filter, and — once the CDN data is loaded — no gift rows from Gossamyr's card-reading `ProcessDeltaFavor(33081, …)` lines).
 
 ## Session 44 — A capped NPC's gift count is the note's, not the delta's
 
 **Date:** 2026-10-16.
-**Status:** ✅ `cargo test --lib` 708 passed / 0 failed / 6 ignored (714 total), `npm run build` clean.
+**Status:** ✅ `cargo test --lib` 709 passed / 0 failed / 6 ignored (715 total), `npm run build` clean.
 
 ### What changed
 
