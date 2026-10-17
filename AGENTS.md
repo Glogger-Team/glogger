@@ -49,7 +49,8 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 | Frontend build + typecheck | `npm run build` | `vue-tsc --noEmit && vite build` |
 | Rust check | `cd src-tauri && cargo check` | Faster feedback |
 | Rust tests | `cd src-tauri && cargo test --lib`|709 tests, 57 files|
-| TOS/CoC hard lines | `pwsh scripts/check-glogger-constraints.ps1` | Game-interaction limits gate: local pre-push hook (install per clone: `scripts/setup-hooks.sh`) + the release workflow's `validate` job |
+|TOS/CoC hard lines|`pwsh scripts/check-glogger-constraints.ps1`|Game-interaction limits gate: local pre-push hook (install per clone: `scripts/setup-hooks.sh`) + the release workflow's `validate` job|
+|Grid standards|`npm run check:grids`|Fails on a raw `<table>` outside the documented exemptions, a stale exemption, or a `DataTable` census that disagrees with `docs/TODO.md` (`scripts/check-grid-standards.mjs`) — run it when touching a table or the census|
 | Full Rust tests | `cd src-tauri && cargo test` | No `src-tauri/tests/` dir exists; everything is in-lib |
 | Survey replay | `npm run survey-test` | `--ignored` accuracy report, minutes-scale, needs `test_data/` + `docs/CDN-full-examples/` |
 | Version bump | `npm run version:bump patch\|minor\|major\|x.y.z`|See version section|
