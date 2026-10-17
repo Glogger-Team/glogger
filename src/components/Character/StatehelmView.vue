@@ -8,8 +8,10 @@
         <h2 class="text-lg font-semibold text-text-primary">Statehelm Reputation</h2>
         <div class="flex items-center gap-3">
           <div v-if="filteredStatuses.length > 0" class="flex items-center gap-3">
-            <span class="text-sm text-text-muted">
-              {{ totalGiftsGiven }} / {{ totalGiftsMax }} gifts this week
+            <span
+              class="text-sm text-text-muted"
+              :title="`Each Statehelm NPC accepts ${MAX_GIFTS_PER_WEEK} gifts per week — ${trackedNpcCount} tracked NPCs × ${MAX_GIFTS_PER_WEEK}. Every NPC's cap resets Monday 00:00 America/New_York.`">
+              {{ totalGiftsGiven }} of {{ totalGiftsMax }} gift slots used
             </span>
             <span class="text-xs text-text-dim">
               Resets {{ weekResetLabel }}
@@ -22,6 +24,14 @@
             title="Re-read Player.log, Player-prev.log and archived copies, and reconcile each NPC's weekly gift count to the game's own note"
           >{{ rescanning ? 'Rescanning…' : 'Rescan logs' }}</button>
         </div>
+      </div>
+
+      <!-- Where the week's gifts went — the same traceable line the dashboard
+           widget carries, so the two views teach the same reading. -->
+      <div v-if="giftedThisWeek.length > 0" class="text-xs text-text-dim">
+        Gifted this week:
+        {{ giftedThisWeek.slice(0, 6).map(g => `${g.name} ${g.gifts}/${g.max}`).join(' · ')
+        }}<span v-if="giftedThisWeek.length > 6"> +{{ giftedThisWeek.length - 6 }} more</span>
       </div>
 
       <!-- Rescan status -->
@@ -65,12 +75,18 @@
           <input type="checkbox" v-model="hideMaxedGifts" class="accent-accent-gold" />
           Hide maxed gifts
         </label>
+        <label
+          class="flex items-center gap-1 text-text-secondary cursor-pointer"
+          title="Keeps only the NPCs whose gifts can move their reputation — the set the header's gift total counts">
+          <input type="checkbox" v-model="onlyGiftMattering" class="accent-accent-gold" />
+          Only NPCs whose gifts matter
+        </label>
       </div>
 
       <EmptyState
         v-if="!loading && npcStatuses.length === 0"
         primary="No giftable Statehelm NPCs found."
-        secondary="NPC data may still be loading, or no Statehelm NPCs have gift preferences configured." />
+        secondary="NPC data may still be loading — the CDN game data is fetched in the background at startup." />
 
       <EmptyState
         v-else-if="npcStatuses.length > 0 && filteredStatuses.length === 0"
@@ -86,7 +102,7 @@
           :favor-tier="status.favorTier"
           :gift-tracking="{ giftsThisWeek: status.giftsThisWeek, maxGifts: status.maxGifts }"
           :vendor-status="gameState.vendorByNpc[status.npc.key] ?? null"
-          :show-gift-tracking="true"
+          :show-gift-tracking="status.giftTracking"
           :selected="selectedNpcKey === status.npc.key"
           @select="selectNpc(status.npc.key)"
         >
@@ -126,7 +142,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { useStatehelmTracker } from '../../composables/useStatehelmTracker'
+import { useStatehelmTracker, MAX_GIFTS_PER_WEEK } from '../../composables/useStatehelmTracker'
 import { useGameStateStore } from '../../stores/gameStateStore'
 import { useGameDataStore } from '../../stores/gameDataStore'
 import { tierDisplayName, isTierAtOrAbove, FAVOR_TIERS } from '../../composables/useFavorTiers'
@@ -143,6 +159,8 @@ const {
   npcStatuses,
   totalGiftsGiven,
   totalGiftsMax,
+  trackedNpcCount,
+  giftedThisWeek,
   loading,
   loadGiftLog,
   addGift,
@@ -185,6 +203,9 @@ const showOnlyTrainers = ref(false)
 const showOnlyVendors = ref(false)
 const showOnlyStorage = ref(false)
 const hideMaxedGifts = ref(false)
+/** Keep only NPCs whose gifts can move their reputation (`giftTracking`) — the
+ *  28 of 68 Statehelm NPCs with no CDN gift data are clutter for a cap tracker. */
+const onlyGiftMattering = ref(false)
 
 // Tiers available for the "hide above" dropdown (exclude Despised — hiding above Despised hides everything)
 const filterableTiers = FAVOR_TIERS.filter(t => t !== 'Despised')
@@ -219,8 +240,15 @@ const filteredStatuses = computed(() => {
       if (!matches) return false
     }
 
-    // Hide maxed gifts
-    if (hideMaxedGifts.value && status.giftsThisWeek >= status.maxGifts) return false
+    // Hide maxed gifts (meaningless for NPCs whose gift tracking is off)
+    if (hideMaxedGifts.value && status.giftTracking && status.giftsThisWeek >= status.maxGifts) {
+      return false
+    }
+
+    // Gifts cannot move a tasteless NPC's reputation, so their cards are
+    // optional clutter here (Gossamyr the Great, Captain Gregory, Slim Ostren,
+    // Fenna…). Opt-in: they stay visible by default.
+    if (onlyGiftMattering.value && !status.giftTracking) return false
 
     return true
   })

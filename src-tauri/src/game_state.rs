@@ -676,10 +676,10 @@ impl GameStateManager {
 
             PlayerEvent::FavorChanged {
                 timestamp,
+                npc_id,
                 npc_name,
                 delta,
                 is_gift,
-                ..
             } => {
                 let dt = self.to_utc(timestamp);
                 // Resolve NPC display name → CDN key (e.g., "Kalaba" → "NPC_Kalaba")
@@ -702,8 +702,36 @@ impl GameStateManager {
                     rusqlite::params![character, server, npc_key, display_name, *delta as f64, dt],
                 ).ok();
 
-                // Log individual gift events for weekly gift-limit tracking
-                if *is_gift {
+                // Log individual gift events for weekly gift-limit tracking —
+                // except where the game's own signals say this is not a gift:
+                //
+                // - `npc_id == 0`: the game did not attribute the favor to an
+                //   NPC entity. Every such line in the logs is a scripted
+                //   payout — `ProcessCompleteQuest(18236949, 27909)` →
+                //   `ProcessDeltaFavor(0, "NPC_Cheb", 25, True)` →
+                //   `ProcessAddItem(Recipe_Uraknocha…)` — which is how one
+                //   repeatable quest put 116 "gifts" in Cheb's log.
+                // - No gift data in the CDN (`has_gift_tastes`): with no tastes
+                //   there is no "appropriate gift", so gifting cannot move the
+                //   NPC's reputation. Gossamyr the Great's accepted gift emitted
+                //   no `ProcessDeltaFavor` line at all, and his rows are his card
+                //   reading.
+                // - A gift-capped area (Statehelm): the cap note is that region's
+                //   authoritative count and prints even at 0, so the note
+                //   (reconciled below) owns the rows.
+                //
+                // An NPC the CDN does not know keeps the old behavior. The favor
+                // above still accrues in every case — it is real favor, it just
+                // is not a gift the player spent.
+                let npc = game_data_guard
+                    .as_ref()
+                    .and_then(|gd| gd.resolve_npc(&npc_key));
+                let not_a_gift = *npc_id == 0
+                    || npc.is_some_and(|info| {
+                        crate::game_data::is_gift_capped_area(info.area_name.as_deref())
+                            || !crate::game_data::has_gift_tastes(info)
+                    });
+                if *is_gift && !not_a_gift {
                     conn.execute(
                         "INSERT INTO game_state_gift_log (character_name, server_name, npc_key, npc_name, gifted_at, favor_delta)
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -739,8 +767,19 @@ impl GameStateManager {
                 // last week — or, when this week's count is already higher,
                 // trim this week's real gifts down to last week's number. The
                 // backfill drops these the same way, so the two paths agree.
+                //
+                // NPCs with no gift data in the CDN are skipped entirely
+                // (`has_gift_tastes`): their gifts cannot move their reputation,
+                // so the cap is noise — Gossamyr the Great, Captain Gregory,
+                // Slim Ostren, Fenna. An NPC the CDN does not know keeps the old
+                // behavior, and the backfill applies the same rule.
+                let has_tastes = game_data_guard
+                    .as_ref()
+                    .and_then(|gd| gd.resolve_npc(npc_name))
+                    .map_or(true, |info| crate::game_data::has_gift_tastes(info));
                 let week_start = current_week_start_utc();
-                if dt >= week_start
+                if has_tastes
+                    && dt >= week_start
                     && crate::db::game_state_commands::reconcile_gift_count(
                         conn,
                         character,
@@ -1510,6 +1549,133 @@ mod tests {
             "an in-week note still reconciles"
         );
         assert_eq!(count_this_week(), 2, "trimmed to the game's count");
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// The three ways a gift-flagged favor line is *not* a gift the player
+    /// spent, on verbatim log lines and the NPCs' real CDN fields:
+    ///
+    /// - `npc_id == 0` — the game attributed it to no entity. Cheb's line is a
+    ///   repeatable quest payout (`ProcessCompleteQuest` → delta → `AddItem`),
+    ///   which is how 116 "gifts" landed in his log.
+    /// - No gift data in the CDN (`has_gift_tastes`) — Gossamyr the Great
+    ///   (`AreaStatehelm`, no `Preferences`, no `ItemGifts`) cannot gain
+    ///   reputation from any gift.
+    /// - A gift-capped area — his cap note owns the count.
+    ///
+    /// All three still accrue favor, and Selaxi's real gift (four preferences,
+    /// five gift tiers) still logs.
+    #[test]
+    fn gift_flagged_favor_is_only_logged_when_a_gift_was_spent() {
+        use std::sync::Arc;
+
+        let db_path = std::env::temp_dir().join(format!(
+            "glogger_gift_rules_test_{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
+
+        // Real areas / gift fields for the three NPCs.
+        let mut data = crate::game_data::GameData::empty();
+        data.npcs = crate::game_data::parse_npcs_json(
+            r#"{
+                 "NPC_Selaxi": {
+                   "Name": "Selaxi", "AreaName": "AreaDesert1",
+                   "Preferences": [ { "Name": "Gems", "Desire": "Love", "Pref": 3.0 } ],
+                   "ItemGifts": ["Friends", "CloseFriends", "BestFriends", "LikeFamily", "SoulMates"]
+                 },
+                 "NPC_Gossamyr": { "Name": "Gossamyr the Great", "AreaName": "AreaStatehelm" },
+                 "NPC_Cheb": { "Name": "Cheb", "AreaName": "AreaPovusCaves2" }
+               }"#,
+        )
+        .expect("parse npcs");
+
+        let mut manager =
+            GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(data)));
+        manager.set_active_character_name("TestPlayer");
+        manager.set_active_server_name("Dreva");
+        // Mid-week, so the lines' own `[HH:MM:SS]` values land after Monday
+        // 00:00 Eastern and the note arm's week filter passes.
+        let week_start = current_week_start_utc();
+        let week_start_date =
+            chrono::NaiveDate::parse_from_str(&week_start[..10], "%Y-%m-%d").unwrap();
+        manager.set_base_date(week_start_date + Duration::days(3));
+
+        // Verbatim lines through the real parser.
+        let mut parser = crate::player_event_parser::PlayerEventParser::new();
+        let mut events = Vec::new();
+        for line in [
+            r#"[03:23:46] LocalPlayer: ProcessDeltaFavor(11080, "NPC_Selaxi", 24.57, True)"#,
+            r#"[00:46:24] LocalPlayer: ProcessDeltaFavor(33081, "NPC_Gossamyr", 25, True)"#,
+            r#"[01:13:32] LocalPlayer: ProcessDeltaFavor(0, "NPC_Cheb", 25, True)"#,
+        ] {
+            events.extend(parser.process_line(line));
+        }
+        assert_eq!(events.len(), 3, "all three lines must parse to favor events");
+        manager.process_events_batch(&events, &pool);
+
+        let conn = pool.get().unwrap();
+        let favors: Vec<(String, f64)> = conn
+            .prepare("SELECT npc_key, cumulative_delta FROM game_state_favor ORDER BY npc_key")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(favors.len(), 3, "every payout is still favor: {favors:?}");
+        assert_eq!(
+            favors.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            vec!["NPC_Cheb", "NPC_Gossamyr", "NPC_Selaxi"]
+        );
+
+        let gift_keys = |pool: &crate::db::DbPool| -> Vec<String> {
+            let conn = pool.get().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT npc_key FROM game_state_gift_log ORDER BY npc_key")
+                .unwrap();
+            let keys = stmt
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            keys
+        };
+        assert_eq!(
+            gift_keys(&pool),
+            vec!["NPC_Selaxi".to_string()],
+            "only the spent gift is logged: not the quest payout, not the \
+             tasteless NPC's scripted payout"
+        );
+
+        // The note path applies the same rule: a tasteless NPC's cap note is
+        // ignored (nothing to track), a tasting NPC's is reconciled.
+        drop(conn);
+        let notes = vec![
+            PlayerEvent::GiftCountObserved {
+                timestamp: "12:00:00".to_string(),
+                npc_name: "NPC_Gossamyr".to_string(),
+                received: 3,
+                max: 5,
+            },
+            PlayerEvent::GiftCountObserved {
+                timestamp: "12:05:00".to_string(),
+                npc_name: "NPC_Selaxi".to_string(),
+                received: 2,
+                max: 5,
+            },
+        ];
+        manager.process_events_batch(&notes, &pool);
+
+        assert_eq!(
+            gift_keys(&pool),
+            vec!["NPC_Selaxi".to_string(), "NPC_Selaxi".to_string()],
+            "Gossamyr's note must not write rows; Selaxi's reconciles to the \
+             game's count of 2"
+        );
 
         let _ = std::fs::remove_file(&db_path);
     }

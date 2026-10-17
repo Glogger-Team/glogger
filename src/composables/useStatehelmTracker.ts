@@ -17,10 +17,22 @@ export interface GiftLogEntry {
 
 export interface StatehelmNpcStatus {
   npc: NpcInfo
+  /** Weekly gift count from the game (its cap note when the NPC is capped). */
   giftsThisWeek: number
   maxGifts: number
   giftLog: GiftLogEntry[]
   favorTier: string | null
+  /** False when the CDN lists no gift data for the NPC — no item tastes
+   *  (`preferences`) and no gift tiers (`gift_favor_tiers`). Without them there
+   *  is no "appropriate gift", so gifting cannot move their reputation and the
+   *  weekly count is noise: Gossamyr the Great's accepted gift emitted no
+   *  `ProcessDeltaFavor` line at all (his reputation only moves via his card
+   *  reading), and the ingest drops his rows for the same reason. Verified
+   *  2026-10-16: every NPC with preference-scaled (real) gift deltas — Selaxi
+   *  5.90, Corinth 58.97, Merriana 797.92 — has non-empty gift data.
+   *
+   *  Mirror of `game_data::npcs::has_gift_tastes`; the two must change together. */
+  giftTracking: boolean
 }
 
 /** A prioritized gift target: an NPC surfaced because it trains one of the
@@ -33,7 +45,7 @@ export interface StatehelmGiftTarget extends StatehelmNpcStatus {
   equipped: boolean
 }
 
-const MAX_GIFTS_PER_WEEK = 5
+export const MAX_GIFTS_PER_WEEK = 5
 
 /** How many of the player's top combat / non-combat skills to surface */
 const TOP_COMBAT_SKILLS = 4
@@ -161,10 +173,24 @@ export function useStatehelmTracker() {
       // reads "Statehelm townsfolk are more sophisticated than villagers
       // elsewhere… it would be uncouth to receive too many gifts per week" —
       // and it applies in the Statehelm Sewers too (Hamilton, Smoke Tail and
-      // Fuzzlebun, all `AreaStatehelmCaves`, show the cap note).
+      // Fuzzlebun, all `AreaStatehelmCaves`, show the cap note). The region is
+      // the whole rule; no CDN field marks the cap.
+      //
+      // `preferences` is a *favourites* list, not a giftability flag, so it must
+      // not gate this filter. Verified in game 2026-10-16: Gossamyr the Great
+      // (storage, `AreaStatehelm`, **no** `Preferences` in the CDN) offers Give
+      // Gift and printed the cap note ("… will accept up to <b>5</b> gifts per
+      // calendar week and has received <b>0</b> so far this week") — and his
+      // accepted gift emitted **no** `ProcessDeltaFavor` line at all, so the
+      // count came from that note. Gating on `Preferences` dropped Statehelm's
+      // own storage NPCs (Gossamyr, Captain Gregory, Slim Ostren — all without
+      // `Preferences`) from the tracker.
+      //
+      // Twin of `game_data::npcs::GIFT_CAPPED_AREAS` (`src-tauri/src/game_data/
+      // npcs.rs`), which keeps these NPCs' *scripted* payouts out of the gift
+      // log so their count is the note's; a newly capped region goes in both.
       const area = (npc.area_name ?? '').toLowerCase()
-      return (area === 'areastatehelm' || area === 'areastatehelmcaves')
-        && npc.preferences.length > 0
+      return area === 'areastatehelm' || area === 'areastatehelmcaves'
     }).sort((a, b) => a.name.localeCompare(b.name))
   })
 
@@ -192,6 +218,7 @@ export function useStatehelmTracker() {
         maxGifts: MAX_GIFTS_PER_WEEK,
         giftLog: gifts,
         favorTier: favorData?.favor_tier ?? null,
+        giftTracking: npc.preferences.length > 0 || npc.gift_favor_tiers.length > 0,
       }
     })
   })
@@ -294,10 +321,12 @@ export function useStatehelmTracker() {
 
   /** Pick the representative NPC for a skill: the one whose category matches and
    *  that has the highest current favor standing, skipping NPCs that are maxed
-   *  (5/5 this week) or excluded by favor standing. Returns null when none remain. */
+   *  (5/5 this week), excluded by favor standing, or have no gift data at all
+   *  (gifting buys nothing there). Returns null when none remain. */
   function representativeFor(internal: string, wantCombat: boolean): StatehelmNpcStatus | null {
     const candidates = (statusesBySkillInternal.value.get(internal) ?? []).filter((st) => {
       if ((npcIsCombatByKey.value.get(st.npc.key) ?? false) !== wantCombat) return false
+      if (!st.giftTracking) return false
       if (st.giftsThisWeek >= st.maxGifts) return false
       if (isExcludedByFavor(st)) return false
       return true
@@ -369,12 +398,35 @@ export function useStatehelmTracker() {
     return out
   })
 
+  // The tab's totals count only NPCs whose gifts do something: an NPC with no
+  // gift data in the CDN (Gossamyr the Great, Captain Gregory, Slim Ostren,
+  // Fenna — 28 of the 68 Statehelm NPCs) can't move its reputation with gifts,
+  // so including it in the denominator would ask the player to spend gifts that
+  // earn nothing. Their cards still render; only their gift tracking is gone.
+  const giftTrackingStatuses = computed(() => npcStatuses.value.filter(s => s.giftTracking))
+
+  /** How many NPCs the denominator counts (`totalGiftsMax / MAX_GIFTS_PER_WEEK`),
+   *  for the label that explains the number. */
+  const trackedNpcCount = computed(() => giftTrackingStatuses.value.length)
+
+  /** The NPCs that actually received gifts this week, most first — the source of
+   *  `totalGiftsGiven`, which otherwise looks detached from the skill-driven
+   *  "next targets" list: a maxed NPC (5/5) drops off that list entirely while
+   *  still counting here, so the header can read `7 / 200` above rows that are all
+   *  `0 / 5`. Tasteless NPCs go with their rows (see `giftTracking`). */
+  const giftedThisWeek = computed(() =>
+    giftTrackingStatuses.value
+      .filter(s => s.giftsThisWeek > 0)
+      .sort((a, b) => b.giftsThisWeek - a.giftsThisWeek || a.npc.name.localeCompare(b.npc.name))
+      .map(s => ({ name: s.npc.name, gifts: s.giftsThisWeek, max: s.maxGifts }))
+  )
+
   const totalGiftsGiven = computed(() =>
-    npcStatuses.value.reduce((sum, s) => sum + s.giftsThisWeek, 0)
+    giftTrackingStatuses.value.reduce((sum, s) => sum + s.giftsThisWeek, 0)
   )
 
   const totalGiftsMax = computed(() =>
-    npcStatuses.value.length * MAX_GIFTS_PER_WEEK
+    giftTrackingStatuses.value.length * MAX_GIFTS_PER_WEEK
   )
 
   async function loadGiftLog() {
@@ -452,6 +504,8 @@ export function useStatehelmTracker() {
     nonCombatGiftTargets,
     totalGiftsGiven,
     totalGiftsMax,
+    trackedNpcCount,
+    giftedThisWeek,
     loading,
     loadGiftLog,
     loadSkillMeta: ensureSkillMeta,

@@ -137,6 +137,26 @@ pub fn scan_gift_notes(path: &Path, week_start: &str) -> Vec<GiftNote> {
     notes
 }
 
+/// [`has_gift_tastes`] for a row of the stored `npcs` table. The backfill
+/// resolves notes against the DB rather than game data, so it evaluates the same
+/// rule on the CDN entry it already has (`raw_json`) — one rule, two callers. An
+/// unreadable entry keeps the count, mirroring the live arm's "unknown NPC"
+/// fallback.
+///
+/// [`has_gift_tastes`]: crate::game_data::has_gift_tastes
+fn stored_has_gift_tastes(key: &str, raw_json: &str) -> bool {
+    let Ok(entry) = serde_json::from_str::<serde_json::Value>(raw_json) else {
+        return true;
+    };
+    let mut map = serde_json::Map::new();
+    map.insert(key.to_string(), entry);
+    let one = serde_json::Value::Object(map).to_string();
+    crate::game_data::parse_npcs_json(&one)
+        .ok()
+        .and_then(|npcs| npcs.get(key).map(crate::game_data::has_gift_tastes))
+        .unwrap_or(true)
+}
+
 /// Reconcile this week's gift-log rows for every capped NPC named in `paths`.
 ///
 /// Idempotent by construction: each NPC's row count is set to the game's
@@ -192,21 +212,31 @@ pub fn backfill_gifts_from_paths(
     // Resolve each display name to its CDN key (exact-name match, mirroring
     // `GameDataState::npc_name_index`; `ORDER BY key` because the table holds
     // duplicate names, e.g. 8× "Work Orders"). Fall back to the raw name,
-    // mirroring `resolve_npc`'s raw-name fallback.
-    let resolved: Vec<(String, String, GiftNote)> = {
+    // mirroring `resolve_npc`'s raw-name fallback. The CDN entry rides along so
+    // the tastes rule can be applied to notes for NPCs whose gifts cannot move
+    // their reputation (they are dropped below, exactly as the live arm drops
+    // them).
+    let resolved: Vec<(String, String, GiftNote, bool)> = {
         let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
         let mut stmt = conn
-            .prepare("SELECT key, name FROM npcs WHERE name = ?1 ORDER BY key LIMIT 1")
+            .prepare("SELECT key, name, raw_json FROM npcs WHERE name = ?1 ORDER BY key LIMIT 1")
             .map_err(|e| format!("Query error: {e}"))?;
         latest
             .into_values()
             .map(|note| {
-                let (key, name) = stmt
+                let (key, name, tastes) = stmt
                     .query_row(rusqlite::params![&note.npc_name], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        let key: String = row.get(0)?;
+                        let name: String = row.get(1)?;
+                        let raw: String = row.get(2)?;
+                        Ok((key, name, raw))
                     })
-                    .unwrap_or_else(|_| (note.npc_name.clone(), note.npc_name.clone()));
-                (key, name, note)
+                    .map(|(key, name, raw)| {
+                        let tastes = stored_has_gift_tastes(&key, &raw);
+                        (key, name, tastes)
+                    })
+                    .unwrap_or_else(|_| (note.npc_name.clone(), note.npc_name.clone(), true));
+                (key, name, note, tastes)
             })
             .collect()
     };
@@ -222,7 +252,10 @@ pub fn backfill_gifts_from_paths(
         .map_err(|e| format!("Failed to begin transaction: {e}"))?;
 
     let mut changed = 0usize;
-    for (key, name, note) in &resolved {
+    for (key, name, note, tastes) in &resolved {
+        if !*tastes {
+            continue;
+        }
         if super::game_state_commands::reconcile_gift_count(
             &tx,
             &note.character,
@@ -391,12 +424,67 @@ mod tests {
         (pool, path)
     }
 
+    /// A CDN-shaped `npcs` row. The gift backfill reads the stored entry's gift
+    /// data (`Preferences` / `ItemGifts`) to decide whether the NPC's gifts can
+    /// move their reputation at all, so this fixture carries real gift data —
+    /// Corinth has one preference in the CDN.
     fn insert_npc(conn: &Connection, key: &str, name: &str) {
         conn.execute(
-            "INSERT INTO npcs (key, name, raw_json) VALUES (?1, ?2, '{}')",
-            rusqlite::params![key, name],
+            "INSERT INTO npcs (key, name, raw_json) VALUES (?1, ?2, ?3)",
+            rusqlite::params![
+                key,
+                name,
+                r#"{"Preferences":[{"Name":"Magical Dust","Desire":"Like","Pref":1.0}]}"#
+            ],
         )
         .unwrap();
+    }
+
+    /// A note for an NPC with no gift data in the CDN is ignored: gifts cannot
+    /// move their reputation, so the weekly count is noise. Gossamyr the Great's
+    /// real shape (no `Preferences`, no `ItemGifts`, `AreaStatehelm`) — his
+    /// accepted gift produced no favor line at all, and the live arm drops his
+    /// notes the same way, so the two paths must agree here.
+    #[test]
+    fn backfill_skips_notes_for_npcs_without_gift_data() {
+        let (pool, db_path) = temp_pool();
+        {
+            let conn = pool.get_write().unwrap();
+            conn.execute(
+                "INSERT INTO npcs (key, name, raw_json) VALUES ('NPC_Gossamyr', \
+                 'Gossamyr the Great', '{\"AreaName\":\"AreaStatehelm\"}')",
+                [],
+            )
+            .unwrap();
+            // A tasting NPC in the same run — the gate must be selective.
+            insert_npc(&conn, "NPC_Corinth", "Corinth");
+        }
+
+        let log = format!(
+            "[12:04:37] Logged in as character TestPlayer. Time UTC=10/14/2026 12:04:37. Timezone Offset -05:00:00\n{}\n{}\n",
+            note_line("12:20:00", "Gossamyr the Great", 3),
+            note_line("12:25:00", "Corinth", 1),
+        );
+        let path = write_log(&log);
+
+        let changed =
+            backfill_gifts_from_paths(std::slice::from_ref(&path), WEEK_START, "TestServer", &pool)
+                .unwrap();
+        assert_eq!(changed, 1, "only the NPC with gift data is reconciled");
+
+        let rows: Vec<(String, i64)> = pool
+            .get()
+            .unwrap()
+            .prepare("SELECT npc_key, COUNT(*) FROM game_state_gift_log GROUP BY npc_key")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(rows, vec![("NPC_Corinth".to_string(), 1)]);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&db_path);
     }
 
     #[test]

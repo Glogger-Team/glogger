@@ -9,11 +9,20 @@
     <template v-else>
       <!-- Progress header -->
       <div class="flex items-center justify-between text-sm">
-        <span>
+        <span
+          :title="`Each Statehelm NPC accepts ${MAX_GIFTS_PER_WEEK} gifts per week — ${trackedNpcCount} tracked NPCs × ${MAX_GIFTS_PER_WEEK}. Every NPC's cap resets Monday 00:00 America/New_York.`">
           <span class="text-accent-gold font-bold">{{ totalGiftsGiven }}</span>
-          <span class="text-text-muted"> / {{ totalGiftsMax }} gifts</span>
+          <span class="text-text-muted"> of {{ totalGiftsMax }} gift slots used</span>
         </span>
         <span class="text-xs text-text-dim">{{ resetLabel }}</span>
+      </div>
+
+      <!-- Where the week's gifts went. The list below is "who's next", so a maxed
+           NPC (5/5) is gone from it while still counting in the header. -->
+      <div v-if="giftedThisWeek.length > 0" class="text-[11px] leading-snug text-text-dim">
+        Gifted this week:
+        {{ giftedThisWeek.slice(0, 4).map(g => `${g.name} ${g.gifts}/${g.max}`).join(' · ')
+        }}<span v-if="giftedThisWeek.length > 4"> +{{ giftedThisWeek.length - 4 }} more</span>
       </div>
 
       <!-- Progress bar -->
@@ -47,7 +56,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, h, type FunctionalComponent } from 'vue'
-import { useStatehelmTracker, type StatehelmGiftTarget } from '../../../composables/useStatehelmTracker'
+import { useStatehelmTracker, MAX_GIFTS_PER_WEEK, type StatehelmGiftTarget } from '../../../composables/useStatehelmTracker'
 import NpcInline from '../../Shared/NPC/NpcInline.vue'
 import SkeletonLoader from '../../Shared/SkeletonLoader.vue'
 
@@ -56,6 +65,8 @@ const {
   nonCombatGiftTargets,
   totalGiftsGiven,
   totalGiftsMax,
+  trackedNpcCount,
+  giftedThisWeek,
   loading,
   loadGiftLog,
   loadSkillMeta,

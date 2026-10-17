@@ -86,6 +86,32 @@ count to the game's number.
 - **No `ProcessDeltaFavor` replay.** `FavorChanged` handling *adds* to
   `game_state_favor.cumulative_delta`, so replaying those lines would
   double-count favor. The absolute note count is the only signal needed.
+- **A `ProcessDeltaFavor` line is not a gift just because the game flags it
+  `is_gift`.** Three signals decide, all verified against the user's own logs
+  (2026-10-16):
+  1. **`npc_id == 0`** — the game attributed the favor to no entity. Every such
+     line is a scripted payout: `ProcessCompleteQuest(18236949, 27909)` →
+     `ProcessDeltaFavor(0, "NPC_Cheb", 25, True)` → `ProcessAddItem(Recipe_…)`,
+     one repeatable quest that put **116** "gifts" in Cheb's log.
+  2. **No gift data in the CDN** (`game_data::npcs::has_gift_tastes`, i.e.
+     `Preferences` and `ItemGifts` both empty) — without tastes there is no
+     "appropriate gift", so gifting cannot move the NPC's reputation: Gossamyr
+     the Great's *accepted* gift emitted **no** `ProcessDeltaFavor` line at all,
+     and his rows are his card reading. Every NPC in the DB whose deltas are
+     preference-scaled (a real gift: Selaxi 5.90, Corinth 58.97, Merriana
+     797.92) has non-empty gift data; the flat-only ones have none.
+  3. **A gift-capped area** (`is_gift_capped_area` = `AreaStatehelm` +
+     `AreaStatehelmCaves`, the twin of the tracker's `statehelmNpcs` filter) —
+     the cap note is that region's authoritative count and prints even at 0, so
+     the note owns the rows.
+  The `FavorChanged` arm skips the `game_state_gift_log` row for all three and
+  still accumulates the favor (it *is* real favor, just not a gift the player
+  spent); an NPC the CDN does not know keeps the old behavior. The note arm
+  applies rule 2 as well (a tasteless NPC's cap note is ignored), and the
+  backfill applies it to the stored `npcs` row so both paths agree. Uncapped,
+  tasting NPCs have no note, so there the delta stays the only source. Pinned by
+  `game_state::tests::gift_flagged_favor_is_only_logged_when_a_gift_was_spent`
+  and `game_data::npcs::tests::gift_data_is_what_marks_an_npc_as_worth_tracking`.
 - **No new game interaction.** Log text only, from files the client wrote to
   the user's own disk — see `docs/research/glogger-game-interaction-limits.md`
   §3. No packet, memory, or client-binary anything.
@@ -162,6 +188,30 @@ Why these three, and why in that shape:
   `AreaStatehelmCaves` (Statehelm Sewers: Hamilton, Smoke Tail, Fuzzlebun, all
   of which show the cap note) — instead of the city alone, so sewers NPCs are
   tracked and reconciled like city ones.
+- **`StatehelmNpcStatus.giftTracking`** mirrors `has_gift_tastes`: false for the
+  **28 of 68** Statehelm NPCs whose CDN entry lists neither `Preferences` nor
+  `ItemGifts` (Gossamyr the Great, Captain Gregory, Slim Ostren, Fenna, Grim
+  Jim…). Their cards still render — name, area, favor tier, services — but
+  `NpcCard`'s `showGiftTracking` is off, so no counter, no dots, no ± buttons
+  (the `+` was also the path that planted Gossamyr's phantom row). They are
+  excluded from the widget's skill-driven targets and from the header's
+  `totalGiftsGiven` / `totalGiftsMax`, and the "Hide maxed gifts" filter skips
+  them. The ingest drops their rows too (see the invariants), so the number
+  cannot come back through the DB. An opt-in **"Only NPCs whose gifts matter"**
+  checkbox (next to "Hide maxed gifts") narrows the cards to the tracked set;
+  the 28 tasteless cards stay visible by default, since the tab is also how the
+  user finds NPCs like Gossamyr at all.
+- **Both headers read `N of M gift slots used`** with a tooltip ("Each Statehelm
+  NPC accepts 5 gifts per week — 40 tracked NPCs × 5. Every NPC's cap resets
+  Monday 00:00 America/New_York.") and a **traceable caption** —
+  `Gifted this week: Hamilton 5/5 · Sourgum 2/5`. Reason: the header aggregates
+  *every* tracked NPC while the dashboard widget's rows are a skill-driven
+  "who's next" slice, so `7 / 200` sat above seven `0 / 5` rows and read as
+  broken — the 7 came from Hamilton (maxed, so off the row list) and Sourgum
+  (his skill ranks below the two shown). The caption comes from
+  `giftedThisWeek` (tracked NPCs with `giftsThisWeek > 0`, most first) and
+  `trackedNpcCount`; `MAX_GIFTS_PER_WEEK` is exported so the label can't drift
+  from the per-NPC caps.
 - The **Rescan logs** button (Character → Statehelm, next to the existing stats
   block) invokes `backfill_statehelm_gifts`, reloads the gift log, and reports
   "Reconciled N NPC(s) from the logs." / "No new gift info found in the logs."
@@ -175,10 +225,63 @@ Why these three, and why in that shape:
 - **Capped NPCs only.** Only NPCs with an in-week cap note are reconciled.
   Uncapped NPCs (flat 25-favor gifts, no note) keep whatever the live path
   recorded.
+- **The note prints at *zero* usage, and its numbers are 5/week + Monday-EDT**
+  (verified in game 2026-10-16 while standing at `NPC_Gossamyr`, who has no
+  `Preferences`): `"… Gossamyr the Great will accept up to <b>5</b> gifts per
+  calendar week and has received <b>0</b> so far this week. (The week resets on
+  Monday EDT.)"` — so a note proves the NPC *is* giftable rather than marking a
+  used-up cap, and both `MAX_GIFTS_PER_WEEK = 5` and the America/New_York week
+  boundary the frontend computes are the game's own numbers. The post-gift
+  `ProcessTalkScreen` then repeats it with `<b>1</b>`.
+- **An accepted gift can emit no `ProcessDeltaFavor` line at all.** Gossamyr's
+  gift that day produced two pre-gift prompt notes, the post-gift note, and *no*
+  favor line — so the delta route alone never sees it; the count is note-derived
+  (`reconcile_gift_count`, `favor_delta = 0`).
+- **A `+` (manual) row is not distinguishable from a note row by shape.** The
+  button stamps `chrono::Utc::now()` in the same `YYYY-MM-DD HH:MM:SS` format,
+  and it can disagree with the game: the tracker held `NPC_Gossamyr` at
+  `2026-10-16 04:10:30` (Thu 23:10 local, `favor_delta = 0`) while the game's own
+  note reported **0** that week, and no scanned log (`Player.log`,
+  `Player-prev.log` — session login 10/16 01:02 — and the two archived sessions
+  10/13, 10/14) carries a Gossamyr note anywhere but in the 10/17 session. Since
+  the only writers of a space-format zero-delta row are `reconcile_gift_count`
+  and `add_manual_gift`, that row is a manual mark; the next cap note trims it
+  (delete-newest-extras), i.e. the game stays authoritative.
 - **The cap itself is not in the CDN.** No NPC field marks the weekly gift cap
   (`ItemGifts` is a service tier list, not a limit), so the region is used as
-  the signal: Statehelm city + sewers, with gift preferences. A newly capped NPC
-  outside those two areas would need the filter widened (and one that shares an
-  area but isn't capped would need it narrowed).
+  the signal: Statehelm city + sewers — `area_name` only. `preferences` is a
+  favourites list, not a giftability flag, and gating the **roster** on it hid
+  NPCs the tab is supposed to list (Gossamyr the Great, Captain Gregory, Slim
+  Ostren, Fenna) — removed in Session 43 and staying removed. Session 43 also
+  justified that removal with "those NPCs report gift favor"; the corrected
+  reading (Session 44) is that their flat 25/100 rows were *scripted* payouts,
+  not gifts — Gossamyr's card reading and a repeatable quest flagged
+  `ProcessDeltaFavor(0, …)`. What `preferences` (with `ItemGifts`) *is* good for
+  is the separate question of whether gifts can move an NPC's reputation at all:
+  `giftTracking` / `has_gift_tastes`. A newly capped NPC outside those two areas
+  would need the filter widened (and one that shares an area but isn't capped
+  would need it narrowed).
+- **The CDN cannot mark giftability either (checked, closed).** The tool-facing
+  CDN is the file list documented at `https://cdn.projectgorgon.com/v{ver}/data/`
+  (mirrored in `docs/CDN-full-examples/`): there is no per-entity attribute
+  table, `npcs.json` carries exactly `AreaFriendlyName, AreaName, Desc, Name,
+  Pos, Services, Preferences, ItemGifts`, `strings_all.json` contains none of
+  the cap-note fragments, and `Translation/strings_npcs.json` (fetched, 1715
+  entries) is only `npcinfo_<key>_{Name,Desc,AreaFriendlyName}`. Elder Game
+  *does* model it — `attributes.json` defines `NPC_MOD_FAVORFROMGIFTS`
+  ("Favor Earned From Gifts %", default 1) — but no published file carries the
+  per-NPC values, and the CDN's own note on `npcs.json` says the `Pref` field is
+  "not sufficient to exactly calculate favor earned from a gift". So
+  giftability/cap can only be observed in the logs (a `Give Gift` prompt, a cap
+  note) or asserted by the user; do not re-chase this.
+- **The dialog action ids in `ProcessTalkScreen` are decodable** (useful, and the
+  reason the array must not be read as a gift flag): the id after the menu array
+  on a `ProcessPromptForItem`/`PromptForItem`/`TrainingScreen`/`VendorScreen`
+  line names the action that produced it — `-1301` Give Gift (every one of the
+  51 gift prompts), `-1801` Training, `-1601` Shop, `-1701` Storage, `-1501`
+  Barter, `-2001` Consignment. They match the CDN service lists, which is how
+  the earlier "-1801 marks gifting" reading was falsified: the gifted NPCs in
+  the sample were all trainers, and `-1301` is present in *every* NPC action
+  menu (26/27 captured; the exception is a non-NPC object).
 - **`Player.log` itself is never archived** — only rotated copies; the live log
   is always read directly.

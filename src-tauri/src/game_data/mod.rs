@@ -57,6 +57,15 @@ pub use items::{parse as parse_items_json, ItemInfo, SurveyKind};
 pub use lorebooks::LorebookCategoryInfo;
 pub use lorebooks::LorebookEntry;
 pub use npcs::NpcInfo;
+// Re-exported so the gift-cap rule (`game_state.rs`'s `FavorChanged` arm) and
+// test harnesses that seed `npcs` for it can reach them without making the
+// whole module public — same shape as `parse_items_json` above. The name is
+// kept here as the rule's public handle; `GIFT_CAPPED_AREAS` and the parser are
+// only touched from inside `npcs.rs` and its tests.
+#[allow(unused_imports)]
+pub use npcs::{
+    has_gift_tastes, is_gift_capped_area, parse as parse_npcs_json, GIFT_CAPPED_AREAS,
+};
 pub use player_titles::PlayerTitleInfo;
 pub use quests::QuestInfo;
 pub use recipes::RecipeInfo;

@@ -12,15 +12,20 @@ Gift events are detected from `ProcessDeltaFavor` log lines where `is_gift` is `
 
 ## NPC Selection
 
-Statehelm NPCs are identified from CDN data by area:
+Statehelm NPCs are identified from CDN data by area alone:
 - `area_name` is `AreaStatehelm` (the city) **or** `AreaStatehelmCaves` (the
-  sewers — Hamilton, Smoke Tail, Fuzzlebun), and
-- the NPC has at least one entry in `preferences` (they accept gifts)
+  sewers — Hamilton, Smoke Tail, Fuzzlebun).
 
 The weekly cap is a Statehelm-region rule (the game's own note: "Statehelm
 townsfolk are more sophisticated than villagers elsewhere…"), and it applies in
-the sewers too. No CDN field marks the cap, so the area is the signal. Fully
-data-driven — new Statehelm NPCs in future CDN updates appear automatically.
+the sewers too. No CDN field marks the cap, so the area is the signal — and the
+**only** signal. `preferences` is a *favourites* list, not a giftability flag:
+the CDN omits it for NPCs that still report gift favor (Gossamyr the Great —
+storage, `AreaStatehelm` — Captain Gregory, Slim Ostren and Fenna all carry
+none, yet the game's `ProcessDeltaFavor(…, True)` lines for Gossamyr and Fenna
+land in `game_state_gift_log`), so gating on it hid Statehelm's own storage
+NPCs. Fully data-driven — new Statehelm NPCs in future CDN updates appear
+automatically.
 
 ## Weekly Reset
 
