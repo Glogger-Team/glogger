@@ -19,7 +19,8 @@
         :row-key="(row) => String(row.stat_key)"
         compact
         size="sm"
-        empty-text="No stats match the current filter.">
+        empty-variant="compact"
+        :empty-text="emptyText">
         <template #cell-stat_key="{ row }">
           <span class="text-text-primary">{{ formatStatKey(row.stat_key as string) }}</span>
         </template>
@@ -53,6 +54,11 @@ const filtered = computed(() => {
     ? props.stats.filter(s => s.stat_key.toLowerCase().includes(f))
     : props.stats
 })
+
+// Only blame the filter when one is set: an empty snapshot must not claim the
+// filters are to blame (same rule as InventoryTable).
+const emptyText = computed(() =>
+  filter.value ? 'No stats match the current filter.' : 'No stats in this snapshot.')
 
 function formatStatKey(key: string): string {
   return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())

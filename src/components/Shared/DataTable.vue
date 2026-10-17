@@ -65,8 +65,8 @@
           ]"
           :tabindex="rowClickable ? 0 : undefined"
           @click="emit('rowClick', { row, index })"
-          @keydown.enter.prevent="emit('rowClick', { row, index })"
-          @keydown.space.prevent="emit('rowClick', { row, index })">
+          @keydown.enter="onRowKeydown($event, row, index)"
+          @keydown.space="onRowKeydown($event, row, index)">
           <td
             v-for="col in columns"
             :key="col.key"
@@ -154,6 +154,21 @@ function alignClass(col: ColumnDef): string {
 
 function getCellValue(row: Record<string, unknown>, key: string): unknown {
   return row[key]
+}
+
+/**
+ * `Enter`/`Space` on a focused row emit the same `rowClick` payload — but only for a
+ * `rowClickable` table and only when the event comes from the row itself. A keydown that
+ * bubbles out of a control inside a cell belongs to that control: emitting `rowClick` for
+ * it would fire the row action while the user is operating the control, and calling
+ * `preventDefault()` would cancel the control's own activation (Space on a checkbox, Space
+ * or Enter on a button). `.prevent` cannot be used as a modifier here — Vue applies guard
+ * modifiers before the handler runs, so it would cancel the key for every row regardless.
+ */
+function onRowKeydown(event: KeyboardEvent, row: Record<string, unknown>, index: number) {
+  if (!props.rowClickable || event.target !== event.currentTarget) return
+  event.preventDefault()
+  emit('rowClick', { row, index })
 }
 
 function handleSort(key: string) {

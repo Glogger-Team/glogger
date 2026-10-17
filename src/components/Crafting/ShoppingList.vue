@@ -19,6 +19,7 @@
         :columns="vendorColumns"
         :row-key="(row) => String(row.item_id)"
         compact
+        :hoverable="false"
         :rows="(vendorItems as unknown as Record<string, unknown>[])">
         <template #cell-item_name="{ value }">
           <ItemInline :reference="(value as string)" />
@@ -45,6 +46,7 @@
         :columns="sourceColumns"
         :row-key="(row) => String(row.item_id)"
         compact
+        :hoverable="false"
         :rows="(sourceItems as unknown as Record<string, unknown>[])">
         <template #cell-item_name="{ row }">
           <template v-if="row.is_dynamic">

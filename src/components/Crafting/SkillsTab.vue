@@ -177,6 +177,7 @@
                 :rows="(filteredRecipes as unknown as Record<string, unknown>[])"
                 :row-key="(row) => String(row.id)"
                 compact
+                :hoverable="false"
                 empty-variant="compact"
                 empty-text="No recipes match the current filters."
                 :row-class="recipeRowClass">

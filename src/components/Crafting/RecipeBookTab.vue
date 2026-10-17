@@ -98,6 +98,7 @@
             :rows="recipeRows"
             :row-key="(row) => String(row.id)"
             compact
+            empty-variant="compact"
             :empty-text="emptyMessage"
             :row-class="rowClassFn">
             <template #cell-isKnown="{ value }">

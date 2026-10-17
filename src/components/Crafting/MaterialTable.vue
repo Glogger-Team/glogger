@@ -2,9 +2,7 @@
   <DataTable
     :columns="columns"
     :rows="displayRows"
-    :row-key="(row, i) => (row._kind === 'breakdown'
-      ? `${row.item_name}-${row.item_id}-${i}`
-      : (row.is_dynamic ? `dyn-${row.item_name}` : String(row.item_id)))"
+    :row-key="(row) => String(row._key)"
     compact
     :hoverable="false"
     :row-class="displayRowClass"
@@ -121,10 +119,14 @@ const columns = computed<ColumnDef[]>(() => {
 const displayRows = computed<Record<string, unknown>[]>(() => {
   const rows: Record<string, unknown>[] = [];
   for (const mat of props.items) {
-    rows.push(asRow(mat, { _kind: "material" }));
+    // Parent identity is baked in as `_key`: a breakdown row keyed by its position in the
+    // flattened list would change whenever *another* parent expands or collapses, and each
+    // rekey remounts the row's `ItemInline` (which re-resolves its reference over IPC).
+    const key = getMaterialKey(mat);
+    rows.push(asRow(mat, { _kind: "material", _key: key }));
     if (props.expandedKeys.has(mat.item_name)) {
       for (const sub of mat.dynamic_breakdown ?? []) {
-        rows.push(asRow(sub, { _kind: "breakdown" }));
+        rows.push(asRow(sub, { _kind: "breakdown", _key: `${key}:${sub.item_id}` }));
       }
     }
   }

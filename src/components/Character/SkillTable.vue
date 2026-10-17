@@ -21,7 +21,8 @@
         :sort-dir="sortAsc ? 'asc' : 'desc'"
         compact
         size="sm"
-        empty-text="No skills match the current filter."
+        empty-variant="compact"
+        :empty-text="emptyText"
         @sort="handleSort">
         <template #cell-skill_name="{ value }">
           <span class="text-text-primary">{{ value }}</span>
@@ -79,6 +80,11 @@ const filtered = computed(() => {
 
   return list
 })
+
+// Only blame the filter when one is set: an empty snapshot must not claim the
+// filters are to blame (same rule as InventoryTable).
+const emptyText = computed(() =>
+  filter.value ? 'No skills match the current filter.' : 'No skills in this snapshot.')
 
 function toggleSort(key: 'skill_name' | 'level') {
   if (sortKey.value === key) {
