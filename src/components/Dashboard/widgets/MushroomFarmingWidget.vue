@@ -37,10 +37,12 @@
       <DataTable
         :columns="columns"
         :rows="(filteredMushrooms as unknown as Record<string, unknown>[])"
+        :row-key="(row) => String(row.name)"
         :sort-key="sortKey"
         :sort-dir="sortAsc ? 'asc' : 'desc'"
         compact
         size="sm"
+        empty-variant="compact"
         empty-text="No mushrooms match your filter."
         :row-class="rowClass"
         @sort="onSort">

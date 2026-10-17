@@ -17,6 +17,7 @@
 
       <DataTable
         :columns="vendorColumns"
+        :row-key="(row) => String(row.item_id)"
         compact
         :rows="(vendorItems as unknown as Record<string, unknown>[])">
         <template #cell-item_name="{ value }">
@@ -42,6 +43,7 @@
 
       <DataTable
         :columns="sourceColumns"
+        :row-key="(row) => String(row.item_id)"
         compact
         :rows="(sourceItems as unknown as Record<string, unknown>[])">
         <template #cell-item_name="{ row }">

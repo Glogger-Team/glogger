@@ -96,6 +96,7 @@
             v-else
             :columns="columns"
             :rows="recipeRows"
+            :row-key="(row) => String(row.id)"
             compact
             :empty-text="emptyMessage"
             :row-class="rowClassFn">
@@ -268,6 +269,7 @@ const columns = computed<ColumnDef[]>(() => {
 const recipeRows = computed(
   () =>
     displayRecipes.value.map((r) => ({
+      id: r.recipe.id,
       name: r.recipe.name,
       isKnown: r.isKnown,
       completions: r.completions,

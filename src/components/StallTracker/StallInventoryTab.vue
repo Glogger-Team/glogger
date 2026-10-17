@@ -117,7 +117,7 @@
       </div>
       <div
         v-show="soldOutOpen"
-        class="px-3 pb-3">
+        class="px-3 pb-3 max-h-64 overflow-auto">
         <DataTable
           :columns="soldOutColumns"
           :rows="(sortedRecentlySoldOut as unknown as Record<string, unknown>[])"

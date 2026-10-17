@@ -37,6 +37,7 @@
       <DataTable
         :columns="columns"
         :rows="(filtered as unknown as Record<string, unknown>[])"
+        :row-key="(row) => String(row.id)"
         :sort-key="sortKey"
         :sort-dir="sortAsc ? 'asc' : 'desc'"
         compact

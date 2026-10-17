@@ -15,7 +15,9 @@
     <DataTable
       :columns="columns"
       :rows="(items as unknown as Record<string, unknown>[])"
+      :row-key="(row) => String(row.item_name)"
       compact
+      empty-variant="compact"
       empty-text="No loot data recorded.">
       <template #cell-item_name="{ row }">
         <ItemInline :reference="row.item_name as string" />

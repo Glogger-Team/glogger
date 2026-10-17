@@ -5,14 +5,17 @@
       <span class="text-text-muted">({{ tiers.length }} tiers)</span>
     </div>
 
-    <!-- Compact table -->
+    <!-- `overflow-x-auto` is content-height, so it can never pin a header; the real
+         vertical scroller is the pane above, out of the header's reach. -->
     <div class="overflow-x-auto">
       <DataTable
         :columns="columns"
         :rows="(tiers as unknown as Record<string, unknown>[])"
+        :row-key="(row) => String(row.id)"
         :row-class="tierRowClass"
         compact
         row-clickable
+        :sticky-header="false"
         @row-click="onTierRowClick">
         <template #cell-tier_index="{ row }">
           <span class="text-text-primary">{{ tierIndexById.get(asTier(row).id) }}</span>

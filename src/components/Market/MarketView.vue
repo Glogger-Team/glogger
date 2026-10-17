@@ -184,8 +184,8 @@
         <DataTable
           :columns="observationColumns"
           :rows="(stallPriceStore.observations as unknown as Record<string, unknown>[])"
+          :row-key="(row) => String(obsOf(row).id)"
           :hoverable="false"
-          :sticky-header="true"
           compact>
           <template #cell-item_name="{ row }">
             <ItemInline
@@ -302,10 +302,9 @@
         v-else
         :columns="marketColumns"
         :rows="(filteredValues as unknown as Record<string, unknown>[])"
+        :row-key="(row) => String(valOf(row).item_type_id)"
         :sort-key="sortField"
         :sort-dir="sortAsc ? 'asc' : 'desc'"
-        :hoverable="true"
-        :sticky-header="true"
         :row-class="marketRowClass"
         compact
         @sort="onSort">
@@ -496,7 +495,7 @@ import { useMarketStore, type MarketValue, type ImportMarketValuesResult } from 
 import { useSettingsStore } from '../../stores/settingsStore'
 import { useGameDataStore } from '../../stores/gameDataStore'
 import type { ItemInfo } from '../../types/gameData'
-import DataTable from '../Shared/DataTable.vue'
+import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 import EmptyState from '../Shared/EmptyState.vue'
 import AccordionSection from '../Shared/AccordionSection.vue'
 import ItemInline from '../Shared/Item/ItemInline.vue'
@@ -514,7 +513,7 @@ const search = ref('')
 const sortField = ref<'item_name' | 'market_value' | 'updated_at'>('item_name')
 const sortAsc = ref(true)
 
-const marketColumns = [
+const marketColumns: ColumnDef[] = [
   { key: 'select', label: '', width: '2rem' },
   { key: 'item_name', label: 'Item', sortable: true },
   { key: 'market_value', label: 'Price', sortable: true, align: 'right' as const, numeric: true, width: '7.5rem' },
@@ -864,7 +863,7 @@ onMounted(() => {
 
 // ── Stall price observations ────────────────────────────────────────────────
 
-const observationColumns = [
+const observationColumns: ColumnDef[] = [
   { key: 'item_name', label: 'Item' },
   { key: 'quantity', label: 'Qty', align: 'right' as const, numeric: true },
   { key: 'price_unit', label: 'Price', align: 'right' as const, numeric: true },

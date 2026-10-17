@@ -49,6 +49,7 @@
       <DataTable
         :columns="columns"
         :rows="(analytics.survey_types as unknown as Record<string, unknown>[])"
+        :row-key="(row) => `${row.map_internal_name}::${row.area ?? ''}`"
         compact
         row-clickable
         @row-click="selectTypeRow">

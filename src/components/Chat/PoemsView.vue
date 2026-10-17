@@ -58,8 +58,8 @@
           v-else
           :columns="columns"
           :rows="(filteredPoems as unknown as Record<string, unknown>[])"
+          :row-key="(row) => String(row.id)"
           :hoverable="false"
-          :sticky-header="true"
           :row-class="rowClassFn"
           row-clickable
           size="sm"
@@ -157,8 +157,8 @@ const columns = [
   // `max-w-0` is what lets the cell's inner `truncate` actually elide: with
   // `table-layout: auto` a nowrap cell contributes its full text width otherwise.
   { key: 'title', label: 'Title', cellClass: 'max-w-0' },
-  { key: 'author', label: 'Author' },
-  { key: 'recorded_at', label: 'Recorded' },
+  { key: 'author', label: 'Author', cellClass: 'align-top' },
+  { key: 'recorded_at', label: 'Recorded', cellClass: 'align-top' },
 ]
 
 /** Keep the original hover token (DataTable's default would use

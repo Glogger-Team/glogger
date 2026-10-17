@@ -24,7 +24,8 @@
         :rows="(filtered as unknown as Record<string, unknown>[])"
         :row-key="(row) => String(row.attribute_name)"
         compact
-        size="sm">
+        size="sm"
+        empty-text="No attributes match the current filter.">
         <template #cell-attribute_name="{ value }">
           <span class="text-text-primary">{{ formatAttrName(value as string) }}</span>
         </template>

@@ -39,6 +39,7 @@
         <DataTable
           :columns="wealthColumns"
           :rows="(aggregateStore.wealth.per_character as unknown as Record<string, unknown>[])"
+          :row-key="(row) => String(row.character_name)"
           compact
           size="sm"
           :hoverable="false">
@@ -76,6 +77,7 @@
           v-else
           :columns="inventoryColumns"
           :rows="(inventoryRows as unknown as Record<string, unknown>[])"
+          :row-key="(row) => String(row.item_name)"
           compact
           size="sm"
           :hoverable="false">
@@ -166,7 +168,7 @@ const inventoryColumns: ColumnDef[] = [
   { key: 'item_name', label: 'Item' },
   { key: 'total_stack_size', label: 'Total', align: 'right', numeric: true },
   { key: 'character_count', label: 'Characters', align: 'right' },
-  { key: 'breakdown', label: 'Breakdown' },
+  { key: 'breakdown', label: 'Breakdown', cellClass: 'text-xs' },
 ]
 
 const invSearch = ref('')

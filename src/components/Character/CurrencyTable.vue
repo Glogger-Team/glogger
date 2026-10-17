@@ -5,6 +5,7 @@
       <DataTable
         :columns="columns"
         :rows="(currencies as unknown as Record<string, unknown>[])"
+        :row-key="(row) => String(row.currency_key)"
         compact
         size="sm"
         empty-text="No currencies.">

@@ -43,8 +43,8 @@
       <!-- Empty state -->
       <tbody v-else-if="rows.length === 0">
         <tr>
-          <td :colspan="columns.length" class="py-8">
-            <EmptyState :primary="emptyText" :secondary="emptyHint" />
+          <td :colspan="columns.length" :class="emptyVariant === 'compact' ? 'py-2' : 'py-8'">
+            <EmptyState :primary="emptyText" :secondary="emptyHint" :variant="emptyVariant" />
           </td>
         </tr>
       </tbody>
@@ -91,7 +91,12 @@ export interface ColumnDef {
   align?: 'left' | 'center' | 'right'
   width?: string
   numeric?: boolean
-  /** Extra classes for this column's `<td>` (e.g. `align-top`, `max-w-0` for truncation). */
+  /**
+   * Extra classes for this column's `<td>` (e.g. `align-top`, `max-w-0` for truncation).
+   * Appended after the alignment/numeric classes, but Tailwind resolves equal-specificity
+   * conflicts by stylesheet order, not attribute order — so it cannot reliably override
+   * `align`/`numeric`'s `text-right`. Use the column's own `align` for that.
+   */
   cellClass?: string
 }
 
@@ -105,6 +110,9 @@ const props = withDefaults(defineProps<{
   emptyHint?: string
   compact?: boolean
   size?: 'sm' | 'xs'
+  /** `EmptyState` variant for the empty branch. `compact` is a single inline line for
+   * dense widgets/panels whose old markup was an italic one-liner. */
+  emptyVariant?: 'panel' | 'compact'
   hoverable?: boolean
   stickyHeader?: boolean
   skeletonRows?: number
@@ -117,6 +125,7 @@ const props = withDefaults(defineProps<{
   emptyText: 'No data',
   compact: false,
   size: 'xs',
+  emptyVariant: 'panel',
   hoverable: true,
   stickyHeader: true,
   skeletonRows: 5,

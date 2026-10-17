@@ -23,6 +23,7 @@
     <DataTable
       :columns="columns"
       :rows="(sortedZones as unknown as Record<string, unknown>[])"
+      :row-key="(row) => String(row.area)"
       compact
       row-clickable
       @row-click="selectZoneRow">

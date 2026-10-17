@@ -338,6 +338,7 @@
           </div>
           <DataTable
             :columns="materialColumns"
+            :row-key="(row) => String(row.key)"
             compact
             :rows="(aggregatedMaterials as unknown as Record<string, unknown>[])">
             <template #cell-item_name="{ row }">

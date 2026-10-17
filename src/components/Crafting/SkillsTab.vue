@@ -175,7 +175,9 @@
               <DataTable
                 :columns="recipeColumns"
                 :rows="(filteredRecipes as unknown as Record<string, unknown>[])"
+                :row-key="(row) => String(row.id)"
                 compact
+                empty-variant="compact"
                 empty-text="No recipes match the current filters."
                 :row-class="recipeRowClass">
                 <template #cell-name="{ value }">

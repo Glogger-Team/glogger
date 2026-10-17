@@ -2,6 +2,9 @@
   <DataTable
     :columns="columns"
     :rows="displayRows"
+    :row-key="(row, i) => (row._kind === 'breakdown'
+      ? `${row.item_name}-${row.item_id}-${i}`
+      : (row.is_dynamic ? `dyn-${row.item_name}` : String(row.item_id)))"
     compact
     :row-class="displayRowClass"
     @row-click="onRowClick">

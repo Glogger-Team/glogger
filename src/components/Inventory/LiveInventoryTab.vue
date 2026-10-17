@@ -57,8 +57,8 @@
         <DataTable
           :columns="columns"
           :rows="(filteredItems as unknown as Record<string, unknown>[])"
+          :row-key="(row) => String(row.instance_id)"
           :hoverable="false"
-          :sticky-header="true"
           :row-class="rowClassFn"
           compact
           size="sm"

@@ -132,7 +132,12 @@
 
     <!-- Account Overview -->
     <template v-else-if="activeTab === 'account'">
-      <AggregateView />
+      <!-- The pane itself is `overflow-hidden`, so AggregateView's grids need this to be
+           the nearest scrollport: without it the content is clipped and the sticky
+           headers cannot pin (DataTable never owns scrolling). -->
+      <div class="flex-1 min-h-0 overflow-auto">
+        <AggregateView />
+      </div>
     </template>
   </div>
   </PaneLayout>

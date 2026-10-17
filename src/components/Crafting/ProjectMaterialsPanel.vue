@@ -200,6 +200,7 @@
             <DataTable
               :columns="materialColumns"
               :rows="(sortedMaterials as unknown as Record<string, unknown>[])"
+              :row-key="(row) => String(row.key)"
               compact
               :row-class="materialRowClass">
               <template #cell-item_name="{ row }">

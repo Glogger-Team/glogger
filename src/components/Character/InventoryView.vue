@@ -172,6 +172,7 @@
         v-else
         :columns="crossCharColumns"
         :rows="(crossCharDisplayRows as unknown as Record<string, unknown>[])"
+        :row-key="(row, i) => (row.kind === 'item' ? String(row.name) : `${row.name}-${row.charName}-${row.location}-${i}`)"
         :hoverable="false"
         :row-class="crossCharRowClass"
         @row-click="onCrossCharRowClick">
@@ -207,6 +208,7 @@
         <DataTable
           :columns="totalColumns"
           :rows="(totalDisplayRows as unknown as Record<string, unknown>[])"
+          :row-key="(row, i) => (row.kind === 'item' ? String(row.name) : `${row.name}-${row.locationLabel}-${i}`)"
           :sort-key="totalSort"
           :sort-dir="totalSortAsc ? 'asc' : 'desc'"
           :hoverable="false"
@@ -403,7 +405,11 @@ const crossCharDisplayRows = computed<CrossCharDisplayRow[]>(() => {
 // Only item rows are interactive/hoverable, matching the original markup;
 // hover lives in rowClass because `hoverable` applies table-wide.
 function crossCharRowClass(row: Record<string, unknown>): string {
-  return row.kind === 'item' ? 'hover:bg-surface-row-hover cursor-pointer' : 'bg-surface-inset/30'
+  // Sub-rows keep the original dense `py-1`: the arbitrary variant outranks the
+  // component's `py-2` cell padding. Only item rows are interactive.
+  return row.kind === 'item'
+    ? 'hover:bg-surface-row-hover cursor-pointer'
+    : 'bg-surface-inset/30 [&>td]:py-1'
 }
 
 function onCrossCharRowClick(payload: { row: Record<string, unknown> }) {
@@ -715,7 +721,9 @@ const totalDisplayRows = computed<TotalDisplayRow[]>(() => {
 // Only item rows are interactive/hoverable, matching the original markup;
 // hover lives in rowClass because `hoverable` applies table-wide.
 function totalRowClass(row: Record<string, unknown>): string {
-  return row.kind === 'item' ? 'hover:bg-surface-row-hover cursor-pointer' : 'bg-surface-inset/30'
+  return row.kind === 'item'
+    ? 'hover:bg-surface-row-hover cursor-pointer'
+    : 'bg-surface-inset/30 [&>td]:py-1'
 }
 
 function onTotalRowClick(payload: { row: Record<string, unknown> }) {

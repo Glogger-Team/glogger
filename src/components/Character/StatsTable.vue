@@ -16,6 +16,7 @@
       <DataTable
         :columns="columns"
         :rows="(filtered as unknown as Record<string, unknown>[])"
+        :row-key="(row) => String(row.stat_key)"
         compact
         size="sm"
         empty-text="No stats match the current filter.">

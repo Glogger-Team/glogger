@@ -13,6 +13,7 @@
         :rows="(rows as unknown as Record<string, unknown>[])"
         :row-key="(row) => String(row.item_name)"
         compact
+        empty-variant="compact"
         empty-text="No loot attributed yet.">
         <template #cell-item_name="{ row }">
           <ItemMinicard

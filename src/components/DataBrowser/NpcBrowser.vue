@@ -101,6 +101,7 @@
                 <DataTable
                   :columns="vendorColumns"
                   :rows="(vendorItems as unknown as Record<string, unknown>[])"
+                  :row-key="(row) => String(row.item_id)"
                   compact>
                   <template #cell-item_id="{ row }">
                     <ItemInline :reference="String(row.item_id)" />
