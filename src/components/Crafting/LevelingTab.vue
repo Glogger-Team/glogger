@@ -338,6 +338,7 @@
           </div>
           <DataTable
             :columns="materialColumns"
+            compact
             :rows="(aggregatedMaterials as unknown as Record<string, unknown>[])">
             <template #cell-item_name="{ row }">
               <template v-if="row.is_dynamic">

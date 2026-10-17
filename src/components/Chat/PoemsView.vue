@@ -62,6 +62,7 @@
           :sticky-header="true"
           :row-class="rowClassFn"
           row-clickable
+          size="sm"
           @row-click="({ index }) => openPoem(index)">
           <template #cell-title="{ row }">
             <div v-if="row.title" class="text-text-primary font-medium truncate" v-html="renderInline(row.title as string)"></div>
@@ -153,7 +154,9 @@ interface Poem {
 }
 
 const columns = [
-  { key: 'title', label: 'Title' },
+  // `max-w-0` is what lets the cell's inner `truncate` actually elide: with
+  // `table-layout: auto` a nowrap cell contributes its full text width otherwise.
+  { key: 'title', label: 'Title', cellClass: 'max-w-0' },
   { key: 'author', label: 'Author' },
   { key: 'recorded_at', label: 'Recorded' },
 ]

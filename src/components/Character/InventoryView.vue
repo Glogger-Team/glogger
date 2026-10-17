@@ -174,11 +174,10 @@
         :rows="(crossCharDisplayRows as unknown as Record<string, unknown>[])"
         :hoverable="false"
         :row-class="crossCharRowClass"
-        row-clickable
         @row-click="onCrossCharRowClick">
         <template #cell-item="{ row }">
           <ItemInline v-if="row.kind === 'item'" :reference="row.name as string" :type-id="row.typeId as number" />
-          <span v-else class="pl-5 text-text-secondary">{{ row.charName }}</span>
+          <span v-else class="pl-8 text-text-secondary">{{ row.charName }}</span>
         </template>
         <template #cell-total="{ row }">
           <span v-if="row.kind === 'item'" class="font-medium text-text-primary">{{ (row.qty as number).toLocaleString() }}</span>
@@ -212,12 +211,11 @@
           :sort-dir="totalSortAsc ? 'asc' : 'desc'"
           :hoverable="false"
           :row-class="totalRowClass"
-          row-clickable
           @sort="handleTotalSort"
           @row-click="onTotalRowClick">
           <template #cell-name="{ row }">
             <ItemInline v-if="row.kind === 'item'" :reference="row.name as string" :type-id="row.typeId as number" />
-            <span v-else class="pl-5 text-text-muted">{{ row.locationLabel }}</span>
+            <span v-else class="pl-8 text-text-muted">{{ row.locationLabel }}</span>
           </template>
           <template #cell-qty="{ row }">
             <span v-if="row.kind === 'item'" class="font-medium text-text-primary">{{ (row.qty as number).toLocaleString() }}</span>

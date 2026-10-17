@@ -359,13 +359,21 @@ A sortable data table with built-in loading skeletons, empty state, and custom c
 </DataTable>
 ```
 
-**Props:** `columns: ColumnDef[]`, `rows: Record<string, unknown>[]`, `sortKey?: string`, `sortDir?: 'asc' | 'desc'` (default `'asc'`), `loading?: boolean` (default `false`), `emptyText?: string` (default `"No data"`), `emptyHint?: string`, `compact?: boolean` (default `false` — tighter cell padding `px-2 py-1` and `text-[11px]` instead of `text-xs`), `hoverable?: boolean` (default `true`), `stickyHeader?: boolean` (default `true`), `skeletonRows?: number` (default `5`), `rowClickable?: boolean` (default `false` — adds `cursor-pointer` to rows), `rowClass?: (row, index) => string`
+**Props:** `columns: ColumnDef[]`, `rows: Record<string, unknown>[]`, `sortKey?: string`, `sortDir?: 'asc' | 'desc'` (default `'asc'`), `loading?: boolean` (default `false`), `emptyText?: string` (default `"No data"`), `emptyHint?: string`, `compact?: boolean` (default `false` — tighter padding only: cells `px-2 py-1` instead of `px-3 py-2`, headers `px-2 py-1` instead of `px-3 py-1.5`), `size?: 'sm' | 'xs'` (default `'xs'` — table font size `text-sm` / `text-xs`).
 
-**ColumnDef:** `{ key: string; label: string; sortable?: boolean; align?: 'left' | 'center' | 'right'; width?: string; numeric?: boolean }`
+Padding (`compact`) and font size (`size`) are separate props on purpose: `compact` is what dense grids want, while a screen that used to render a `text-sm` table passes `size="sm"` to keep its type size.
 
-**Slots:** `header-{key}` (custom header), `cell-{key}` (custom cell, receives `{ row, value }`)
+`hoverable?: boolean` (default `true`), `stickyHeader?: boolean` (default `true`), `skeletonRows?: number` (default `5`), `rowClickable?: boolean` (default `false` — adds `cursor-pointer` to rows), `rowKey?: (row, index) => string | number` (default: array index — pass it when rows reorder and a cell holds local state), `rowClass?: (row, index) => string`
 
-**Events:** `sort({ key, dir })`, `rowClick({ row, index })` (fires on any row click; pair with `rowClickable` for click-to-drill/select tables — keep per-row highlight logic in `rowClass`)
+**ColumnDef:** `{ key: string; label: string; sortable?: boolean; align?: 'left' | 'center' | 'right'; width?: string; numeric?: boolean; cellClass?: string }` — `numeric` right-aligns and adds `tabular-nums`; `cellClass` adds classes to that column's `<td>` (e.g. `align-top pt-2`, or `max-w-0` to let an inner `truncate` elide).
+
+**Slots:** `header-{key}` (custom header, receives `{ column }`), `cell-{key}` (custom cell, receives `{ row, value }`)
+
+**Events:** `sort({ key, dir })`, `rowClick({ row, index })` (fires on any row click, whether or not `rowClickable` is set; pair with `rowClickable` for click-to-drill/select tables — keep per-row highlight logic in `rowClass`. Put `@click.stop` on any control inside a row that also has a row-level action.)
+
+**Scroll container:** `DataTable` never owns scrolling. It renders no `overflow` on its wrapper, because an `overflow` box between the table and the real scroller becomes the scrollport for the sticky header and the header would then scroll away with the rows. The parent supplies the scroller (`overflow-auto` + a height constraint); `stickyHeader` only works when that parent is the nearest scrolling ancestor. Give the parent the constraint, e.g. `<div class="flex-1 min-h-0 overflow-auto"><DataTable … /></div>`.
+
+**Empty state:** when `rows` is empty and `loading` is false the header row is not rendered — only the `EmptyState`. Rows are also the source of truth for sorting: the component never sorts, it only flips the arrow and emits `sort`.
 
 ### FilterBar
 

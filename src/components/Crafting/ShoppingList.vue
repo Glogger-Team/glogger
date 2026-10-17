@@ -17,6 +17,7 @@
 
       <DataTable
         :columns="vendorColumns"
+        compact
         :rows="(vendorItems as unknown as Record<string, unknown>[])">
         <template #cell-item_name="{ value }">
           <ItemInline :reference="(value as string)" />
@@ -41,6 +42,7 @@
 
       <DataTable
         :columns="sourceColumns"
+        compact
         :rows="(sourceItems as unknown as Record<string, unknown>[])">
         <template #cell-item_name="{ row }">
           <template v-if="row.is_dynamic">

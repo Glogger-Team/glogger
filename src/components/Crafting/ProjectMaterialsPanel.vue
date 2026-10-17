@@ -200,6 +200,7 @@
             <DataTable
               :columns="materialColumns"
               :rows="(sortedMaterials as unknown as Record<string, unknown>[])"
+              compact
               :row-class="materialRowClass">
               <template #cell-item_name="{ row }">
                 <template v-if="row.is_dynamic">

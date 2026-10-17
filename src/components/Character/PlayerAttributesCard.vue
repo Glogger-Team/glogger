@@ -19,31 +19,33 @@
     </div>
 
     <div v-else class="flex-1 overflow-y-auto min-h-0">
-      <table class="w-full text-sm border-collapse">
-        <thead class="sticky top-0 bg-surface-elevated">
-          <tr class="text-left text-text-secondary border-b border-border-default">
-            <th class="py-1 px-2 text-xs">Attribute</th>
-            <th class="py-1 px-2 text-right text-xs">Current</th>
-            <th class="py-1 px-2 text-right text-xs">Min</th>
-            <th class="py-1 px-2 text-right text-xs">Max</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="attr in filtered"
-            :key="attr.attribute_name"
-            class="border-b border-border-default/30 hover:bg-surface-elevated/50">
-            <td class="py-0.5 px-2 text-text-primary">{{ formatAttrName(attr.attribute_name) }}</td>
-            <td class="py-0.5 px-2 text-right text-accent-gold font-mono">{{ fmtVal(attr.current_value) }}</td>
-            <td class="py-0.5 px-2 text-right font-mono" :class="attr.min_value < attr.current_value ? 'text-blue-400' : 'text-text-dim'">
-              {{ fmtVal(attr.min_value) }}
-            </td>
-            <td class="py-0.5 px-2 text-right font-mono" :class="attr.max_value > attr.current_value ? 'text-green-400' : 'text-text-dim'">
-              {{ fmtVal(attr.max_value) }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
+      <DataTable
+        :columns="columns"
+        :rows="(filtered as unknown as Record<string, unknown>[])"
+        :row-key="(row) => String(row.attribute_name)"
+        compact
+        size="sm">
+        <template #cell-attribute_name="{ value }">
+          <span class="text-text-primary">{{ formatAttrName(value as string) }}</span>
+        </template>
+        <template #cell-current_value="{ row }">
+          <span class="text-accent-gold font-mono">{{ fmtVal(row.current_value as number) }}</span>
+        </template>
+        <template #cell-min_value="{ row }">
+          <span
+            class="font-mono"
+            :class="(row.min_value as number) < (row.current_value as number) ? 'text-blue-400' : 'text-text-dim'">
+            {{ fmtVal(row.min_value as number) }}
+          </span>
+        </template>
+        <template #cell-max_value="{ row }">
+          <span
+            class="font-mono"
+            :class="(row.max_value as number) > (row.current_value as number) ? 'text-green-400' : 'text-text-dim'">
+            {{ fmtVal(row.max_value as number) }}
+          </span>
+        </template>
+      </DataTable>
     </div>
   </div>
 </template>
@@ -53,6 +55,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useSettingsStore } from '../../stores/settingsStore'
+import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 
 interface AttributeExtreme {
   attribute_name: string
@@ -60,6 +63,13 @@ interface AttributeExtreme {
   min_value: number
   max_value: number
 }
+
+const columns: ColumnDef[] = [
+  { key: 'attribute_name', label: 'Attribute' },
+  { key: 'current_value', label: 'Current', align: 'right' },
+  { key: 'min_value', label: 'Min', align: 'right' },
+  { key: 'max_value', label: 'Max', align: 'right' },
+]
 
 const settings = useSettingsStore()
 const attributes = ref<AttributeExtreme[]>([])

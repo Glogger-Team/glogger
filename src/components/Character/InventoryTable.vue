@@ -40,6 +40,7 @@
         :sort-key="sortKey"
         :sort-dir="sortAsc ? 'asc' : 'desc'"
         compact
+        size="sm"
         empty-text="No items match the current filters."
         @sort="handleSort">
         <template #cell-item_name="{ row }">

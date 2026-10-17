@@ -39,6 +39,7 @@
         <DataTable
           :columns="columns"
           :rows="recipeRows"
+          compact
           :empty-text="emptyText">
           <template #cell-idx="{ value }">
             <span class="text-text-muted">{{ value }}</span>

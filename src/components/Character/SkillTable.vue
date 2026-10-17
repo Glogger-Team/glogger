@@ -19,6 +19,7 @@
         :sort-key="sortKey"
         :sort-dir="sortAsc ? 'asc' : 'desc'"
         compact
+        size="sm"
         empty-text="No skills match the current filter."
         @sort="handleSort">
         <template #cell-skill_name="{ value }">

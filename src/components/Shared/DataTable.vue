@@ -1,7 +1,11 @@
 <template>
-  <div class="w-full overflow-auto">
-    <table class="w-full border-collapse" :class="compact ? 'text-[11px]' : 'text-xs'">
-      <thead v-if="!loading || rows.length > 0" :class="stickyHeader ? 'sticky top-0 z-10' : ''" class="bg-surface-base border-b border-border-default">
+  <!-- No `overflow` on this wrapper: a box with `overflow != visible` becomes the nearest
+       scrollport for the table's `position: sticky` header, and because this wrapper's height
+       is content-driven it never scrolls — the header would scroll away with the rows instead
+       of pinning to the parent scroller. Only the outermost scroller must stay the scrollport. -->
+  <div class="w-full">
+    <table class="w-full border-collapse" :class="size === 'sm' ? 'text-sm' : 'text-xs'">
+      <thead v-if="rows.length > 0 || loading" :class="stickyHeader ? 'sticky top-0 z-10' : ''" class="bg-surface-base border-b border-border-default">
         <tr>
           <th
             v-for="col in columns"
@@ -37,7 +41,7 @@
       </tbody>
 
       <!-- Empty state -->
-      <tbody v-else-if="rows.length === 0 && !loading">
+      <tbody v-else-if="rows.length === 0">
         <tr>
           <td :colspan="columns.length" class="py-8">
             <EmptyState :primary="emptyText" :secondary="emptyHint" />
@@ -49,12 +53,12 @@
       <tbody v-else>
         <tr
           v-for="(row, index) in rows"
-          :key="index"
+          :key="rowKey ? rowKey(row, index) : index"
           class="border-b border-border-default/50"
           :class="[
             hoverable ? 'hover:bg-surface-row-hover' : '',
             rowClickable ? 'cursor-pointer' : '',
-            rowClassFn ? rowClassFn(row, index) : '',
+            rowClass ? rowClass(row, index) : '',
           ]"
           @click="emit('rowClick', { row, index })">
           <td
@@ -64,6 +68,7 @@
               cellPadding,
               alignClass(col),
               col.numeric ? 'tabular-nums' : '',
+              col.cellClass ?? '',
             ]">
             <slot :name="`cell-${col.key}`" :row="row" :value="getCellValue(row, col.key)">
               {{ getCellValue(row, col.key) ?? '' }}
@@ -86,6 +91,8 @@ export interface ColumnDef {
   align?: 'left' | 'center' | 'right'
   width?: string
   numeric?: boolean
+  /** Extra classes for this column's `<td>` (e.g. `align-top`, `max-w-0` for truncation). */
+  cellClass?: string
 }
 
 const props = withDefaults(defineProps<{
@@ -97,16 +104,19 @@ const props = withDefaults(defineProps<{
   emptyText?: string
   emptyHint?: string
   compact?: boolean
+  size?: 'sm' | 'xs'
   hoverable?: boolean
   stickyHeader?: boolean
   skeletonRows?: number
   rowClickable?: boolean
+  rowKey?: (row: Record<string, unknown>, index: number) => string | number
   rowClass?: (row: Record<string, unknown>, index: number) => string
 }>(), {
   sortDir: 'asc',
   loading: false,
   emptyText: 'No data',
   compact: false,
+  size: 'xs',
   hoverable: true,
   stickyHeader: true,
   skeletonRows: 5,
@@ -117,8 +127,6 @@ const emit = defineEmits<{
   sort: [payload: { key: string; dir: 'asc' | 'desc' }]
   rowClick: [payload: { row: Record<string, unknown>; index: number }]
 }>()
-
-const rowClassFn = props.rowClass
 
 const headerPadding = computed(() => props.compact ? 'px-2 py-1' : 'px-3 py-1.5')
 const cellPadding = computed(() => props.compact ? 'px-2 py-1' : 'px-3 py-2')

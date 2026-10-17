@@ -8,7 +8,8 @@
       <DataTable
         :columns="columns"
         :rows="(sortedDiffs as unknown as Record<string, unknown>[])"
-        compact>
+        compact
+        size="sm">
         <template #cell-skill_name="{ value }">
           <span class="text-text-primary">{{ value }}</span>
         </template>

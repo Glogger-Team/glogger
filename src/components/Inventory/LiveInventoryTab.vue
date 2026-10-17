@@ -60,7 +60,9 @@
           :hoverable="false"
           :sticky-header="true"
           :row-class="rowClassFn"
-          compact>
+          compact
+          size="sm"
+          empty-text="No items match your search.">
           <template #cell-slot_index="{ value }">
             <span class="text-text-muted text-xs font-mono">
               {{ (value as number) >= 0 ? (value as number) : '-' }}

@@ -11,6 +11,7 @@
       <DataTable
         :columns="columns"
         :rows="(rows as unknown as Record<string, unknown>[])"
+        :row-key="(row) => String(row.item_name)"
         compact
         empty-text="No loot attributed yet.">
         <template #cell-item_name="{ row }">
@@ -59,10 +60,11 @@ const hasBonus = computed(() => props.rows.some(r => r.bonus_qty > 0))
 const columns = computed<ColumnDef[]>(() => {
   const cols: ColumnDef[] = [
     { key: 'item_name', label: 'Item' },
-    { key: 'total_qty', label: 'Qty', align: 'right', numeric: true },
+    // The minicard makes these rows tall; the numbers align with its first line.
+    { key: 'total_qty', label: 'Qty', align: 'right', numeric: true, cellClass: 'align-top pt-2' },
   ]
-  if (hasBonus.value) cols.push({ key: 'bonus_qty', label: 'Split', align: 'right', numeric: true })
-  cols.push({ key: 'total_value', label: 'Value', align: 'right', numeric: true })
+  if (hasBonus.value) cols.push({ key: 'bonus_qty', label: 'Split', align: 'right', numeric: true, cellClass: 'align-top pt-2' })
+  cols.push({ key: 'total_value', label: 'Value', align: 'right', numeric: true, cellClass: 'align-top pt-2' })
   return cols
 })
 </script>

@@ -40,6 +40,7 @@
         :sort-key="sortKey"
         :sort-dir="sortAsc ? 'asc' : 'desc'"
         compact
+        size="sm"
         empty-text="No mushrooms match your filter."
         :row-class="rowClass"
         @sort="onSort">

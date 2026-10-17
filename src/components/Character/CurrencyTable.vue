@@ -6,6 +6,7 @@
         :columns="columns"
         :rows="(currencies as unknown as Record<string, unknown>[])"
         compact
+        size="sm"
         empty-text="No currencies.">
         <template #cell-currency_key="{ row }">
           <span class="text-text-primary">{{ formatKey(row.currency_key as string) }}</span>

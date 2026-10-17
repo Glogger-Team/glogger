@@ -96,6 +96,7 @@
             v-else
             :columns="columns"
             :rows="recipeRows"
+            compact
             :empty-text="emptyMessage"
             :row-class="rowClassFn">
             <template #cell-isKnown="{ value }">

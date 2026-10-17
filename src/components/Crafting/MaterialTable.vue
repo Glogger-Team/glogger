@@ -2,6 +2,7 @@
   <DataTable
     :columns="columns"
     :rows="displayRows"
+    compact
     :row-class="displayRowClass"
     @row-click="onRowClick">
     <template #cell-item_name="{ row }">
@@ -21,6 +22,11 @@
         </template>
         <ItemInline v-else :reference="(row.item_name as string)" />
       </template>
+    </template>
+    <template #cell-quantity_needed="{ row }">
+      <span v-if="row._kind === 'material'" class="font-mono text-text-primary">
+        {{ row.quantity_needed }}
+      </span>
     </template>
     <template #cell-customer_provides="{ row }">
       <input

@@ -40,6 +40,7 @@
           :columns="wealthColumns"
           :rows="(aggregateStore.wealth.per_character as unknown as Record<string, unknown>[])"
           compact
+          size="sm"
           :hoverable="false">
           <template #cell-character_name="{ row }">
             <span class="text-text-primary">{{ row.character_name }}</span>
@@ -76,6 +77,7 @@
           :columns="inventoryColumns"
           :rows="(inventoryRows as unknown as Record<string, unknown>[])"
           compact
+          size="sm"
           :hoverable="false">
           <template #cell-item_name="{ row }">
             <span class="text-text-primary">{{ row.item_name }}</span>

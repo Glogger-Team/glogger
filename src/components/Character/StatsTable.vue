@@ -17,6 +17,7 @@
         :columns="columns"
         :rows="(filtered as unknown as Record<string, unknown>[])"
         compact
+        size="sm"
         empty-text="No stats match the current filter.">
         <template #cell-stat_key="{ row }">
           <span class="text-text-primary">{{ formatStatKey(row.stat_key as string) }}</span>
