@@ -9,7 +9,10 @@
     @row-click="onRowClick">
     <template #cell-item_name="{ row }">
       <template v-if="row._kind === 'breakdown'">
-        <span class="inline-block pl-3">
+        <!-- The full 1.5rem cue of the base cell's `pl-6`: the parent row's own
+             text now starts at `compact`'s `px-2` (0.5rem), so the span carries
+             the whole indent instead of sharing it with the cell. -->
+        <span class="inline-block pl-6">
           <ItemInline :reference="String(row.item_id)" />
         </span>
       </template>

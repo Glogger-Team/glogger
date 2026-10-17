@@ -178,7 +178,7 @@
         @row-click="onCrossCharRowClick">
         <template #cell-item="{ row }">
           <ItemInline v-if="row.kind === 'item'" :reference="row.name as string" :type-id="row.typeId as number" />
-          <span v-else class="pl-8 text-text-secondary">{{ row.charName }}</span>
+          <span v-else class="pl-5 text-text-secondary">{{ row.charName }}</span>
         </template>
         <template #cell-total="{ row }">
           <span v-if="row.kind === 'item'" class="font-medium text-text-primary">{{ (row.qty as number).toLocaleString() }}</span>
@@ -218,7 +218,7 @@
           @row-click="onTotalRowClick">
           <template #cell-name="{ row }">
             <ItemInline v-if="row.kind === 'item'" :reference="row.name as string" :type-id="row.typeId as number" />
-            <span v-else class="pl-8 text-text-muted">{{ row.locationLabel }}</span>
+            <span v-else class="pl-5 text-text-muted">{{ row.locationLabel }}</span>
           </template>
           <template #cell-qty="{ row }">
             <span v-if="row.kind === 'item'" class="font-medium text-text-primary">{{ (row.qty as number).toLocaleString() }}</span>
@@ -407,7 +407,9 @@ const crossCharDisplayRows = computed<CrossCharDisplayRow[]>(() => {
 // hover lives in rowClass because `hoverable` applies table-wide.
 function crossCharRowClass(row: Record<string, unknown>): string {
   // Sub-rows keep the original dense `py-1`: the arbitrary variant outranks the
-  // component's `py-2` cell padding. Only item rows are interactive.
+  // component's `py-2` cell padding. Only item rows are interactive. Their indent
+  // lives on the template's `pl-5` because this cell's own `px-3` (0.75rem) is
+  // additive: 0.75 + 1.25 = the 2rem the base revision put on the cell as `pl-8`.
   return row.kind === 'item'
     ? 'hover:bg-surface-row-hover cursor-pointer'
     : 'bg-surface-inset/30 [&>td]:py-1'
@@ -722,6 +724,8 @@ const totalDisplayRows = computed<TotalDisplayRow[]>(() => {
 // Only item rows are interactive/hoverable, matching the original markup;
 // hover lives in rowClass because `hoverable` applies table-wide.
 function totalRowClass(row: Record<string, unknown>): string {
+  // Same sub-row treatment as `crossCharRowClass`, including the template's
+  // `pl-5` indent (this cell's `px-3` + 1.25rem = the original 2rem).
   return row.kind === 'item'
     ? 'hover:bg-surface-row-hover cursor-pointer'
     : 'bg-surface-inset/30 [&>td]:py-1'
