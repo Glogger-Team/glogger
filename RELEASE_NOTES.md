@@ -1,15 +1,15 @@
-## What's Changed since v1.3.1
+## What's Changed since v1.3.2
+
+### Features
+- feat: let /frozen take its target from the argument (`c924788`)
+- feat: add /frozen — this repo's one-word review call (`d439fd7`)
 
 ### Improvements
-- impv: migrate every data grid to the shared DataTable (`f34eb3b`)
+- impv: retire the repo review command in favour of the shared skill (`3b8f95d`)
 
 ### Fixes
-- fix: correct the ledger's padding rows and scope the gate's exemption check (`01b203a`)
-- fix: restore the sub-row indents the DataTable sweep flattened (`6482561`)
-- fix: gate DataTable row keydown to the row itself; stable MaterialTable keys (`8b5c3c5`)
-- fix: repair DataTable fallthrough + row keyboard access; third review pass (`ff7ba13`)
-- fix: restore row keys, dense empty states and pane scrollers after the DataTable sweep (`82708c3`)
-- fix: repair the sticky-header wrapper and the compact/size conflation in DataTable (`a600e3b`)
+- fix: give keyboard-focusable DataTable rows a visible focus indicator (`712b6d1`)
+- fix: correct the review-loop and gate claims; scope the exemption check to the rule (`b77e4bd`)
 
 ---
-*8 commits since v1.3.1*
+*11 commits since v1.3.2*
