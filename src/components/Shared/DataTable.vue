@@ -60,7 +60,9 @@
           class="border-b border-border-default/50"
           :class="[
             hoverable ? 'hover:bg-surface-row-hover' : '',
-            rowClickable ? 'cursor-pointer' : '',
+            rowClickable
+              ? 'cursor-pointer focus-visible:bg-surface-row-hover focus-visible:outline-none'
+              : '',
             rowClass ? rowClass(row, index) : '',
           ]"
           :tabindex="rowClickable ? 0 : undefined"
