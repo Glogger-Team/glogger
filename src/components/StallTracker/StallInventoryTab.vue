@@ -41,6 +41,7 @@
       <DataTable
         :columns="inStockColumns"
         :rows="(sortedInStockItems as unknown as Record<string, unknown>[])"
+        :row-key="(row) => String(row.item)"
         :sort-key="sortBy"
         :sort-dir="sortDir"
         :loading="loading"
@@ -121,10 +122,10 @@
         <DataTable
           :columns="soldOutColumns"
           :rows="(sortedRecentlySoldOut as unknown as Record<string, unknown>[])"
+          :row-key="(row) => String(row.item)"
           :sort-key="soldOutSortBy"
           :sort-dir="soldOutSortDir"
           :hoverable="true"
-          :sticky-header="false"
           compact
           empty-text="Nothing has sold out in the selected window."
           empty-hint=""

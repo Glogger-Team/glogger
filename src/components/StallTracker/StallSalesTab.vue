@@ -50,6 +50,7 @@
       <DataTable
         :columns="columns"
         :rows="(rows as unknown as Record<string, unknown>[])"
+        :row-key="(row) => String(row.id)"
         :sort-key="displaySortKey"
         :sort-dir="sortDir"
         :loading="loading"

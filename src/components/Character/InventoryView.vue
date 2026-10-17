@@ -211,6 +211,7 @@
           :row-key="(row, i) => (row.kind === 'item' ? String(row.name) : `${row.name}-${row.locationLabel}-${i}`)"
           :sort-key="totalSort"
           :sort-dir="totalSortAsc ? 'asc' : 'desc'"
+          empty-text="No items in this snapshot."
           :hoverable="false"
           :row-class="totalRowClass"
           @sort="handleTotalSort"
@@ -732,8 +733,8 @@ function onTotalRowClick(payload: { row: Record<string, unknown> }) {
 
 // DataTable only reports the clicked column; the comparator and per-column
 // default directions stay here.
-function handleTotalSort(payload: { key: string; dir: 'asc' | 'desc' }) {
-  toggleTotalSort(payload.key as 'name' | 'qty')
+function handleTotalSort({ key }: { key: string }) {
+  toggleTotalSort(key as 'name' | 'qty')
 }
 
 // ── Snapshot management ─────────────────────────────────────────────────────

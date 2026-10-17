@@ -6,6 +6,7 @@
       ? `${row.item_name}-${row.item_id}-${i}`
       : (row.is_dynamic ? `dyn-${row.item_name}` : String(row.item_id)))"
     compact
+    :hoverable="false"
     :row-class="displayRowClass"
     @row-click="onRowClick">
     <template #cell-item_name="{ row }">

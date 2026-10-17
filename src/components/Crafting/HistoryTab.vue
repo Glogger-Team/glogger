@@ -41,6 +41,7 @@
           :rows="recipeRows"
           :row-key="(row) => String(row.recipe_key)"
           compact
+          :hoverable="false"
           empty-variant="compact"
           :empty-text="emptyText">
           <template #cell-idx="{ value }">

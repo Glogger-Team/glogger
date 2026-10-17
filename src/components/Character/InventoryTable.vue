@@ -42,7 +42,8 @@
         :sort-dir="sortAsc ? 'asc' : 'desc'"
         compact
         size="sm"
-        empty-text="No items match the current filters."
+        empty-variant="compact"
+        :empty-text="emptyText"
         @sort="handleSort">
         <template #cell-item_name="{ row }">
           <div class="flex flex-col">
@@ -188,6 +189,13 @@ const filtered = computed(() => {
   return list
 })
 
+// The empty grid means "filtered to nothing" only when a filter is actually
+// set; an item-less snapshot must not claim the filters are to blame.
+const emptyText = computed(() =>
+  filterText.value || filterVault.value || filterRarity.value || filterSlot.value
+    ? 'No items match the current filters.'
+    : 'No items in this snapshot.')
+
 function toggleSort(key: SortKey) {
   if (sortKey.value === key) {
     sortAsc.value = !sortAsc.value
@@ -199,8 +207,8 @@ function toggleSort(key: SortKey) {
 
 // Keeps the file's own comparator/default-direction semantics; DataTable only
 // reports the clicked column and renders the arrow from sortKey/sortAsc.
-function handleSort(payload: { key: string; dir: 'asc' | 'desc' }) {
-  toggleSort(payload.key as SortKey)
+function handleSort({ key }: { key: string }) {
+  toggleSort(key as SortKey)
 }
 
 function formatNumber(n: number): string {

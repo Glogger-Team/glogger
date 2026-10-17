@@ -340,6 +340,7 @@
             :columns="materialColumns"
             :row-key="(row) => String(row.key)"
             compact
+            :hoverable="false"
             :rows="(aggregatedMaterials as unknown as Record<string, unknown>[])">
             <template #cell-item_name="{ row }">
               <template v-if="row.is_dynamic">

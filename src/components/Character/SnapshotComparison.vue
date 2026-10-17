@@ -7,7 +7,7 @@
     <div v-else class="overflow-auto max-h-[60vh]">
       <DataTable
         :columns="columns"
-        :rows="(sortedDiffs as unknown as Record<string, unknown>[])"
+        :rows="sortedDiffs"
         :row-key="(row) => String(row.skill_name)"
         compact
         size="sm">
@@ -25,8 +25,8 @@
             {{ (row.level_change as number) > 0 ? `+${row.level_change}` : row.level_change || '-' }}
           </span>
         </template>
-        <template #cell-xp_change="{ row }">
-          <span class="text-text-secondary">{{ formatXpChange(row as unknown as SkillDiff) }}</span>
+        <template #cell-xp_change="{ value }">
+          <span class="text-text-secondary">{{ value }}</span>
         </template>
       </DataTable>
     </div>
@@ -50,14 +50,16 @@ const columns: ColumnDef[] = [
   { key: 'xp_change', label: 'XP Change', align: 'right' },
 ]
 
-const sortedDiffs = computed(() => {
-  return [...props.diffs].sort((a, b) => {
-    // Changed skills first, then alphabetical
-    const aChanged = a.level_change !== 0 || a.old_xp !== a.new_xp
-    const bChanged = b.level_change !== 0 || b.old_xp !== b.new_xp
-    if (aChanged !== bChanged) return aChanged ? -1 : 1
-    return a.skill_name.localeCompare(b.skill_name)
-  })
+const sortedDiffs = computed<Record<string, unknown>[]>(() => {
+  return [...props.diffs]
+    .sort((a, b) => {
+      // Changed skills first, then alphabetical
+      const aChanged = a.level_change !== 0 || a.old_xp !== a.new_xp
+      const bChanged = b.level_change !== 0 || b.old_xp !== b.new_xp
+      if (aChanged !== bChanged) return aChanged ? -1 : 1
+      return a.skill_name.localeCompare(b.skill_name)
+    })
+    .map((diff): Record<string, unknown> => ({ ...diff, xp_change: formatXpChange(diff) }))
 })
 
 function changeColor(change: number): string {

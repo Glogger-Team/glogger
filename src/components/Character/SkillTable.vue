@@ -91,8 +91,8 @@ function toggleSort(key: 'skill_name' | 'level') {
 
 // Keeps the file's own comparator/default-direction semantics; DataTable only
 // reports the clicked column and renders the arrow from sortKey/sortAsc.
-function handleSort(payload: { key: string; dir: 'asc' | 'desc' }) {
-  toggleSort(payload.key as 'skill_name' | 'level')
+function handleSort({ key }: { key: string }) {
+  toggleSort(key as 'skill_name' | 'level')
 }
 
 function formatNumber(n: number): string {

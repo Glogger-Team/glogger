@@ -1,9 +1,12 @@
 <template>
-  <!-- No `overflow` on this wrapper: a box with `overflow != visible` becomes the nearest
-       scrollport for the table's `position: sticky` header, and because this wrapper's height
-       is content-driven it never scrolls — the header would scroll away with the rows instead
-       of pinning to the parent scroller. Only the outermost scroller must stay the scrollport. -->
   <div class="w-full">
+    <!-- No `overflow` on this wrapper: a box with `overflow != visible` becomes the nearest
+         scrollport for the table's `position: sticky` header, and because this wrapper's height
+         is content-driven it never scrolls — the header would scroll away with the rows instead
+         of pinning to the parent scroller. Only the outermost scroller must stay the scrollport.
+         (Keep this comment out of the SFC's root position: a comment before the root element
+         makes the root a Fragment, which silently drops every fallthrough attribute —
+         `class`/`style`/`ref`/native listeners.) -->
     <table class="w-full border-collapse" :class="size === 'sm' ? 'text-sm' : 'text-xs'">
       <thead v-if="rows.length > 0 || loading" :class="stickyHeader ? 'sticky top-0 z-10' : ''" class="bg-surface-base border-b border-border-default">
         <tr>
@@ -60,7 +63,10 @@
             rowClickable ? 'cursor-pointer' : '',
             rowClass ? rowClass(row, index) : '',
           ]"
-          @click="emit('rowClick', { row, index })">
+          :tabindex="rowClickable ? 0 : undefined"
+          @click="emit('rowClick', { row, index })"
+          @keydown.enter.prevent="emit('rowClick', { row, index })"
+          @keydown.space.prevent="emit('rowClick', { row, index })">
           <td
             v-for="col in columns"
             :key="col.key"
