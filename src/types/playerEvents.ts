@@ -37,6 +37,7 @@ export interface ItemAddedEvent {
   instance_id: number
   slot_index: number
   is_new: boolean
+  initial_quantity: number
   provenance: ItemProvenance
 }
 

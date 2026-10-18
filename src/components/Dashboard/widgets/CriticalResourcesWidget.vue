@@ -12,9 +12,6 @@
     <div v-if="trackedItems.length === 0" class="text-xs text-text-dim italic">
       No tracked items configured.
     </div>
-    <div>
-      warning: item tracking is not great right now! these counts might be lower (likely not higher) than actual.
-    </div>
   </div>
 </template>
 

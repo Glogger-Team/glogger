@@ -368,6 +368,10 @@ export const useStartupStore = defineStore("startup", () => {
     try {
       // Load all game state domains (skills, inventory, favor, recipes, etc.)
       await gameState.loadAll();
+      // Re-read inventory + storage so chat-corrected DB rows overwrite the
+      // snapshot before live tailing begins (heals pre-fix `1`s).
+      await gameState.refreshDomain('inventory');
+      await gameState.refreshDomain('storage');
       // Also load storage vault CDN metadata
       updateTask(TASK_GAME_STATE, "running", "Loading storage vaults...");
       await gameState.loadStorageVaults();
