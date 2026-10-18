@@ -95,10 +95,10 @@ exist. The narrow frontend defect this bucket produced is now fixed (see *Closed
   - **Audit: verified (still unimplemented).** `QuestTooltip.vue` and `ItemTooltip.vue` render no state; WO completion exists only inside the Quests screen for the selected character (`QuestsScreen.vue:167-173`), and the only cross-character command (`get_all_character_items`, `inventory_commands.rs:566`) is inventory-items-only (used by `ConsolidateTab`).
   - **Effort: Medium | Impact: Medium (multi-character awareness)**
 
-- [ ] Equipment display limited
-  - Equipment IS tracked from Player.log via `ProcessSetEquippedItems`, but only provides `slot` + `appearance_key` — no item names, stats, or details. A basic display could be built showing appearance slots only. Full details require VIP JSON export.
-  - **Audit: verified (still open).** `ProcessSetEquippedItems` → `EquipmentChanged` (`player_event_parser.rs:1344-1347,3035-3037`); stored as `slot`+`appearance_key` only (`migrations.rs:2294-2300`, read `game_state_commands.rs:379-392`). The only renderings are debug tables (`Settings/GameStateDebug.vue:72-78`, dev panel `GameStateTab.vue:80-86`) — no appearance-only view was ever built.
-  - **Effort: Low-Medium (appearance-slot view only) | Impact: Low-Medium**
+- [ ] Current gear display (blocked: no source knows what's worn)
+  - The ask is a "what's my character wearing" tab — names, stats, details. Neither source answers it. The log path (`ProcessSetEquippedItems` → `EquipmentChanged`, stored as `slot`+`appearance_key` only) is live but nameless: appearance look-codes, never item names. The snapshot path has names/mods/TSys (`character_snapshot_items` via `get_equipped_gear_candidates`) but the report carries no "currently equipped" flag — worn gear and carried spares are indistinguishable, so the picker returns best-guess candidates and asks the user to confirm. An appearance-keys-only view was built and reverted: it rendered correctly but answered nothing the user asked.
+  - **Unblocks when:** a source identifies worn gear — either a log event carrying item identity per slot, or a snapshot/VIP report flagging equipped items.
+  - **Effort: unknown (needs the source first) | Impact: Medium**
 
 - [ ] Evaluate ingestion pipeline / coordinator architecture
   - **Partial investigation (see `docs/architecture/pipeline-structure.md`):** Coordinator is a manual dispatch hub (~2K lines). No formal event bus — each new feature adds match arms. No history/audit tables for most domains (only `item_transactions` is append-only). No shared schema contract for Tauri event payloads. Current design works at this scale but these are real gaps to watch as features grow.
