@@ -41,11 +41,11 @@
 
       <!-- Filters -->
       <div v-if="npcStatuses.length > 0" class="flex items-center gap-4 flex-wrap text-xs">
-        <!-- Hide above favor tier -->
+        <!-- Hide at-or-above favor tier -->
         <label class="flex items-center gap-1.5 text-text-secondary">
-          Hide above
+          Hide at/above
           <select
-            v-model="hideAboveTier"
+            v-model="hideAtOrAboveTier"
             class="bg-surface-elevated border border-border-default rounded px-1.5 py-0.5 text-xs text-text-primary cursor-pointer">
             <option value="">Off</option>
             <option v-for="tier in filterableTiers" :key="tier" :value="tier">
@@ -198,7 +198,7 @@ const selectedVendorStatus = computed(() => {
 })
 
 // Filter state
-const hideAboveTier = ref('')
+const hideAtOrAboveTier = ref('')
 const showOnlyTrainers = ref(false)
 const showOnlyVendors = ref(false)
 const showOnlyStorage = ref(false)
@@ -207,7 +207,7 @@ const hideMaxedGifts = ref(false)
  *  28 of 68 Statehelm NPCs with no CDN gift data are clutter for a cap tracker. */
 const onlyGiftMattering = ref(false)
 
-// Tiers available for the "hide above" dropdown (exclude Despised — hiding above Despised hides everything)
+// Tiers available for the "hide at/above" dropdown (exclude Despised — hiding at/above Despised hides everything)
 const filterableTiers = FAVOR_TIERS.filter(t => t !== 'Despised')
 
 // Enrich statuses with parsed services
@@ -225,9 +225,9 @@ const enrichedStatuses = computed(() => {
 
 const filteredStatuses = computed(() => {
   return enrichedStatuses.value.filter(status => {
-    // Hide above tier filter
-    if (hideAboveTier.value && status.favorTier) {
-      if (isTierAtOrAbove(status.favorTier, hideAboveTier.value)) return false
+    // Hide at-or-above tier filter
+    if (hideAtOrAboveTier.value && status.favorTier) {
+      if (isTierAtOrAbove(status.favorTier, hideAtOrAboveTier.value)) return false
     }
 
     // Service filters (additive — if any are checked, NPC must match at least one)

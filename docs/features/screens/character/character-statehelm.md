@@ -62,7 +62,7 @@ Each card displays:
 
 ## Filters
 
-- **Hide above tier** — dropdown to hide NPCs at or above a chosen favor tier (e.g., hide Soul Mates)
+- **Hide at/above tier** — dropdown to hide NPCs at or above a chosen favor tier (e.g., hide Soul Mates)
 - **Trainers / Vendors / Storage** — checkbox filters (additive: show NPCs matching any checked service)
 - **Hide maxed gifts** — hide *tracked* NPCs that already received 5 gifts this week (meaningless for NPCs whose gifts do nothing, so those are kept)
 - **Only NPCs whose gifts matter** — opt-in: keep only NPCs with CDN gift data (`giftTracking`), the same set the header's gift total counts
