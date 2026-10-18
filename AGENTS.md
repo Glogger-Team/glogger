@@ -17,7 +17,7 @@ SQLite (WAL) via r2d2 pool          ──►  Tauri events (game-state-updated,
 Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_handler!
 ```
 
-- **Single Rust lib crate** (`glogger_lib` in `src-tauri/`); `main.rs` is a 5-line shim calling `run()`. `lib.rs` is the wiring hub: numbered, commented startup sequence, `tauri::generate_handler![...]` with command groups per `// <area>` comment sections (count via `grep -c '#\[tauri::command\]' src-tauri/src/lib.rs`).
+ - **Single Rust lib crate** (`glogger_lib` in `src-tauri/`); `main.rs` is a 5-line shim calling `run()`. `lib.rs` is the wiring hub: numbered, commented startup sequence, `tauri::generate_handler![...]` with command groups per `// <area>` comment sections (count via `grep -rc '#\[tauri::command\]' src-tauri/src`).
 - **FE→BE**: `invoke('snake_case_cmd', { camelCaseArgs })` from `@tauri-apps/api/core`. Commands mostly sync `fn -> Result<T, String>`, registered in `lib.rs`.
 - **BE→FE**: `app_handle.emit(...)` → `listen(...)` in stores. Key contract: `game-state-updated` payload is a **list of domain names** (e.g. `["arena"]`) — handlers must refresh only the named domains.
 - **State split**: Rust `app.manage()` holds durable state (`DbPool`, `SettingsManager` JSON-file settings, `GameDataState` CDN data, `DataIngestCoordinator`, `StallOpsLock`). Pinia stores are session caches, hydrated via invoke and kept fresh by events — game-state durability flows through backend settings/DB, not `localStorage` (which holds only UI prefs: pinned NPCs, timers).
