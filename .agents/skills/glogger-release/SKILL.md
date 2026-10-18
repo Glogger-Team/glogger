@@ -26,7 +26,7 @@ This repo (`cprivitere/glogger-twinkleoftoes`) is a standalone fork of `crisp-od
 ## Decision rules
 
 - **Which profile is the user running?** Window title: `glogger v<ver>` = the installed daily driver (appdata `glogger.Release`, data persists forever). `EXPERIMENTAL` = sandbox that re-seeds from the Release dir on each version bump — never treat its data as valuable. `DEV` = `npm run tauri dev` scratch DB (`glogger.Dev`).
-- **Where does new work live?** Committed work goes on `main` in logical chunks (commit prefixes: `feat:`/`fix:`/`impv:`/`docs:`/`test:`/`build:`).
+- **Where does new work live?** Committed work goes on `main` in logical chunks (prefix list owned by `.githooks/commit-msg`).
 - **Upstream is a reference remote:** absorb upstream fixes with `git fetch upstream && git merge upstream/<branch>`. Expect conflicts in the config/CI files this fork owns (`tauri.conf.json` updater block, `tauri.release.conf.json`, `scripts/*`, `.github/workflows/release.yml`, `AGENTS.md`) — resolve toward this fork's values. Never open a PR against `crisp-oddio/glogger-oddio`.
 - **DB safety:** copy DBs only when the source app is closed; copy `glogger.db` + `-wal` + `-shm` together; verify with count-diff (`words_of_power`, `character_resuscitations`). Migrations are upward-only — never open a newer-schema DB with an older build.
 
@@ -36,7 +36,7 @@ This repo (`cprivitere/glogger-twinkleoftoes`) is a standalone fork of `crisp-od
 2. Verify: `cargo test --lib` (src-tauri dir) + `npm run build` if TS changed.
 3. Build: `npm run tauri:build`. NSIS bundle lands in `src-tauri/target/release/bundle/nsis/`.
 4. Install: run the setup exe (installs to `%LOCALAPPDATA%\glogger\`, does not touch the data dir).
-5. Smoke: launch → title `glogger v<ver>` → confirm recent events (log positions advance).
+5. Smoke: launch → title `glogger v<ver>` → confirm recent events (log positions advance). Visual QA beyond that is owned by `skill://glogger-smoke` (CDP recipe, in-window only).
 
 ### Platforms shipped (CI matrix in `.github/workflows/release.yml`)
 
@@ -61,7 +61,7 @@ If the Release DB drifts stale: close ALL gloggers, copy the four files into `%A
 
 ## Known hazards (this machine, Windows)
 
-- Hooks are **opt-in per clone**: `scripts/setup-hooks.sh` sets `core.hooksPath=.githooks`. `pre-push` runs the TOS/CoC hard-line scanner (`scripts/check-glogger-constraints.ps1`) and blocks the push on a violation; the release workflow's `validate` job re-runs it, so an uninstalled hook cannot ship a violation.
+- Hooks are **opt-in per clone**: `scripts/setup-hooks.sh` sets `core.hooksPath=.githooks`. Pre-push runs the hard-line scanner (`scripts/check-glogger-constraints.ps1` owns the machine patterns; TOS prose in `docs/research/glogger-game-interaction-limits.md`) and blocks a violating push; release `validate` re-checks.
 
 - PowerShell 5.1 mangles `git commit -m` here-strings with double quotes → `git commit -F <file>`.
 - `src-tauri/Cargo.toml` phantom CRLF diff in `git status` — leave uncommitted.

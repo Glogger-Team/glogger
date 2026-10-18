@@ -92,17 +92,15 @@ The pipeline refuses to publish when the tag != the committed
 `tauri.conf.json` version, when any platform's `.sig` is missing, or (for a
 dispatched publish) when the tag doesn't exist on `origin`. The `validate` job
 also runs the game-interaction hard-line scanner
-(`scripts/check-glogger-constraints.ps1`, `pwsh`), so a TOS/CoC violation fails
+(`scripts/check-glogger-constraints.ps1`, `pwsh` — TOS prose lives in
+`docs/research/glogger-game-interaction-limits.md`), so a TOS/CoC violation fails
 the release — the same scanner runs from `.githooks/pre-push`, which is
-**opt-in per clone**: install it with `scripts/setup-hooks.sh` (verify:
-`git config --get core.hooksPath` → `.githooks`; it blocks a push carrying a
-probe violation, and `GLOGGER_SKIP_CONSTRAINTS=1` bypasses it loudly — never do
-that to get a release out, CI re-checks anyway). A tag push also
+opt-in per clone (install: `scripts/setup-hooks.sh`; it blocks a violating
+push, `GLOGGER_SKIP_CONSTRAINTS=1` bypasses it loudly, CI re-checks anyway). A tag push also
 fails `validate` when `RELEASE_NOTES.md` is missing or doesn't cover the range
 since the previous tag (a warning only on `workflow_dispatch`, where historical
-tags are smoke-tested). Commit prefixes drive the notes: `feat:`/`impv:`/`fix:`
-appear, `docs:`/`build:`/`test:`/`chore:`/`release:` do not — so put anything a
-user should read about in a `feat:`/`impv:`/`fix:` commit.
+tags are smoke-tested). The `.githooks/commit-msg` prefix list drives the notes — put anything a
+user should read about in a prefix the notes include.
 
 ### When a tag's build fails
 
@@ -196,26 +194,23 @@ pubkey is compiled in, so the new-key release must be installed manually once.
 - `src-tauri/Cargo.toml` shows a phantom CRLF-only diff in `git status` —
   leave it uncommitted (permanent known artifact).
 - npm only (Node 24); no bun/yarn/pnpm.
-- Commit prefixes: `feat:` / `fix:` / `impv:` / `docs:` / `test:` / `build:`.
+- Prefixes/hook install: see `.githooks/commit-msg` and `scripts/setup-hooks.sh` (cited, not restated).
 
 ## Upstream reference path
-
 `upstream` (crisp-oddio/glogger-oddio) is a read-only reference remote.
 Absorb fixes with `git fetch upstream && git merge upstream/<branch>`; expect
 conflicts in the config/CI files this fork owns. Never open a PR against
-upstream. The local pre-push constraint scanner
-(`scripts/check-glogger-constraints.ps1`) runs automatically on push.
+upstream. Enforcement: `scripts/check-glogger-constraints.ps1` runs from `.githooks/pre-push` — the script owns the machine patterns.
 
 ## Credit lines (release bodies + README)
 
 - Original app: **Daniel Auchenpaugh** (`danielout/glogger`).
 - Upstream fork: credit the handle **oddio** (`crisp-oddio/glogger-oddio`) —
   that is their own public self-credit ("oddio of arisetsu"), and their GitHub
-  profile carries no display name. The git author identity behind their 277
-  commits (`git log --author=crisp-oddio`) does carry a personal name, which
-  they publish nowhere; default to the handle unless they ask for the name.
-- Credit the **work**, not just the pipeline: 277 of their commits are
-  ancestors of our releases (103 of them feat/fix/impv), so the release
+  profile carries no display name. The git author identity behind their commits
+  does carry a personal name, which they publish nowhere; default to the handle unless they ask for the name.
+- Credit the **work**, not just the pipeline: their commits are
+  ancestors of our releases (count via `git log --author=crisp-oddio --oneline | wc -l`), so the release
   boilerplate reads "Features, fixes and the release pipeline inherited from
   the oddio fork by oddio". Keep the wording in `release.yml` (template) and
   `README.md` (footer) in sync when it changes.
