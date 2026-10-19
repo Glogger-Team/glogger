@@ -1,7 +1,7 @@
-## What's Changed since v1.3.3
+## What's Changed since v1.3.4
 
 ### Fixes
-- fix: rename Statehelm favor filter to hide at/above tier (`a2287db`)
+- fix: seed live inventory from ItemAdded initial_quantity so multi-stack pickups count at once (`feee54e`)
 
 ---
-*1 commit since v1.3.3*
+*6 commits since v1.3.4*
