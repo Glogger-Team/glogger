@@ -258,12 +258,13 @@ impl DataIngestCoordinator {
     /// the character's own chat login line from this catch-up's
     /// `chat_session_servers` scan, else the server in use. See
     /// `apply_catch_up_login`.
-    fn adopt_player_log_session(&mut self, character_name: &str) -> SessionServerSource {
+    fn adopt_player_log_session(&mut self, character_name: &str, clear_inventory: bool) -> SessionServerSource {
         let source = apply_catch_up_login(
             &mut self.game_state,
             &self.db_pool,
             &self.catch_up_chat_servers,
             character_name,
+            clear_inventory,
         );
         startup_log!(
             "Player.log session identity: {} on {} (server from {})",
@@ -764,7 +765,7 @@ impl DataIngestCoordinator {
                         "Player.log catch-up saw no login line; re-arming from the log's saved position: '{}'",
                         name
                     );
-                    self.adopt_player_log_session(&name);
+                    self.adopt_player_log_session(&name, false);
                 }
             }
 
@@ -1011,7 +1012,7 @@ impl DataIngestCoordinator {
                     // identity now has one owner (`GameStateManager`), and the
                     // durable selection is synced to it when the replay ends —
                     // see `poll`.
-                    self.adopt_player_log_session(&character_name);
+                    self.adopt_player_log_session(&character_name, true);
                     // No `character-login` emit: live identity changes (and the
                     // frontend reload they trigger) are the chat log's job, and
                     // the startup sequence loads the character explicitly once
@@ -1517,6 +1518,20 @@ impl DataIngestCoordinator {
                                         self.app_handle
                                             .emit("game-state-updated", &corrected_domains)
                                             .ok();
+                                    }
+                                }
+
+                                // Milking timer: if we gained milk while interacting with a cow
+                                if (item_name == "Bottle of Milk"
+                                    || internal_name.as_deref() == Some("BottleOfMilk"))
+                                    && self.pending_cow_interaction.is_some()
+                                {
+                                    if let Some(cow_internal) = self.pending_cow_interaction.take() {
+                                        let cow_display = cow_internal
+                                            .strip_prefix("Cow_")
+                                            .unwrap_or(&cow_internal)
+                                            .to_string();
+                                        self.record_cow_milk(&cow_display, timestamp);
                                     }
                                 }
 
@@ -4010,7 +4025,8 @@ fn apply_catch_up_login(
     db: &DbPool,
     chat_servers: &std::collections::HashMap<String, String>,
     character_name: &str,
-) -> SessionServerSource {
+    clear_inventory: bool,
+    ) -> SessionServerSource {
     let current_server = game_state.get_active_server().map(str::to_string);
     game_state.set_active_character_name(character_name);
     let (server, source) = match session_server_for(db, character_name, current_server.as_deref()) {
@@ -4040,15 +4056,17 @@ fn apply_catch_up_login(
         // replayed session pollute this one. Equipment/combat/mount/favor are
         // deliberately untouched: equipment self-heals via its full-dump
         // reinsert, and the rest have no repopulating dump event.
-        if let (Some(character), Ok(conn)) = (
-            game_state.get_active_character().map(str::to_string),
-            db.get_write(),
-        ) {
-            if let Err(e) = conn.execute(
-                "DELETE FROM game_state_inventory WHERE character_name = ?1 AND server_name = ?2",
-                rusqlite::params![character, server],
+        if clear_inventory {
+            if let (Some(character), Ok(conn)) = (
+                game_state.get_active_character().map(str::to_string),
+                db.get_write(),
             ) {
-                startup_log!("[coordinator] clear-on-adopt inventory delete failed: {e}");
+                if let Err(e) = conn.execute(
+                    "DELETE FROM game_state_inventory WHERE character_name = ?1 AND server_name = ?2",
+                    rusqlite::params![character, server],
+                ) {
+                    startup_log!("[coordinator] clear-on-adopt inventory delete failed: {e}");
+                }
             }
         }
     }
@@ -4550,7 +4568,7 @@ mod session_identity_tests {
         let mut gs = game_state("TestPlayer", "Dreva");
 
         assert_eq!(
-            apply_catch_up_login(&mut gs, &pool, &map, "TestPlayer"),
+            apply_catch_up_login(&mut gs, &pool, &map, "TestPlayer", true),
             SessionServerSource::InUse
         );
         gs.process_events_batch(&skills_loaded(7), &pool);
@@ -4558,7 +4576,7 @@ mod session_identity_tests {
         // The alt has no `user_characters` row: without the chat tier it borrows
         // the selected character's server (`Dreva`) and replaces its rows.
         assert_eq!(
-            apply_catch_up_login(&mut gs, &pool, &map, "OtherAlt"),
+            apply_catch_up_login(&mut gs, &pool, &map, "OtherAlt", true),
             SessionServerSource::ChatLog
         );
         gs.process_events_batch(&skills_loaded(99), &pool);
@@ -4584,7 +4602,7 @@ mod session_identity_tests {
 
         // A repeated login line for the same character resolves the same way.
         assert_eq!(
-            apply_catch_up_login(&mut gs, &pool, &map, "OtherAlt"),
+            apply_catch_up_login(&mut gs, &pool, &map, "OtherAlt", true),
             SessionServerSource::ChatLog
         );
         assert_eq!(gs.get_active_server(), Some("OtherAltServer"));
@@ -4620,7 +4638,7 @@ mod session_identity_tests {
             "OtherAlt".to_string(),
             "Dreva".to_string(),
         )]);
-        apply_catch_up_login(&mut gs, &pool, &map, "OtherAlt");
+        apply_catch_up_login(&mut gs, &pool, &map, "OtherAlt", true);
 
         let count: i64 = pool
             .get()
@@ -4657,7 +4675,7 @@ mod session_identity_tests {
         let mut gs = game_state("TestPlayer", "Dreva");
 
         let source =
-            apply_catch_up_login(&mut gs, &pool, &std::collections::HashMap::new(), "Ghost");
+            apply_catch_up_login(&mut gs, &pool, &std::collections::HashMap::new(), "Ghost", true);
 
         assert_eq!(source, SessionServerSource::None);
         assert_eq!(gs.get_active_server(), Some("Dreva"));
@@ -4681,7 +4699,7 @@ mod session_identity_tests {
             "OtherAltServer".to_string(),
         )]);
 
-        let source = apply_catch_up_login(&mut gs, &pool, &map, "TestPlayer");
+        let source = apply_catch_up_login(&mut gs, &pool, &map, "TestPlayer", true);
 
         assert_eq!(source, SessionServerSource::None);
         assert_eq!(gs.get_active_server(), Some("Dreva"));
