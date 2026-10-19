@@ -1,4 +1,4 @@
-use crate::chat_parser::{parse_chat_lines, parse_chat_login_line, ChatMessage};
+use crate::chat_parser::{parse_chat_lines_tagged, parse_chat_login_line, ChatMessage};
 use crate::parsers::{parse_skill_update, SkillUpdate};
 use crate::player_event_parser::{PlayerEvent, PlayerEventParser};
 use chrono::NaiveDateTime;
@@ -21,9 +21,11 @@ pub type PatternMatcher = fn(&str, &mut PlayerLogWatcher) -> Option<LogEvent>;
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum LogEvent {
-    /// Chat message parsed
-    ChatMessage(ChatMessage),
-
+    /// Chat message parsed, tagged with the login session that produced it
+    /// (`None` while no login line has been seen yet — mid-session resume
+    /// from a stored byte offset: the caller falls back to the drain identity
+    /// instead of dropping the gain).
+    ChatMessage(ChatMessage, Option<crate::chat_parser::ChatSessionTag>),
     /// Character logged in
     CharacterLogin {
         character_name: String,
@@ -660,10 +662,14 @@ impl LogFileWatcher for ChatLogWatcher {
         }
         events.extend(non_login_marker_events);
 
-        // Parse all chat messages using the multiline-aware parser
-        let messages = parse_chat_lines(&content_str);
-        for msg in messages {
-            events.push(LogEvent::ChatMessage(msg));
+        // Parse all chat messages with the multiline-aware parser, tagged by
+        // the login session that produced each one. Login lines were consumed
+        // above as markers (only the last survives the collapse) — the tagged
+        // parser re-derives the full per-line session sequence, so gains in
+        // earlier sessions keep their own identity. Resume-from-offset polls
+        // yield `None` tags until the next login line, by design.
+        for (msg, session) in parse_chat_lines_tagged(&content_str) {
+            events.push(LogEvent::ChatMessage(msg, session));
         }
 
         Ok(events)
@@ -690,6 +696,7 @@ impl LogFileWatcher for ChatLogWatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chat_parser::parse_chat_lines;
 
     #[test]
     fn test_parse_character_login() {
@@ -873,5 +880,78 @@ mod tests {
 
         let event2 = watcher.parse_line("LOADING LEVEL TestArea");
         assert!(matches!(event2, Some(LogEvent::AreaTransition { .. })));
+    }
+
+    #[test]
+    fn test_chat_poll_tags_gains_by_producing_session() {
+        // The frozen-review repro at the watcher level: a daily file with two
+        // sessions. The collapsed login markers carry only the last session,
+        // but each gain ChatMessage keeps the session that produced it.
+        use crate::chat_parser::ChatSessionTag;
+        use std::io::Write;
+
+        let dir = std::env::temp_dir().join(format!(
+            "glogger_chat_tag_test_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Chat-26-03-09.log");
+        let mut file = std::fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            "26-03-09 05:01:46\t**************************************** Logged In As AltA. Server Dreva. Timezone Offset -07:00:00.\n\
+             26-03-09 05:02:00\t[Status] Fluorite x5 added to inventory.\n\
+             26-03-09 06:01:46\t**************************************** Logged In As AltB. Server Legacy. Timezone Offset -07:00:00.\n\
+             26-03-09 06:02:00\t[Status] Fluorite x3 added to inventory."
+        )
+        .unwrap();
+        drop(file);
+
+        let mut watcher = ChatLogWatcher::new(path.clone());
+        watcher.start().unwrap();
+        let events = watcher.poll().unwrap();
+
+        // Last login survives the marker collapse (pre-existing behaviour).
+        let logins: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                LogEvent::CharacterLogin { character_name, .. } => Some(character_name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(logins, vec!["AltB".to_string()]);
+
+        // But each gain keeps its own producing session.
+        let tags: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                LogEvent::ChatMessage(msg, tag)
+                    if msg.channel.as_deref() == Some("Status") =>
+                {
+                    Some(tag.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tags.len(), 2);
+        assert_eq!(
+            tags[0],
+            Some(ChatSessionTag {
+                character_name: "AltA".to_string(),
+                server_name: "Dreva".to_string(),
+            })
+        );
+        assert_eq!(
+            tags[1],
+            Some(ChatSessionTag {
+                character_name: "AltB".to_string(),
+                server_name: "Legacy".to_string(),
+            })
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

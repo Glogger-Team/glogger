@@ -82,7 +82,8 @@ pub struct CoordinatorStatus {
 }
 
 /// A chat `[Status] ItemGained` gain seen during catch-up, keyed by the
-/// session in force when the chat drain processed it. Applied to the player
+/// login session that produced the line (`ChatSessionTag`, re-derived
+/// per line — not the drain-final identity). Applied to the player
 /// rows via `GameStateManager::correct_stack_for_session` just before the
 /// live flip, because the Player.log drain already wrote fallback `stack_size
 /// = 1` rows before the chat drain ran.
@@ -307,7 +308,7 @@ impl DataIngestCoordinator {
     /// Apply chat stack gains staged during catch-up to their own sessions.
     /// Runs once, as the last step of the catch-up window (after the chat
     /// drain, before `set_live_mode`): the Player.log drain already wrote the
-    /// rows, and the staged keys name the session each gain was seen under.
+    /// rows, and the staged keys name the login session that produced each gain.
     fn apply_staged_chat_corrections(&mut self) {
         let staged = std::mem::take(&mut self.staged_chat_gains);
         if staged.is_empty() {
@@ -632,7 +633,7 @@ impl DataIngestCoordinator {
                             .or(self.settings.get().timezone_offset_seconds)
                             .unwrap_or(0);
                         for event in events {
-                            if let LogEvent::ChatMessage(mut msg) = event {
+                            if let LogEvent::ChatMessage(mut msg, _) = event {
                                 msg.timestamp = chat_local_to_utc(msg.timestamp, tz_offset);
                                 messages.push(msg);
                             }
@@ -1379,7 +1380,7 @@ impl DataIngestCoordinator {
 
         for event in events {
             match event {
-                LogEvent::ChatMessage(msg) => {
+                LogEvent::ChatMessage(msg, session_tag) => {
                     // Capture the local wall-clock timestamp BEFORE the UTC
                     // conversion below — the Combat Wisdom store keys on local
                     // time to stay consistent with the chat-log backfill (which
@@ -1484,11 +1485,29 @@ impl DataIngestCoordinator {
                                     // buffer — so stage the gain session-keyed
                                     // for `apply_staged_chat_corrections`
                                     // instead of feeding/correcting now under a
-                                    // drain-order identity.
-                                    if let (Some(character), Some(server)) = (
-                                        self.game_state.get_active_character().map(String::from),
-                                        self.game_state.get_active_server().map(String::from),
-                                    ) {
+                                    // drain-order identity. The tag is the login
+                                    // session that produced the line; only when
+                                    // the file was resumed mid-session (`None`)
+                                    // do we fall back to the drain identity.
+                                    let staged_identity: Option<(String, String)> =
+                                        session_tag.as_ref().map(|tag| {
+                                            (
+                                                tag.character_name.clone(),
+                                                tag.server_name.clone(),
+                                            )
+                                        }).or_else(|| {
+                                            match (
+                                                self.game_state.get_active_character(),
+                                                self.game_state.get_active_server(),
+                                            ) {
+                                                (Some(c), Some(s)) => Some((
+                                                    c.to_string(),
+                                                    s.to_string(),
+                                                )),
+                                                _ => None,
+                                            }
+                                        });
+                                    if let Some((character, server)) = staged_identity {
                                         self.staged_chat_gains.push(StagedChatGain {
                                             character,
                                             server,

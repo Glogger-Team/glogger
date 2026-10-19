@@ -5,6 +5,18 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+/// Session a chat line was written under: the login line that opened it.
+///
+/// Chat logs are daily files (`Chat-YY-MM-DD.log`) that span multiple play
+/// sessions; each `Logged In As <Name>. Server <Server>.` line starts one.
+/// Tagging keeps catch-up gains attributable to the session that produced
+/// them instead of the drain-final identity (see `parse_chat_lines_tagged`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatSessionTag {
+    pub character_name: String,
+    pub server_name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub timestamp: NaiveDateTime,
@@ -203,6 +215,64 @@ pub fn parse_chat_lines(text: &str) -> Vec<ChatMessage> {
     }
 
     messages
+}
+
+/// Parse a block of chat log text, tagging each message with the login
+/// session that produced it.
+///
+/// Same message stream as [`parse_chat_lines`] (login lines stay ordinary
+/// untagged system messages — [`parse_chat_line`] has no channel for them),
+/// plus one tag per message: the `Logged In As <Name>. Server <Server>.`
+/// session in force when the line was read. `Logged Out` lines are messages
+/// too; they close the session, so a later resume without a fresh login
+/// yields `None` tags (caller falls back to the drain identity) rather than
+/// the previous session's tag.
+pub fn parse_chat_lines_tagged(text: &str) -> Vec<(ChatMessage, Option<ChatSessionTag>)> {
+    let mut tagged: Vec<(ChatMessage, Option<ChatSessionTag>)> = Vec::new();
+    let mut session: Option<ChatSessionTag> = None;
+
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        // Login lines open the session for the lines that follow. They are
+        // still parsed as messages (same stream as `parse_chat_lines`); the
+        // login line itself keeps the *previous* session's tag.
+        if line.contains("Logged In As") {
+            if let Some(msg) = parse_chat_line(line) {
+                tagged.push((msg, session.clone()));
+            }
+            if let Some(info) = parse_chat_login_line(line) {
+                session = Some(ChatSessionTag {
+                    character_name: info.character_name,
+                    server_name: info.server_name,
+                });
+            }
+            continue;
+        }
+        if line.contains("Logged Out") {
+            if let Some(msg) = parse_chat_line(line) {
+                tagged.push((msg, session.clone()));
+            }
+            session = None;
+            continue;
+        }
+
+        if is_timestamped_line(line) {
+            if let Some(msg) = parse_chat_line(line) {
+                tagged.push((msg, session.clone()));
+            }
+        } else if let Some((last_msg, _)) = tagged.last_mut() {
+            // Continuation line — append to previous message, keep its tag.
+            last_msg.message.push('\n');
+            last_msg.message.push_str(line.trim());
+            last_msg.item_links = extract_item_links(&last_msg.message);
+        }
+        // Orphaned continuation line: skipped, same as `parse_chat_lines`.
+    }
+
+    tagged
 }
 
 /// Extract item links from a chat message
@@ -764,5 +834,78 @@ Dying together\n\
         // But different directions
         assert_eq!(msgs[0].from_player, Some(true)); // outgoing
         assert_eq!(msgs[1].from_player, Some(false)); // incoming
+    }
+
+    // ── Session-tagged parsing tests ──────────────────────────────────────
+
+    #[test]
+    fn test_tagged_keeps_parity_with_untagged_stream() {
+        // Same message stream as `parse_chat_lines`: login lines stay
+        // ordinary system messages, not consumed markers.
+        let text = "26-03-09 05:01:46\t**************************************** Logged In As Zenith. Server Dreva. Timezone Offset -07:00:00.\n\
+                     26-03-09 05:01:47\t[Status] Fluorite x5 added to inventory.";
+        let tagged = parse_chat_lines_tagged(text);
+        let plain = parse_chat_lines(text);
+
+        assert_eq!(tagged.len(), plain.len());
+        for ((msg, _), expected) in tagged.iter().zip(plain.iter()) {
+            assert_eq!(msg.message, expected.message);
+            assert_eq!(msg.channel, expected.channel);
+        }
+        // The login line itself predates any session: untagged.
+        assert_eq!(tagged[0].1, None);
+        // The gain after it carries the session that produced it.
+        assert_eq!(
+            tagged[1].1,
+            Some(ChatSessionTag {
+                character_name: "Zenith".to_string(),
+                server_name: "Dreva".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_tagged_attributes_each_gain_to_its_session() {
+        // The frozen-review repro: two sessions in one daily file. Each gain
+        // must keep the login session that produced it, not the drain-final
+        // identity.
+        let text = "26-03-09 05:01:46\t**************************************** Logged In As AltA. Server Dreva. Timezone Offset -07:00:00.\n\
+                     26-03-09 05:02:00\t[Status] Fluorite x5 added to inventory.\n\
+                     26-03-09 06:01:46\t**************************************** Logged In As AltB. Server Legacy. Timezone Offset -07:00:00.\n\
+                     26-03-09 06:02:00\t[Status] Fluorite x3 added to inventory.";
+        let tagged = parse_chat_lines_tagged(text);
+
+        let gains: Vec<_> = tagged
+            .iter()
+            .filter(|(msg, _)| msg.channel.as_deref() == Some("Status"))
+            .collect();
+        assert_eq!(gains.len(), 2);
+        assert_eq!(
+            gains[0].1,
+            Some(ChatSessionTag {
+                character_name: "AltA".to_string(),
+                server_name: "Dreva".to_string(),
+            })
+        );
+        assert_eq!(
+            gains[1].1,
+            Some(ChatSessionTag {
+                character_name: "AltB".to_string(),
+                server_name: "Legacy".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_tagged_logout_closes_session_without_borrowing() {
+        // After logout, lines belong to no session until the next login —
+        // never to the logged-out session.
+        let text = "26-03-09 05:01:46\t**************************************** Logged In As Zenith. Server Dreva. Timezone Offset -07:00:00.\n\
+                     26-03-09 05:05:00\t**************************************** Logged Out\n\
+                     26-03-09 05:06:00\t[Status] Fluorite x5 added to inventory.";
+        let tagged = parse_chat_lines_tagged(text);
+
+        assert_eq!(tagged.len(), 3);
+        assert_eq!(tagged[2].1, None);
     }
 }
