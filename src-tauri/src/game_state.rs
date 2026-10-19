@@ -1219,14 +1219,14 @@ impl GameStateManager {
         }
     }
 
-    /// Correct inventory/storage stack sizes using chat status data.
-    ///
-    /// Player.log's ProcessAddItem always records stack_size=1. The chat log's
-    /// "[Status] Item x5 added to inventory." gives us the real quantity.
-    /// This finds recent rows with stack_size=1 for the matching item and
-    /// updates them, returning which domains were corrected.
-    pub fn correct_stack_from_chat(
+    /// Session-keyed stack correction: corrects the named `(character, server)`
+    /// slice instead of the active slice. Catch-up applies staged chat gains
+    /// through this so corrections land on the session that produced the rows,
+    /// not whatever identity is active at drain time.
+    pub fn correct_stack_for_session(
         &self,
+        character: &str,
+        server: &str,
         display_name: &str,
         quantity: u32,
         db: &DbPool,
@@ -1234,11 +1234,6 @@ impl GameStateManager {
         if quantity <= 1 {
             return vec![];
         }
-
-        let (character, server) = match (&self.active_character, &self.active_server) {
-            (Some(c), Some(s)) => (c.as_str(), s.as_str()),
-            _ => return vec![],
-        };
 
         let conn = match db.get_write() {
             Ok(c) => c,
@@ -1254,11 +1249,12 @@ impl GameStateManager {
 
         let mut domains = Vec::new();
 
-        // Try to correct game_state_inventory — match by internal_name or display_name
+        // Try to correct game_state_inventory — match by internal_name or display_name.
+        // NOTE: `base_where` uses ?2/?3 because ?1 is the SET value and ?4 the item name.
         let inv_corrected = correct_stack_in_table(
             &conn,
             "game_state_inventory",
-            "character_name = ?1 AND server_name = ?2",
+            "character_name = ?2 AND server_name = ?3",
             character,
             server,
             None, // no vault_key filter
@@ -1274,7 +1270,7 @@ impl GameStateManager {
         let storage_corrected = correct_stack_in_table(
             &conn,
             "game_state_storage",
-            "character_name = ?1 AND server_name = ?2",
+            "character_name = ?2 AND server_name = ?3",
             character,
             server,
             None,
@@ -1287,6 +1283,25 @@ impl GameStateManager {
         }
 
         domains
+    }
+
+    /// Correct inventory/storage stack sizes using chat status data.
+    ///
+    /// Player.log's ProcessAddItem always records stack_size=1. The chat log's
+    /// "[Status] Item x5 added to inventory." gives us the real quantity.
+    /// This finds recent rows with stack_size=1 for the matching item and
+    /// updates them, returning which domains were corrected.
+    pub fn correct_stack_from_chat(
+        &self,
+        display_name: &str,
+        quantity: u32,
+        db: &DbPool,
+    ) -> Vec<&'static str> {
+        let (character, server) = match (&self.active_character, &self.active_server) {
+            (Some(c), Some(s)) => (c.as_str(), s.as_str()),
+            _ => return vec![],
+        };
+        self.correct_stack_for_session(character, server, display_name, quantity, db)
     }
 
     /// Record an item transaction in the ledger.
@@ -1362,7 +1377,7 @@ fn correct_stack_in_table(
         "UPDATE {table} SET stack_size = ?1
          WHERE rowid = (
              SELECT rowid FROM {table}
-             WHERE {base_where} AND item_name = ?3 AND stack_size = 1
+             WHERE {base_where} AND item_name = ?4 AND stack_size = 1
              ORDER BY rowid DESC LIMIT 1
          )"
     );
@@ -1389,7 +1404,7 @@ fn correct_stack_in_table(
                     "UPDATE {table} SET stack_size = ?1
                      WHERE rowid = (
                          SELECT rowid FROM {table}
-                         WHERE {base_where} AND item_name = ?3 AND stack_size = 1
+                         WHERE {base_where} AND item_name = ?4 AND stack_size = 1
                          ORDER BY rowid DESC LIMIT 1
                      )"
                 ),
@@ -1837,6 +1852,71 @@ mod tests {
         };
         assert_eq!(level("TestPlayer"), 7, "first session's dump survived");
         assert_eq!(level("OtherAlt"), 99, "second session landed under its own identity");
+
+        // Drop the pool first: Windows won't delete a file with an open handle.
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn session_scoped_stack_correction_keys_by_session() {
+        use std::sync::Arc;
+
+        let db_path = std::env::temp_dir().join(format!(
+            "glogger_session_stack_correct_test_{}.db",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
+
+        let mut manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
+            crate::game_data::GameData::empty(),
+        )));
+
+        let seed = |character: &str, instance_id: i64, item_name: &str| {
+            pool.get_write()
+                .unwrap()
+                .execute(
+                    "INSERT INTO game_state_inventory
+                     (character_name, server_name, instance_id, item_name, stack_size, last_confirmed_at, source)
+                     VALUES (?1, 'Dreva', ?2, ?3, 1, '2026-10-19 12:00:00', 'log')",
+                    rusqlite::params![character, instance_id, item_name],
+                )
+                .unwrap()
+        };
+        // Internal names, matching the player-log rows the coordinator drains
+        // before the staged chat corrections run.
+        seed("TestPlayer", 1, "Fluorite");
+        seed("OtherAlt", 2, "Fluorite");
+
+        let stack = |character: &str| -> i64 {
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT stack_size FROM game_state_inventory
+                     WHERE character_name = ?1 AND server_name = 'Dreva' AND item_name = 'Fluorite'",
+                    rusqlite::params![character],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+
+        // Session-keyed: only OtherAlt's slice is corrected.
+        let domains =
+            manager.correct_stack_for_session("OtherAlt", "Dreva", "Fluorite", 5, &pool);
+        assert!(domains.contains(&"inventory"));
+        assert_eq!(stack("OtherAlt"), 5, "staged session corrected");
+        assert_eq!(stack("TestPlayer"), 1, "other session untouched");
+
+        // Live wrapper targets the active slice.
+        manager.set_active_character_name("TestPlayer");
+        manager.set_active_server_name("Dreva");
+        let domains = manager.correct_stack_from_chat("Fluorite", 3, &pool);
+        assert!(domains.contains(&"inventory"));
+        assert_eq!(stack("TestPlayer"), 3, "active slice corrected");
+        assert_eq!(stack("OtherAlt"), 5, "staged correction survived");
 
         // Drop the pool first: Windows won't delete a file with an open handle.
         drop(pool);

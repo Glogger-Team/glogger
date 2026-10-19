@@ -81,7 +81,20 @@ pub struct CoordinatorStatus {
     pub operation: String, // Serialized OperationType
 }
 
+/// A chat `[Status] ItemGained` gain seen during catch-up, keyed by the
+/// session in force when the chat drain processed it. Applied to the player
+/// rows via `GameStateManager::correct_stack_for_session` just before the
+/// live flip, because the Player.log drain already wrote fallback `stack_size
+/// = 1` rows before the chat drain ran.
+struct StagedChatGain {
+    character: String,
+    server: String,
+    item_name: String,
+    quantity: u32,
+}
+
 /// Central coordinator for all data ingestion
+
 pub struct DataIngestCoordinator {
     player_watcher: Option<PlayerLogWatcher>,
     chat_watcher: Option<ChatLogWatcher>,
@@ -139,6 +152,9 @@ pub struct DataIngestCoordinator {
     /// reaching `set_live_mode` would otherwise re-read every `Chat-*.log` on
     /// the 500ms polling thread, holding the coordinator lock each time.
     catch_up_servers_scanned: bool,
+    /// Chat stack gains staged during catch-up (see `StagedChatGain`); applied
+    /// just before the live flip. Cleared once live.
+    staged_chat_gains: Vec<StagedChatGain>,
 }
 
 impl DataIngestCoordinator {
@@ -185,6 +201,7 @@ impl DataIngestCoordinator {
             last_rez_dedup: std::collections::HashMap::new(),
             catch_up_chat_servers: std::collections::HashMap::new(),
             catch_up_servers_scanned: false,
+            staged_chat_gains: Vec::new(),
         })
     }
 
@@ -284,6 +301,36 @@ impl DataIngestCoordinator {
             self.catch_up_chat_servers.len(),
             dir.display()
         );
+    }
+
+    /// Apply chat stack gains staged during catch-up to their own sessions.
+    /// Runs once, as the last step of the catch-up window (after the chat
+    /// drain, before `set_live_mode`): the Player.log drain already wrote the
+    /// rows, and the staged keys name the session each gain was seen under.
+    fn apply_staged_chat_corrections(&mut self) {
+        let staged = std::mem::take(&mut self.staged_chat_gains);
+        if staged.is_empty() {
+            return;
+        }
+        let mut domains: Vec<&str> = Vec::new();
+        for gain in &staged {
+            domains.extend(
+                self.game_state.correct_stack_for_session(
+                    &gain.character,
+                    &gain.server,
+                    &gain.item_name,
+                    gain.quantity,
+                    &self.db_pool,
+                ),
+            );
+        }
+        domains.sort();
+        domains.dedup();
+        if !domains.is_empty() {
+            self.app_handle
+                .emit("game-state-updated", &domains)
+                .ok();
+        }
     }
 
     /// Read access to the DB pool. Feature commands need this to issue
@@ -759,6 +806,7 @@ impl DataIngestCoordinator {
         // failed poll simply retries (without re-running the chat-login scan —
         // see `catch_up_servers_scanned`).
         if !self.game_state.is_live() {
+            self.apply_staged_chat_corrections();
             startup_log!("Catch-up complete — switching to live tailing mode");
             self.game_state.set_live_mode();
             self.catch_up_chat_servers.clear();
@@ -1428,43 +1476,48 @@ impl DataIngestCoordinator {
                                             })
                                         })
                                         .unwrap_or((None, None));
-                                if let (Some(internal), Some(watcher)) =
-                                    (internal_name.clone(), self.player_watcher.as_mut())
-                                {
-                                    // timestamp is "YYYY-MM-DD HH:MM:SS" UTC — extract the time portion
-                                    let hms = timestamp
-                                        .split_whitespace()
-                                        .nth(1)
-                                        .unwrap_or(timestamp);
-                                    watcher.feed_chat_gain(internal, *quantity, hms);
-                                }
-
-                                // Milking timer: if we gained milk while interacting with a cow
-                                if (item_name == "Bottle of Milk"
-                                    || internal_name.as_deref() == Some("BottleOfMilk"))
-                                    && self.pending_cow_interaction.is_some()
-                                {
-                                    if let Some(cow_internal) =
-                                        self.pending_cow_interaction.take()
-                                    {
-                                        let cow_display = cow_internal
-                                            .strip_prefix("Cow_")
-                                            .unwrap_or(&cow_internal)
-                                            .to_string();
-                                        self.record_cow_milk(&cow_display, timestamp);
+                                if !self.game_state.is_live() {
+                                    // Catch-up: the Player.log drain already wrote
+                                    // fallback `stack_size = 1` rows, and no future
+                                    // `ProcessAddItem` will consult the parser
+                                    // buffer — so stage the gain session-keyed
+                                    // for `apply_staged_chat_corrections`
+                                    // instead of feeding/correcting now under a
+                                    // drain-order identity.
+                                    if let (Some(character), Some(server)) = (
+                                        self.game_state.get_active_character().map(String::from),
+                                        self.game_state.get_active_server().map(String::from),
+                                    ) {
+                                        self.staged_chat_gains.push(StagedChatGain {
+                                            character,
+                                            server,
+                                            item_name: item_name.clone(),
+                                            quantity: *quantity,
+                                        });
                                     }
-                                }
+                                } else {
+                                    if let (Some(internal), Some(watcher)) =
+                                        (internal_name.clone(), self.player_watcher.as_mut())
+                                    {
+                                        // timestamp is "YYYY-MM-DD HH:MM:SS" UTC — extract the time portion
+                                        let hms = timestamp
+                                            .split_whitespace()
+                                            .nth(1)
+                                            .unwrap_or(timestamp);
+                                        watcher.feed_chat_gain(internal, *quantity, hms);
+                                    }
 
-                                // Correct inventory/storage stack sizes
-                                let corrected_domains = self.game_state.correct_stack_from_chat(
-                                    item_name,
-                                    *quantity,
-                                    &self.db_pool,
-                                );
-                                if !corrected_domains.is_empty() {
-                                    self.app_handle
-                                        .emit("game-state-updated", &corrected_domains)
-                                        .ok();
+                                    // Correct inventory/storage stack sizes
+                                    let corrected_domains = self.game_state.correct_stack_from_chat(
+                                        item_name,
+                                        *quantity,
+                                        &self.db_pool,
+                                    );
+                                    if !corrected_domains.is_empty() {
+                                        self.app_handle
+                                            .emit("game-state-updated", &corrected_domains)
+                                            .ok();
+                                    }
                                 }
 
                                 // Record in transaction ledger.
@@ -3981,6 +4034,23 @@ fn apply_catch_up_login(
     };
     if let Some(server) = server {
         game_state.set_active_server_name(&server);
+        // The adopted session replays its own full-state inventory burst
+        // (`is_new=false` upserts + `ProcessUpdateItemCode` baselines), so
+        // start it from an empty slice — otherwise rows from an earlier
+        // replayed session pollute this one. Equipment/combat/mount/favor are
+        // deliberately untouched: equipment self-heals via its full-dump
+        // reinsert, and the rest have no repopulating dump event.
+        if let (Some(character), Ok(conn)) = (
+            game_state.get_active_character().map(str::to_string),
+            db.get_write(),
+        ) {
+            if let Err(e) = conn.execute(
+                "DELETE FROM game_state_inventory WHERE character_name = ?1 AND server_name = ?2",
+                rusqlite::params![character, server],
+            ) {
+                startup_log!("[coordinator] clear-on-adopt inventory delete failed: {e}");
+            }
+        }
     }
     source
 }
@@ -4523,6 +4593,62 @@ mod session_identity_tests {
         drop(pool);
         let _ = std::fs::remove_file(&db_path);
         let _ = std::fs::remove_dir_all(&chat_dir);
+    }
+
+    #[test]
+    fn catch_up_login_clears_the_adopted_inventory_slice() {
+        let (pool, db_path) = seed_pool(PICKER_ROW);
+        let mut gs = game_state("TestPlayer", "Dreva");
+
+        let seed_inventory = |character: &str, instance_id: i64| {
+            pool.get_write()
+                .unwrap()
+                .execute(
+                    "INSERT INTO game_state_inventory
+                     (character_name, server_name, instance_id, item_name, stack_size, last_confirmed_at, source)
+                     VALUES (?1, 'Dreva', ?2, 'Fluorite', 1, '2026-10-19 12:00:00', 'log')",
+                    rusqlite::params![character, instance_id],
+                )
+                .unwrap()
+        };
+        seed_inventory("TestPlayer", 1);
+        seed_inventory("OtherAlt", 2);
+
+        // Adopting OtherAlt's session clears only its slice; the replay burst
+        // (`is_new=false` upserts + UpdateItemCode baselines) repopulates it.
+        let map = std::collections::HashMap::from([(
+            "OtherAlt".to_string(),
+            "Dreva".to_string(),
+        )]);
+        apply_catch_up_login(&mut gs, &pool, &map, "OtherAlt");
+
+        let count: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM game_state_inventory
+                 WHERE character_name = 'OtherAlt' AND server_name = 'Dreva'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "adopted slice cleared");
+
+        let count: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM game_state_inventory
+                 WHERE character_name = 'TestPlayer' AND server_name = 'Dreva'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "other character untouched");
+
+        // Drop the pool first: Windows won't delete a file with an open handle.
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
     }
 
     #[test]
