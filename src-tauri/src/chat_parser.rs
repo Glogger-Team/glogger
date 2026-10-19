@@ -236,22 +236,26 @@ pub fn parse_chat_lines_tagged(text: &str) -> Vec<(ChatMessage, Option<ChatSessi
             continue;
         }
 
-        // Login lines open the session for the lines that follow. They are
-        // still parsed as messages (same stream as `parse_chat_lines`); the
-        // login line itself keeps the *previous* session's tag.
-        if line.contains("Logged In As") {
+        // Login lines open the session for the lines that follow. Gated on
+        // the strict login predicate (same as the watcher's marker), so a
+        // player-chat line that merely mentions logging in falls through to
+        // ordinary message parsing. They are still parsed as messages (same
+        // stream as `parse_chat_lines`); the login line itself keeps the
+        // *previous* session's tag.
+        if let Some(info) = parse_chat_login_line(line) {
             if let Some(msg) = parse_chat_line(line) {
                 tagged.push((msg, session.clone()));
             }
-            if let Some(info) = parse_chat_login_line(line) {
-                session = Some(ChatSessionTag {
-                    character_name: info.character_name,
-                    server_name: info.server_name,
-                });
-            }
+            session = Some(ChatSessionTag {
+                character_name: info.character_name,
+                server_name: info.server_name,
+            });
             continue;
         }
-        if line.contains("Logged Out") {
+        // Same strictness for logout (watcher matches `"******** Logged Out"`,
+        // the game's own marker): a chat line mentioning logging out must not
+        // close the session or be swallowed.
+        if line.contains("******** Logged Out") {
             if let Some(msg) = parse_chat_line(line) {
                 tagged.push((msg, session.clone()));
             }
@@ -907,5 +911,40 @@ Dying together\n\
 
         assert_eq!(tagged.len(), 3);
         assert_eq!(tagged[2].1, None);
+    }
+
+    #[test]
+    fn test_tagged_ignores_session_phrases_in_player_chat() {
+        // Player chat merely mentioning login/logout must neither open nor
+        // close the session — and a continuation line carrying such a phrase
+        // stays appended to its message instead of being swallowed.
+        let text = "26-03-09 05:01:46\t**************************************** Logged In As Zenith. Server Dreva. Timezone Offset -07:00:00.\n\
+                     26-03-09 05:02:00\t[Guild] Bob: I Logged Out yesterday\n\
+                     26-03-09 05:02:01\t[Guild] Bob: I Logged In As someone else\n\
+                     still talking here\n\
+                     26-03-09 05:03:00\t[Status] Fluorite x5 added to inventory.";
+        let tagged = parse_chat_lines_tagged(text);
+        let plain = parse_chat_lines(text);
+
+        // Same message stream as the untagged parser.
+        assert_eq!(tagged.len(), plain.len());
+        for ((msg, _), expected) in tagged.iter().zip(plain.iter()) {
+            assert_eq!(msg.message, expected.message);
+        }
+        // Session never closed: every message keeps Zenith/Dreva — the login
+        // line itself is untagged, the rest carry the session, including the
+        // gain and the chat line with the appended continuation.
+        assert_eq!(tagged.len(), 4);
+        assert_eq!(tagged[0].1, None);
+        for (_, tag) in &tagged[1..] {
+            assert_eq!(
+                *tag,
+                Some(ChatSessionTag {
+                    character_name: "Zenith".to_string(),
+                    server_name: "Dreva".to_string(),
+                })
+            );
+        }
+        assert!(tagged[2].0.message.contains("still talking here"));
     }
 }

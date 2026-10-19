@@ -83,7 +83,8 @@ pub struct CoordinatorStatus {
 
 /// A chat `[Status] ItemGained` gain seen during catch-up, keyed by the
 /// login session that produced the line (`ChatSessionTag`, re-derived
-/// per line — not the drain-final identity). Applied to the player
+/// per line — not the drain-final identity), except a mid-session resume
+/// (`None` tag), which falls back to the drain identity. Applied to the player
 /// rows via `GameStateManager::correct_stack_for_session` just before the
 /// live flip, because the Player.log drain already wrote fallback `stack_size
 /// = 1` rows before the chat drain ran.
@@ -308,7 +309,8 @@ impl DataIngestCoordinator {
     /// Apply chat stack gains staged during catch-up to their own sessions.
     /// Runs once, as the last step of the catch-up window (after the chat
     /// drain, before `set_live_mode`): the Player.log drain already wrote the
-    /// rows, and the staged keys name the login session that produced each gain.
+    /// rows, and the staged keys name the login session that produced each gain
+    /// (mid-session resume gains excepted — see `StagedChatGain`).
     fn apply_staged_chat_corrections(&mut self) {
         let staged = std::mem::take(&mut self.staged_chat_gains);
         if staged.is_empty() {
