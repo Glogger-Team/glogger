@@ -439,8 +439,7 @@ pub fn update_build_preset_slot_props(
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| format!("Failed to begin transaction: {e}"))?;
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-    tx.execute(&sql, param_refs.as_slice())
+    tx.execute(&sql, rusqlite::params_from_iter(params.iter()))
         .map_err(|e| format!("Failed to update slot props: {e}"))?;
 
     tx.execute(

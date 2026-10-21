@@ -302,22 +302,20 @@ pub fn bulk_delete_market_values(
     let server = resolve_server(&settings_manager, &server_name);
     let conn = db.get_write().map_err(|e| format!("Database error: {e}"))?;
 
-    // Build parameterized IN clause
-    let placeholders: Vec<String> = item_ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 2)).collect();
-    let sql = format!(
-        "DELETE FROM market_values WHERE server_name = ?1 AND item_type_id IN ({})",
-        placeholders.join(", ")
+    // Array binding via rarray: one ?1 + ?2 instead of N placeholders.
+    use std::rc::Rc;
+    let sql =
+        "DELETE FROM market_values WHERE server_name = ?1 AND item_type_id IN (SELECT value FROM rarray(?2))";
+
+    let ids: Rc<Vec<rusqlite::types::Value>> = Rc::new(
+        item_ids
+            .iter()
+            .map(|id| rusqlite::types::Value::Integer(*id as i64))
+            .collect(),
     );
 
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    params.push(Box::new(server));
-    for id in &item_ids {
-        params.push(Box::new(*id));
-    }
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-
     let deleted = conn
-        .execute(&sql, param_refs.as_slice())
+        .execute(sql, rusqlite::params![server, ids])
         .map_err(|e| format!("Delete error: {e}"))?;
 
     Ok(deleted)

@@ -171,16 +171,27 @@ pub async fn download_translation_zip(version: u32, cache_dir: &Path) -> Result<
                 .by_index(i)
                 .map_err(|e| format!("Failed to read zip entry {i}: {e}"))?;
 
-            let name = file.name().map_err(|e| format!("Failed to read zip entry name {i}: {e}"))?.to_string();
-            if !name.ends_with(".json") {
+            // enclosed_name() rejects absolute paths, drive letters, and `..`
+            // escapes (Zip-Slip) — hardened in zip 9.0.4. Skip unsafe entries
+            // instead of joining them onto the cache dir.
+            let safe_path = match file.enclosed_name() {
+                Some(p) => p.to_path_buf(),
+                None => continue,
+            };
+            if safe_path.extension().and_then(|ext| ext.to_str()) != Some("json") {
                 continue;
             }
 
+            let name = safe_path.display().to_string();
             let mut contents = Vec::new();
             file.read_to_end(&mut contents)
                 .map_err(|e| format!("Failed to extract {name}: {e}"))?;
 
-            let dest = dir.join(&name);
+            let dest = dir.join(&safe_path);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create parent dir for {name}: {e}"))?;
+            }
             std::fs::write(&dest, &contents)
                 .map_err(|e| format!("Failed to write {name}: {e}"))?;
         }

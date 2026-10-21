@@ -73,7 +73,7 @@ const parts = computed((): HighlightPart[] => {
   const patterns: string[] = []
   for (const { term, kind } of props.terms) {
     if (term.length === 0) continue
-    const esc = foldAccent(term).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const esc = RegExp.escape(foldAccent(term))
     switch (kind) {
       case 'exact':
         // Whole token(s): no token chars touching the match on either side

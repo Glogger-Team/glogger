@@ -41,7 +41,6 @@ updates:
           - "vite"
           - "typescript"
           - "vue-tsc"
-          - "esbuild"
     schedule:
       interval: daily
 

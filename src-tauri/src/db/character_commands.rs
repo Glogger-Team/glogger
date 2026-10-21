@@ -429,10 +429,8 @@ pub fn get_character_snapshots(
         .prepare(sql)
         .map_err(|e| format!("Failed to prepare query: {e}"))?;
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
-
     let rows = stmt
-        .query_map(param_refs.as_slice(), |row| {
+        .query_map(rusqlite::params_from_iter(params.iter()), |row| {
             Ok(CharacterSnapshotSummary {
                 id: row.get(0)?,
                 character_name: row.get(1)?,

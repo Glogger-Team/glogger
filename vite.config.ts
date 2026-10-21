@@ -9,6 +9,8 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [vue(), tailwindcss()],
+  // Vite 8 built-in bundle/module-graph inspector.
+  devtools: true,
 
   build: {
     rolldownOptions: {
@@ -25,6 +27,9 @@ export default defineConfig(async () => ({
   clearScreen: false,
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
+    // Forward browser console output to the `tauri dev` terminal — surfaces
+    // client errors without opening WebView2 devtools.
+    forwardConsole: true,
     port: 1420,
     strictPort: true,
     host: host || false,

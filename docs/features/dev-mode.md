@@ -53,7 +53,7 @@ The dev panel is a second Vite entry point (`dev-panel.html`) with its own Vue a
 
 **Tauri config:**
 - `src-tauri/capabilities/default.json` — Window creation permissions (`core:window:allow-create`, `core:webview:allow-create-webview-window`), dev-panel window included in capability scope
-- `vite.config.ts` — Multi-page build with `rollupOptions.input`
+- `vite.config.ts` — Multi-page build with `rolldownOptions.input`
 
 ### Debug Capture
 

@@ -683,35 +683,27 @@ pub fn check_material_availability(
 
     // ── 1. Query persisted inventory from game_state_inventory (log-driven) ────
     {
-        let placeholders: Vec<String> = item_type_ids
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 2))
-            .collect();
-        let placeholders_str = placeholders.join(",");
+        use std::rc::Rc;
 
-        let sql = format!(
+        let sql =
             "SELECT item_type_id, item_name, SUM(stack_size) as qty
              FROM game_state_inventory
-             WHERE character_name = ?1 AND item_type_id IN ({})
-             GROUP BY item_type_id",
-            placeholders_str
-        );
+             WHERE character_name = ?1 AND item_type_id IN (SELECT value FROM rarray(?2))
+             GROUP BY item_type_id";
 
         let mut stmt = conn
-            .prepare(&sql)
+            .prepare(sql)
             .map_err(|e| format!("Failed to prepare game state inventory query: {e}"))?;
 
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        params.push(Box::new(character_name.clone()));
-        for id in &item_type_ids {
-            params.push(Box::new(*id));
-        }
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params.iter().map(|p| p.as_ref()).collect();
+        let ids: Rc<Vec<rusqlite::types::Value>> = Rc::new(
+            item_type_ids
+                .iter()
+                .map(|id| rusqlite::types::Value::Integer(*id))
+                .collect(),
+        );
 
         let rows = stmt
-            .query_map(param_refs.as_slice(), |row| {
+            .query_map(rusqlite::params![character_name.clone(), ids], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,    // item_type_id
                     row.get::<_, String>(1)?, // item_name
@@ -742,35 +734,27 @@ pub fn check_material_availability(
         .ok();
 
     if let Some(snapshot_id) = latest_snapshot_id {
-        let placeholders: Vec<String> = item_type_ids
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 2))
-            .collect();
-        let placeholders_str = placeholders.join(",");
+        use std::rc::Rc;
 
-        let sql = format!(
+        let sql =
             "SELECT type_id, item_name, storage_vault, SUM(stack_size) as qty
              FROM character_snapshot_items
-             WHERE item_snapshot_id = ?1 AND type_id IN ({}) AND is_in_inventory = 0
-             GROUP BY type_id, storage_vault",
-            placeholders_str
-        );
+             WHERE item_snapshot_id = ?1 AND type_id IN (SELECT value FROM rarray(?2)) AND is_in_inventory = 0
+             GROUP BY type_id, storage_vault";
 
         let mut stmt = conn
-            .prepare(&sql)
+            .prepare(sql)
             .map_err(|e| format!("Failed to prepare availability query: {e}"))?;
 
-        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-        params.push(Box::new(snapshot_id));
-        for id in &item_type_ids {
-            params.push(Box::new(*id));
-        }
-        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params.iter().map(|p| p.as_ref()).collect();
+        let ids: Rc<Vec<rusqlite::types::Value>> = Rc::new(
+            item_type_ids
+                .iter()
+                .map(|id| rusqlite::types::Value::Integer(*id))
+                .collect(),
+        );
 
         let rows = stmt
-            .query_map(param_refs.as_slice(), |row| {
+            .query_map(rusqlite::params![snapshot_id, ids], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,    // type_id
                     row.get::<_, String>(1)?, // item_name

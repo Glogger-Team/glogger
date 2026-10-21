@@ -191,6 +191,14 @@ pub fn init_pool(db_path: PathBuf, tz_offset_seconds: Option<i32>) -> Result<DbP
     }
 
     let manager = SqliteConnectionManager::file(&db_path).with_init(|conn| {
+        // rarray (array binding for IN-list queries) must be registered
+        // per-connection; do it alongside the PRAGMA setup so every pooled
+        // connection gets it.
+        if let Err(e) = rusqlite::vtab::array::load_module(conn) {
+            return Err(rusqlite::Error::ModuleError(format!(
+                "Failed to load rarray module: {e}"
+            )));
+        }
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
                  PRAGMA busy_timeout=5000;
@@ -213,6 +221,11 @@ pub fn init_pool(db_path: PathBuf, tz_offset_seconds: Option<i32>) -> Result<DbP
         .max_size(12)
         .connection_timeout(std::time::Duration::from_secs(15))
         .build(SqliteConnectionManager::file(&db_path).with_init(|conn| {
+            if let Err(e) = rusqlite::vtab::array::load_module(conn) {
+                return Err(rusqlite::Error::ModuleError(format!(
+                    "Failed to load rarray module: {e}"
+                )));
+            }
             conn.execute_batch(
                 "PRAGMA journal_mode=WAL;
                      PRAGMA busy_timeout=5000;

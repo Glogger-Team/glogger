@@ -406,7 +406,7 @@ function removeTextWord(word: string) {
   // Remove the token exactly as it appears in the query. `\b` boundaries
   // fail on tokens starting/ending with non-word chars (quotes, `*`), so
   // match the escaped token between whitespace boundaries instead.
-  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const escaped = RegExp.escape(word)
   rawQuery.value = rawQuery.value
     .replace(new RegExp(`(?:^|(?<=\\s))${escaped}(?:(?=\\s)|$)`, 'i'), '')
     .trim()

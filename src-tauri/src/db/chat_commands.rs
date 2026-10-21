@@ -766,13 +766,8 @@ pub fn get_watch_rule_messages<C: DbRead + ?Sized>(
         where_clause, limit, offset
     );
 
-    let params_refs: Vec<&dyn rusqlite::ToSql> = param_values
-        .iter()
-        .map(|p| p as &dyn rusqlite::ToSql)
-        .collect();
-
     let mut stmt = conn.prepare(&query)?;
-    let rows = stmt.query_map(params_refs.as_slice(), |row| {
+    let rows = stmt.query_map(rusqlite::params_from_iter(param_values.iter()), |row| {
         Ok(ChatMessageRow {
             id: row.get(0)?,
             timestamp: row.get(1)?,

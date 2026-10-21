@@ -15,12 +15,12 @@ pub mod player_data {
         vendor_name: Option<&str>,
         notes: Option<&str>,
     ) -> Result<i64> {
-        conn.execute(
+        conn.query_row(
             "INSERT INTO market_prices (item_id, price, quantity, vendor_type, vendor_name, notes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING id",
             params![item_id, price, quantity, vendor_type, vendor_name, notes],
-        )?;
-        Ok(conn.last_insert_rowid())
+            |row| row.get(0),
+        )
     }
 
     /// Record a sale in sales history
@@ -33,25 +33,24 @@ pub mod player_data {
         buyer_name: Option<&str>,
         notes: Option<&str>,
     ) -> Result<i64> {
-        conn.execute(
+        conn.query_row(
             "INSERT INTO sales_history (item_id, quantity, sale_price, sale_method, buyer_name, notes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) RETURNING id",
             params![item_id, quantity, sale_price, sale_method, buyer_name, notes],
-        )?;
-        Ok(conn.last_insert_rowid())
+            |row| row.get(0),
+        )
     }
-
     /// Log a generic event
     pub fn log_event(
         conn: &WriteConn,
         event_type: &str,
         event_data: &str, // JSON string
     ) -> Result<i64> {
-        conn.execute(
-            "INSERT INTO event_log (event_type, event_data) VALUES (?1, ?2)",
+        conn.query_row(
+            "INSERT INTO event_log (event_type, event_data) VALUES (?1, ?2) RETURNING id",
             params![event_type, event_data],
-        )?;
-        Ok(conn.last_insert_rowid())
+            |row| row.get(0),
+        )
     }
 }
 
