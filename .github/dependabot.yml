@@ -8,6 +8,15 @@ updates:
           - "tauri*"
           - "wry"
           - "tao"
+      sqlite:
+        patterns:
+          - "rusqlite*"
+          - "r2d2*"
+          - "libsqlite3-sys"
+          - "hashlink"
+      zip:
+        patterns:
+          - "zip"
     schedule:
       interval: daily
 
@@ -20,12 +29,19 @@ updates:
       vue:
         patterns:
           - "vue*"
+          - "@vue/*"
           - "pinia"
           - "@vitejs/*"
       tailwind:
         patterns:
           - "tailwindcss"
           - "@tailwindcss/*"
+      build:
+        patterns:
+          - "vite"
+          - "typescript"
+          - "vue-tsc"
+          - "esbuild"
     schedule:
       interval: daily
 
