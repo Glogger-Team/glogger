@@ -1194,45 +1194,86 @@ mod tests {
         let game_data = GameData::empty();
         import_character_report_internal(&db, FIXTURE, &game_data).expect("import fixture");
 
-        let conn = db.get_write().expect("write conn");
-        let snapshot_id: i64 = conn
-            .query_row(
-                "SELECT id FROM character_snapshots WHERE character_name = 'TestPlayer'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("snapshot row");
+        let snapshot_id: i64 = {
+            let conn = db.get_write().expect("write conn");
+            let snapshot_id: i64 = conn
+                .query_row(
+                    "SELECT id FROM character_snapshots WHERE character_name = 'TestPlayer'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("snapshot row");
 
-        let (favor, councils, reset, notes): (Option<f64>, Option<i64>, Option<String>, Option<String>) = conn
-            .query_row(
-                "SELECT favor, councils_spent_at_vendor, vendor_reset_time, player_notes
-                 FROM character_npc_favor WHERE snapshot_id = ?1 LIMIT 1",
-                [snapshot_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .expect("npc favor row");
-        assert_eq!((favor, councils, reset, notes), (None, None, None, None));
-
-        // New-fields round trip: write one NPC row with all four set (as a
-        // post-10/21 export would), read it back through the query SQL.
-        conn.execute(
-            "UPDATE character_npc_favor SET favor = 1234.0, councils_spent_at_vendor = 5000,
-             vendor_reset_time = '2026-10-21T00:00:00Z', player_notes = 'sells cheap cheese'
-             WHERE snapshot_id = ?1 AND npc_key = 'AccountPackageGolem'",
-            [snapshot_id],
+            let (favor, councils, reset, notes): (Option<f64>, Option<i64>, Option<String>, Option<String>) = conn
+                .query_row(
+                    "SELECT favor, councils_spent_at_vendor, vendor_reset_time, player_notes
+                     FROM character_npc_favor WHERE snapshot_id = ?1 LIMIT 1",
+                    [snapshot_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .expect("npc favor row");
+            assert_eq!((favor, councils, reset, notes), (None, None, None, None));
+            snapshot_id
+        };
+        // New keys must parse through serde (not just store): build a minimal
+        // post-10/21-style report inline and import it. Key names follow the
+        // game's PascalCase convention (FavorLevel precedent); replace with a
+        // real capture if the game emits different names.
+        let dir = std::env::temp_dir().join(format!(
+            "glogger_npc_fields_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let path = dir.join("Character_VipProbe_Dreva.json");
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "Character": "VipProbe",
+                "ServerName": "Dreva",
+                "Timestamp": "2026-10-21T12:00:00Z",
+                "Report": "CharacterSheet",
+                "ReportVersion": 1,
+                "Race": "Human",
+                "Skills": {},
+                "RecipeCompletions": {},
+                "CurrentStats": {},
+                "Currencies": {},
+                "NPCs": {
+                    "TestVendor": {
+                        "FavorLevel": "Friends",
+                        "Favor": 1234.0,
+                        "CouncilsSpentAtVendor": 5000,
+                        "VendorResetTime": "2026-10-21T00:00:00Z",
+                        "PlayerNotes": "sells cheap cheese"
+                    }
+                }
+            })
+            .to_string(),
         )
-        .expect("update npc row");
-        let (favor, councils, reset, notes): (Option<f64>, Option<i64>, Option<String>, Option<String>) = conn
-            .query_row(
-                "SELECT favor, councils_spent_at_vendor, vendor_reset_time, player_notes
-                 FROM character_npc_favor WHERE snapshot_id = ?1 AND npc_key = 'AccountPackageGolem'",
-                [snapshot_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )
-            .expect("updated npc row");
-        assert_eq!(favor, Some(1234.0));
-        assert_eq!(councils, Some(5000));
-        assert_eq!(reset.as_deref(), Some("2026-10-21T00:00:00Z"));
-        assert_eq!(notes.as_deref(), Some("sells cheap cheese"));
+        .expect("write probe report");
+        import_character_report_internal(&db, path.to_str().expect("path"), &game_data)
+            .expect("import probe report");
+
+        {
+            let conn = db.get_write().expect("write conn");
+            let (favor, councils, reset, notes): (Option<f64>, Option<i64>, Option<String>, Option<String>) = conn
+                .query_row(
+                    "SELECT favor, councils_spent_at_vendor, vendor_reset_time, player_notes
+                     FROM character_npc_favor
+                     WHERE snapshot_id = (SELECT id FROM character_snapshots WHERE character_name = 'VipProbe')
+                       AND npc_key = 'TestVendor'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .expect("probe npc row");
+            assert_eq!(favor, Some(1234.0));
+            assert_eq!(councils, Some(5000));
+            assert_eq!(reset.as_deref(), Some("2026-10-21T00:00:00Z"));
+            assert_eq!(notes.as_deref(), Some("sells cheap cheese"));
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
