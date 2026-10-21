@@ -591,7 +591,9 @@ const groupedItems = computed<ItemGroup[]>(() => {
   if (groupMode.value === 'storage') {
     const groups = new Map<string, SnapshotItem[]>()
     for (const item of items) {
-      groups.getOrInsert(getLocation(item), []).push(item)
+      const loc = getLocation(item)
+      if (!groups.has(loc)) groups.set(loc, [])
+      groups.get(loc)!.push(item)
     }
     return [...groups.entries()]
       .map(([key, groupItems]) => ({
@@ -608,7 +610,8 @@ const groupedItems = computed<ItemGroup[]>(() => {
       const loc = getLocation(item)
       // Merge Inventory + Saddlebag into one group
       const zone = INVENTORY_VAULTS.has(loc) ? 'Inventory + Saddlebag' : getZoneForVault(loc)
-      groups.getOrInsert(zone, []).push(item)
+      if (!groups.has(zone)) groups.set(zone, [])
+      groups.get(zone)!.push(item)
     }
     return [...groups.entries()]
       .map(([zone, groupItems]) => ({
