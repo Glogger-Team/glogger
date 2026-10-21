@@ -363,6 +363,10 @@ export interface SnapshotSkillLevel {
 export interface SnapshotNpcFavor {
   npc_key: string
   favor_level: string
+  favor: number | null
+  councils_spent_at_vendor: number | null
+  vendor_reset_time: string | null
+  player_notes: string | null
 }
 
 export interface SnapshotRecipeCompletion {

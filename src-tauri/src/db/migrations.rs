@@ -400,6 +400,21 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 73)?;
     }
 
+    if current_version < 74 {
+        migration_v74_snapshot_skill_abilities(conn)?;
+        super::record_migration(conn, 74)?;
+    }
+
+    if current_version < 75 {
+        migration_v75_achievements(conn)?;
+        super::record_migration(conn, 75)?;
+    }
+
+    if current_version < 76 {
+        migration_v76_npc_favor_details(conn)?;
+        super::record_migration(conn, 76)?;
+    }
+
     tx.commit()?;
     Ok(())
 }
@@ -418,6 +433,64 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
 fn migration_v73_milking_cooldown_unknown(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "ALTER TABLE milking_timers ADD COLUMN cooldown_unknown INTEGER NOT NULL DEFAULT 0;",
+    )?;
+    Ok(())
+}
+
+/// Migration V74: persist known abilities per skill per character snapshot.
+///
+/// `SkillData.abilities` was parsed from `/outputcharacter` exports but dropped
+/// (never stored). Every `character_snapshots.raw_json` already contains the
+/// arrays, so new imports populate this table; old snapshots simply have no
+/// rows (no backfill — re-import the export to populate).
+fn migration_v74_snapshot_skill_abilities(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE snapshot_skill_abilities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_id INTEGER NOT NULL,
+            skill_name TEXT NOT NULL,
+            ability_key TEXT NOT NULL,
+            FOREIGN KEY (snapshot_id) REFERENCES character_snapshots(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_skill_abilities_snapshot ON snapshot_skill_abilities(snapshot_id);
+        CREATE INDEX idx_skill_abilities_ability ON snapshot_skill_abilities(ability_key, snapshot_id);",
+    )?;
+    Ok(())
+}
+
+/// Migration V75: CDN achievement reference table (read-only catalog).
+///
+/// `achievements.json` is a small array (11 entries at v487) of `{id, name,
+/// description, iconType}` keyed by string `id` (e.g. `Combat_Any_25`). No
+/// per-character unlock tracking: the game is the tracker, first-round
+/// achievements are retroactive on login, and no log signal is known — so a
+/// flat catalog is all we persist. Standalone table (no snapshot FK): it is
+/// global CDN reference data like `quests`/`areas`, not per-snapshot rows.
+fn migration_v75_achievements(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE achievements (
+            id TEXT PRIMARY KEY,
+            name TEXT,
+            description TEXT,
+            icon_type TEXT
+        );
+        CREATE INDEX idx_achievements_name ON achievements(name);",
+    )?;
+    Ok(())
+}
+
+/// Migration V76: new VIP-report NPC columns from the 10/21/2026 update.
+///
+/// VIP exports gained raw favor points, councils spent at the vendor, vendor
+/// reset time, and GUI player notes per NPC. All nullable: older exports omit
+/// them, and the importer passes NULLs through (serde `default` on `Option`
+/// fields). No backfill — re-import the export to populate.
+fn migration_v76_npc_favor_details(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE character_npc_favor ADD COLUMN favor REAL;
+         ALTER TABLE character_npc_favor ADD COLUMN councils_spent_at_vendor INTEGER;
+         ALTER TABLE character_npc_favor ADD COLUMN vendor_reset_time TEXT;
+         ALTER TABLE character_npc_favor ADD COLUMN player_notes TEXT;",
     )?;
     Ok(())
 }
@@ -3590,13 +3663,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            73,
+            76,
             "fresh DB migrates to the head version"
         );
         // Second run: every `if current_version < N` block is skipped. If the
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 73);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 76);
     }
 }

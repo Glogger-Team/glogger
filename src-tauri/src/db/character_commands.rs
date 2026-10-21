@@ -43,14 +43,27 @@ pub struct SkillData {
     pub bonus_levels: i32,
     pub xp_toward_next_level: i64,
     pub xp_needed_for_next_level: i64,
-    #[allow(dead_code)]
     pub abilities: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct NpcFavorData {
+    #[serde(default)]
     pub favor_level: String,
+    /// Raw favor point total. New in VIP exports alongside the 10/21/2026
+    /// update; older exports omit it, hence `default`.
+    #[serde(default)]
+    pub favor: Option<f64>,
+    /// Councils spent at this NPC's vendor. New in VIP exports; older omit.
+    #[serde(default)]
+    pub councils_spent_at_vendor: Option<i64>,
+    /// Vendor reset time, if a reset timer is active. New; older omit.
+    #[serde(default)]
+    pub vendor_reset_time: Option<String>,
+    /// Player notes for this NPC (entered via the game GUI). New; older omit.
+    #[serde(default)]
+    pub player_notes: Option<String>,
 }
 
 // ── Command Response Types ───────────────────────────────────────────────────
@@ -90,9 +103,19 @@ pub struct SnapshotSkillLevel {
 }
 
 #[derive(Serialize)]
+pub struct SnapshotSkillAbility {
+    pub skill_name: String,
+    pub ability_key: String,
+}
+
+#[derive(Serialize)]
 pub struct SnapshotNpcFavor {
     pub npc_key: String,
     pub favor_level: String,
+    pub favor: Option<f64>,
+    pub councils_spent_at_vendor: Option<i64>,
+    pub vendor_reset_time: Option<String>,
+    pub player_notes: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -234,11 +257,37 @@ pub fn import_character_report_internal(
                 .map_err(|e| format!("Failed to insert skill {skill_name}: {e}"))?;
         }
 
+        // 7b. Batch insert known abilities (deduped per skill; None/empty skipped)
+        {
+            use std::collections::HashSet;
+            let mut ability_stmt = conn
+                .prepare(
+                    "INSERT INTO snapshot_skill_abilities (snapshot_id, skill_name, ability_key)
+             VALUES (?1, ?2, ?3)",
+                )
+                .map_err(|e| format!("Failed to prepare ability insert: {e}"))?;
+
+            for (skill_name, skill_data) in &report.skills {
+                let Some(abilities) = skill_data.abilities.as_ref() else {
+                    continue;
+                };
+                let mut seen = HashSet::new();
+                for ability_key in abilities {
+                    if ability_key.is_empty() || !seen.insert(ability_key) {
+                        continue;
+                    }
+                    ability_stmt
+                        .execute(rusqlite::params![snapshot_id, skill_name, ability_key,])
+                        .map_err(|e| format!("Failed to insert ability {ability_key}: {e}"))?;
+                }
+            }
+        }
+
         // 8. Batch insert NPC favor
         let mut npc_stmt = conn
             .prepare(
-                "INSERT INTO character_npc_favor (snapshot_id, npc_key, favor_level)
-             VALUES (?1, ?2, ?3)",
+                "INSERT INTO character_npc_favor (snapshot_id, npc_key, favor_level, favor, councils_spent_at_vendor, vendor_reset_time, player_notes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             )
             .map_err(|e| format!("Failed to prepare NPC insert: {e}"))?;
 
@@ -248,6 +297,10 @@ pub fn import_character_report_internal(
                     snapshot_id,
                     npc_key,
                     npc_data.favor_level,
+                    npc_data.favor,
+                    npc_data.councils_spent_at_vendor,
+                    npc_data.vendor_reset_time,
+                    npc_data.player_notes,
                 ])
                 .map_err(|e| format!("Failed to insert NPC {npc_key}: {e}"))?;
         }
@@ -482,6 +535,37 @@ pub fn get_snapshot_skills(
 }
 
 #[tauri::command]
+pub fn get_snapshot_skill_abilities(
+    db: State<'_, DbPool>,
+    snapshot_id: i64,
+) -> Result<Vec<SnapshotSkillAbility>, String> {
+    let conn = db
+        .get()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT skill_name, ability_key
+         FROM snapshot_skill_abilities
+         WHERE snapshot_id = ?1
+         ORDER BY skill_name, ability_key",
+        )
+        .map_err(|e| format!("Failed to prepare query: {e}"))?;
+
+    let rows = stmt
+        .query_map([snapshot_id], |row| {
+            Ok(SnapshotSkillAbility {
+                skill_name: row.get(0)?,
+                ability_key: row.get(1)?,
+            })
+        })
+        .map_err(|e| format!("Query failed: {e}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read results: {e}"))
+}
+
+#[tauri::command]
 pub fn get_snapshot_npc_favor(
     db: State<'_, DbPool>,
     snapshot_id: i64,
@@ -492,7 +576,7 @@ pub fn get_snapshot_npc_favor(
 
     let mut stmt = conn
         .prepare(
-            "SELECT npc_key, favor_level
+            "SELECT npc_key, favor_level, favor, councils_spent_at_vendor, vendor_reset_time, player_notes
          FROM character_npc_favor
          WHERE snapshot_id = ?1
          ORDER BY npc_key",
@@ -504,6 +588,10 @@ pub fn get_snapshot_npc_favor(
             Ok(SnapshotNpcFavor {
                 npc_key: row.get(0)?,
                 favor_level: row.get(1)?,
+                favor: row.get(2)?,
+                councils_spent_at_vendor: row.get(3)?,
+                vendor_reset_time: row.get(4)?,
+                player_notes: row.get(5)?,
             })
         })
         .map_err(|e| format!("Query failed: {e}"))?;
@@ -797,7 +885,37 @@ fn seed_game_state_from_snapshot(
             .map_err(|e| format!("Failed to upsert favor: {e}"))?;
     }
 
-    // Seed currencies
+    // Seed NPC vendor spend/reset from the new VIP fields. Councils-spent and
+    // reset time live in the vendor table (per-NPC spend tracking); NPCs with
+    // neither field (older exports) are skipped, leaving rows untouched.
+    {
+        let mut vendor_stmt = conn.prepare(
+            "INSERT INTO game_state_npc_vendor (character_name, server_name, npc_key, councils_earned_current, vendor_gold_timer_start, last_confirmed_at)
+             VALUES (?1, ?2, ?3, COALESCE(?4, 0), ?5, ?6)
+             ON CONFLICT(character_name, server_name, npc_key) DO UPDATE SET
+                councils_earned_current = COALESCE(?4, game_state_npc_vendor.councils_earned_current),
+                vendor_gold_timer_start = COALESCE(?5, game_state_npc_vendor.vendor_gold_timer_start),
+                last_confirmed_at = excluded.last_confirmed_at
+             WHERE excluded.last_confirmed_at > game_state_npc_vendor.last_confirmed_at"
+        ).map_err(|e| format!("Failed to prepare vendor spend upsert: {e}"))?;
+
+        for (npc_key, npc_data) in &report.npcs {
+            if npc_data.councils_spent_at_vendor.is_none() && npc_data.vendor_reset_time.is_none() {
+                continue;
+            }
+            vendor_stmt
+                .execute(rusqlite::params![
+                    character,
+                    server,
+                    npc_key,
+                    npc_data.councils_spent_at_vendor,
+                    npc_data.vendor_reset_time,
+                    ts,
+                ])
+                .map_err(|e| format!("Failed to upsert vendor spend for {npc_key}: {e}"))?;
+        }
+    }
+
     let mut currency_stmt = conn.prepare(
         "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at, source)
          VALUES (?1, ?2, ?3, ?4, ?5, 'snapshot')
@@ -912,4 +1030,209 @@ fn seed_game_state_from_snapshot(
 
     eprintln!("[game_state] Seeded game state from snapshot for {character} on {server} at {ts}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::migrations::run_migrations;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// Migrated in-memory DB wrapped in the app's pool type. Shared-cache
+    /// memory URI so `reads` and `writes` hit the same DB (migrations run
+    /// through `writes`; `import_*` writes through `writes`, query commands
+    /// read through `reads`). Unique name per call keeps tests isolated.
+    fn pool() -> DbPool {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let mk = |query_only: bool| {
+            r2d2_sqlite::SqliteConnectionManager::file(format!(
+                "file:character_abilities_test_{n}?mode=memory&cache=shared"
+            ))
+            .with_init(move |conn| {
+                if query_only {
+                    conn.execute_batch(
+                        "PRAGMA journal_mode=WAL;
+                         PRAGMA busy_timeout=5000;
+                         PRAGMA synchronous=NORMAL;
+                         PRAGMA foreign_keys=ON;
+                         PRAGMA query_only=ON;",
+                    )
+                } else {
+                    conn.execute_batch(
+                        "PRAGMA journal_mode=WAL;
+                         PRAGMA busy_timeout=5000;
+                         PRAGMA synchronous=NORMAL;
+                         PRAGMA foreign_keys=ON;",
+                    )
+                }
+            })
+        };
+        let writes = r2d2::Pool::builder()
+            .max_size(1)
+            .build(mk(false))
+            .expect("writes pool");
+        let reads = r2d2::Pool::builder()
+            .max_size(2)
+            .build(mk(true))
+            .expect("reads pool");
+        let conn = writes.get().expect("conn");
+        run_migrations(&conn, None).expect("migrations");
+        drop(conn);
+        DbPool::from_pools(reads, writes)
+    }
+
+    const FIXTURE: &str = "../test_data/inventory/completeState/Character_TestPlayer_Dreva.json";
+
+    #[test]
+    fn import_persists_skill_abilities_from_fixture() {
+        let db = pool();
+        let game_data = GameData::empty();
+        let result =
+            import_character_report_internal(&db, FIXTURE, &game_data).expect("import fixture");
+        assert!(!result.was_duplicate);
+
+        let conn = db.get_write().expect("write conn");
+        let snapshot_id: i64 = conn
+            .query_row(
+                "SELECT id FROM character_snapshots WHERE character_name = 'TestPlayer'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("snapshot row");
+
+        // Sword has 14 abilities in the fixture.
+        let sword_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM snapshot_skill_abilities WHERE snapshot_id = ?1 AND skill_name = 'Sword'",
+                [snapshot_id],
+                |row| row.get(0),
+            )
+            .expect("sword count");
+        assert_eq!(sword_count, 14, "Sword abilities persisted");
+
+        let has_slash: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM snapshot_skill_abilities
+                 WHERE snapshot_id = ?1 AND skill_name = 'Sword' AND ability_key = 'SwordSlash'",
+                [snapshot_id],
+                |row| row.get(0),
+            )
+            .expect("sword slash");
+        assert_eq!(has_slash, 1, "SwordSlash row exists");
+
+        // Unknown skill has ~20 entries in the fixture (observed 96); assert > 0, not exact.
+        let unknown_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM snapshot_skill_abilities WHERE snapshot_id = ?1 AND skill_name = 'Unknown'",
+                [snapshot_id],
+                |row| row.get(0),
+            )
+            .expect("unknown count");
+        assert!(unknown_count > 0, "Unknown abilities persisted");
+
+        // Total matches the fixture's ability strings (432 observed; compute live).
+        let raw: String = conn
+            .query_row(
+                "SELECT raw_json FROM character_snapshots WHERE id = ?1",
+                [snapshot_id],
+                |row| row.get(0),
+            )
+            .expect("raw json");
+        let v: serde_json::Value = serde_json::from_str(&raw).expect("parse raw");
+        let mut expected = 0i64;
+        if let Some(skills) = v.get("Skills").and_then(|s| s.as_object()) {
+            for skill in skills.values() {
+                if let Some(abs) = skill.get("Abilities").and_then(|a| a.as_array()) {
+                    expected += abs.len() as i64;
+                }
+            }
+        }
+        let stored: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM snapshot_skill_abilities WHERE snapshot_id = ?1",
+                [snapshot_id],
+                |row| row.get(0),
+            )
+            .expect("total count");
+        assert_eq!(stored, expected, "every fixture ability persisted");
+    }
+
+    #[test]
+    fn empty_abilities_skill_inserts_zero_rows() {
+        let db = pool();
+        let game_data = GameData::empty();
+        import_character_report_internal(&db, FIXTURE, &game_data).expect("import fixture");
+
+        let conn = db.get_write().expect("write conn");
+        let snapshot_id: i64 = conn
+            .query_row(
+                "SELECT id FROM character_snapshots WHERE character_name = 'TestPlayer'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("snapshot row");
+
+        // Mycology has an empty Abilities array in the fixture.
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM snapshot_skill_abilities WHERE snapshot_id = ?1 AND skill_name = 'Mycology'",
+                [snapshot_id],
+                |row| row.get(0),
+            )
+            .expect("mycology count");
+        assert_eq!(count, 0, "empty-abilities skill inserts zero rows");
+    }
+
+    #[test]
+    fn old_export_without_npc_details_imports_with_nulls() {
+        // The fixture predates the 10/21/2026 VIP fields: every NPC entry is
+        // `{"FavorLevel": ...}` with no Favor/CouncilsSpentAtVendor/
+        // VendorResetTime/PlayerNotes — the import must succeed with NULLs.
+        let db = pool();
+        let game_data = GameData::empty();
+        import_character_report_internal(&db, FIXTURE, &game_data).expect("import fixture");
+
+        let conn = db.get_write().expect("write conn");
+        let snapshot_id: i64 = conn
+            .query_row(
+                "SELECT id FROM character_snapshots WHERE character_name = 'TestPlayer'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("snapshot row");
+
+        let (favor, councils, reset, notes): (Option<f64>, Option<i64>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT favor, councils_spent_at_vendor, vendor_reset_time, player_notes
+                 FROM character_npc_favor WHERE snapshot_id = ?1 LIMIT 1",
+                [snapshot_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("npc favor row");
+        assert_eq!((favor, councils, reset, notes), (None, None, None, None));
+
+        // New-fields round trip: write one NPC row with all four set (as a
+        // post-10/21 export would), read it back through the query SQL.
+        conn.execute(
+            "UPDATE character_npc_favor SET favor = 1234.0, councils_spent_at_vendor = 5000,
+             vendor_reset_time = '2026-10-21T00:00:00Z', player_notes = 'sells cheap cheese'
+             WHERE snapshot_id = ?1 AND npc_key = 'AccountPackageGolem'",
+            [snapshot_id],
+        )
+        .expect("update npc row");
+        let (favor, councils, reset, notes): (Option<f64>, Option<i64>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT favor, councils_spent_at_vendor, vendor_reset_time, player_notes
+                 FROM character_npc_favor WHERE snapshot_id = ?1 AND npc_key = 'AccountPackageGolem'",
+                [snapshot_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("updated npc row");
+        assert_eq!(favor, Some(1234.0));
+        assert_eq!(councils, Some(5000));
+        assert_eq!(reset.as_deref(), Some("2026-10-21T00:00:00Z"));
+        assert_eq!(notes.as_deref(), Some("sells cheap cheese"));
+    }
 }

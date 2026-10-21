@@ -17,6 +17,7 @@ macro_rules! startup_log {
 
 // ── Module declarations ──────────────────────────────────────────────────────
 mod abilities;
+mod achievements;
 pub mod ability_stats;
 mod ability_dynamic;
 mod ability_keywords;
@@ -43,6 +44,7 @@ mod tsys;
 mod xp_tables;
 
 // ── Re-exports so cdn_commands.rs doesn't need updating ──────────────────────
+pub use achievements::AchievementInfo;
 pub use abilities::AbilityFamily;
 pub use abilities::AbilityInfo;
 pub use abilities::{CombatStats, DotEffect};
@@ -163,6 +165,7 @@ pub struct GameData {
     pub quests: HashMap<String, quests::QuestInfo>,
     pub sources: sources::SourcesData,
     pub storage_vaults: HashMap<String, storage_vaults::StorageVaultInfo>,
+    pub achievements: HashMap<String, achievements::AchievementInfo>,
     pub tsys: tsys::TsysData,
 
     // ── Brewing (derived from recipes + items) ────────────────────────
@@ -289,6 +292,7 @@ impl GameData {
             quests: HashMap::new(),
             sources: sources::SourcesData::empty(),
             storage_vaults: HashMap::new(),
+            achievements: HashMap::new(),
             tsys: tsys::TsysData::empty(),
             brewing_recipes: Vec::new(),
             brewing_ingredients: Vec::new(),
@@ -661,6 +665,12 @@ pub async fn load_from_cache_with_progress(
             eprintln!("Warning: {e}");
             String::from("{}")
         });
+    let achievements_json = read_file(&cache_dir.join("achievements.json"))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Warning: {e}");
+            String::from("{}")
+        });
 
     // Try to load cached indices
     let indices_path = cache_dir.join("indices.json");
@@ -760,7 +770,9 @@ pub async fn load_from_cache_with_progress(
         startup_log!("  sources: parsed");
 
         let storage_vaults = storage_vaults::parse(&storage_vaults_json)?;
-        startup_log!("  storage_vaults: {} entries", storage_vaults.len());
+        let achievements = achievements::parse(&achievements_json)?;
+        startup_log!("  achievements: {} entries", achievements.len());
+
 
         let tsys = tsys::TsysData::parse(&tsys_client_info_json, &tsys_profiles_json)?;
         startup_log!("  tsys: parsed");
@@ -817,6 +829,7 @@ pub async fn load_from_cache_with_progress(
             quests,
             sources,
             storage_vaults,
+            achievements,
             tsys,
             brewing_recipes,
             brewing_ingredients,

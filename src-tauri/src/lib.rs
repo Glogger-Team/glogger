@@ -172,8 +172,8 @@ use db::build_planner_commands::{
 };
 use db::character_commands::{
     compare_snapshots, get_character_snapshots, get_characters, get_snapshot_active_quests,
-    get_snapshot_currencies, get_snapshot_npc_favor, get_snapshot_recipes, get_snapshot_skills,
-    get_snapshot_stats, import_character_report,
+    get_snapshot_currencies, get_snapshot_npc_favor, get_snapshot_recipes,
+    get_snapshot_skill_abilities, get_snapshot_skills, get_snapshot_stats, import_character_report,
 };
 use db::death_commands::{get_character_deaths, get_death_damage_sources};
 use db::resuscitate_commands::get_character_resuscitations;
@@ -917,6 +917,7 @@ pub fn run() {
             get_characters,
             get_character_snapshots,
             get_snapshot_skills,
+            get_snapshot_skill_abilities,
             get_snapshot_npc_favor,
             get_snapshot_recipes,
             get_snapshot_stats,

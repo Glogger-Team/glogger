@@ -40,6 +40,7 @@ pub const DATA_FILES: &[&str] = &[
     "storagevaults",
     "tsysclientinfo",
     "tsysprofiles",
+    "achievements",
 ];
 
 // ── Version helpers ──────────────────────────────────────────────────────────
@@ -125,6 +126,7 @@ pub fn data_file_path(cache_dir: &Path, name: &str) -> PathBuf {
 /// text-only changes between CDN versions.
 pub const TRANSLATION_FILES: &[&str] = &[
     "strings_abilities",
+    "strings_achievements",
     "strings_ai",
     "strings_areas",
     "strings_attributes",

@@ -1,6 +1,6 @@
 use crate::game_data::{
-    AbilityInfo, AreaInfo, GameData, ItemInfo, ItemUseInfo, QuestInfo, RecipeInfo, SkillInfo,
-    SurveyKind, TsysClientInfo, XpTableInfo,
+    AbilityInfo, AchievementInfo, AreaInfo, GameData, ItemInfo, ItemUseInfo, QuestInfo,
+    RecipeInfo, SkillInfo, SurveyKind, TsysClientInfo, XpTableInfo,
 };
 use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};
 
@@ -22,6 +22,7 @@ pub fn persist_cdn_data(conn: &mut Connection, data: &GameData) -> Result<()> {
     insert_tsys_client_info(&tx, &data.tsys.client_info)?;
     insert_item_uses(&tx, &data.item_uses)?;
     insert_areas(&tx, &data.areas)?;
+    insert_achievements(&tx, &data.achievements)?;
     insert_foods(&tx, data)?;
     insert_survey_types(&tx, &data.items, &data.recipes, &data.areas)?;
 
@@ -79,9 +80,9 @@ fn clear_cdn_data(tx: &Transaction) -> Result<()> {
          DELETE FROM npcs;
          DELETE FROM quests;
          DELETE FROM xp_tables;
-         DELETE FROM tsys_client_info;
          DELETE FROM item_uses;
          DELETE FROM areas;
+         DELETE FROM achievements;
          DELETE FROM foods;
          DROP TABLE IF EXISTS survey_types;
          CREATE TABLE survey_types (
@@ -508,6 +509,28 @@ fn insert_areas(
             &area.friendly_name,
             &area.short_friendly_name,
             raw_json_str,
+        ])?;
+    }
+
+    Ok(())
+}
+
+/// Insert achievements into database
+fn insert_achievements(
+    tx: &Transaction,
+    achievements: &std::collections::HashMap<String, AchievementInfo>,
+) -> Result<()> {
+    let mut stmt = tx.prepare(
+        "INSERT INTO achievements (id, name, description, icon_type)
+         VALUES (?1, ?2, ?3, ?4)",
+    )?;
+
+    for (id, achievement) in achievements {
+        stmt.execute(params![
+            id,
+            &achievement.name,
+            &achievement.description,
+            &achievement.icon_type,
         ])?;
     }
 
