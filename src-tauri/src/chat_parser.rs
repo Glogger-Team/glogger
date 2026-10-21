@@ -921,7 +921,7 @@ Dying together\n\
         let text = "26-03-09 05:01:46\t**************************************** Logged In As Zenith. Server Dreva. Timezone Offset -07:00:00.\n\
                      26-03-09 05:02:00\t[Guild] Bob: I Logged Out yesterday\n\
                      26-03-09 05:02:01\t[Guild] Bob: I Logged In As someone else\n\
-                     still talking here\n\
+                     still talking here, I Logged Out yesterday\n\
                      26-03-09 05:03:00\t[Status] Fluorite x5 added to inventory.";
         let tagged = parse_chat_lines_tagged(text);
         let plain = parse_chat_lines(text);
@@ -945,6 +945,6 @@ Dying together\n\
                 })
             );
         }
-        assert!(tagged[2].0.message.contains("still talking here"));
+        assert!(tagged[2].0.message.contains("still talking here, I Logged Out yesterday"));
     }
 }
