@@ -1,10 +1,10 @@
-## What's Changed since v1.3.5
+## What's Changed since v1.3.6
+
+### Improvements
+- impv: post-major-bump cleanup + opt-ins (TS 6, Vite 8, rusqlite 0.40, zip 9) (`c6ec646`)
 
 ### Fixes
-- fix: strict session-boundary gates for tagged chat lines (`3cac8dd`)
-- fix: key catch-up staged gains by producing chat session (`83e04eb`)
-- fix: restore live cow-milk path; gate clear-on-adopt to login-line adoption (`1fa856d`)
-- fix: session-keyed catch-up stack correction + clear-on-adopt inventory dump (`55f69fc`)
+- fix: revert Map.getOrInsert in InventoryView grouping for older WebView2 (`589bb52`)
 
 ---
-*6 commits since v1.3.5*
+*6 commits since v1.3.6*
