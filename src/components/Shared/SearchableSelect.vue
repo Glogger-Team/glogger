@@ -30,7 +30,6 @@
         @click="close" />
       <div
         v-if="open"
-        ref="dropdownRef"
         class="fixed z-[70] rounded border border-border-default bg-surface-elevated shadow-lg flex flex-col"
         :style="dropdownStyle">
         <div class="p-1.5 border-b border-border-default/60">
@@ -102,7 +101,6 @@ const emit = defineEmits<{
 }>()
 
 const containerRef = ref<HTMLElement>()
-const dropdownRef = ref<HTMLElement>()
 const searchInputRef = ref<HTMLInputElement>()
 const open = ref(false)
 const searchQuery = ref('')

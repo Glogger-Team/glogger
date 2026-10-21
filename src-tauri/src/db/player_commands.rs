@@ -218,7 +218,7 @@ pub fn get_recent_events(
         .get()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
-    let limit = limit.unwrap_or(50);
+    let limit: i64 = limit.unwrap_or(50) as i64;
 
     let mut results = Vec::new();
 

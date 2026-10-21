@@ -11,7 +11,7 @@ export default defineConfig(async () => ({
   plugins: [vue(), tailwindcss()],
 
   build: {
-    rollupOptions: {
+    rolldownOptions: {
       input: {
         main: resolve(__dirname, "index.html"),
         "dev-panel": resolve(__dirname, "dev-panel.html"),

@@ -171,7 +171,7 @@ pub async fn download_translation_zip(version: u32, cache_dir: &Path) -> Result<
                 .by_index(i)
                 .map_err(|e| format!("Failed to read zip entry {i}: {e}"))?;
 
-            let name = file.name().to_string();
+            let name = file.name().map_err(|e| format!("Failed to read zip entry name {i}: {e}"))?.to_string();
             if !name.ends_with(".json") {
                 continue;
             }

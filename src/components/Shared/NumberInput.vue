@@ -10,7 +10,6 @@
     </button>
 
     <input
-      ref="inputRef"
       type="number"
       class="bg-transparent text-text-primary text-center border-none outline-none appearance-none [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none [-moz-appearance:textfield] min-w-0"
       :class="inputClasses"
@@ -37,7 +36,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 
 const props = withDefaults(defineProps<{
   modelValue: number
@@ -60,8 +59,6 @@ const emit = defineEmits<{
   'update:modelValue': [value: number]
   'change': [value: number]
 }>()
-
-const inputRef = ref<HTMLInputElement>()
 
 const atMin = computed(() => props.modelValue <= props.min)
 const atMax = computed(() => props.modelValue >= props.max)
