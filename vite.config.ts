@@ -9,14 +9,11 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [vue(), tailwindcss()],
-  // Vite 8 built-in bundle/module-graph inspector.
-  devtools: true,
-
   build: {
     rolldownOptions: {
       input: {
-        main: resolve(__dirname, "index.html"),
-        "dev-panel": resolve(__dirname, "dev-panel.html"),
+        main: resolve(import.meta.dirname, "index.html"),
+        "dev-panel": resolve(import.meta.dirname, "dev-panel.html"),
       },
     },
   },

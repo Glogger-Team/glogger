@@ -612,7 +612,17 @@ const allItemTypes = computed(() => {
   return [...types].sort()
 })
 
-// Active character vendor entries — includes ALL vendors with buy capacity
+/** Councils spent → councils still available, given the favor cap. */
+function spentToAvailable(spent: number, cap: number): number | null {
+  if (!Number.isFinite(spent) || !Number.isFinite(cap)) return null
+  if (spent === 0) return cap
+  if (cap >= spent) return cap - spent
+  // Cap may have dropped since the snapshot (favor decay or stale tier):
+  // available must be ≥ 0, and a changed cap makes the delta meaningless.
+  if (spent <= cap * 3) return 0
+  return null
+}
+
 const characterEntries = computed<VendorEntry[]>(() => {
   const entries: VendorEntry[] = []
 
@@ -624,19 +634,30 @@ const characterEntries = computed<VendorEntry[]>(() => {
     const capAtTier = goldCapAtTier(npc, playerTier)
     const maxGold = vendorState?.vendor_gold_max ?? capAtTier?.maxGold ?? null
 
+    // Snapshot anchor: the 10/21 export names `spent` (not `available`), and
+    // the only log line that yields a live row is the similarly-named
+    // `ProcessVendorUpdateAvailableGold(currentGold, …)` — the capitalized
+    // `Available` misleads. Derive available = cap − spent (capped at 0) and
+    // anchor the 168h reset timer on the snapshot's reset time so gold reads
+    // are estimates until the player next sells to the vendor live.
+    const snapFavor = characterStore.npcFavor.find(f => f.npc_key === key)
+    const snapTimer = vendorState?.vendor_gold_timer_start ?? snapFavor?.vendor_reset_time ?? null
+    const earnedSnap = vendorState?.councils_earned_current ?? snapFavor?.councils_spent_at_vendor ?? 0
+
     // Determine effective gold: if timer has expired, assume reset to cap
-    let goldAvailable = vendorState?.vendor_gold_available ?? null
+    let goldAvailable = vendorState?.vendor_gold_available
+      ?? (maxGold != null ? spentToAvailable(earnedSnap, maxGold) : null)
     let assumedReset = false
     let resetLabel: string | null = null
 
-    if (vendorState && goldAvailable != null) {
-      if (hasTimerExpired(vendorState.vendor_gold_timer_start)) {
+    if (goldAvailable != null) {
+      if (hasTimerExpired(snapTimer)) {
         // Timer expired — vendor has reset to cap
         goldAvailable = maxGold
         assumedReset = true
         resetLabel = '(reset)'
       } else {
-        resetLabel = computeTimerLabel(vendorState.vendor_gold_timer_start)
+        resetLabel = computeTimerLabel(snapTimer)
         if (resetLabel) resetLabel = `(${resetLabel})`
       }
     }
@@ -652,7 +673,7 @@ const characterEntries = computed<VendorEntry[]>(() => {
       itemCategories: getItemCategories(key),
       rawItemTypes: getRawItemTypes(key),
       characterBreakdown: null,
-      snapshotSpent: characterStore.npcFavor.find(f => f.npc_key === key)?.councils_spent_at_vendor ?? null,
+      snapshotSpent: snapFavor?.councils_spent_at_vendor ?? null,
     })
   }
 
@@ -888,10 +909,16 @@ const earnedVendorEntries = computed<EarnedVendorEntry[]>(() => {
     if (!hasBuyCapacity(npc)) continue
 
     const vendorState = gameState.vendorByNpc[key]
-    if (!vendorState) continue
+    const snapSpent = characterStore.npcFavor.find(f => f.npc_key === key)?.councils_spent_at_vendor ?? 0
+    const snapTimer = vendorState?.vendor_gold_timer_start
+      ?? characterStore.npcFavor.find(f => f.npc_key === key)?.vendor_reset_time ?? null
 
-    const earnedCurrent = vendorState.councils_earned_current ?? 0
-    const earnedLifetime = vendorState.councils_earned_lifetime ?? 0
+    // Live-earned this period, else the snapshot's spent (zeroed once its
+    // reset timer expires — same 168h rule as the Available tab). Snapshot
+    // spend is period-only; lifetime stays live-tracked from zero.
+    const earnedCurrent = vendorState?.councils_earned_current
+      ?? (hasTimerExpired(snapTimer) ? 0 : snapSpent)
+    const earnedLifetime = vendorState?.councils_earned_lifetime ?? 0
 
     if (earnedCurrent === 0 && earnedLifetime === 0) continue
 

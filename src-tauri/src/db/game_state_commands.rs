@@ -786,6 +786,8 @@ pub struct GameStateVendor {
     pub last_interaction_at: Option<String>,
     pub last_sell_at: Option<String>,
     pub last_confirmed_at: String,
+    pub councils_earned_current: Option<i64>,
+    pub councils_earned_lifetime: Option<i64>,
 }
 
 #[tauri::command]
@@ -797,7 +799,7 @@ pub fn get_game_state_vendor(
     let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
     let mut stmt = conn
         .prepare(
-            "SELECT npc_key, vendor_gold_available, vendor_gold_max, vendor_gold_timer_start, last_interaction_at, last_sell_at, last_confirmed_at
+            "SELECT npc_key, vendor_gold_available, vendor_gold_max, vendor_gold_timer_start, last_interaction_at, last_sell_at, last_confirmed_at, councils_earned_current, councils_earned_lifetime
              FROM game_state_npc_vendor WHERE character_name = ?1 AND server_name = ?2
              ORDER BY npc_key",
         )
@@ -813,6 +815,8 @@ pub fn get_game_state_vendor(
                 last_interaction_at: row.get(4)?,
                 last_sell_at: row.get(5)?,
                 last_confirmed_at: row.get(6)?,
+                councils_earned_current: row.get(7)?,
+                councils_earned_lifetime: row.get(8)?,
             })
         })
         .map_err(|e| format!("Query error: {e}"))?;
