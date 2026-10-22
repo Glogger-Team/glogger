@@ -125,7 +125,7 @@ export function useBuildCrossRef() {
   }
 
   /**
-   * Snapshot known-ability check. `knownRows` are bare CDN InternalNames
+   * Snapshot known-ability check. `knownKeys` are bare CDN InternalNames
    * (e.g. "DebilitatingBlow1") stored per skill at import time. A family
    * counts as known when a stored key matches any tier's InternalName or
    * the family's base key; empty known set = pre-v74 snapshot, fall back

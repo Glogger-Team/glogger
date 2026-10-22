@@ -26,7 +26,7 @@
             type="checkbox"
             :disabled="!snapshotHasAbilityRows"
             class="w-2.5 h-2.5 cursor-pointer disabled:opacity-40" />
-          <span>Known abilities</span>
+          <span>Known skills</span>
         </label>
       </div>
       <div class="flex items-center gap-2">
@@ -95,7 +95,7 @@ const compactMode = ref(false)
 const snapshotHasAbilityRows = computed(() => characterStore.snapshotAbilities.length > 0)
 const knownAbilitiesTitle = computed(() =>
   snapshotHasAbilityRows.value
-    ? 'Show only mods that affect snapshot-known abilities'
+    ? 'Show only mods for snapshot-known skills'
     : 'Select a post-import snapshot to enable',
 )
 
@@ -157,10 +157,10 @@ const filteredPowers = computed(() => {
   if (myAbilitiesFilter.value && abilityBaseNames.value.size > 0) {
     powers = powers.filter(p => isAbilityRelated(p.internal_name ?? p.key))
   }
-
-  // Known-abilities filter: keep mods whose skill is one of the snapshot's
-  // known skills. Scoped to the build's skills already applied above — never
-  // filters to zero on missing data (toggle disabled when no rows).
+  // Known-skills filter: keep mods whose skill is one of the snapshot's
+  // known skills. Skill-level by design (mod↔ability resolution is per-slot
+  // cross-ref, not per-power) — scoped to the build's skills already applied
+  // above, never filters to zero on missing data (toggle disabled when no rows).
   if (knownAbilitiesFilter.value && snapshotHasAbilityRows.value) {
     const knownSkills = new Set(characterStore.snapshotAbilities.map(a => a.skill_name))
     powers = powers.filter(p => p.skill == null || knownSkills.has(p.skill) || isGenericPower(p))
