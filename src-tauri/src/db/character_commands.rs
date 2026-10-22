@@ -196,6 +196,18 @@ pub fn import_character_report_internal(
         ));
     }
 
+    // 3b. Reject placeholder reports from the game's extra-report bug:
+    // missing character name in filename, "???" name, race "error".
+    if report.character.trim().is_empty()
+        || report.character.trim() == "???"
+        || report.race.trim().eq_ignore_ascii_case("error")
+    {
+        return Err(format!(
+            "Skipping placeholder character report (character {:?}, race {:?})",
+            report.character, report.race
+        ));
+    }
+
     let mut conn = db
         .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
@@ -1279,6 +1291,57 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn placeholder_report_is_rejected() {
+        let db = pool();
+        let game_data = GameData::empty();
+        let dir = std::env::temp_dir().join(format!(
+            "glogger_placeholder_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        // The game's extra-report bug: "???" name, race "error".
+        for (file, name, race) in [
+            ("Character_.json", "???", "error"),
+            ("Character_empty.json", "", "Human"),
+            ("Character_err.json", "SomeName", "error"),
+        ] {
+            let path = dir.join(file);
+            std::fs::write(
+                &path,
+                serde_json::json!({
+                    "Character": name,
+                    "ServerName": "Dreva",
+                    "Timestamp": "2026-10-22T12:00:00Z",
+                    "Report": "CharacterSheet",
+                    "ReportVersion": 1,
+                    "Race": race,
+                    "Skills": {},
+                    "RecipeCompletions": {},
+                    "CurrentStats": {},
+                    "Currencies": {},
+                    "NPCs": {}
+                })
+                .to_string(),
+            )
+            .expect("write placeholder report");
+            match import_character_report_internal(&db, path.to_str().expect("path"), &game_data) {
+                Ok(_) => panic!("placeholder must be rejected: {file}"),
+                Err(err) => assert!(err.contains("placeholder"), "unexpected error: {err}"),
+            }
+        }
+        let count: i64 = db
+            .get_write()
+            .expect("write conn")
+            .query_row("SELECT COUNT(*) FROM character_snapshots", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(count, 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// Live-export regression: the real 10/21 TwinkleofToes report parses with
     /// its exact key spellings (`CouncilsSpent`, space-separated timestamps)
     /// and lands VIP rows end to end. Ignored: needs the game export next to
@@ -1297,7 +1360,6 @@ mod tests {
                 panic!("live export not found at {path:?} or {alt:?}");
             }
             live_export_assert(&alt);
-            return;
         }
         live_export_assert(&path);
     }

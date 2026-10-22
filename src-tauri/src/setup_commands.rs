@@ -58,6 +58,23 @@ struct ReportHeader {
     server_name: String,
     timestamp: Option<String>,
     report: Option<String>,
+    #[serde(default)]
+    race: Option<String>,
+}
+
+/// Placeholder reports from the game's extra-report bug: missing character
+/// name, "???" name, or race "error". Filtered out of every scan/import path.
+fn is_placeholder_report(character: &str, race: Option<&str>) -> bool {
+    let name = character.trim();
+    if name.is_empty() || name == "???" {
+        return true;
+    }
+    if let Some(r) = race {
+        if r.trim().eq_ignore_ascii_case("error") {
+            return true;
+        }
+    }
+    false
 }
 
 // ── Commands ────────────────────────────────────────────────────────────────
@@ -111,9 +128,13 @@ pub fn scan_reports_for_characters(path: String) -> Result<Vec<DiscoveredCharact
             Ok(h) => h,
             Err(_) => continue,
         };
-
         // Only count CharacterSheet reports
         if header.report.as_deref() != Some("CharacterSheet") {
+            continue;
+        }
+
+        // Skip the game's placeholder extra report (??? name / error race)
+        if is_placeholder_report(&header.character, header.race.as_deref()) {
             continue;
         }
 
@@ -448,6 +469,10 @@ pub fn import_latest_report_for_character(
             continue;
         }
 
+        if is_placeholder_report(&header.character, header.race.as_deref()) {
+            continue;
+        }
+
         if header.character != character_name {
             continue;
         }
@@ -534,8 +559,11 @@ pub fn import_reports_for_server(
             Ok(h) => h,
             Err(_) => continue,
         };
-
         if header.report.as_deref() != Some("CharacterSheet") {
+            continue;
+        }
+
+        if is_placeholder_report(&header.character, header.race.as_deref()) {
             continue;
         }
 
