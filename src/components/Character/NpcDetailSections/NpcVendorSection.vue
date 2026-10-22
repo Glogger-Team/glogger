@@ -105,10 +105,20 @@
         <span class="text-text-muted">Last sold:</span>
         <span class="text-text-secondary">{{ lastSellLabel }}</span>
       </div>
+
+      <!-- Snapshot import anchor (display-only, never feeds live math) -->
+      <div v-if="snapshotCouncilsSpent != null || snapshotResetDate" class="flex items-center gap-2 px-2 text-xs">
+        <span class="text-text-dim">At import:</span>
+        <span v-if="snapshotCouncilsSpent != null" class="text-text-secondary">spent {{ snapshotCouncilsSpent.toLocaleString() }}c</span>
+        <span v-if="snapshotResetDate" class="text-text-dim">· vendor reset {{ snapshotResetDate }}</span>
+      </div>
     </template>
 
-    <div v-else class="flex items-center gap-2 px-2">
-      <span class="text-xs text-text-dim italic">
+    <div v-else class="flex flex-col gap-1 px-2">
+      <div v-if="snapshotCouncilsSpent != null || snapshotResetDate" class="text-xs text-text-secondary">
+        At import: <span v-if="snapshotCouncilsSpent != null">spent {{ snapshotCouncilsSpent.toLocaleString() }}c</span><span v-if="snapshotResetDate"> · vendor reset {{ snapshotResetDate }}</span>
+      </div>
+      <span v-else class="text-xs text-text-dim italic">
         No vendor data yet — sell an item or click Edit to set manually
       </span>
     </div>
@@ -128,7 +138,14 @@ const props = defineProps<{
   vendorStatus: GameStateVendor | null
   npc: NpcInfo
   playerTier: string
+  snapshotCouncilsSpent?: number | null
+  snapshotVendorReset?: string | null
 }>()
+
+/** Raw ISO date portion only — vendor timestamps are machine strings, no Date math. */
+const snapshotResetDate = computed(() =>
+  props.snapshotVendorReset ? props.snapshotVendorReset.slice(0, 10) : null,
+)
 
 const settingsStore = useSettingsStore()
 const gameState = useGameStateStore()

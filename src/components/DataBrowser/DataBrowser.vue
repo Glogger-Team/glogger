@@ -35,6 +35,9 @@
         <template v-else-if="activeTab === 'titles'">
           <TitleBrowser />
         </template>
+        <template v-else-if="activeTab === 'achievements'">
+          <AchievementBrowser />
+        </template>
         <template v-else-if="activeTab === 'treasure'">
           <TsysBrowser />
         </template>
@@ -57,6 +60,7 @@ import AreaBrowser from "./AreaBrowser.vue";
 import EffectBrowser from "./EffectBrowser.vue";
 import LoreBrowser from "./LoreBrowser.vue";
 import TitleBrowser from "./TitleBrowser.vue";
+import AchievementBrowser from "./AchievementBrowser.vue";
 import TsysBrowser from "./TsysBrowser.vue";
 
 const props = defineProps<{

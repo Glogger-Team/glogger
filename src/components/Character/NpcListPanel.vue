@@ -21,6 +21,7 @@
         class="px-2 py-1.5 bg-surface-base border border-border-default rounded text-xs text-text-primary cursor-pointer">
         <option value="favor">Favor</option>
         <option value="name">Name</option>
+        <option value="spent">Councils Spent</option>
       </select>
 
       <label class="flex items-center gap-1 text-[0.65rem] text-text-muted cursor-pointer">
@@ -97,6 +98,10 @@ export interface NpcRow {
   cdnData: NpcInfo | null
   effective_tier: string
   has_gamestate_data: boolean
+  snapshot_favor_points: number | null
+  snapshot_councils_spent: number | null
+  snapshot_notes: string | null
+  snapshot_vendor_reset: string | null
 }
 
 interface NpcGroup {
@@ -117,7 +122,7 @@ defineEmits<{
 
 const filter = ref('')
 const groupBy = ref<'area' | 'favor' | 'none'>('favor')
-const sortBy = ref<'favor' | 'name'>('favor')
+const sortBy = ref<'favor' | 'name' | 'spent'>('favor')
 const hideNeutral = ref(false)
 const collapsedGroups = ref(new Set<string>())
 
@@ -148,6 +153,10 @@ const allRows = computed<NpcRow[]>(() => {
       cdnData: cdn,
       effective_tier: effectiveTier,
       has_gamestate_data: !!gs,
+      snapshot_favor_points: snap.favor ?? null,
+      snapshot_councils_spent: snap.councils_spent_at_vendor ?? null,
+      snapshot_notes: snap.player_notes ?? null,
+      snapshot_vendor_reset: snap.vendor_reset_time ?? null,
     })
   }
 
@@ -164,6 +173,10 @@ const allRows = computed<NpcRow[]>(() => {
       cdnData: cdn,
       effective_tier: gs.favor_tier ?? 'Neutral',
       has_gamestate_data: true,
+      snapshot_favor_points: null,
+      snapshot_councils_spent: null,
+      snapshot_notes: null,
+      snapshot_vendor_reset: null,
     })
   }
 
@@ -184,6 +197,7 @@ const filteredRows = computed(() => {
       r.display_name.toLowerCase().includes(f)
       || (r.area_friendly_name?.toLowerCase().includes(f) ?? false)
       || r.effective_tier.toLowerCase().includes(f)
+      || (r.snapshot_notes?.toLowerCase().includes(f) ?? false)
     )
   }
 
@@ -199,6 +213,9 @@ const sortedRows = computed(() => {
       break
     case 'name':
       rows.sort((a, b) => a.display_name.localeCompare(b.display_name))
+      break
+    case 'spent':
+      rows.sort((a, b) => (b.snapshot_councils_spent ?? -1) - (a.snapshot_councils_spent ?? -1) || a.display_name.localeCompare(b.display_name))
       break
   }
   return rows

@@ -37,16 +37,19 @@
       <!-- Favor -->
       <NpcFavorSection
         :snapshot-tier="snapshotTier"
+        :snapshot-favor-points="snapshotFavor?.favor ?? null"
+        :snapshot-notes="snapshotFavor?.player_notes ?? null"
         :gamestate-favor="gamestateFavor"
         :npc-key="npcKey"
         :npc="cdnData" />
-
       <!-- Vendor Status -->
       <NpcVendorSection
         v-if="hasVendorService"
         :vendor-status="vendorStatus"
         :npc="cdnData"
-        :player-tier="effectiveTier" />
+        :player-tier="effectiveTier"
+        :snapshot-councils-spent="snapshotFavor?.councils_spent_at_vendor ?? null"
+        :snapshot-vendor-reset="snapshotFavor?.vendor_reset_time ?? null" />
 
       <!-- Vendor Buys Summary -->
       <div v-if="vendorCapAtTier" class="text-xs text-text-secondary px-2">
@@ -99,6 +102,8 @@
         <div class="text-accent-gold text-base font-bold">{{ displayName }}</div>
         <NpcFavorSection
           :snapshot-tier="snapshotTier"
+          :snapshot-favor-points="snapshotFavor?.favor ?? null"
+          :snapshot-notes="snapshotFavor?.player_notes ?? null"
           :gamestate-favor="gamestateFavor" />
         <div class="text-xs text-text-dim italic">No additional data available for this NPC.</div>
       </div>
@@ -127,6 +132,7 @@ import AreaInline from '../Shared/Area/AreaInline.vue'
 const props = defineProps<{
   npcKey: string | null
   snapshotTier: string | null
+  snapshotFavor?: import('../../types/database').SnapshotNpcFavor | null
   gamestateFavor: GameStateFavor | null
   cdnData: NpcInfo | null
   vendorStatus?: GameStateVendor | null

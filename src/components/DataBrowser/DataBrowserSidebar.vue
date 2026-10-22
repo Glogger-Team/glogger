@@ -248,6 +248,7 @@ const typeBadgeClasses: Record<BrowserEntityType, string> = {
   effect: "bg-mod-augment/15 text-mod-augment",
   lorebook: "bg-sky-500/15 text-sky-400",
   title: "bg-amber-500/15 text-amber-400",
+  achievement: "bg-violet-500/15 text-violet-400",
   treasure: "bg-emerald-500/15 text-emerald-400",
 };
 
@@ -267,6 +268,7 @@ const typeLabels: Record<BrowserEntityType, string> = {
   effect: "EFX",
   lorebook: "LOR",
   title: "TTL",
+  achievement: "ACH",
   treasure: "TRS",
 };
 

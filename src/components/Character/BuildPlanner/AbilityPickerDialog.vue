@@ -129,11 +129,11 @@ import { ref, computed, watch } from 'vue'
 import { useBuildPlannerStore } from '../../../stores/buildPlannerStore'
 import { useGameDataStore } from '../../../stores/gameDataStore'
 import { useCharacterStore } from '../../../stores/characterStore'
+import { useBuildCrossRef } from '../../../composables/useBuildCrossRef'
 import { useSettingsStore } from '../../../stores/settingsStore'
 import type { AbilityInfo, AbilityFamily } from '../../../types/gameData'
 import { expandBuildSkill } from '../../../types/buildPlanner'
 import AbilityFamilyOption from './AbilityFamilyOption.vue'
-
 interface FamilyEntry {
   family: AbilityFamily
   tiers: AbilityInfo[]
@@ -157,6 +157,7 @@ const store = useBuildPlannerStore()
 const gameData = useGameDataStore()
 const characterStore = useCharacterStore()
 const settingsStore = useSettingsStore()
+const { familyHasKnownAbility } = useBuildCrossRef()
 
 const searchFilter = ref('')
 const hideUnlearned = ref(false)
@@ -243,7 +244,21 @@ function applyTierConstraints(entry: { tiers: AbilityInfo[], family: AbilityFami
   let visible = [...entry.tiers]
   const skillLevel = getCharacterLevelForSkill(entry.family.skill)
 
-  if (hideUnlearned.value && skillLevel != null) {
+  // Known-ability truth: any ability rows on the snapshot means a post-v74
+  // import — hide families absent from the known set. No rows at all =
+  // pre-v74 snapshot (or none selected): fall back to the level proxy so the
+  // checkbox never hides everything on old data.
+  const snapshotHasAbilityRows = characterStore.snapshotAbilities.length > 0
+  if (hideUnlearned.value && snapshotHasAbilityRows) {
+    const skillKnownKeys = new Set(
+      characterStore.snapshotAbilities
+        .filter(a => a.skill_name === entry.family.skill)
+        .map(a => a.ability_key),
+    )
+    if (!familyHasKnownAbility(entry.tiers, entry.family.base_internal_name, skillKnownKeys)) {
+      visible = []
+    }
+  } else if (hideUnlearned.value && skillLevel != null) {
     visible = visible.filter(t => (t.level ?? 0) <= skillLevel)
   }
 

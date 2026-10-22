@@ -67,6 +67,7 @@
         <NpcDetailPanel
           :npc-key="selectedNpcKey"
           :snapshot-tier="selectedSnapshotTier"
+          :snapshot-favor="selectedSnapshotFavor"
           :gamestate-favor="selectedGamestateFavor"
           :cdn-data="selectedCdnData" />
       </template>
@@ -133,6 +134,11 @@ const selectedSnapshotTier = computed(() => {
   if (!selectedNpcKey.value) return null
   const snap = characterStore.npcFavor.find(f => f.npc_key === selectedNpcKey.value)
   return snap?.favor_level ?? null
+})
+
+const selectedSnapshotFavor = computed(() => {
+  if (!selectedNpcKey.value) return null
+  return characterStore.npcFavor.find(f => f.npc_key === selectedNpcKey.value) ?? null
 })
 
 const selectedGamestateFavor = computed(() => {

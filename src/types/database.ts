@@ -359,6 +359,11 @@ export interface SnapshotSkillLevel {
   xp_toward_next: number
   xp_needed_for_next: number
 }
+export interface SnapshotSkillAbility {
+  skill_name: string
+  ability_key: string
+}
+
 
 export interface SnapshotNpcFavor {
   npc_key: string

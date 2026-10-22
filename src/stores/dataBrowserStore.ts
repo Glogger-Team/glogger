@@ -1,10 +1,10 @@
-import { defineStore } from "pinia";
+import { defineStore, acceptHMRUpdate } from "pinia";
 import { ref } from "vue";
 import { useSettingsStore } from "./settingsStore";
 import type { EntityType } from "../composables/useEntityNavigation";
 
 /** Extends EntityType with browser-only types that don't support entity navigation */
-export type BrowserEntityType = EntityType | "effect" | "lorebook" | "title" | "treasure";
+export type BrowserEntityType = EntityType | "effect" | "lorebook" | "title" | "treasure" | "achievement";
 
 export interface FavoriteEntry {
   type: BrowserEntityType;
@@ -33,6 +33,7 @@ export const browserTypes = [
   { id: "effects", label: "Effects" },
   { id: "lorebooks", label: "Lorebooks" },
   { id: "titles", label: "Titles" },
+  { id: "achievements", label: "Achievements" },
   { id: "treasure", label: "Treasure" },
 ] as const;
 
@@ -48,6 +49,7 @@ export const entityTypeToTab: Record<string, string> = {
   effect: "effects",
   lorebook: "lorebooks",
   title: "titles",
+  achievement: "achievements",
   treasure: "treasure",
 };
 
@@ -196,3 +198,7 @@ export const useDataBrowserStore = defineStore("dataBrowser", () => {
     setMaxHistory,
   };
 });
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useDataBrowserStore, import.meta.hot))
+}

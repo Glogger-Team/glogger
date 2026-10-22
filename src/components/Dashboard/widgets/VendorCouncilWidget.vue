@@ -554,6 +554,8 @@ interface VendorEntry {
   itemCategories: string[]
   rawItemTypes: string[]
   characterBreakdown: CharacterBreakdownEntry[] | null
+  /** Snapshot import anchor: councils spent at import, display-only. */
+  snapshotSpent: number | null
 }
 
 function resolvePlayerTier(npcKey: string): string {
@@ -650,6 +652,7 @@ const characterEntries = computed<VendorEntry[]>(() => {
       itemCategories: getItemCategories(key),
       rawItemTypes: getRawItemTypes(key),
       characterBreakdown: null,
+      snapshotSpent: characterStore.npcFavor.find(f => f.npc_key === key)?.councils_spent_at_vendor ?? null,
     })
   }
 
@@ -726,6 +729,7 @@ const aggregateEntries = computed<VendorEntry[]>(() => {
             goldAvailable: c.vendor_gold_available,
             goldMax: c.vendor_gold_max,
           })),
+        snapshotSpent: null,
       })
     } else {
       // No DB data — untracked vendor
@@ -740,6 +744,7 @@ const aggregateEntries = computed<VendorEntry[]>(() => {
         itemCategories: getItemCategories(key),
         rawItemTypes: getRawItemTypes(key),
         characterBreakdown: null,
+        snapshotSpent: characterStore.npcFavor.find(f => f.npc_key === key)?.councils_spent_at_vendor ?? null,
       })
     }
   }

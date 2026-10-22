@@ -77,6 +77,9 @@
               <div v-if="visitedTypes.has('titles')" v-show="store.activeType === 'titles'" class="h-full">
                 <TitleBrowser />
               </div>
+              <div v-if="visitedTypes.has('achievements')" v-show="store.activeType === 'achievements'" class="h-full">
+                <AchievementBrowser />
+              </div>
               <div v-if="visitedTypes.has('treasure')" v-show="store.activeType === 'treasure'" class="h-full">
                 <TsysBrowser />
               </div>
@@ -110,6 +113,7 @@ import AreaBrowser from "./AreaBrowser.vue";
 import EffectBrowser from "./EffectBrowser.vue";
 import LoreBrowser from "./LoreBrowser.vue";
 import TitleBrowser from "./TitleBrowser.vue";
+import AchievementBrowser from "./AchievementBrowser.vue";
 import TsysBrowser from "./TsysBrowser.vue";
 import CdnDiffBrowser from "./CdnDiffBrowser.vue";
 import DataBrowserSidebar from "./DataBrowserSidebar.vue";

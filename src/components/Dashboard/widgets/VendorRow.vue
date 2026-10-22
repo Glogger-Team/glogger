@@ -39,6 +39,9 @@
           <span v-if="entry.resetLabel" class="text-[10px]" :class="entry.assumedReset ? 'text-value-positive italic' : 'text-text-dim'">
             {{ entry.resetLabel }}
           </span>
+          <span v-if="entry.snapshotSpent != null" class="text-[10px] text-text-dim italic">
+            (spent {{ entry.snapshotSpent.toLocaleString() }})
+          </span>
         </template>
       </div>
     </div>
@@ -104,6 +107,7 @@ interface VendorEntry {
   itemCategories: string[]
   rawItemTypes: string[]
   characterBreakdown: { characterName: string; goldAvailable: number | null; goldMax: number | null }[] | null
+  snapshotSpent: number | null
 }
 
 const props = defineProps<{

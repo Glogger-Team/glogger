@@ -32,6 +32,9 @@
       >
         {{ tierDisplayName(favorTier) }}
       </span>
+      <span v-if="snapshotFavor?.favor != null" class="text-text-dim text-[10px]">
+        ({{ snapshotFavor.favor.toLocaleString() }})
+      </span>
     </div>
 
     <!-- Favor progress -->
@@ -50,6 +53,9 @@
         <span v-if="vendorData.vendor_gold_max != null" class="text-text-dim">
           / {{ vendorData.vendor_gold_max.toLocaleString() }}
         </span>
+      </span>
+      <span v-else-if="snapshotFavor?.councils_spent_at_vendor != null" class="text-text-dim">
+        spent {{ snapshotFavor.councils_spent_at_vendor.toLocaleString() }} (snapshot)
       </span>
       <span v-else class="text-text-dim">unknown</span>
       <span v-if="timerRemaining" class="text-text-dim text-[10px]">
@@ -106,6 +112,11 @@ const favorTier = computed<string | null>(() => {
   const snap = characterStore.npcFavor.find(f => f.npc_key === props.npc.key);
   return snap?.favor_level ?? null;
 });
+
+/** Snapshot fallback values (parenthetical, live data keeps precedence). */
+const snapshotFavor = computed(() =>
+  characterStore.npcFavor.find(f => f.npc_key === props.npc.key) ?? null,
+);
 
 // ── Favor progress ────────────────────────────────────────────────
 const gamestateFavor = computed(() => gameState.favorByNpc[props.npc.key] ?? null);

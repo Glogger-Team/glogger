@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+import { defineStore, acceptHMRUpdate } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -9,6 +9,7 @@ import type {
   CharacterInfo,
   CharacterSnapshotSummary,
   SnapshotSkillLevel,
+  SnapshotSkillAbility,
   SnapshotNpcFavor,
   SnapshotRecipeCompletion,
   SnapshotStat,
@@ -29,6 +30,7 @@ export const useCharacterStore = defineStore('character', () => {
   const selectedCharacter = ref<CharacterInfo | null>(null)
   const selectedSnapshot = ref<CharacterSnapshotSummary | null>(null)
   const skills = ref<SnapshotSkillLevel[]>([])
+  const snapshotAbilities = ref<SnapshotSkillAbility[]>([])
   const npcFavor = ref<SnapshotNpcFavor[]>([])
   const recipes = ref<SnapshotRecipeCompletion[]>([])
   const stats = ref<SnapshotStat[]>([])
@@ -188,15 +190,17 @@ export const useCharacterStore = defineStore('character', () => {
   async function selectSnapshot(snapshot: CharacterSnapshotSummary) {
     selectedSnapshot.value = snapshot
     skillDiffs.value = []
+    snapshotAbilities.value = []
     await loadSnapshotDetails(snapshot.id)
   }
 
   async function loadSnapshotDetails(snapshotId: number) {
     try {
       loading.value = true
-      const [skillsResult, favorResult, recipesResult, statsResult, currenciesResult, questsResult] =
+      const [skillsResult, abilitiesResult, favorResult, recipesResult, statsResult, currenciesResult, questsResult] =
         await Promise.all([
           invoke<SnapshotSkillLevel[]>('get_snapshot_skills', { snapshotId }),
+          invoke<SnapshotSkillAbility[]>('get_snapshot_skill_abilities', { snapshotId }),
           invoke<SnapshotNpcFavor[]>('get_snapshot_npc_favor', { snapshotId }),
           invoke<SnapshotRecipeCompletion[]>('get_snapshot_recipes', { snapshotId }),
           invoke<SnapshotStat[]>('get_snapshot_stats', { snapshotId }),
@@ -204,6 +208,7 @@ export const useCharacterStore = defineStore('character', () => {
           invoke<SnapshotActiveQuest[]>('get_snapshot_active_quests', { snapshotId }),
         ])
       skills.value = skillsResult
+      snapshotAbilities.value = abilitiesResult
       npcFavor.value = favorResult
       recipes.value = recipesResult
       stats.value = statsResult
@@ -461,6 +466,7 @@ export const useCharacterStore = defineStore('character', () => {
     selectedCharacter,
     selectedSnapshot,
     skills,
+    snapshotAbilities,
     npcFavor,
     recipes,
     stats,
@@ -497,3 +503,7 @@ export const useCharacterStore = defineStore('character', () => {
     loadAllCharacterItems,
   }
 })
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useCharacterStore, import.meta.hot))
+}

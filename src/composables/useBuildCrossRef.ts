@@ -124,6 +124,27 @@ export function useBuildCrossRef() {
     return tsysAbilityCache
   }
 
+  /**
+   * Snapshot known-ability check. `knownRows` are bare CDN InternalNames
+   * (e.g. "DebilitatingBlow1") stored per skill at import time. A family
+   * counts as known when a stored key matches any tier's InternalName or
+   * the family's base key; empty known set = pre-v74 snapshot, fall back
+   * to the level proxy at the call site (never filter to zero on missing).
+   */
+  function familyHasKnownAbility(
+    tiers: { raw_json?: unknown; name?: string }[],
+    baseInternalName: string,
+    knownKeys: Set<string>,
+  ): boolean {
+    if (knownKeys.size === 0) return false
+    if (knownKeys.has(baseInternalName)) return true
+    for (const t of tiers) {
+      const internal = (t.raw_json as Record<string, unknown> | undefined)?.InternalName
+      if (typeof internal === 'string' && knownKeys.has(internal)) return true
+    }
+    return false
+  }
+
   return {
     abilityBaseNames,
     powerAbilities,
@@ -131,5 +152,6 @@ export function useBuildCrossRef() {
     isAbilityRelated,
     getAbilitiesForPower,
     getTsysAbilityCache,
+    familyHasKnownAbility,
   }
 }

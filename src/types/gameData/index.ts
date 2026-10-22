@@ -12,10 +12,11 @@ export type {
   QuestRequirement
 } from './quests'
 export type { NpcPreference, NpcInfo } from './npcs'
+export type { PlayerTitleInfo } from './playerTitles'
+export type { AchievementInfo } from './achievements'
 export type { EffectInfo } from './effects'
 export type { EnemyInfo, MonsterEntry } from './enemies'
 export type { LorebookEntry, LorebookCategoryInfo } from './lorebooks'
-export type { PlayerTitleInfo } from './playerTitles'
 export type { TsysBrowserEntry, TsysTierInfo } from './tsys'
 export type { SourceEntry, QuestSummary, EntitySources } from './sources'
 

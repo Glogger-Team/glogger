@@ -55,9 +55,11 @@ pub struct NpcFavorData {
     /// update; older exports omit it, hence `default`.
     #[serde(default)]
     pub favor: Option<f64>,
-    /// Councils spent at this NPC's vendor. New in VIP exports; older omit.
-    #[serde(default)]
-    pub councils_spent_at_vendor: Option<i64>,
+    /// Councils spent at this NPC's vendor. Live game key is `CouncilsSpent`
+    /// (verified 10/21 export); `CouncilsSpentAtVendor` alias keeps the
+    /// pre-release probe shape parsing.
+    #[serde(default, alias = "CouncilsSpentAtVendor")]
+    pub councils_spent: Option<i64>,
     /// Vendor reset time, if a reset timer is active. New; older omit.
     #[serde(default)]
     pub vendor_reset_time: Option<String>,
@@ -298,7 +300,7 @@ pub fn import_character_report_internal(
                     npc_key,
                     npc_data.favor_level,
                     npc_data.favor,
-                    npc_data.councils_spent_at_vendor,
+                    npc_data.councils_spent,
                     npc_data.vendor_reset_time,
                     npc_data.player_notes,
                 ])
@@ -900,7 +902,7 @@ fn seed_game_state_from_snapshot(
         ).map_err(|e| format!("Failed to prepare vendor spend upsert: {e}"))?;
 
         for (npc_key, npc_data) in &report.npcs {
-            if npc_data.councils_spent_at_vendor.is_none() && npc_data.vendor_reset_time.is_none() {
+            if npc_data.councils_spent.is_none() && npc_data.vendor_reset_time.is_none() {
                 continue;
             }
             vendor_stmt
@@ -908,7 +910,7 @@ fn seed_game_state_from_snapshot(
                     character,
                     server,
                     npc_key,
-                    npc_data.councils_spent_at_vendor,
+                    npc_data.councils_spent,
                     npc_data.vendor_reset_time,
                     ts,
                 ])
@@ -1216,9 +1218,9 @@ mod tests {
             snapshot_id
         };
         // New keys must parse through serde (not just store): build a minimal
-        // post-10/21-style report inline and import it. Key names follow the
-        // game's PascalCase convention (FavorLevel precedent); replace with a
-        // real capture if the game emits different names.
+        // post-10/21-style report inline and import it. Key `CouncilsSpent` is
+        // the live game spelling (verified 10/21 TwinkleofToes export);
+        // `CouncilsSpentAtVendor` survives as a serde alias only.
         let dir = std::env::temp_dir().join(format!(
             "glogger_npc_fields_{}",
             std::time::SystemTime::now()
@@ -1245,8 +1247,8 @@ mod tests {
                     "TestVendor": {
                         "FavorLevel": "Friends",
                         "Favor": 1234.0,
-                        "CouncilsSpentAtVendor": 5000,
-                        "VendorResetTime": "2026-10-21T00:00:00Z",
+                        "CouncilsSpent": 5000,
+                        "VendorResetTime": "2026-10-21 00:00:00Z",
                         "PlayerNotes": "sells cheap cheese"
                     }
                 }
@@ -1271,9 +1273,100 @@ mod tests {
                 .expect("probe npc row");
             assert_eq!(favor, Some(1234.0));
             assert_eq!(councils, Some(5000));
-            assert_eq!(reset.as_deref(), Some("2026-10-21T00:00:00Z"));
+            assert_eq!(reset.as_deref(), Some("2026-10-21 00:00:00Z"));
             assert_eq!(notes.as_deref(), Some("sells cheap cheese"));
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Live-export regression: the real 10/21 TwinkleofToes report parses with
+    /// its exact key spellings (`CouncilsSpent`, space-separated timestamps)
+    /// and lands VIP rows end to end. Ignored: needs the game export next to
+    /// the repo (Reports dir), not checked in.
+    #[test]
+    #[ignore]
+    fn live_export_vip_fields_import_end_to_end() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../Reports/Character_TwinkleofToes_Dreva.json");
+        if !path.exists() {
+            let home = std::env::var("USERPROFILE").unwrap_or_default();
+            let alt = std::path::Path::new(&home).join(
+                "AppData/LocalLow/Elder Game/Project Gorgon/Reports/Character_TwinkleofToes_Dreva.json",
+            );
+            if !alt.exists() {
+                panic!("live export not found at {path:?} or {alt:?}");
+            }
+            live_export_assert(&alt);
+            return;
+        }
+        live_export_assert(&path);
+    }
+
+    #[cfg(test)]
+    fn live_export_assert(path: &std::path::Path) {
+        let db = pool();
+        let game_data = GameData::empty();
+        import_character_report_internal(&db, path.to_str().expect("utf8 path"), &game_data).expect("import live export");
+        let conn = db.get_write().expect("write conn");
+        let snapshot_id: i64 = conn
+            .query_row(
+                "SELECT id FROM character_snapshots WHERE character_name = 'TwinkleofToes'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("snapshot row");
+        // Raina: Friends tier + fractional favor, no councils, empty notes.
+        let (favor, councils, notes): (Option<f64>, Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT favor, councils_spent_at_vendor, player_notes
+                 FROM character_npc_favor WHERE snapshot_id = ?1 AND npc_key = 'NPC_Raina'",
+                [snapshot_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("raina row");
+        assert!((favor.unwrap() - 598.4678).abs() < 1e-3, "raina favor {favor:?}");
+        assert_eq!(councils, Some(0));
+        assert_eq!(notes.as_deref(), Some(""));
+        // Bendith: councils spent + vendor reset land on the snapshot row…
+        let (spent, reset): (Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT councils_spent_at_vendor, vendor_reset_time
+                 FROM character_npc_favor WHERE snapshot_id = ?1 AND npc_key = 'NPC_Bendith'",
+                [snapshot_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("bendith row");
+        assert_eq!(spent, Some(48));
+        assert_eq!(reset.as_deref(), Some("2026-10-21 21:36:13Z"));
+        // …and seed the live vendor table (spend + timer, not gold columns).
+        let (earned, timer): (Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT councils_earned_current, vendor_gold_timer_start
+                 FROM game_state_npc_vendor
+                 WHERE character_name = 'TwinkleofToes' AND npc_key = 'NPC_Bendith'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("bendith vendor seed");
+        assert_eq!(earned, Some(48));
+        assert_eq!(timer.as_deref(), Some("2026-10-21 21:36:13Z"));
+        // Sword abilities persist as bare InternalName keys.
+        let sword_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM snapshot_skill_abilities WHERE snapshot_id = ?1 AND skill_name = 'Sword'",
+                [snapshot_id],
+                |row| row.get(0),
+            )
+            .expect("sword count");
+        assert_eq!(sword_count, 18, "live Sword ability count");
+        let has_slash: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM snapshot_skill_abilities
+                 WHERE snapshot_id = ?1 AND skill_name = 'Sword' AND ability_key = 'SwordSlash'",
+                [snapshot_id],
+                |row| row.get(0),
+            )
+            .expect("sword slash");
+        assert_eq!(has_slash, 1);
     }
 }

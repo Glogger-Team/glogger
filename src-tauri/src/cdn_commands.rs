@@ -1263,6 +1263,61 @@ pub async fn search_npcs(
     Ok(results)
 }
 
+// ── Achievement query commands ──────────────────────────────────────────────
+
+/// Get all achievements, sorted by name.
+#[tauri::command]
+pub async fn get_all_achievements(
+    state: State<'_, GameDataState>,
+) -> Result<Vec<crate::game_data::AchievementInfo>, String> {
+    let data = state.read().await;
+    let mut results: Vec<crate::game_data::AchievementInfo> =
+        data.achievements.values().cloned().collect();
+    results.sort_by(|a, b| {
+        a.name
+            .as_deref()
+            .unwrap_or(&a.id)
+            .cmp(b.name.as_deref().unwrap_or(&b.id))
+    });
+    Ok(results)
+}
+
+/// Search achievements by name, description, or id (case-insensitive contains).
+#[tauri::command]
+pub async fn search_achievements(
+    query: String,
+    state: State<'_, GameDataState>,
+) -> Result<Vec<crate::game_data::AchievementInfo>, String> {
+    let data = state.read().await;
+    let q = query.to_lowercase();
+
+    let mut results: Vec<crate::game_data::AchievementInfo> = data
+        .achievements
+        .values()
+        .filter(|ach| {
+            let name_match = ach
+                .name
+                .as_ref()
+                .is_some_and(|n| n.to_lowercase().contains(&q));
+            let desc_match = ach
+                .description
+                .as_ref()
+                .is_some_and(|d| d.to_lowercase().contains(&q));
+            let id_match = ach.id.to_lowercase().contains(&q);
+            name_match || desc_match || id_match
+        })
+        .cloned()
+        .collect();
+
+    results.sort_by(|a, b| {
+        a.name
+            .as_deref()
+            .unwrap_or(&a.id)
+            .cmp(b.name.as_deref().unwrap_or(&b.id))
+    });
+     Ok(results)
+ }
+
 /// Get all NPCs in a specific area.
 #[tauri::command]
 pub async fn get_npcs_in_area(

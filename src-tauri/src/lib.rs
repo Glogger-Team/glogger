@@ -49,6 +49,8 @@ use cdn_commands::{
     get_ability_sources,
     get_skills_with_ability_counts,
     search_ability_families,
+    get_all_achievements,
+    search_achievements,
     get_all_item_keywords,
     get_all_lorebooks,
     get_all_npcs,
@@ -779,6 +781,8 @@ pub fn run() {
             // NPC queries
             get_all_npcs,
             search_npcs,
+            get_all_achievements,
+            search_achievements,
             get_npcs_in_area,
             get_monsters_in_area,
             get_all_areas,

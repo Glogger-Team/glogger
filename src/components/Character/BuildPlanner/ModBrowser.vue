@@ -18,6 +18,16 @@
             class="w-2.5 h-2.5 cursor-pointer" />
           <span>My abilities</span>
         </label>
+        <label
+          class="flex items-center gap-1 text-[10px] text-text-muted cursor-pointer shrink-0"
+          :title="knownAbilitiesTitle">
+          <input
+            v-model="knownAbilitiesFilter"
+            type="checkbox"
+            :disabled="!snapshotHasAbilityRows"
+            class="w-2.5 h-2.5 cursor-pointer disabled:opacity-40" />
+          <span>Known abilities</span>
+        </label>
       </div>
       <div class="flex items-center gap-2">
         <input
@@ -65,6 +75,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useBuildPlannerStore } from '../../../stores/buildPlannerStore'
+import { useCharacterStore } from '../../../stores/characterStore'
 import type { SlotTsysPower } from '../../../types/buildPlanner'
 import { computeSlotConstraints, expandBuildSkill } from '../../../types/buildPlanner'
 import { useBuildCrossRef } from '../../../composables/useBuildCrossRef'
@@ -72,11 +83,21 @@ import StyledSelect from '../../Shared/StyledSelect.vue'
 import ModBrowserItem from './ModBrowserItem.vue'
 
 const store = useBuildPlannerStore()
+const characterStore = useCharacterStore()
 const { abilityBaseNames, isAbilityRelated } = useBuildCrossRef()
 
 const skillFilter = ref('__build__')
 const myAbilitiesFilter = ref(false)
+const knownAbilitiesFilter = ref(false)
 const compactMode = ref(false)
+
+/** Post-v74 snapshot rows present → the toggle means something. */
+const snapshotHasAbilityRows = computed(() => characterStore.snapshotAbilities.length > 0)
+const knownAbilitiesTitle = computed(() =>
+  snapshotHasAbilityRows.value
+    ? 'Show only mods that affect snapshot-known abilities'
+    : 'Select a post-import snapshot to enable',
+)
 
 const skillFilterOptions = computed(() => {
   const primary = store.selectedSlot ? store.getSlotSkillPrimary(store.selectedSlot) : store.activePreset?.skill_primary
@@ -135,6 +156,14 @@ const filteredPowers = computed(() => {
   // Apply ability filter
   if (myAbilitiesFilter.value && abilityBaseNames.value.size > 0) {
     powers = powers.filter(p => isAbilityRelated(p.internal_name ?? p.key))
+  }
+
+  // Known-abilities filter: keep mods whose skill is one of the snapshot's
+  // known skills. Scoped to the build's skills already applied above — never
+  // filters to zero on missing data (toggle disabled when no rows).
+  if (knownAbilitiesFilter.value && snapshotHasAbilityRows.value) {
+    const knownSkills = new Set(characterStore.snapshotAbilities.map(a => a.skill_name))
+    powers = powers.filter(p => p.skill == null || knownSkills.has(p.skill) || isGenericPower(p))
   }
 
   return powers

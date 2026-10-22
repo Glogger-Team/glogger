@@ -1,4 +1,4 @@
-import { defineStore } from "pinia";
+import { defineStore, acceptHMRUpdate } from "pinia";
 import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -15,6 +15,7 @@ import type {
   LorebookEntry,
   LorebookCategoryInfo,
   PlayerTitleInfo,
+  AchievementInfo,
   TsysBrowserEntry,
   CacheStatus,
   EntitySources,
@@ -60,6 +61,14 @@ export const useGameDataStore = defineStore("gameData", () => {
     allQuestsCache.value = await invoke<QuestInfo[]>('get_all_quests')
   }
 
+  // ── Preloaded achievement catalog (11 rows, backend-sorted) ──────────────
+  const achievementsCache = ref<AchievementInfo[]>([])
+
+  async function loadAllAchievements(): Promise<void> {
+    if (achievementsCache.value.length > 0) return
+    achievementsCache.value = await invoke<AchievementInfo[]>('get_all_achievements')
+  }
+
   const questsByNpc = computed<Map<string, QuestInfo[]>>(() => {
     const map = new Map<string, QuestInfo[]>()
     for (const quest of allQuestsCache.value) {
@@ -89,7 +98,7 @@ export const useGameDataStore = defineStore("gameData", () => {
   listen<number>("game-data-ready", async (_event) => {
     status.value = "ready";
     errorMessage.value = null;
-    await Promise.all([refreshCacheStatus(), loadAllNpcsMap(), loadAllQuests()]);
+    await Promise.all([refreshCacheStatus(), loadAllNpcsMap(), loadAllQuests(), loadAllAchievements()]);
     startCdnPolling();
   });
 
@@ -104,6 +113,7 @@ export const useGameDataStore = defineStore("gameData", () => {
     if (status.value === 'ready') {
       loadAllNpcsMap()
       loadAllQuests()
+      loadAllAchievements()
     }
   });
 
@@ -397,6 +407,18 @@ export const useGameDataStore = defineStore("gameData", () => {
     return invoke<PlayerTitleInfo[]>("search_player_titles", { query });
   }
 
+  // ── Achievement queries ───────────────────────────────────────────────────
+
+  async function getAllAchievements(): Promise<AchievementInfo[]> {
+    if (achievementsCache.value.length > 0) return achievementsCache.value
+    await loadAllAchievements()
+    return achievementsCache.value
+  }
+
+  async function searchAchievements(query: string): Promise<AchievementInfo[]> {
+    return invoke<AchievementInfo[]>("search_achievements", { query });
+  }
+
   // ── Lorebook queries ───────────────────────────────────────────────────────
 
   async function getAllLorebooks(): Promise<LorebookEntry[]> {
@@ -578,6 +600,10 @@ export const useGameDataStore = defineStore("gameData", () => {
     searchLorebooks,
     getAllPlayerTitles,
     searchPlayerTitles,
+    getAllAchievements,
+    searchAchievements,
+    loadAllAchievements,
+    achievementsCache,
     getAbilitySources,
     getItemSources,
     getRecipeSources,
@@ -608,3 +634,7 @@ export const useGameDataStore = defineStore("gameData", () => {
     computeAbilityBuildStats,
   };
 });
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useGameDataStore, import.meta.hot))
+}

@@ -19,6 +19,7 @@
         :class="favorBadgeClasses(entry.favorTier)"
       >
         {{ tierDisplayName(entry.favorTier) }}
+        <span v-if="entry.snapshotFavorPoints != null" class="opacity-70">({{ entry.snapshotFavorPoints.toLocaleString() }})</span>
       </span>
 
       <!-- Vendor gold -->
@@ -26,7 +27,9 @@
         <span class="text-accent-gold">$</span>
         {{ entry.vendorGold.toLocaleString() }}<span v-if="entry.vendorGoldMax != null" class="text-text-dim">/{{ entry.vendorGoldMax.toLocaleString() }}</span>
       </span>
-
+      <span v-else-if="entry.snapshotCouncilsSpent != null" class="text-[10px] text-text-dim shrink-0 whitespace-nowrap">
+        spent {{ entry.snapshotCouncilsSpent.toLocaleString() }}
+      </span>
       <!-- Storage -->
       <span v-if="entry.storageUsed != null" class="text-[10px] text-text-secondary shrink-0 whitespace-nowrap">
         <span class="text-cyan-400">&#x25A3;</span>
@@ -68,6 +71,8 @@ const characterStore = useCharacterStore()
 interface PinnedNpcEntry {
   key: string
   favorTier: string | null
+  snapshotFavorPoints: number | null
+  snapshotCouncilsSpent: number | null
   vendorGold: number | null
   vendorGoldMax: number | null
   storageUsed: number | null
@@ -115,6 +120,8 @@ const pinnedNpcs = computed<PinnedNpcEntry[]>(() => {
     return {
       key: npcKey,
       favorTier,
+      snapshotFavorPoints: snapFavor?.favor ?? null,
+      snapshotCouncilsSpent: snapFavor?.councils_spent_at_vendor ?? null,
       vendorGold,
       vendorGoldMax,
       storageUsed,

@@ -14,10 +14,18 @@
       <span v-if="snapshotTier && gamestateTier && snapshotTier !== gamestateTier" class="text-[10px] text-text-dim">
         Snapshot: <span :class="favorColor(snapshotTier)">{{ tierDisplayName(snapshotTier) }}</span>
       </span>
+      <span v-if="snapshotFavorPoints != null" class="text-[10px] text-text-dim">
+        {{ snapshotFavorPoints.toLocaleString() }} favor (snapshot)
+      </span>
       <span v-if="gamestateFavor?.cumulative_delta" class="text-[10px] text-text-dim">
         Session: <span class="text-accent-gold">{{ gamestateFavor.cumulative_delta > 0 ? '+' : '' }}{{ gamestateFavor.cumulative_delta.toFixed(1) }}</span> favor
       </span>
     </div>
+
+    <!-- Player notes from the snapshot (read-only) -->
+    <div v-if="snapshotNotes?.length" class="text-xs text-text-secondary italic border-l-2 border-border-subtle pl-2">
+      &ldquo;{{ snapshotNotes }}&rdquo;
+     </div>
 
     <!-- Tier ladder -->
     <div class="flex flex-col gap-0.5">
@@ -96,6 +104,8 @@ import {
 
 const props = defineProps<{
   snapshotTier: string | null
+  snapshotFavorPoints?: number | null
+  snapshotNotes?: string | null
   gamestateFavor: GameStateFavor | null
   npcKey?: string | null
   npc?: NpcInfo | null

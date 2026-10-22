@@ -121,6 +121,18 @@
 
       <!-- ═══ Row 3, Col 1-2: Related Abilities + Keywords ═══ -->
       <div class="flex flex-col gap-4" style="grid-area: abilities;">
+        <div v-if="knownAbilityKeys.length" class="flex flex-col gap-1.5">
+          <div class="text-[0.65rem] uppercase tracking-widest text-text-dim border-b border-surface-card pb-0.5">
+            Known Abilities — Snapshot ({{ knownAbilityKeys.length }})
+          </div>
+          <div class="flex flex-wrap gap-1">
+            <span
+              v-for="key in knownAbilityKeys"
+              :key="key"
+              class="text-[0.72rem] px-1.5 py-0.5 bg-surface-card border border-border-subtle text-entity-ability"
+              :title="`Known in snapshot: ${key}`">{{ key }}</span>
+          </div>
+        </div>
         <div v-if="abilities.length" class="flex flex-col gap-1.5">
           <div class="text-[0.65rem] uppercase tracking-widest text-text-dim border-b border-surface-card pb-0.5">
             Related Abilities ({{ abilities.length }})
@@ -194,6 +206,7 @@
 import { ref, computed, watch } from 'vue'
 import { useGameStateStore } from '../../stores/gameStateStore'
 import { useGameDataStore } from '../../stores/gameDataStore'
+import { useCharacterStore } from '../../stores/characterStore'
 import { skillTotalLevel, type GameStateSkill } from '../../types/gameState'
 import type { SkillInfo, AbilityInfo, EntitySources } from '../../types/gameData'
 import SkillLevelDisplay from '../Shared/SkillLevelDisplay.vue'
@@ -221,9 +234,19 @@ const props = defineProps<{
   skill: GameStateSkill | null
   cdnSkills?: Record<string, SkillInfo>
 }>()
-
 const store = useGameStateStore()
 const gameData = useGameDataStore()
+const characterStore = useCharacterStore()
+
+/** Bare ability keys stored on the selected snapshot for this skill (import-time truth). */
+const knownAbilityKeys = computed(() => {
+  if (!props.skill) return [] as string[]
+  const name = props.skill.skill_name
+  return characterStore.snapshotAbilities
+    .filter(a => a.skill_name === name)
+    .map(a => a.ability_key)
+    .sort((a, b) => a.localeCompare(b))
+})
 
 const cdnData = ref<SkillInfo | null>(null)
 const abilities = ref<AbilityInfo[]>([])
