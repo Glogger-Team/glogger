@@ -81,7 +81,7 @@ fn clear_cdn_data(tx: &Transaction) -> Result<()> {
          DELETE FROM quests;
          DELETE FROM xp_tables;
          DELETE FROM tsys_client_info;
-         DELETE FROM areas;
+         DELETE FROM item_uses;
          DELETE FROM achievements;
          DELETE FROM foods;
          DROP TABLE IF EXISTS survey_types;
