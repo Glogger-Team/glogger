@@ -167,6 +167,7 @@ export const useCharacterStore = defineStore('character', () => {
     selectedCharacter.value = character
     selectedSnapshot.value = null
     skills.value = []
+    snapshotAbilities.value = []
     npcFavor.value = []
     recipes.value = []
     stats.value = []
