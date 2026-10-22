@@ -641,7 +641,9 @@ const characterEntries = computed<VendorEntry[]>(() => {
     // anchor the 168h reset timer on the snapshot's reset time so gold reads
     // are estimates until the player next sells to the vendor live.
     const snapFavor = characterStore.npcFavor.find(f => f.npc_key === key)
-    const snapTimer = vendorState?.vendor_gold_timer_start ?? snapFavor?.vendor_reset_time ?? null
+    // Live NULL (vendor at cap, no timer) is meaningful, not missing — only
+    // fall back to the snapshot reset when there is no live row at all.
+    const snapTimer = vendorState ? vendorState.vendor_gold_timer_start : snapFavor?.vendor_reset_time ?? null
     const earnedSnap = vendorState?.councils_earned_current ?? snapFavor?.councils_spent_at_vendor ?? 0
 
     // Determine effective gold: if timer has expired, assume reset to cap
@@ -909,9 +911,10 @@ const earnedVendorEntries = computed<EarnedVendorEntry[]>(() => {
     if (!hasBuyCapacity(npc)) continue
 
     const vendorState = gameState.vendorByNpc[key]
-    const snapSpent = characterStore.npcFavor.find(f => f.npc_key === key)?.councils_spent_at_vendor ?? 0
-    const snapTimer = vendorState?.vendor_gold_timer_start
-      ?? characterStore.npcFavor.find(f => f.npc_key === key)?.vendor_reset_time ?? null
+    const snapFavor = characterStore.npcFavor.find(f => f.npc_key === key)
+    const snapSpent = snapFavor?.councils_spent_at_vendor ?? 0
+    // Same row-exists guard as the Available tab: live NULL means at-cap.
+    const snapTimer = vendorState ? vendorState.vendor_gold_timer_start : snapFavor?.vendor_reset_time ?? null
 
     // Live-earned this period, else the snapshot's spent (zeroed once its
     // reset timer expires — same 168h rule as the Available tab). Snapshot
