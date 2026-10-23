@@ -9,9 +9,3 @@ rules:
     # trigger that could let an untrusted run poison either cache.
     ignore:
       - release.yml
-  unpinned-images:
-    # No docker on the dev machine to resolve the digest; re-pin with
-    # `docker buildx imagetools inspect <image> --format '{{json .Manifest}}'`
-    # when bumping the GNOME runtime.
-    ignore:
-      - flatpak.yml

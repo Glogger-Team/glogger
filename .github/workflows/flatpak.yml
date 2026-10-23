@@ -52,10 +52,10 @@ jobs:
     # flatpak-builder + the GNOME SDK only exist inside the official Flatpak
     # builder image, not on the bare runner.
     container:
-      # Pinned by digest once resolvable (no docker here to read it): the
-      # `gnome-50` tag moves. Re-pin with
-      # `docker buildx imagetools inspect <image> --format '{{json .Manifest}}'`.
-      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
+      # Pinned by digest: the `gnome-50` tag moves. Re-pin the digest with
+      # `docker buildx imagetools inspect <image> --format '{{json .Manifest}}'`
+      # when bumping the GNOME runtime.
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50@sha256:1de59efef01a946d9f28f1ec3458bf6f61dcee3507d7fecdd473f8134da4ec77
       options: --privileged
 
     steps:
