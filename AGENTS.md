@@ -81,7 +81,7 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 - **Tailwind v4**: CSS-first via `@tailwindcss/vite`; **no** `tailwind.config.js`/`postcss.config.js`. Classes applied directly in templates.
 - **Component naming**: PascalCase with role suffixes (`*Widget.vue`, `*Tab.vue`, `*View.vue`, `*Panel.vue`, `*Overlay.vue`). Rust: `<domain>_commands.rs`, `<domain>_parser.rs`.
 - **Rust↔TS contract**: Rust snake_case structs, hand-mirrored camelCase types in `src/types/`. When adding a setting: update both `toBackendSettings`/`fromBackendSettings` converters + defaults in `settingsStore.ts`.
-
+- **Default directories** (never guess; all from `settings.rs::get_default_game_data_path` / `get_default_player_log_path`): game data root is `%APPDATA%\..\LocalLow\Elder Game\Project Gorgon\` on Windows (`~/Library/Application Support/unity.Elder Game.Project Gorgon/` on macOS). Everything game-side hangs off it: `Player.log` (+ game-rotated `Player-prev.log` sibling), `ChatLogs/`, `Reports/` (`Character_*.json`, `*_items_*.json`), `Books/`. glogger-side lives under Tauri's `app_data_dir` (per-build identifier: `glogger.Dev` / `glogger.Release` / `glogger.Experimental`): `glogger.db` (or custom `db_path`), `settings.json`, `data/` (CDN cache), `icons/`, `gst/`, `tesseract/`, `player-logs/` (rotated-Player.log archive; derived from the settings file's parent, not the game dir). Path-dependent tests (`#[ignore]` live-export, survey replay) resolve fixtures via relative paths, not these defaults.
 ## Important Files
 
 | File | Why it matters |
