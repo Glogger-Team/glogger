@@ -122,6 +122,22 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 - Replay fixtures live **outside the crate** (`test_data/`, `docs/CDN-full-examples/`), reached via relative paths from `src-tauri` — breaks if run from another CWD.
 - The release workflow gates releases with `npm run build` + `cargo test --lib` before bundling; ignored replay tests never run in CI.
 
+## Linting
+
+Before committing, lint every file type you changed and fix what the linter reports — local feedback first, not CI. Commands below run from the repo root; mise-managed tools go through `mise x` (the shim needs no global default that way).
+
+| File type | Linter | Run |
+| --------- | ------ | --- |
+| TS/Vue/JS (`.ts`, `.vue`, `.mjs`, `.cjs`) | vue-tsc (gated today); eslint (pending `npm i -D`) | `npm run build` |
+| Rust (`.rs`) | rustfmt + clippy, both advisory (823 unformatted spots, 167 findings pre-existing — report, don't gate) | from `src-tauri/`: `cargo fmt -- --check`, `cargo clippy --all-targets` |
+| Python (`.py`) | ruff | `mise x ruff -- ruff check scripts/ && mise x ruff -- ruff format --check scripts/` |
+| Shell (`.sh`, `.githooks/*`) | shellcheck (warning+; info notes don't fail) | `shellcheck -S warning scripts/*.sh .githooks/pre-push .githooks/commit-msg` |
+| YAML / Workflows (`.yml`) | yamllint + zizmor medium+ (config `.github/zizmor.yml`) | `mise x yamllint -- yamllint .github/` then `mise x zizmor -- zizmor --no-online-audits --config <repo>/.github/zizmor.yml --min-severity medium <repo>/.github/workflows/` (absolute paths: `mise x` resets CWD for the inner command; jactionlint excluded, its cache-poisoning rule can't ignore accepted drift) |
+| Markdown (`.md`) | markdownlint-cli2 (opt-in, not gated: 6k+ pre-existing) | `mise x npm:markdownlint-cli2 -- markdownlint-cli2 --fix "**/*.md"` when ready |
+| PowerShell (`.ps1`) | PSScriptAnalyzer (pending install, opt-in) | `powershell -NoProfile -Command "Invoke-ScriptAnalyzer -Path scripts -Recurse"` |
+
+Optional extras installed but not gated: `pinact`, `gasa` (action pinning). Not installed, add only if wanted: stylelint (CSS), eslint-plugin-jsonc (JSON validity). Formatters are a separate job from lint: `cargo fmt`, `ruff format` (prettier is not configured).
+
 ## Gotchas
 
 - **`acceptHMRUpdate` on every Pinia store**: without it, `tauri dev` HMR leaves stale store singletons causing silent no-op bugs. Mirror the pattern at the bottom of `buildPlannerStore.ts`:

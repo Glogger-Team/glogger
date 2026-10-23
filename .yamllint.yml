@@ -1,0 +1,16 @@
+# yamllint config: line-length off (workflow `run:` shell lines and embedded
+# echo prose routinely exceed any limit; wrapping them hurts readability and
+# risks changing shell behavior). document-start off: existing files omit
+# `---`. truthy off: `on:` is a YAML 1.1 `true` key and GitHub Actions
+# requires it literally.
+
+extends: default
+
+rules:
+  line-length: disable
+  document-start: disable
+  truthy: disable
+  # comments (min-spaces-before: 2) fires on every `# vX` version pin in
+  # `uses:` lines — those are Dependabot-managed, single-space is the
+  # ecosystem convention, and double-spacing them would fight automation.
+  comments: disable

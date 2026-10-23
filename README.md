@@ -146,6 +146,17 @@ npm run tauri:build
 cd src-tauri && cargo test --lib
 ```
 
+### Lint
+
+Before committing, lint what you changed (see `AGENTS.md` → `## Linting` for the per-file-type commands). Fast local gates:
+
+```bash
+npm run build                                    # TS/Vue typecheck
+mise x ruff -- ruff check scripts/               # Python
+shellcheck -S warning scripts/*.sh               # Shell
+mise x yamllint -- yamllint .github/             # YAML / workflows
+```
+
 ## Tech Stack
 
 - **[Tauri 2](https://tauri.app)** — Rust backend with OS webview
