@@ -1,0 +1,17 @@
+# zizmor configuration: https://docs.zizmor.sh/configuration/
+# Ignores live here, not as inline comments on SHA-pinned `uses:` lines,
+# so Dependabot can keep rewriting the version comment.
+rules:
+  cache-poisoning:
+    # Release caches stay on deliberately (linux build is ~30 min without
+    # them): npm cache key derives from the frozen lockfile (`npm ci`) and
+    # rust-cache only saves on tag pushes (`save-if`), with no pull_request
+    # trigger that could let an untrusted run poison either cache.
+    ignore:
+      - release.yml
+  unpinned-images:
+    # No docker on the dev machine to resolve the digest; re-pin with
+    # `docker buildx imagetools inspect <image> --format '{{json .Manifest}}'`
+    # when bumping the GNOME runtime.
+    ignore:
+      - flatpak.yml

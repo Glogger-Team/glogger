@@ -39,7 +39,11 @@ on:
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   REPO: ${{ github.repository }}
@@ -49,20 +53,22 @@ jobs:
   # ── Resolve the version + frontend type gate ──
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ inputs.ref || github.ref }}
           # full history + tags: the release-notes check needs the previous
           # release tag to know which range RELEASE_NOTES.md must cover.
           fetch-depth: 0
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24"
           cache: npm
@@ -76,6 +82,10 @@ jobs:
       - name: Resolve version (must match the pushed tag)
         id: version
         shell: bash
+        env:
+          REF_VALUE: ${{ inputs.ref || github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           VERSION=$(awk -F'"' '/"version"/ {print $4; exit}' src-tauri/tauri.conf.json)
           if [ -z "$VERSION" ]; then
@@ -84,13 +94,13 @@ jobs:
           fi
           # A tag-triggered release must match the committed version: the asset
           # names, release tag and latest.json all derive from it.
-          if [ "${{ github.event_name }}" = "push" ] && [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
-            echo "ERROR: tag ${GITHUB_REF_NAME} != tauri.conf.json version v${VERSION} — was the bump committed before tagging?"
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" != "v${VERSION}" ]; then
+            echo "ERROR: tag $REF_NAME != tauri.conf.json version v${VERSION} — was the bump committed before tagging?"
             exit 1
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
-          echo "building v$VERSION from ${{ inputs.ref || github.ref }}"
+          echo "building v$VERSION from $REF_VALUE"
 
       - name: Game-interaction hard lines (TOS/CoC)
         shell: pwsh
@@ -100,6 +110,7 @@ jobs:
         shell: bash
         env:
           TAG: ${{ steps.version.outputs.tag }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           # RELEASE_NOTES.md is generated and committed by scripts/release.sh,
           # so a tag push always carries notes for its own range. This is a
@@ -125,7 +136,7 @@ jobs:
             cat RELEASE_NOTES.md
             exit 0
           fi
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [ "$EVENT_NAME" = "push" ]; then
             echo "ERROR: $PROBLEM."
             echo "Cut releases with 'npm run release <patch|minor|major|x.y.z>', which generates RELEASE_NOTES.md and commits it with the bump."
             exit 1
@@ -135,6 +146,11 @@ jobs:
   # ── Build every platform we ship, each gated by its own test run ──
   build:
     needs: validate
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 45
+    # Signing secrets (TAURI_SIGNING_PRIVATE_KEY[_PASSWORD]) are scoped to this
+    # environment rather than floating as repo-wide secrets.
+    environment: release-signing
     strategy:
       fail-fast: false
       matrix:
@@ -151,12 +167,12 @@ jobs:
             label: linux
             target: ""
             args: ""
-    runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-latest'
@@ -165,20 +181,29 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Setup Node
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24"
           cache: npm
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        # Master-history SHA, not the `stable` branch head: upstream force-pushes
+        # `stable` on every toolchain release and non-master commits get GC'd
+        # (upstream README requires a master-history SHA; a pinned stable head
+        # goes dangling). `toolchain: stable` preserves the old `@stable` behavior.
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri
+          # Smoke-test dispatches restore but never save: only tag pushes write
+          # the cache releases read. No pull_request trigger exists, so no
+          # untrusted run can poison it; this narrows the writers to releases.
+          save-if: ${{ github.event_name == 'push' }}
 
       - name: Install frontend dependencies
         run: npm ci
@@ -188,7 +213,7 @@ jobs:
         run: cargo test --lib
 
       - name: Build release installer
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -250,7 +275,7 @@ jobs:
           ls -la release-artifacts/
 
       - name: Upload platform artifacts
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: artifacts-${{ matrix.label }}
           path: release-artifacts/*
@@ -260,6 +285,9 @@ jobs:
     needs: [validate, build]
     if: github.event_name == 'push' || inputs.publish == true
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # creates the Release, uploads assets, moves the channel pointer
     env:
       VERSION: ${{ needs.validate.outputs.version }}
       TAG: ${{ needs.validate.outputs.tag }}
@@ -276,12 +304,13 @@ jobs:
             echo "ERROR: tag $TAG does not exist on origin — cut it with npm run release"; exit 1; }
 
       - name: Checkout (at the release tag, for RELEASE_NOTES.md)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.validate.outputs.tag }}
+          persist-credentials: false
 
       - name: Download artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: artifacts-*
           path: all-artifacts
@@ -402,4 +431,4 @@ jobs:
       tag: ${{ needs.validate.outputs.tag }}
       publish: true
     permissions:
-      contents: write
+      contents: write # the called workflow's attach job uploads the bundle

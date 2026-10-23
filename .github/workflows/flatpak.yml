@@ -33,8 +33,11 @@ on:
         default: true
         type: boolean
 
-permissions:
-  contents: write
+permissions: {}
+
+concurrency:
+  group: flatpak-${{ inputs.tag }}
+  cancel-in-progress: false
 
 env:
   TARGET_TAG: ${{ inputs.tag }}
@@ -43,17 +46,24 @@ jobs:
   flatpak:
     name: Build Flatpak bundle
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     # flatpak-builder + the GNOME SDK only exist inside the official Flatpak
     # builder image, not on the bare runner.
     container:
+      # Pinned by digest once resolvable (no docker here to read it): the
+      # `gnome-50` tag moves. Re-pin with
+      # `docker buildx imagetools inspect <image> --format '{{json .Manifest}}'`.
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
       options: --privileged
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.TARGET_TAG }}
+          persist-credentials: false
 
       # The release workflow always passes the vetted release tag; a dispatched
       # smoke test may pass any ref (e.g. `main`) as long as it does not publish,
@@ -62,14 +72,16 @@ jobs:
       # the ref itself is a checkout ref (a bad one fails the checkout above).
       - name: Check the ref is sane for this mode
         shell: bash
+        env:
+          PUBLISH: ${{ inputs.publish }}
         run: |
-          if [ "${{ inputs.publish }}" = "true" ]; then
+          if [ "$PUBLISH" = "true" ]; then
             case "$TARGET_TAG" in
               v[0-9]*.[0-9]*.[0-9]*) ;;
               *) echo "ERROR: '${TARGET_TAG}' is not a v<semver> release tag"; exit 1 ;;
             esac
           fi
-          echo "building Flatpak from ${TARGET_TAG} (publish=${{ inputs.publish }})"
+          echo "building Flatpak from ${TARGET_TAG} (publish=$PUBLISH)"
 
       # ── Generate offline source manifests ───────────────────────────────
       # Flatpak build environments have no internet access, so all Cargo and npm
@@ -111,7 +123,7 @@ jobs:
       # ── Build Flatpak ───────────────────────────────────────────────────
 
       - name: Build Flatpak bundle
-        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        uses: flatpak/flatpak-github-actions/flatpak-builder@79327416609af08178ad73b352877e51450790b3 # v6.8
         with:
           bundle: glogger.flatpak
           manifest-path: flatpak/io.github.cprivitere.glogger.yml
@@ -119,7 +131,7 @@ jobs:
           cache-key: flatpak-${{ hashFiles('src-tauri/Cargo.lock', 'package-lock.json') }}
 
       - name: Upload bundle as workflow artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: glogger-flatpak
           path: glogger.flatpak
@@ -129,22 +141,26 @@ jobs:
     name: Attach bundle to release
     needs: flatpak
     runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: write # uploads the bundle to the release
     if: ${{ inputs.publish == true && inputs.tag != '' }}
     steps:
       - name: Download built bundle
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: glogger-flatpak
 
       - name: Attach bundle to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           TAG="${TARGET_TAG}"
           echo "Waiting for release $TAG to exist..."
           FOUND=0
           for i in $(seq 1 30); do
-            if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            if gh release view "$TAG" --repo "$REPOSITORY" >/dev/null 2>&1; then
               echo "Release $TAG found."
               FOUND=1
               break
@@ -157,5 +173,5 @@ jobs:
             exit 1
           fi
           gh release upload "$TAG" glogger.flatpak \
-            --repo "${{ github.repository }}" \
+            --repo "$REPOSITORY" \
             --clobber
