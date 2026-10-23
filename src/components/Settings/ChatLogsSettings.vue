@@ -32,6 +32,9 @@
           </div>
         </div>
         <div v-if="importingFile" class="mt-3 text-xs text-text-secondary">Importing file…</div>
+        <div v-if="parseResult && !parseResult.startsWith('Import failed:')" class="success-box">{{ parseResult }}</div>
+        <div v-if="parseResult && parseResult.startsWith('Import failed:')" class="error-box">{{ parseResult }}</div>
+        <div v-if="props.error" class="error-box">{{ props.error }}</div>
       </div>
     </div>
 
@@ -216,20 +219,26 @@ async function parseFolder() {
   });
   if (selected) {
     parseResult.value = null;
+    if (!unlistenScan) {
+      try {
+        unlistenScan = await listen<{ current: number; total: number; file_name: string }>(
+          "chat-scan-progress",
+          (event) => {
+            scanCurrent.value = event.payload.current;
+            scanTotal.value = event.payload.total;
+            scanFileName.value = event.payload.file_name;
+          }
+        );
+      } catch (e: any) {
+        parseResult.value = `Import failed: ${e}`;
+        console.error('Failed to subscribe to scan progress:', e);
+        return;
+      }
+    }
     importingFolder.value = true;
     scanCurrent.value = 0;
     scanTotal.value = 0;
     scanFileName.value = "";
-    if (!unlistenScan) {
-      unlistenScan = await listen<{ current: number; total: number; file_name: string }>(
-        "chat-scan-progress",
-        (event) => {
-          scanCurrent.value = event.payload.current;
-          scanTotal.value = event.payload.total;
-          scanFileName.value = event.payload.file_name;
-        }
-      );
-    }
     try {
       const result = await invoke<{ messages_imported: number }>('scan_chat_logs', { path: selected });
       parseResult.value = `Imported ${result.messages_imported} messages from folder.`;
