@@ -148,9 +148,6 @@ jobs:
     needs: validate
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 45
-    # Signing secrets (TAURI_SIGNING_PRIVATE_KEY[_PASSWORD]) are scoped to this
-    # environment rather than floating as repo-wide secrets.
-    environment: release-signing
     strategy:
       fail-fast: false
       matrix:
