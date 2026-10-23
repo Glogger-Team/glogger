@@ -1,12 +1,12 @@
 ---
 name: glogger-release
-description: Operate the glogger-twinkleoftoes fork — integrate tested work into the main branch, build/install the glogger.Release daily driver (npm run tauri:build), cut a signed release (npm run release), keep %APPDATA%\glogger.Release data safe, and treat upstream (crisp-oddio) as an optional read-only reference.
+description: Operate the glogger canonical repo — integrate tested work into the main branch, build/install the glogger.Release daily driver (npm run tauri:build), cut a signed release (npm run release), keep %APPDATA%\glogger.Release data safe, and treat upstream (crisp-oddio) as an optional read-only reference.
 ---
 
-# Glogger Fork — Daily Driver & Release Pipeline
+# Glogger — Daily Driver & Release Pipeline
 
 ## Overview
-This repo (`cprivitere/glogger-twinkleoftoes`) is a standalone fork of `crisp-oddio/glogger-oddio`. It owns its config, release pipeline, update channel and branch line: `main` is both the source of truth and the release branch. Upstream is an optional read-only reference (`git fetch upstream && git merge upstream/<branch>`), never a PR target.
+This repo (`Glogger-Team/glogger`) is the canonical home of glogger, successor of the `cprivitere/glogger-twinkleoftoes` fork of `crisp-oddio/glogger-oddio`. It owns its config, release pipeline, update channel and branch line: `main` is both the source of truth and the release branch. Upstream is an optional read-only reference (`git fetch upstream && git merge upstream/<branch>`), never a PR target.
 
 ## Quick reference
 
@@ -17,7 +17,7 @@ This repo (`cprivitere/glogger-twinkleoftoes`) is a standalone fork of `crisp-od
 | Build daily driver | `npm run tauri:build` (from repo root; unsigned locally unless a key is set — see *Auto-update*) |
 | Installer output | Local Windows build: `src-tauri/target/release/bundle/nsis/*.exe` (macOS/Linux installers only come from CI — this box has no cross toolchain) |
 | Publish a release | `npm run release <patch\|minor\|major\|x.y.z>` (bumps, writes `RELEASE_NOTES.md`, commits, tags `v<version>`, pushes; CI builds + signs + publishes Windows/macOS(aarch64)/Linux with those notes and refreshes the update channel) |
-| Dry-run the release pipeline | `gh workflow run release.yml --repo cprivitere/glogger-twinkleoftoes -f ref=<tag\|main> -f publish=false` — builds all three platforms, creates no release |
+| Dry-run the release pipeline | `gh workflow run release.yml --repo Glogger-Team/glogger -f ref=<tag\|main> -f publish=false` — builds all three platforms, creates no release |
 | Install/update | Run the NSIS setup — appdata `%APPDATA%\glogger.Release` is preserved on reinstall. Once a signed build is installed, the app updates itself (banner in the header / Help → Changelog) |
 | Signing key material | `~/.tauri/glogger.key` + `.password` (outside the repo) ↔ repo secrets `TAURI_SIGNING_PRIVATE_KEY[_PASSWORD]`; pubkey in `src-tauri/tauri.conf.json` (`plugins.updater.pubkey`, key ID `E39F2150244B82CA`) |
 | Fresh data copy | Close glogger → copy `%APPDATA%\glogger.Release\{glogger.db,glogger.db-wal,glogger.db-shm,settings.json}` |
@@ -27,7 +27,7 @@ This repo (`cprivitere/glogger-twinkleoftoes`) is a standalone fork of `crisp-od
 
 - **Which profile is the user running?** Window title: `glogger v<ver>` = the installed daily driver (appdata `glogger.Release`, data persists forever). `EXPERIMENTAL` = sandbox that re-seeds from the Release dir on each version bump — never treat its data as valuable. `DEV` = `npm run tauri dev` scratch DB (`glogger.Dev`).
 - **Where does new work live?** Committed work goes on `main` in logical chunks (prefix list owned by `.githooks/commit-msg`).
-- **Upstream is a reference remote:** absorb upstream fixes with `git fetch upstream && git merge upstream/<branch>`. Expect conflicts in the config/CI files this fork owns (`tauri.conf.json` updater block, `tauri.release.conf.json`, `scripts/*`, `.github/workflows/release.yml`, `AGENTS.md`) — resolve toward this fork's values. Never open a PR against `crisp-oddio/glogger-oddio`.
+- **Upstream is a reference remote:** absorb upstream fixes with `git fetch upstream && git merge upstream/<branch>`. Expect conflicts in the config/CI files this repo owns (`tauri.conf.json` updater block, `tauri.release.conf.json`, `scripts/*`, `.github/workflows/release.yml`, `AGENTS.md`) — resolve toward this repo's values. Never open a PR against `crisp-oddio/glogger-oddio`.
 - **DB safety:** copy DBs only when the source app is closed; copy `glogger.db` + `-wal` + `-shm` together; verify with count-diff (`words_of_power`, `character_resuscitations`). Migrations are upward-only — never open a newer-schema DB with an older build.
 
 ## Build pipeline details

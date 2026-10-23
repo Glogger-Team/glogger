@@ -370,7 +370,7 @@ jobs:
             echo
             echo "Installed builds auto-update from the \`$CHANNEL_TAG\` channel."
             echo
-            echo "Original app by Daniel Auchenpaugh ([danielout/glogger](https://github.com/danielout/glogger)). Features, fixes and the release pipeline inherited from the [oddio fork](https://github.com/crisp-oddio/glogger-oddio) by oddio — this fork builds on that work. Maintained by [cprivitere (TwinkleofToes)](https://github.com/cprivitere)."
+            echo "Original app by Daniel Auchenpaugh ([danielout/glogger](https://github.com/danielout/glogger)). Features, fixes and the release pipeline inherited from the [oddio fork](https://github.com/crisp-oddio/glogger-oddio) by oddio — now maintained at [Glogger-Team/glogger](https://github.com/Glogger-Team/glogger)."
             echo
             echo "---"
             echo

@@ -11,7 +11,7 @@ Glogger has two update systems:
 
 ### How It Works
 
-- **Source:** GitHub Releases on [cprivitere/glogger-twinkleoftoes](https://github.com/cprivitere/glogger-twinkleoftoes) — the endpoint compiled into the app is the `updater-latest` channel tag (`releases/download/updater-latest/latest.json`).
+- **Source:** GitHub Releases on [Glogger-Team/glogger](https://github.com/Glogger-Team/glogger) — the endpoint compiled into the app is the `updater-latest` channel tag (`releases/download/updater-latest/latest.json`).
 - Uses the [Tauri updater plugin](https://v2.tauri.app/plugin/updater/) (`tauri-plugin-updater`), which checks that `latest.json` manifest and verifies the per-platform signatures before installing.
 - The manifest includes download URLs and cryptographic signatures for each platform. Signatures are verified before installation.
 - Failures (no network, rate-limited, GitHub down) are silently ignored.

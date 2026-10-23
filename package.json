@@ -6,7 +6,7 @@
   "license": "GPL-3.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/cprivitere/glogger-twinkleoftoes.git"
+    "url": "https://github.com/Glogger-Team/glogger.git"
   },
   "scripts": {
     "dev": "vite",

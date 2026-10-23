@@ -3,7 +3,7 @@
 How glogger is packaged as a Flatpak, how to build it locally, and the fixes that
 got the bundle rendering correctly on a fresh Debian-family install.
 
-The manifest lives at [`flatpak/io.github.crisp_oddio.glogger.yml`](../flatpak/io.github.crisp_oddio.glogger.yml).
+The manifest lives at [`flatpak/io.github.cprivitere.glogger.yml`](../flatpak/io.github.cprivitere.glogger.yml).
 CI builds and attaches the bundle to releases via
 [`.github/workflows/flatpak.yml`](../.github/workflows/flatpak.yml) on every `v*` tag.
 
@@ -64,13 +64,13 @@ flatpak-node-generator npm package-lock.json -o flatpak/generated-node-sources.j
 flatpak-cargo-generator src-tauri/Cargo.lock  -o flatpak/generated-cargo-sources.json
 
 flatpak-builder --user --install --force-clean build-dir \
-  flatpak/io.github.crisp_oddio.glogger.yml
+  flatpak/io.github.cprivitere.glogger.yml
 ```
 
 Run it:
 
 ```bash
-flatpak run io.github.crisp_oddio.glogger
+flatpak run io.github.cprivitere.glogger
 ```
 
 ## Fixes that got it rendering

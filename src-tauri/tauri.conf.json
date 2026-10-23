@@ -41,7 +41,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEUzOUYyMTUwMjQ0QjgyQ0EKUldUS2drc2tVQ0dmNDZwclZzTm9oaFFFSVJ2RG5ybFE5MWlEWFJCYUl4bjVialA1bWpERW81S3EK",
       "endpoints": [
-        "https://github.com/cprivitere/glogger-twinkleoftoes/releases/download/updater-latest/latest.json"
+        "https://github.com/Glogger-Team/glogger/releases/download/updater-latest/latest.json"
       ],
       "windows": { "installMode": "passive" }
     }

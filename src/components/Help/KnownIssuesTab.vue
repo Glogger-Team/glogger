@@ -60,7 +60,7 @@
       Found a bug not listed here? Report it to Zenith on the Project: Gorgon
       discord. Or post an issue
       <a
-        href="https://github.com/danielout/glogger/issues"
+        href="https://github.com/Glogger-Team/glogger/issues"
         class="text-accent-gold hover:text-text-primary transition-colors"
         >on GitHub</a
       >.

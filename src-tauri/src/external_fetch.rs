@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 const GITHUB_RELEASES_URL: &str =
-    "https://api.github.com/repos/cprivitere/glogger-twinkleoftoes/releases";
+    "https://api.github.com/repos/Glogger-Team/glogger/releases";
 
 const PG_NEWS_URL: &str = "https://client.projectgorgon.com/news.txt";
 

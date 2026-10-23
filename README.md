@@ -1,6 +1,6 @@
 # Glogger
 
-**[Download Latest Release](https://github.com/cprivitere/glogger-twinkleoftoes/releases)**
+**[Download Latest Release](https://github.com/Glogger-Team/glogger/releases)**
 
 A desktop companion app for **[Project: Gorgon](https://projectgorgon.com)**. glogger reads your game's log files in real time and gives you dashboards, analytics, and tools for tracking your gameplay.
 
@@ -22,7 +22,7 @@ https://www.youtube.com/watch?v=wXSaIyMzuuA
 
 I apologize for bad UI/UX/programming - I'm a game designer by trade, not a software engineer. I'm more at home with excel and scripts than app development, so I'm learning as I go.
 
-Maintained by [cprivitere (TwinkleofToes)](https://github.com/cprivitere). Built on [crisp-oddio/glogger-oddio](https://github.com/crisp-oddio/glogger-oddio) by oddio — its features, fixes and release pipeline carry over here — originally [danielout/glogger](https://github.com/danielout/glogger) by Daniel Auchenpaugh.
+Maintained by the [Glogger Team](https://github.com/Glogger-Team). Originally [danielout/glogger](https://github.com/danielout/glogger) by Daniel Auchenpaugh; features, fixes and release pipeline inherited from the [oddio fork](https://github.com/crisp-oddio/glogger-oddio).
 
 ## Why beta?
 
@@ -104,7 +104,7 @@ Multi-zone route planner with teleport-aware pathfinding. Respects bind location
 
 Grab the latest release for your platform:
 
-**[Download Latest Release](https://github.com/cprivitere/glogger-twinkleoftoes/releases)**
+**[Download Latest Release](https://github.com/Glogger-Team/glogger/releases)**
 
 | Platform | Installer |
 |----------|-----------|
@@ -128,8 +128,8 @@ Release builds include automatic update checking — glogger will notify you whe
 ### Setup
 
 ```bash
-git clone https://github.com/cprivitere/glogger-twinkleoftoes.git
-cd glogger-twinkleoftoes
+git clone https://github.com/Glogger-Team/glogger.git
+cd glogger
 npm install
 npm run tauri dev
 ```

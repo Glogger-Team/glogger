@@ -14,8 +14,8 @@
         (Also known as Daniel Auchenpaugh)
       </p>
       <p class="m-0 mt-0.5 text-text-dim text-xs">
-        Fork maintained by
-        <a href="https://github.com/cprivitere">TwinkleofToes</a> &middot; built on the
+        Maintained by the
+        <a href="https://github.com/Glogger-Team">Glogger Team</a> &middot; originally by Daniel Auchenpaugh, built on the
         <a href="https://github.com/crisp-oddio/glogger-oddio">oddio fork</a>
       </p>
 

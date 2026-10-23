@@ -1,20 +1,20 @@
-# glogger-twinkleoftoes — branch, build & release pipeline (fork-owned)
+# glogger — branch, build & release pipeline (canonical)
 
-Skill for managing the `main` branch of `cprivitere/glogger-twinkleoftoes`:
+Skill for managing the `main` branch of `Glogger-Team/glogger`:
 merging work in, building the `glogger.Release` daily driver, cutting signed
-releases, and keeping data intact. This fork owns its config and CI; upstream
+releases, and keeping data intact. This repo owns its config and CI; upstream
 (`crisp-oddio/glogger-oddio`) is an optional read-only reference.
 
 ## Branch map
 
 | Branch | Purpose | Push? |
 |---|---|---|
-| `main` | Source of truth + release branch: all fork work and releases. | YES (to `origin`) |
+| `main` | Source of truth + release branch: all repo work and releases. | YES (to `origin`) |
 | `dev` | Legacy shared line inherited from upstream; not the release branch. | as needed |
-| `upstream/*` | `crisp-oddio` remotes — read-only reference. | never |
+| `canonical/*` | `Glogger-Team/glogger` tracking — the canonical remote. | never (push to `origin`) |
 
 Absorb upstream fixes with `git fetch upstream && git merge upstream/<branch>`
-and resolve conflicts toward this fork's values (config/CI files it owns).
+and resolve conflicts toward this repo's values (config/CI files it owns).
 
 ## Key identifiers & profiles
 
@@ -76,7 +76,7 @@ tags it, and pushes both the branch and the tag to `origin`. CI
 (`.github/workflows/release.yml`) then builds the **signed** `glogger.Release`
 bundles on three runners — Windows NSIS, macOS aarch64 (`dmg` + `app.tar.gz`),
 Linux (`deb` + `AppImage`) — and publishes them to
-`https://github.com/cprivitere/glogger-twinkleoftoes/releases/tag/v<version>`
+`https://github.com/Glogger-Team/glogger/releases/tag/v<version>`
 as `glogger-<version>-{windows-setup.exe,macos.dmg,macos.app.tar.gz,linux.deb,linux.AppImage}`
 (each updater artifact with a `.sig`), then refreshes the update channel (next
 section). The release body is the download table + the tagged `RELEASE_NOTES.md`
@@ -84,7 +84,7 @@ section). The release body is the download table + the tagged `RELEASE_NOTES.md`
 the same matrix without publishing:
 
 ```bash
-gh workflow run release.yml --repo cprivitere/glogger-twinkleoftoes \
+gh workflow run release.yml --repo Glogger-Team/glogger \
   -f ref=v<version> -f publish=false
 ```
 
@@ -141,9 +141,9 @@ header, full UI in Help → Changelog).
 | Piece | Value |
 |---|---|
 | Private key (build-time signing) | `C:\Users\cprivitere\.tauri\glogger.key` (password in `glogger.key.password` next to it) — **outside the repo; this is the only copy** |
-| Repo secrets | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (set via `gh secret set … --repo cprivitere/glogger-twinkleoftoes --body "$(cat <file>)"`) |
+| Repo secrets | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (set via `gh secret set … --repo Glogger-Team/glogger --body "$(cat <file>)"`) |
 | Public key (compiled into the app) | `plugins.updater.pubkey` in `src-tauri/tauri.conf.json` — minisign key ID `E39F2150244B82CA` |
-| Update endpoint (compiled into the app) | `https://github.com/cprivitere/glogger-twinkleoftoes/releases/download/updater-latest/latest.json` |
+| Update endpoint (compiled into the app) | `https://github.com/Glogger-Team/glogger/releases/download/updater-latest/latest.json` |
 | Manifest producer | `.github/workflows/release.yml` → *Generate latest.json updater manifest* → uploaded to the `updater-latest` pointer release (`--clobber`) |
 | Manually installed `.sig` verification | `tauri signer sign` produces the same minisign payload; CI verifies `latest.json` parses |
 
@@ -199,7 +199,7 @@ pubkey is compiled in, so the new-key release must be installed manually once.
 ## Upstream reference path
 `upstream` (crisp-oddio/glogger-oddio) is a read-only reference remote.
 Absorb fixes with `git fetch upstream && git merge upstream/<branch>`; expect
-conflicts in the config/CI files this fork owns. Never open a PR against
+conflicts in the config/CI files this repo owns. Never open a PR against
 upstream. Enforcement: `scripts/check-glogger-constraints.ps1` runs from `.githooks/pre-push` — the script owns the machine patterns.
 
 ## Credit lines (release bodies + README)

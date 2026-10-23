@@ -12,7 +12,7 @@ Thanks for your interest in contributing to glogger! This document covers everyt
 ## Getting Started
 
 ```bash
-git clone https://github.com/danielout/glogger.git
+git clone https://github.com/Glogger-Team/glogger.git
 cd glogger
 npm install
 npm run tauri dev

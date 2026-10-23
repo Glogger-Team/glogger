@@ -24,7 +24,7 @@ Helper components:
 - **`ShortcutRow.vue`** — Keyboard shortcut display row.
 
 ### Glogger Changelog
-**`ChangelogTab.vue`** — Fetches release notes from the GitHub releases (`danielout/glogger`) via the `fetch_github_releases` Tauri command. Renders markdown release bodies with basic formatting (headers, bold, code, lists). Loads on mount with retry on failure.
+**`ChangelogTab.vue`** — Fetches release notes from the GitHub releases (`Glogger-Team/glogger`) via the `fetch_github_releases` Tauri command. Renders markdown release bodies with basic formatting (headers, bold, code, lists). Loads on mount with retry on failure.
 
 ### Known Issues
 **`KnownIssuesTab.vue`** — Known bugs, limitations, and tips. Extracted from the original `HelpView`. Uses `IssueCard.vue` for individual entries with severity indicators (bug/limitation/cosmetic).
