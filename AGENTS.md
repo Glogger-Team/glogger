@@ -45,7 +45,8 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 
 | Action | Command | Notes |
 |---|---|---|
-| Dev server | `npm run tauri dev` | Vite HMR on :1420, auto-rebuilds Rust |
+| Dev server (CDP-ready) | `export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222; npm run tauri dev` | Default for any session that may need to see the app: flag MUST be exported in the same command (does not carry across calls). WebView2 listens on 9222; attach via `skill://glogger-smoke` recipe. Without the flag there is no CDP endpoint. |
+| Dev server (headless) | `npm run tauri dev` | Vite HMR on :1420, auto-rebuilds Rust. Only when no visual verification is planned. |
 | Frontend build + typecheck | `npm run build` | `vue-tsc --noEmit && vite build` |
 | Rust check | `cd src-tauri && cargo check` | Faster feedback |
 | Rust tests | `cd src-tauri && cargo test --lib` | Count reported per run; all fast except `#[ignore]`-gated suites |
@@ -113,11 +114,11 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 - DB tests use `rusqlite::Connection::open_in_memory()` + `crate::db::migrations::run_migrations` via a local `setup()` helper per module; parser tests embed real log-line fixtures as string constants.
 - Frontend: **no tests** — `vue-tsc --noEmit` is the only gate; the dev panel is for manual/live testing.
 - Live smoke = `skill://glogger-smoke` recipe (verbatim owner, read it):
-  - Launch: `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` on `npm run tauri dev`.
-  - Attach at `http://127.0.0.1:9222`.
+  - Launch: `export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222; npm run tauri dev` (same command — the export does not carry across calls).
+  - Attach at `http://127.0.0.1:9222` after verifying the port LISTENs (stale `msedgewebview2.exe` renderers block it — kill + restart the app).
   - Drive `navigateToView({ view, subTab })` off `Symbol(view-navigation)` — never click labels.
-  - `tab.evaluate` for DOM (`tab.run` has none); prefer MutationObserver over round trips.
-  - Assert render → sort → drill, then `tab.errors()` empty; in-window only (external `localhost:1420` has no Tauri IPC).
+  - `tab.evaluate` for DOM (`tab.run` has none); prefer MutationObserver over round trips. In evaluated strings avoid arrow-IIFEs and regex literals (CDP rejects them); use `function(){}` + `indexOf`.
+  - Assert render → sort → drill, then `tab.errors()` empty; in-window only (external `localhost:1420` has no Tauri IPC). Native file dialogs and Tauri IPC are invisible from CDP eval — user picks the path, or use the dev-panel bundle context for `invoke`/`listen`.
 - Replay fixtures live **outside the crate** (`test_data/`, `docs/CDN-full-examples/`), reached via relative paths from `src-tauri` — breaks if run from another CWD.
 - The release workflow gates releases with `npm run build` + `cargo test --lib` before bundling; ignored replay tests never run in CI.
 
@@ -134,7 +135,7 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 - **Time math**: never parse display-formatted time strings (`formatTimeFull` honors 12/24h user setting; 12h strings break `tsToSeconds` → NaN). Parse machine formats; format only at render; guard comparisons with `Number.isFinite`.
 - **TS casts in templates:** inline type literals in a template expression fail `vue-tsc` `TS1005` — shape rows in `computed` instead; `as number` / `as string` inside slots is fine (same for synthetic column keys hidden behind `as unknown as`).
 - **Shell quoting:** git-bash heredoc needs `<< 'EOF'` when the body has `$`; PS5.1 here-strings with `'` inside C# break `Add-Type` — use file-based scripts or Python ctypes instead.
-- **Two Vite entrypoints**: new root-level pages must be added to `vite.config.ts` inputs; dev panel is a separate app, not a route.
+- **Dev-DB wipe is move-never-delete, and only on request**: `taskkill /F /IM glogger.exe`, move `glogger.db` (+ `-wal`/`-shm`) from `%APPDATA%\glogger.Dev\` to a timestamped `db-backup-*` dir beside it; keep `settings.json` + `data/` (CDN cache). Full ritual lives in `skill://glogger-smoke`.
 - `game-state-updated` payloads are domain lists — refresh only named domains.
 - `scripts/bump-version.sh` rewrites the release window title with a version-agnostic sed.
 - **Avoid force-pushes to shared branches** — an accidental force-push once wiped `main` (restored via PR). `main` is the release branch; cut a release with `npm run release <patch|minor|major|x.y.z>`, which bumps, generates `RELEASE_NOTES.md` from the commits since the previous tag, tags `v<semver>` and pushes. Avoid force-pushes to `main`.

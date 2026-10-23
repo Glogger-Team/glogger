@@ -80,14 +80,12 @@ pub async fn scan_chat_logs(
             })
             .collect();
 
-        // Insert and position update under ONE writer checkout: a concurrent
-        // tail may advance the same file's offset between the two steps, and
-        // this stale scan writing its smaller new_position would regress the
-        // cursor and cause repeated replay. Single-file and tail paths
-        // already use one checkout.
+        // insert_chat_messages runs its own transaction internally, so no
+        // outer transaction here — single-file and tail paths already call
+        // it directly on the write connection. Position updates run on the
+        // same single-writer checkout, so no concurrent tail can interleave.
         let inserted = if messages.is_empty() {
-            // No rows: still record the position (empty read at EOF) under
-            // one checkout.
+            // No rows: still record the position (empty read at EOF).
             let conn = db_pool.get_write().map_err(|e| format!("Database error: {e}"))?;
             log_positions::update_position(
                 &conn,
@@ -106,19 +104,16 @@ pub async fn scan_chat_logs(
             .map_err(|e| format!("Failed to update log position: {e}"))?;
             0
         } else {
-            let mut conn = db_pool.get_write().map_err(|e| format!("Database error: {e}"))?;
-            let tx = conn
-                .transaction()
-                .map_err(|e| format!("Failed to begin transaction: {e}"))?;
+            let conn = db_pool.get_write().map_err(|e| format!("Database error: {e}"))?;
             let inserted = chat_commands::insert_chat_messages(
-                &tx,
+                &conn,
                 &messages,
                 &log_file.file_name,
                 &excluded_channels,
             )
             .map_err(|e| format!("Failed to insert messages: {e}"))?;
             log_positions::update_position(
-                &tx,
+                &conn,
                 &file_path_str,
                 "chat",
                 new_position,
@@ -132,8 +127,6 @@ pub async fn scan_chat_logs(
                 }),
             )
             .map_err(|e| format!("Failed to update log position: {e}"))?;
-            tx.commit()
-                .map_err(|e| format!("Failed to commit insert+position: {e}"))?;
             inserted
         };
         total_messages += inserted;

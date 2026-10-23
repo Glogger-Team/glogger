@@ -6,24 +6,32 @@
       <div class="mb-4">
         <button
           @click="selectAndParseFile"
-          :disabled="props.parsing"
+          :disabled="props.parsing || importingFile || importingFolder"
           class="btn btn-secondary">
-          {{ props.parsing ? "Parsing..." : "Parse a Chat Log File" }}
+          {{ importingFile ? "Importing…" : props.parsing ? "Parsing..." : "Parse a Chat Log File" }}
         </button>
 
         <button
           @click="parseFolder"
-          :disabled="props.parsing"
+          :disabled="props.parsing || importingFile || importingFolder"
           class="btn btn-secondary ml-2">
-          {{ props.parsing ? "Parsing..." : "Parse Entire Folder" }}
+          {{ importingFolder ? "Importing…" : props.parsing ? "Parsing..." : "Parse Entire Folder" }}
         </button>
 
         <p class="mt-2 text-text-muted text-xs leading-relaxed">
           Import chat messages from individual log files or an entire ChatLogs folder.
         </p>
 
-        <div v-if="parseResult" class="success-box">{{ parseResult }}</div>
-        <div v-if="props.error" class="error-box">{{ props.error }}</div>
+        <div v-if="importingFolder" class="mt-3 max-w-100">
+          <div class="flex justify-between text-xs text-text-secondary mb-1">
+            <span class="truncate">Importing {{ scanFileName || "…" }}</span>
+            <span class="ml-2 shrink-0">{{ scanCurrent }} / {{ scanTotal }}</span>
+          </div>
+          <div class="h-1.5 w-full rounded bg-surface-card overflow-hidden">
+            <div class="h-full bg-accent-gold transition-all" :style="{ width: scanPercent + '%' }" />
+          </div>
+        </div>
+        <div v-if="importingFile" class="mt-3 text-xs text-text-secondary">Importing file…</div>
       </div>
     </div>
 
@@ -119,9 +127,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../../stores/settingsStore";
 
 const props = defineProps<{
@@ -164,6 +173,19 @@ function saveExcludedChannels() {
 
 // Manual parsing
 const parseResult = ref<string | null>(null);
+const importingFile = ref(false);
+const importingFolder = ref(false);
+const scanCurrent = ref(0);
+const scanTotal = ref(0);
+const scanFileName = ref("");
+const scanPercent = computed(() =>
+  scanTotal.value > 0 ? Math.round((scanCurrent.value / scanTotal.value) * 100) : 0
+);
+let unlistenScan: UnlistenFn | null = null;
+
+onUnmounted(() => {
+  if (unlistenScan) unlistenScan();
+});
 
 async function selectAndParseFile() {
   const selected = await open({
@@ -173,12 +195,15 @@ async function selectAndParseFile() {
   });
   if (selected) {
     parseResult.value = null;
+    importingFile.value = true;
     try {
       const result = await invoke<{ messages_imported: number }>('scan_chat_log_file', { path: selected });
       parseResult.value = `Imported ${result.messages_imported} messages from file.`;
     } catch (e: any) {
-      parseResult.value = null;
+      parseResult.value = `Import failed: ${e}`;
       console.error('Failed to parse chat log file:', e);
+    } finally {
+      importingFile.value = false;
     }
   }
 }
@@ -191,12 +216,28 @@ async function parseFolder() {
   });
   if (selected) {
     parseResult.value = null;
+    importingFolder.value = true;
+    scanCurrent.value = 0;
+    scanTotal.value = 0;
+    scanFileName.value = "";
+    if (!unlistenScan) {
+      unlistenScan = await listen<{ current: number; total: number; file_name: string }>(
+        "chat-scan-progress",
+        (event) => {
+          scanCurrent.value = event.payload.current;
+          scanTotal.value = event.payload.total;
+          scanFileName.value = event.payload.file_name;
+        }
+      );
+    }
     try {
       const result = await invoke<{ messages_imported: number }>('scan_chat_logs', { path: selected });
       parseResult.value = `Imported ${result.messages_imported} messages from folder.`;
     } catch (e: any) {
-      parseResult.value = null;
+      parseResult.value = `Import failed: ${e}`;
       console.error('Failed to parse chat log folder:', e);
+    } finally {
+      importingFolder.value = false;
     }
   }
 }
