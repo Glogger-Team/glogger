@@ -261,6 +261,10 @@ jobs:
               cp "$BUNDLE_DIR"/nsis/*.exe.sig "release-artifacts/glogger-${VERSION}-windows-setup.exe.sig"
               ;;
             macos)
+              # tauri-action v1 names the updater bundle with the version
+              # (glogger-<version>-macos... like every other artifact); the
+              # glob absorbs the exact infix so a future rename fails open
+              # at the REQUIRED check below instead of silently.
               REQUIRED=("glogger-${VERSION}-macos.dmg" "glogger-${VERSION}-macos.app.tar.gz" "glogger-${VERSION}-macos.app.tar.gz.sig")
               cp "$BUNDLE_DIR"/dmg/*.dmg "release-artifacts/glogger-${VERSION}-macos.dmg"
               cp "$BUNDLE_DIR"/macos/*.tar.gz "release-artifacts/glogger-${VERSION}-macos.app.tar.gz"
