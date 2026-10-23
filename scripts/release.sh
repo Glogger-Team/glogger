@@ -93,6 +93,11 @@ cp "$STAGED_NOTES" RELEASE_NOTES.md
 git add -A
 git commit -m "release: ${TAG}"
 git tag "$TAG"
+
+# Keep the full-history CHANGELOG.md current with the new tag in place.
+scripts/generate-full-changelog.sh > CHANGELOG.md
+git add CHANGELOG.md
+git commit -m "docs: regenerate CHANGELOG.md for ${TAG}"
 git push origin main
 git push origin "$TAG"
 echo "Pushed ${TAG} — the Release workflow will build and publish it."
