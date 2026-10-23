@@ -31,10 +31,9 @@
             <div class="h-full bg-accent-gold transition-all" :style="{ width: scanPercent + '%' }" />
           </div>
         </div>
-        <div v-if="importingFile" class="mt-3 text-xs text-text-secondary">Importing file…</div>
-        <div v-if="parseResult && !parseResult.startsWith('Import failed:')" class="success-box">{{ parseResult }}</div>
-        <div v-if="parseResult && parseResult.startsWith('Import failed:')" class="error-box">{{ parseResult }}</div>
-        <div v-if="props.error" class="error-box">{{ props.error }}</div>
+        <div v-if="parseResult" class="success-box">{{ parseResult }}</div>
+        <div v-if="parseError" class="error-box">{{ parseError }}</div>
+        <div v-if="props.error" class="error-box">Player.log error: {{ props.error }}</div>
       </div>
     </div>
 
@@ -176,6 +175,7 @@ function saveExcludedChannels() {
 
 // Manual parsing
 const parseResult = ref<string | null>(null);
+const parseError = ref<string | null>(null);
 const importingFile = ref(false);
 const importingFolder = ref(false);
 const scanCurrent = ref(0);
@@ -198,12 +198,13 @@ async function selectAndParseFile() {
   });
   if (selected) {
     parseResult.value = null;
+    parseError.value = null;
     importingFile.value = true;
     try {
       const result = await invoke<{ messages_imported: number }>('scan_chat_log_file', { path: selected });
       parseResult.value = `Imported ${result.messages_imported} messages from file.`;
     } catch (e: any) {
-      parseResult.value = `Import failed: ${e}`;
+      parseError.value = `Import failed: ${e}`;
       console.error('Failed to parse chat log file:', e);
     } finally {
       importingFile.value = false;
@@ -219,6 +220,7 @@ async function parseFolder() {
   });
   if (selected) {
     parseResult.value = null;
+    parseError.value = null;
     if (!unlistenScan) {
       try {
         unlistenScan = await listen<{ current: number; total: number; file_name: string }>(
@@ -230,7 +232,7 @@ async function parseFolder() {
           }
         );
       } catch (e: any) {
-        parseResult.value = `Import failed: ${e}`;
+        parseError.value = `Import failed: ${e}`;
         console.error('Failed to subscribe to scan progress:', e);
         return;
       }
@@ -243,7 +245,7 @@ async function parseFolder() {
       const result = await invoke<{ messages_imported: number }>('scan_chat_logs', { path: selected });
       parseResult.value = `Imported ${result.messages_imported} messages from folder.`;
     } catch (e: any) {
-      parseResult.value = `Import failed: ${e}`;
+      parseError.value = `Import failed: ${e}`;
       console.error('Failed to parse chat log folder:', e);
     } finally {
       importingFolder.value = false;
