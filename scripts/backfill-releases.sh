@@ -16,7 +16,7 @@ TAGS_FILE="${1:-}"
 if [ -z "$TAGS_FILE" ]; then
   git tag --list 'v[0-9]*' | sort -V > /tmp/all_tags.txt
   gh release list -R "$REPO" --limit 200 --json tagName --jq '.[].tagName' > /tmp/existing_tags.txt
-  grep -vxFf /tmp/existing_tags.txt /tmp/all_tags.txt > /tmp/missing_tags.txt
+  grep -vxFf /tmp/existing_tags.txt /tmp/all_tags.txt > /tmp/missing_tags.txt || true
   TAGS_FILE=/tmp/missing_tags.txt
 fi
 

@@ -9,7 +9,10 @@
 set -euo pipefail
 
 mapfile -t TAGS < <(git tag --list 'v[0-9]*' | sort -V)
-LATEST="${TAGS[-1]}"
+LATEST=""
+if [ ${#TAGS[@]} -gt 0 ]; then
+  LATEST="${TAGS[-1]}"
+fi
 
 echo "# Changelog"
 echo ""
@@ -19,14 +22,19 @@ echo "(\`feat:\` → Features, \`impv:\` → Improvements, \`fix:\` → Fixes)."
 echo "Releases that predate the commit-prefix convention list all commit subjects."
 echo ""
 
-# Unreleased commits since the newest tag, if any.
-if [ "$(git rev-list --count "${LATEST}..HEAD" 2>/dev/null || echo 0)" -gt 0 ]; then
+# Unreleased commits since the newest tag, if any. With no tags yet the whole
+# history is unreleased.
+if [ -z "$LATEST" ]; then
+  echo "## Unreleased"
+  echo ""
+  bash scripts/generate-changelog.sh "" HEAD | tail -n +3
+  echo ""
+elif [ "$(git rev-list --count "${LATEST}..HEAD" 2>/dev/null || echo 0)" -gt 0 ]; then
   echo "## Unreleased (since ${LATEST})"
   echo ""
   bash scripts/generate-changelog.sh "$LATEST" HEAD | tail -n +3
   echo ""
 fi
-
 # Newest release first. Tag i covers (TAGS[i-1]..TAGS[i]); the oldest tag
 # covers everything reachable from it.
 for (( i=${#TAGS[@]}-1; i>=0; i-- )); do
