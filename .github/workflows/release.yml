@@ -52,6 +52,7 @@ env:
 jobs:
   # ── Resolve the version + frontend type gate ──
   validate:
+    name: Validate release inputs
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -145,6 +146,7 @@ jobs:
 
   # ── Build every platform we ship, each gated by its own test run ──
   build:
+    name: Build release installers
     needs: validate
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 45
@@ -170,6 +172,19 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
           persist-credentials: false
+
+      - name: Cache apt packages
+        if: matrix.platform == 'ubuntu-latest'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          # /var/cache/apt is the deb archive (~webkit-heavy). Restores before
+          # install so the archives are warm; safe despite the tag trigger
+          # because no later step executes cached content — install just
+          # unpacks debs, and a poisoned entry fails closed (hash mismatch).
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/release.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-latest'
@@ -279,6 +294,7 @@ jobs:
 
   # ── Publish the release + refresh the update channel ──
   publish:
+    name: Publish release and update channel
     needs: [validate, build]
     if: github.event_name == 'push' || inputs.publish == true
     runs-on: ubuntu-latest
@@ -423,7 +439,7 @@ jobs:
   flatpak:
     needs: [validate, publish]
     if: ${{ github.event_name == 'push' || inputs.publish == true }}
-    uses: ./.github/workflows/flatpak.yml
+    uses: $/.github/workflows/flatpak.yml
     with:
       tag: ${{ needs.validate.outputs.tag }}
       publish: true
