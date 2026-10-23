@@ -190,9 +190,9 @@ function onSubTabChange(tab: string) {
   activeSubTab.value = tab;
 }
 
-// Global Ctrl+F to open quick search
+// Global Ctrl+F / Ctrl+K to open quick search
 function handleGlobalKeydown(event: KeyboardEvent) {
-  if ((event.ctrlKey || event.metaKey) && event.key === "f") {
+  if ((event.ctrlKey || event.metaKey) && (event.key === "f" || event.key === "k")) {
     event.preventDefault();
     showQuickSearch.value = true;
   }
