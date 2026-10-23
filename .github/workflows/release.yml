@@ -173,16 +173,27 @@ jobs:
           ref: ${{ inputs.ref || github.ref }}
           persist-credentials: false
 
-      - name: Cache apt packages
+      - name: Prepare apt cache dir
         if: matrix.platform == 'ubuntu-latest'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        # The runner user cannot write root-owned /var/cache/apt/archives;
+        # without this the restore step below hard-fails on extraction.
+        run: sudo mkdir -p /var/cache/apt/archives/partial && sudo chown -R "$(id -u):$(id -g)" /var/cache/apt/archives
+
+      - name: Restore apt packages
+        if: matrix.platform == 'ubuntu-latest'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          # /var/cache/apt is the deb archive (~webkit-heavy). Restores before
-          # install so the archives are warm; safe despite the tag trigger
-          # because no later step executes cached content — install just
-          # unpacks debs, and a poisoned entry fails closed (hash mismatch).
+          # /var/cache/apt/archives is the deb archive (~webkit-heavy).
+          # Restores before install so the archives are warm. Two properties
+          # bound the risk: apt re-verifies every deb against a freshly
+          # fetched index (`apt-get update` runs uncached below), so a
+          # poisoned entry fails closed at install; and only tag pushes save
+          # (see the save step), so smoke-test dispatches on an arbitrary ref
+          # can read but never write what releases read.
+          # Save keys carry run_id because cache/save refuses an exact-key
+          # collision; restore falls through to the newest prefix match.
           path: /var/cache/apt/archives
-          key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/release.yml') }}
+          key: apt-${{ runner.os }}-${{ github.run_id }}-${{ hashFiles('.github/workflows/release.yml') }}
           restore-keys: |
             apt-${{ runner.os }}-
 
@@ -191,6 +202,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Save apt packages
+        # Smoke-test dispatches restore but never save: only tag pushes write
+        # the cache releases read. Mirrors the rust-cache save-if narrowing.
+        if: matrix.platform == 'ubuntu-latest' && github.event_name == 'push'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-${{ github.run_id }}-${{ hashFiles('.github/workflows/release.yml') }}
 
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -443,7 +463,7 @@ jobs:
   flatpak:
     needs: [validate, publish]
     if: ${{ github.event_name == 'push' || inputs.publish == true }}
-    uses: $/.github/workflows/flatpak.yml
+    uses: ./.github/workflows/flatpak.yml
     with:
       tag: ${{ needs.validate.outputs.tag }}
       publish: true
