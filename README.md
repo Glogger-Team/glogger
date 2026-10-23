@@ -43,10 +43,10 @@ Instructions available in short (<2 minutes) video form here. Featuring Cheb! ht
 ## Features
 
 ### Dashboard
-Customizable widget grid with drag-to-reorder. Widgets include live skill tracking, item gain/loss feeds, currency changes, zone info with NPC favor, death tracker, watchword alerts, Words of Power capture (with wiki-sourced category/level grouping and CSV export), trip planner, Statehelm gifting progress (favor-aware, so maxed NPCs fall off and the next-best backfills), Vendor Council tracking (Available + Earned tabs — current-period and lifetime councils earned per NPC), Combat Wisdom tracker (session totals plus per-monster reuse-cooldown countdowns learned from your own kill history), XP Rate / Prodigy Tracker, critical resource tracking, and personal notes.
+Customizable widget grid with drag-to-reorder. Widgets include live skill tracking, item gain/loss feeds, currency changes, zone info with NPC favor, death tracker, watchword alerts, Words of Power capture (with wiki-sourced category/level grouping and CSV export), trip planner, Statehelm gifting progress (favor-aware, so maxed NPCs fall off and the next-best backfills), Vendor Council tracking (Available + Earned tabs — current-period and lifetime councils earned per NPC), Combat Wisdom tracker (session totals plus per-monster reuse-cooldown countdowns learned from your own kill history), XP Rate / Prodigy Tracker, critical resource tracking, arena tracking (Earthblood arena kill stats), mushroom farming and milking timers, garden/harvest almanacs, roulette, stat tracking, and personal notes.
 
 ### Character
-- **Skills** — Live XP tracking with session gains, progression charts, and CDN-enriched skill details
+- **Skills** — Live XP tracking with session gains, progression charts, and CDN-enriched skill details (including snapshot-known abilities imported from character reports)
 - **Stats** — Character report import and snapshot management
 - **NPCs** — Favor progression, services, and gift preferences
 - **Quests** — Personalized quest reference with requirement eligibility checking
@@ -81,10 +81,10 @@ Customizable widget grid with drag-to-reorder. Widgets include live skill tracki
 Full-text search across all chat channels. Browse by channel, tells, party, nearby, guild, or system. Watchword alerts let you set up keyword-based notifications for trade chat and more. Item references in chat are linked to the data browser.
 
 ### Data Browser
-Browse the full Project: Gorgon CDN dataset — items, skills, abilities, recipes, quests, NPCs, enemies, areas, effects, lorebooks, and titles. Hover tooltips, click-to-navigate, search, and favorites. Enemy detail pages show Kill Stats and Harvest Stats (what a monster skins/butchers into) pulled from your own logged data.
+Browse the full Project: Gorgon CDN dataset — items, skills, abilities, recipes, quests, NPCs, enemies, areas, effects, lorebooks, titles, achievements, and treasure effects. Hover tooltips, click-to-navigate, search, and favorites. Enemy detail pages show Kill Stats and Harvest Stats (what a monster skins/butchers into) pulled from your own logged data.
 
 ### Unified Search
-Scryfall-inspired structured query syntax across 14 searchable categories. Quick search overlay with `Ctrl+F`.
+Scryfall-inspired structured query syntax across 11 searchable categories. Quick search overlay with `Ctrl+F` (or `Ctrl+K`).
 
 ### Trip Planner
 Multi-zone route planner with teleport-aware pathfinding. Respects bind locations and known teleport abilities.
@@ -118,7 +118,7 @@ Release builds include automatic update checking — glogger will notify you whe
 
 ### Prerequisites
 
-- [Node.js LTS](https://nodejs.org) (22+)
+- [Node.js](https://nodejs.org) (24, npm only)
 - [Rust + rustup](https://rustup.rs)
 - Platform-specific build tools:
   - **Windows:** Visual Studio C++ build tools
@@ -128,8 +128,8 @@ Release builds include automatic update checking — glogger will notify you whe
 ### Setup
 
 ```bash
-git clone https://github.com/danielout/glogger.git
-cd glogger
+git clone https://github.com/cprivitere/glogger-twinkleoftoes.git
+cd glogger-twinkleoftoes
 npm install
 npm run tauri dev
 ```
@@ -143,12 +143,12 @@ npm run tauri:build
 ### Run tests
 
 ```bash
-cd src-tauri && cargo test
+cd src-tauri && cargo test --lib
 ```
 
 ## Tech Stack
 
-- **[Tauri 2](https://tauri.app)** — Rust backend with OS webview, ~10MB distributable
+- **[Tauri 2](https://tauri.app)** — Rust backend with OS webview
 - **[Vue 3](https://vuejs.org)** + **[Pinia](https://pinia.vuejs.org)** — Frontend UI and state management
 - **[Tailwind CSS 4](https://tailwindcss.com)** — Styling
 - **SQLite** (via rusqlite) — Local data persistence
