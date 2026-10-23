@@ -1054,6 +1054,21 @@ mod tests {
 
     static SEQ: AtomicU64 = AtomicU64::new(0);
 
+    /// Unique temp dir per call: `SystemTime` nanos repeat when parallel tests
+    /// start in the same tick, so a bare-nanos dir let two helpers share one
+    /// path — files from one test leaked into another's scan.
+    fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        // Nanos kept for human-sortable names; pid + counter carry uniqueness.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("{prefix}_{}_{nanos}_{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        dir
+    }
+
     /// Migrated in-memory DB wrapped in the app's pool type. Shared-cache
     /// memory URI so `reads` and `writes` hit the same DB (migrations run
     /// through `writes`; `import_*` writes through `writes`, query commands
@@ -1233,14 +1248,7 @@ mod tests {
         // post-10/21-style report inline and import it. Key `CouncilsSpent` is
         // the live game spelling (verified 10/21 TwinkleofToes export);
         // `CouncilsSpentAtVendor` survives as a serde alias only.
-        let dir = std::env::temp_dir().join(format!(
-            "glogger_npc_fields_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let dir = unique_temp_dir("glogger_npc_fields");
         let path = dir.join("Character_VipProbe_Dreva.json");
         std::fs::write(
             &path,
@@ -1295,14 +1303,7 @@ mod tests {
     fn placeholder_report_is_rejected() {
         let db = pool();
         let game_data = GameData::empty();
-        let dir = std::env::temp_dir().join(format!(
-            "glogger_placeholder_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let dir = unique_temp_dir("glogger_placeholder");
         // The game's extra-report bug: "???" name, race "error".
         for (file, name, race) in [
             ("Character_.json", "???", "error"),

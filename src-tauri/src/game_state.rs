@@ -1426,6 +1426,21 @@ fn correct_stack_in_table(
 mod tests {
     use super::*;
 
+    /// Unique temp DB path per call: `SystemTime` nanos repeat when parallel
+    /// tests start in the same tick, so a bare-nanos name let two helpers open
+    /// one DB — rows from one test leaked into another's assertion.
+    fn unique_temp_db(prefix: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        // Nanos kept for human-sortable names; pid + counter carry uniqueness.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("{prefix}_{}_{nanos}_{n}.db", std::process::id()))
+    }
+
     fn week_start(instant: &str) -> String {
         week_start_utc_at(
             chrono::DateTime::parse_from_rfc3339(instant)
@@ -1474,13 +1489,7 @@ mod tests {
     fn gift_note_from_a_previous_week_is_not_reconciled() {
         use std::sync::Arc;
 
-        let db_path = std::env::temp_dir().join(format!(
-            "glogger_gift_week_test_{}.db",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let db_path = unique_temp_db("glogger_gift_week_test");
         let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
 
         let week_start = current_week_start_utc();
@@ -1597,13 +1606,7 @@ mod tests {
     fn gift_flagged_favor_is_only_logged_when_a_gift_was_spent() {
         use std::sync::Arc;
 
-        let db_path = std::env::temp_dir().join(format!(
-            "glogger_gift_rules_test_{}.db",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let db_path = unique_temp_db("glogger_gift_rules_test");
         let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
 
         // Real areas / gift fields for the four NPCs. Selaxi's tier list is
@@ -1803,13 +1806,7 @@ mod tests {
     fn identity_switch_keeps_each_sessions_skills() {
         use std::sync::Arc;
 
-        let db_path = std::env::temp_dir().join(format!(
-            "glogger_session_identity_test_{}.db",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let db_path = unique_temp_db("glogger_session_identity_test");
         let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
 
         let mut manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
@@ -1862,13 +1859,7 @@ mod tests {
     fn session_scoped_stack_correction_keys_by_session() {
         use std::sync::Arc;
 
-        let db_path = std::env::temp_dir().join(format!(
-            "glogger_session_stack_correct_test_{}.db",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let db_path = unique_temp_db("glogger_session_stack_correct_test");
         let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
 
         let mut manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(

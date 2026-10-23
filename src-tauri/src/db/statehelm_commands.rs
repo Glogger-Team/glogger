@@ -392,15 +392,20 @@ mod tests {
 
     const WEEK_START: &str = "2026-10-12 00:00:00";
 
-    fn write_log(lines: &str) -> PathBuf {
-        let mut path = std::env::temp_dir();
+    /// Unique temp path per call: `SystemTime` nanos repeat when parallel tests
+    /// start in the same tick, so a bare-nanos name let two helpers open one
+    /// path — contents from one test leaked into another's assertion.
+    fn unique_temp_path(prefix: &str, ext: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        // Nanos kept for human-sortable names; pid + counter carry uniqueness.
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        path.push(format!("glogger_statehelm_test_{nanos}.log"));
-        let mut f = std::fs::File::create(&path).expect("create log");
-        f.write_all(lines.as_bytes()).expect("write log");
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let mut path = std::env::temp_dir();
+        path.push(format!("{prefix}_{}_{nanos}_{n}.{ext}", std::process::id()));
         path
     }
 
@@ -413,13 +418,15 @@ mod tests {
         )
     }
 
+    fn write_log(lines: &str) -> PathBuf {
+        let path = unique_temp_path("glogger_statehelm_test", "log");
+        let mut f = std::fs::File::create(&path).expect("create log");
+        f.write_all(lines.as_bytes()).expect("write log");
+        path
+    }
+
     fn temp_pool() -> (DbPool, PathBuf) {
-        let mut path = std::env::temp_dir();
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        path.push(format!("glogger_statehelm_test_{nanos}.db"));
+        let path = unique_temp_path("glogger_statehelm_test", "db");
         let pool = crate::db::init_pool(path.clone(), Some(0)).expect("init pool");
         (pool, path)
     }

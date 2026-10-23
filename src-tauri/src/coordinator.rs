@@ -4385,15 +4385,25 @@ mod session_identity_tests {
     use crate::game_state::GameStateManager;
     use crate::player_event_parser::PlayerEvent;
 
+    /// Unique temp path per call: `SystemTime` nanos repeat when parallel tests
+    /// start in the same tick, so a shared `glogger_catch_up_login_test_*`
+    /// prefix let two `seed_pool` callers open one DB — rows from one test
+    /// leaked into the other's assertion (v1.3.8 Windows gate flake).
+    fn unique_temp_path(prefix: &str, ext: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        // Nanos kept for human-sortable names; pid + counter carry uniqueness.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("{prefix}_{}_{nanos}_{n}.{ext}", std::process::id()))
+    }
+
     /// Write a temp `Chat-*.log` set and return the dir holding it.
     fn write_chat_dir(files: &[(&str, &[&str])]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "glogger_chat_scan_test_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = unique_temp_path("glogger_chat_scan_test", "d");
         std::fs::create_dir_all(&dir).unwrap();
         for (name, lines) in files {
             std::fs::write(dir.join(name), format!("{}\n", lines.join("\n"))).unwrap();
@@ -4425,13 +4435,7 @@ mod session_identity_tests {
 
     /// A temp pool seeded with a `user_characters` INSERT.
     fn seed_pool(insert: &str) -> (DbPool, std::path::PathBuf) {
-        let path = std::env::temp_dir().join(format!(
-            "glogger_catch_up_login_test_{}.db",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let path = unique_temp_path("glogger_catch_up_login_test", "db");
         let pool = crate::db::init_pool(path.clone(), Some(0)).expect("init pool");
         pool.get_write().unwrap().execute(insert, []).unwrap();
         (pool, path)
@@ -4453,13 +4457,7 @@ mod session_identity_tests {
     /// the other's `updated_at`) plus one row for an alt on a server no other row
     /// uses — the three tie-breakers in the resolver, in different orders.
     fn seed() -> (DbPool, std::path::PathBuf) {
-        let path = std::env::temp_dir().join(format!(
-            "glogger_session_server_test_{}.db",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let path = unique_temp_path("glogger_session_server_test", "db");
         let pool = crate::db::init_pool(path.clone(), Some(0)).expect("init pool");
         {
             let conn = pool.get_write().unwrap();

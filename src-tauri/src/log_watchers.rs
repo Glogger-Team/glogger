@@ -889,13 +889,18 @@ mod tests {
         // but each gain ChatMessage keeps the session that produced it.
         use crate::chat_parser::ChatSessionTag;
         use std::io::Write;
-
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        // Nanos kept for human-sortable names; pid + counter carry uniqueness
+        // (`SystemTime` nanos repeat when parallel tests start in one tick).
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         let dir = std::env::temp_dir().join(format!(
-            "glogger_chat_tag_test_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            "glogger_chat_tag_test_{}_{nanos}_{n}",
+            std::process::id()
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("Chat-26-03-09.log");
