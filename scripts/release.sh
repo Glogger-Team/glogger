@@ -7,8 +7,9 @@
 # Usage: scripts/release.sh [patch|minor|major|x.y.z] [--notes <file>]
 #
 #   --notes <file>   use hand-written notes instead of the changelog
-#                    generated from the commits since the previous release
-#                    tag (scripts/generate-changelog.sh). The file is copied
+#                    generated from the commits since the last *published*
+#                    release (scripts/generate-changelog.sh, based via
+#                    scripts/last-published-tag.sh). The file is copied
 #                    to RELEASE_NOTES.md at the repo root.
 #
 # Nothing is modified until the notes have been produced and accepted, so an
@@ -33,8 +34,23 @@ if [ -n "$(git status --porcelain)" ]; then
   echo "Error: working tree not clean"; git status --short; exit 1
 fi
 
-# Previous release tag — the base of the "What's Changed since ..." notes.
-PREV_TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
+# Notes base: the last *published* release, not the nearest tag. A tag whose
+# Release run failed never produced a GitHub Release, so basing notes on it
+# would silently drop its commits from the next release's notes (v1.3.8 ->
+# v1.3.9). Falls back to the nearest tag when the lookup is impossible (gh
+# missing, offline, unauthenticated).
+PREV_TAG=""
+# Slug from the origin remote (NOT `gh repo view`: with an upstream remote
+# present that resolves to the fork's parent, whose releases are unrelated).
+ORIGIN_URL="$(git config --get remote.origin.url || true)"
+REPO_SLUG="$(printf '%s' "$ORIGIN_URL" | sed -E 's#.*github\.com[:/]([^/]+/[^/]+?)(\.git)?/?$#\1#')"
+case "$REPO_SLUG" in
+  */*) PREV_TAG="$(scripts/last-published-tag.sh "$REPO_SLUG" 2>/dev/null || true)" ;;
+esac
+if [ -z "$PREV_TAG" ]; then
+  echo "Warning: could not determine the last published release — falling back to the nearest tag."
+  PREV_TAG="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
+fi
 
 STAGED_NOTES="$(mktemp)"
 trap 'rm -f "$STAGED_NOTES"' EXIT

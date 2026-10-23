@@ -55,8 +55,8 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 | Full Rust tests | `cd src-tauri && cargo test` | No `src-tauri/tests/` dir exists; everything is in-lib |
 | Survey replay | `npm run survey-test` | `--ignored` accuracy report, minutes-scale, needs `test_data/` + `docs/CDN-full-examples/` |
 | Version bump | `npm run version:bump patch\|minor\|major\|x.y.z`|See version section|
-| Release | `npm run release patch\|minor\|major\|x.y.z`|On `main`, clean tree: bumps, writes `RELEASE_NOTES.md`, commits, tags `v<semver>`, pushes; CI publishes the release with those notes|
-| Changelog | `npm run changelog` | Git-log notes since the last tag; `npm run release` writes them to `RELEASE_NOTES.md` (publishable to the GitHub Release + `latest.json`). `--notes <file>` overrides |
+| Release | `npm run release patch\|minor\|major\|x.y.z`|On `main`, clean tree: bumps, writes `RELEASE_NOTES.md`, commits, tags `v<semver>`, pushes; CI publishes the release with those notes. Notes cover the commits since the last *published* release (`scripts/last-published-tag.sh`), so a failed release's tag never orphans its commits from the next notes |
+| Changelog | `npm run changelog` | Git-log notes since a base tag (default: nearest tag — pass the last published tag explicitly after a failed release); `npm run release` writes them to `RELEASE_NOTES.md` (publishable to the GitHub Release + `latest.json`). `--notes <file>` overrides |
 
 ## Code review loop
 
@@ -98,7 +98,7 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 | `.github/workflows/release.yml` | Tag-triggered release pipeline: test gate → signed Windows/macOS(aarch64)/Linux builds → GitHub release → updater-latest manifest (`workflow_dispatch` with `publish=false` = dry run, no release); calls `flatpak.yml` to attach `glogger.flatpak` |
 | `.github/workflows/flatpak.yml` | Flatpak bundle build (gnome-50 builder container + offline cargo/npm source lists) driven from `flatpak/io.github.cprivitere.glogger.yml` |
 |`HANDOFF.md`|Session log with durable gotchas — read before nontrivial work|
-|`RELEASE_NOTES.md`|Written by `npm run release` from the commits since the previous tag (or `--notes <file>`); committed with the bump and published as the GitHub Release body + `latest.json.notes`. The `validate` job fails a tag push whose notes don't cover its range|
+|`RELEASE_NOTES.md`|Written by `npm run release` from the commits since the last *published* release (or `--notes <file>`); committed with the bump and published as the GitHub Release body + `latest.json.notes`. The `validate` job fails a tag push whose notes don't cover its range|
 
 ## Runtime/Tooling Preferences
 
@@ -137,8 +137,8 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 - **Shell quoting:** git-bash heredoc needs `<< 'EOF'` when the body has `$`; PS5.1 here-strings with `'` inside C# break `Add-Type` — use file-based scripts or Python ctypes instead.
 - **Dev-DB wipe is move-never-delete, and only on request**: `taskkill /F /IM glogger.exe`, move `glogger.db` (+ `-wal`/`-shm`) from `%APPDATA%\glogger.Dev\` to a timestamped `db-backup-*` dir beside it; keep `settings.json` + `data/` (CDN cache). Full ritual lives in `skill://glogger-smoke`.
 - `game-state-updated` payloads are domain lists — refresh only named domains.
+- **Avoid force-pushes to shared branches** — an accidental force-push once wiped `main` (restored via PR). `main` is the release branch; cut a release with `npm run release <patch|minor|major|x.y.z>`, which bumps, generates `RELEASE_NOTES.md` from the commits since the last *published* release, tags `v<semver>` and pushes. A tag whose Release run failed never published, so the next notes must still cover its commits (v1.3.8 → v1.3.9 dropped them and had to be repaired by hand). Avoid force-pushes to `main`.
 - `scripts/bump-version.sh` rewrites the release window title with a version-agnostic sed.
-- **Avoid force-pushes to shared branches** — an accidental force-push once wiped `main` (restored via PR). `main` is the release branch; cut a release with `npm run release <patch|minor|major|x.y.z>`, which bumps, generates `RELEASE_NOTES.md` from the commits since the previous tag, tags `v<semver>` and pushes. Avoid force-pushes to `main`.
 - Commit prefixes: `feat:`, `fix:`, `impv:`, `docs:`, `test:`, `build:` (`.githooks/commit-msg` owns the list — `release:` and `Merge` commits are exempt).
 - Hooks are **opt-in per clone** — a fresh clone has none until `scripts/setup-hooks.sh` runs (`core.hooksPath`). TOS/CoC enforcement details live in `docs/research/glogger-game-interaction-limits.md`; the machine patterns live in `scripts/check-glogger-constraints.ps1`; the release `validate` job re-runs the same scanner.
 - `db/price_helper_commands.rs` and `db/survey_commands.rs` are unregistered/no-consumer modules (`#[allow(dead_code)]` on the `pub mod` lines in `db/mod.rs`), kept intentionally until their consumers land — not command placeholders.

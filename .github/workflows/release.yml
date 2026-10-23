@@ -105,7 +105,12 @@ jobs:
           # so a tag push always carries notes for its own range. This is a
           # tripwire for tags cut some other way — a warning (not an error) on
           # workflow_dispatch, where historical tags are smoke-tested.
-          PREV_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${TAG}^" 2>/dev/null || echo "")
+          #
+          # The base is the last *published* GitHub Release, not the nearest
+          # tag: a tag whose Release run failed never reached users, so the
+          # next release's notes must still cover its commits (v1.3.8 -> v1.3.9
+          # shipped notes that omitted everything the failed 1.3.8 contained).
+          PREV_TAG=$(bash scripts/last-published-tag.sh "$REPO" 2>/dev/null || git describe --tags --abbrev=0 --match 'v[0-9]*' "${TAG}^" 2>/dev/null || echo "")
           PROBLEM=""
           if [ ! -s RELEASE_NOTES.md ]; then
             PROBLEM="RELEASE_NOTES.md is missing or empty"
