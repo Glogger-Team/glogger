@@ -14,6 +14,7 @@ Usage:
 import argparse
 import json
 import os
+import sys
 from collections import defaultdict
 
 
@@ -132,15 +133,19 @@ def main():
     # Print summary
     total_files = len(results)
     total_fields = sum(len(r["fields"]) for r in results.values())
-    print(f"Extracted schemas from {total_files} CDN files ({total_fields} total fields)")
+    print(
+        f"Extracted schemas from {total_files} CDN files ({total_fields} total fields)"
+    )
     print(f"Output: {args.output}")
 
     for fname, info in sorted(results.items()):
         field_count = len(info["fields"])
-        print(f"  {fname}: {info['total_entries']} entries, {field_count} fields ({info['structure']})")
+        print(
+            f"  {fname}: {info['total_entries']} entries, {field_count} fields ({info['structure']})"
+        )
 
     return 0
 
 
 if __name__ == "__main__":
-    exit(main())
+    sys.exit(main())

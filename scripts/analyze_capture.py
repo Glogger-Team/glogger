@@ -57,7 +57,9 @@ BARE_PROCESS_RE = re.compile(r"^\[\d{2}:\d{2}:\d{2}\] (Process\w+)\(")
 # Timestamp prefix
 TIMESTAMP_RE = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\] ")
 # OnAttackHitMe
-ATTACK_RE = re.compile(r"(entity_\d+|LocalPlayer): OnAttackHitMe\((.+?)\)\. Evaded = (\w+)")
+ATTACK_RE = re.compile(
+    r"(entity_\d+|LocalPlayer): OnAttackHitMe\((.+?)\)\. Evaded = (\w+)"
+)
 
 
 def is_noise(line: str) -> bool:
@@ -95,23 +97,23 @@ def classify_line(line: str) -> str:
     bare = line
     ts_match = TIMESTAMP_RE.match(line)
     if ts_match:
-        bare = line[ts_match.end():]
+        bare = line[ts_match.end() :]
 
     if bare.startswith("Download appearance"):
         return "noise:appearance"
-    if bare.startswith("LoadAssetAsync") or bare.startswith("IsDoneLoading") or bare.startswith("Completed "):
+    if bare.startswith(("LoadAssetAsync", "IsDoneLoading", "Completed ")):
         return "noise:asset_loading"
     if bare.startswith("Successfully downloaded"):
         return "noise:texture"
     if "Playing sound " in bare:
         return "noise:sound"
-    if bare.startswith("MecanimEx:") or bare.startswith("Told to do animation") or bare.startswith("Animator."):
+    if bare.startswith(("MecanimEx:", "Told to do animation", "Animator.")):
         return "noise:animation"
     if bare.startswith("ClearCursor"):
         return "noise:cursor"
-    if bare.startswith("Ref-count") or bare.startswith("ref-count"):
+    if bare.startswith(("Ref-count", "ref-count")):
         return "noise:gc"
-    if bare.startswith("BoxColliders") or bare.startswith("Combined Static") or bare.startswith("Either create"):
+    if bare.startswith(("BoxColliders", "Combined Static", "Either create")):
         return "noise:collider"
     if bare.startswith("Shader "):
         return "noise:shader"
@@ -147,13 +149,18 @@ def classify_line(line: str) -> str:
         return "event:NetworkError"
     if "Logged in as character" in bare:
         return "event:Login"
-    if "UIHighlightSelectionController" in bare or "LocationSender" in bare or "MessageDispatcher" in bare:
+    if (
+        "UIHighlightSelectionController" in bare
+        or "LocationSender" in bare
+        or "MessageDispatcher" in bare
+    ):
         return "noise:stack_trace"
 
     return "other"
 
 
 # ── Analysis ────────────────────────────────────────────────────────
+
 
 def analyze_capture(data: dict, args) -> None:
     lines = data.get("lines", [])
@@ -287,11 +294,13 @@ def analyze_capture(data: dict, args) -> None:
     for entry in player_lines:
         m = ATTACK_RE.search(entry.get("line", ""))
         if m:
-            attacks.append({
-                "target": m.group(1),
-                "ability": m.group(2),
-                "evaded": m.group(3),
-            })
+            attacks.append(
+                {
+                    "target": m.group(1),
+                    "ability": m.group(2),
+                    "evaded": m.group(3),
+                }
+            )
     if attacks:
         print()
         print("-" * 70)
@@ -300,11 +309,13 @@ def analyze_capture(data: dict, args) -> None:
         ability_counts = Counter(a["ability"] for a in attacks)
         evade_count = sum(1 for a in attacks if a["evaded"] == "True")
         print()
-        print(f"  Abilities used against player:")
+        print("  Abilities used against player:")
         for ability, count in ability_counts.most_common(10):
             print(f"    {ability:<40s} {count:>4}x")
         if evade_count:
-            print(f"  Evaded: {evade_count}/{len(attacks)} ({evade_count/len(attacks)*100:.0f}%)")
+            print(
+                f"  Evaded: {evade_count}/{len(attacks)} ({evade_count / len(attacks) * 100:.0f}%)"
+            )
 
     # ── Snapshot diff ──
     if args.diff or args.full:
@@ -333,6 +344,7 @@ def _extract_game_time(line: str) -> str | None:
 
 # ── Snapshot diffing ────────────────────────────────────────────────
 
+
 def print_snapshot_diff(start: dict, stop: dict) -> None:
     if not start or not stop:
         print("  (snapshots not available)")
@@ -350,8 +362,16 @@ def print_snapshot_diff(start: dict, stop: dict) -> None:
                 print(f"    {diff}")
 
     # Compare attributes (large list, only show changes)
-    start_attrs = {a.get("attribute_name"): a for a in start.get("attributes", []) if isinstance(a, dict)}
-    stop_attrs = {a.get("attribute_name"): a for a in stop.get("attributes", []) if isinstance(a, dict)}
+    start_attrs = {
+        a.get("attribute_name"): a
+        for a in start.get("attributes", [])
+        if isinstance(a, dict)
+    }
+    stop_attrs = {
+        a.get("attribute_name"): a
+        for a in stop.get("attributes", [])
+        if isinstance(a, dict)
+    }
     attr_changes = []
     for key in set(start_attrs) | set(stop_attrs):
         s = start_attrs.get(key, {}).get("attribute_value")
@@ -371,12 +391,16 @@ def print_snapshot_diff(start: dict, stop: dict) -> None:
         print()
         print(f"  AREA: {start_area} -> {stop_area}")
 
-    if not any([
-        diff_table("skills", start.get("skills", []), stop.get("skills", [])),
-        diff_table("inventory", start.get("inventory", []), stop.get("inventory", [])),
-        attr_changes,
-        start_area != stop_area,
-    ]):
+    if not any(
+        [
+            diff_table("skills", start.get("skills", []), stop.get("skills", [])),
+            diff_table(
+                "inventory", start.get("inventory", []), stop.get("inventory", [])
+            ),
+            attr_changes,
+            start_area != stop_area,
+        ]
+    ):
         print()
         print("  (no differences detected)")
 
@@ -425,7 +449,12 @@ def diff_table(table: str, start_items: list, stop_items: list) -> list[str]:
             for field in set(s) | set(e):
                 sv = s.get(field)
                 ev = e.get(field)
-                if sv != ev and field not in (key_field, "character_name", "server_name", "updated_at"):
+                if sv != ev and field not in (
+                    key_field,
+                    "character_name",
+                    "server_name",
+                    "updated_at",
+                ):
                     changes.append(f"{field}: {sv} -> {ev}")
             if changes:
                 label = _item_label(table, s)
@@ -461,10 +490,11 @@ def _item_label(table: str, item: dict) -> str:
         return f"{item.get('currency_name', '?')}: {item.get('amount', '?')}"
     if table == "equipment":
         return f"slot {item.get('slot', '?')}"
-    return str(item.get(list(item.keys())[0]) if item else "?")
+    return str(next(iter(item.values())) if item else "?")
 
 
 # ── Entry point ─────────────────────────────────────────────────────
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -479,10 +509,18 @@ Examples:
         """,
     )
     parser.add_argument("file", help="Path to the capture JSON file")
-    parser.add_argument("--full", action="store_true", help="Show all details (examples, chat, diff)")
+    parser.add_argument(
+        "--full", action="store_true", help="Show all details (examples, chat, diff)"
+    )
     parser.add_argument("--chat", action="store_true", help="Display chat lines")
-    parser.add_argument("--diff", action="store_true", help="Show game state snapshot diff")
-    parser.add_argument("--process-only", action="store_true", help="Only output ProcessXxx lines (for piping)")
+    parser.add_argument(
+        "--diff", action="store_true", help="Show game state snapshot diff"
+    )
+    parser.add_argument(
+        "--process-only",
+        action="store_true",
+        help="Only output ProcessXxx lines (for piping)",
+    )
     args = parser.parse_args()
 
     path = Path(args.file)
