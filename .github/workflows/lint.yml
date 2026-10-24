@@ -105,6 +105,7 @@ jobs:
           # No patched 4.x exists; updater hasn't migrated to zip 9.
           cargo audit --ignore RUSTSEC-2026-0367 --ignore RUSTSEC-2026-0368 --ignore RUSTSEC-2026-0369 --json > /tmp/audit.json || true
           python3 - "$GITHUB_STEP_SUMMARY" << 'PYEOF'
+          import json, sys, urllib.request
 
           def cvss_base(vector):
               """Base score from a CVSS v3.x vector string (spec equation)."""
