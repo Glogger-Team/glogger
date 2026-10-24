@@ -98,9 +98,13 @@ jobs:
         working-directory: src-tauri
         run: |
           set -euo pipefail
-          cargo audit --json > /tmp/audit.json || true
+          # Documented ignores (re-evaluate if bundle formats change):
+          # RUSTSEC-2026-0367/0368/0369 (zip 4.6.1 via tauri-plugin-updater):
+          # zip extraction is unreachable — the updater endpoint serves
+          # NSIS/DMG/AppImage only (updaterJsonPreferNsis), never zips.
+          # No patched 4.x exists; updater hasn't migrated to zip 9.
+          cargo audit --ignore RUSTSEC-2026-0367 --ignore RUSTSEC-2026-0368 --ignore RUSTSEC-2026-0369 --json > /tmp/audit.json || true
           python3 - "$GITHUB_STEP_SUMMARY" << 'PYEOF'
-          import json, sys, urllib.request
 
           def cvss_base(vector):
               """Base score from a CVSS v3.x vector string (spec equation)."""
