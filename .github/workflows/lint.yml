@@ -79,8 +79,9 @@ jobs:
           python-version: "3.14"
 
       - name: yamllint
-        # Pinned: unpinned pip installs float with upstream releases.
-        run: pip install "yamllint==1.37.1" && yamllint .github/
+        # Floor, not a freeze: keeps a known-good minimum, still floats with
+        # upstream. No watcher here, so a freeze would rot silently.
+        run: pip install "yamllint>=1.37.1" && yamllint .github/
 
       - name: zizmor
         uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
@@ -110,5 +111,5 @@ jobs:
           cache: npm
 
       - name: Markdown lint (hand-maintained docs only)
-        # Pinned: `npx --yes` without a version floats with upstream releases.
-        run: npx --yes markdownlint-cli2@0.23.3 --config .markdownlint-cli2.json "AGENTS.md" "README.md" "SECURITY.md" "CONTRIBUTING.md"
+        # Floor, not a freeze: no watcher here, so a freeze would rot silently.
+        run: npx --yes markdownlint-cli2@0.23 --config .markdownlint-cli2.json "AGENTS.md" "README.md" "SECURITY.md" "CONTRIBUTING.md"
