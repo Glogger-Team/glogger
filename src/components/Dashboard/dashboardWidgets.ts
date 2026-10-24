@@ -33,6 +33,8 @@ import MessagesWidget from "./widgets/MessagesWidget.vue";
 import HoplologyWidget from "./widgets/HoplologyWidget.vue";
 import VendorCouncilWidget from "./widgets/VendorCouncilWidget.vue";
 import RouletteWidget from "./widgets/RouletteWidget.vue";
+import ServerEventsWidget from "./widgets/ServerEventsWidget.vue";
+import ServerEventsWidgetConfig from "./widgets/ServerEventsWidgetConfig.vue";
 import ArenaWidget from "./widgets/ArenaWidget.vue";
 
 export type WidgetSize = "small" | "medium" | "large";
@@ -252,6 +254,13 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     name: "Casino Arena",
     component: ArenaWidget,
     defaultSize: "large",
+  },
+  {
+    id: "server-events",
+    name: "Server Events",
+    component: ServerEventsWidget,
+    configComponent: ServerEventsWidgetConfig,
+    defaultSize: "small",
   },
 ];
 
