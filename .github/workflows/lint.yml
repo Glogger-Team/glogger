@@ -86,11 +86,10 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-
+      # No toolchain-install step: ubuntu-latest ships stable Rust, and the
+      # org allowlist permits no new third-party actions. cargo-audit never
+      # compiles, so runner Rust is sufficient (release.yml keeps pinned
+      # dtolnay for the cross-platform builds that need it).
       - name: Install cargo-audit
         # Floor, not a freeze: no watcher here, so a freeze would rot silently.
         run: set -euo pipefail; cargo install cargo-audit --locked
