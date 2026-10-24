@@ -79,7 +79,8 @@ jobs:
           python-version: "3.14"
 
       - name: yamllint
-        run: pip install yamllint && yamllint .github/
+        # Pinned: unpinned pip installs float with upstream releases.
+        run: pip install "yamllint==1.37.1" && yamllint .github/
 
       - name: zizmor
         uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
@@ -109,4 +110,5 @@ jobs:
           cache: npm
 
       - name: Markdown lint (hand-maintained docs only)
-        run: npx --yes markdownlint-cli2 --config .markdownlint-cli2.json "AGENTS.md" "README.md" "SECURITY.md" "CONTRIBUTING.md"
+        # Pinned: `npx --yes` without a version floats with upstream releases.
+        run: npx --yes markdownlint-cli2@0.23.3 --config .markdownlint-cli2.json "AGENTS.md" "README.md" "SECURITY.md" "CONTRIBUTING.md"
