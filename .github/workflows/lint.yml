@@ -84,7 +84,11 @@ jobs:
       - name: zizmor
         uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
         with:
-          args: --no-online-audits --config .github/zizmor.yml --min-severity medium .github/workflows/
+          inputs: .github/workflows/
+          online-audits: false
+          config: .github/zizmor.yml
+          min-severity: medium
+          advanced-security: false
 
   markdown:
     name: Markdown (opt-in)
@@ -107,3 +111,4 @@ jobs:
             README.md
             SECURITY.md
             CONTRIBUTING.md
+            !**/*.md
