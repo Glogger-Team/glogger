@@ -118,6 +118,9 @@ pub struct SnapshotNpcFavor {
     pub councils_spent_at_vendor: Option<i64>,
     pub vendor_reset_time: Option<String>,
     pub player_notes: Option<String>,
+    /// Owning snapshot's game timestamp — lets consumers compare snapshot
+    /// freshness against live `last_confirmed_at`.
+    pub snapshot_timestamp: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -590,10 +593,12 @@ pub fn get_snapshot_npc_favor(
 
     let mut stmt = conn
         .prepare(
-            "SELECT npc_key, favor_level, favor, councils_spent_at_vendor, vendor_reset_time, player_notes
-         FROM character_npc_favor
-         WHERE snapshot_id = ?1
-         ORDER BY npc_key",
+            "SELECT cnf.npc_key, cnf.favor_level, cnf.favor, cnf.councils_spent_at_vendor,
+                    cnf.vendor_reset_time, cnf.player_notes, cs.snapshot_timestamp
+             FROM character_npc_favor cnf
+             JOIN character_snapshots cs ON cnf.snapshot_id = cs.id
+             WHERE cnf.snapshot_id = ?1
+             ORDER BY cnf.npc_key",
         )
         .map_err(|e| format!("Failed to prepare query: {e}"))?;
 
@@ -606,6 +611,7 @@ pub fn get_snapshot_npc_favor(
                 councils_spent_at_vendor: row.get(3)?,
                 vendor_reset_time: row.get(4)?,
                 player_notes: row.get(5)?,
+                snapshot_timestamp: row.get(6)?,
             })
         })
         .map_err(|e| format!("Query failed: {e}"))?;
@@ -1233,7 +1239,12 @@ mod tests {
                 )
                 .expect("snapshot row");
 
-            let (favor, councils, reset, notes): (Option<f64>, Option<i64>, Option<String>, Option<String>) = conn
+            let (favor, councils, reset, notes): (
+                Option<f64>,
+                Option<i64>,
+                Option<String>,
+                Option<String>,
+            ) = conn
                 .query_row(
                     "SELECT favor, councils_spent_at_vendor, vendor_reset_time, player_notes
                      FROM character_npc_favor WHERE snapshot_id = ?1 LIMIT 1",
@@ -1337,7 +1348,9 @@ mod tests {
         let count: i64 = db
             .get_write()
             .expect("write conn")
-            .query_row("SELECT COUNT(*) FROM character_snapshots", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM character_snapshots", [], |row| {
+                row.get(0)
+            })
             .expect("count");
         assert_eq!(count, 0);
         std::fs::remove_dir_all(&dir).ok();
@@ -1369,7 +1382,8 @@ mod tests {
     fn live_export_assert(path: &std::path::Path) {
         let db = pool();
         let game_data = GameData::empty();
-        import_character_report_internal(&db, path.to_str().expect("utf8 path"), &game_data).expect("import live export");
+        import_character_report_internal(&db, path.to_str().expect("utf8 path"), &game_data)
+            .expect("import live export");
         let conn = db.get_write().expect("write conn");
         let snapshot_id: i64 = conn
             .query_row(
@@ -1387,7 +1401,10 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .expect("raina row");
-        assert!((favor.unwrap() - 598.4678).abs() < 1e-3, "raina favor {favor:?}");
+        assert!(
+            (favor.unwrap() - 598.4678).abs() < 1e-3,
+            "raina favor {favor:?}"
+        );
         assert_eq!(councils, Some(0));
         assert_eq!(notes.as_deref(), Some(""));
         // Bendith: councils spent + vendor reset land on the snapshot row…

@@ -372,6 +372,7 @@ export interface SnapshotNpcFavor {
   councils_spent_at_vendor: number | null
   vendor_reset_time: string | null
   player_notes: string | null
+  snapshot_timestamp: string | null
 }
 
 export interface SnapshotRecipeCompletion {
