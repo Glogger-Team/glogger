@@ -6,12 +6,12 @@ A desktop companion app for **[Project: Gorgon](https://projectgorgon.com)**. gl
 
 ## About
 
-- Community fork managed by oddio of arisetsu. 
+- Community fork managed by oddio of arisetsu.
 - Huge shoutout to Super for helping figure out how to operate this stuff. Zenith/Danielout - for creating the base application. To Chompynibblers for the inspiration, sharing your database knowledge, and help finding the necessary tags in the log files to properly implement it. To Derava, your friendship keeps me coming back to the game. May this app continue to serve the entire community on the shoulders of these giants.
 
 ## What is glogger?
 
-https://www.youtube.com/watch?v=wXSaIyMzuuA
+<https://www.youtube.com/watch?v=wXSaIyMzuuA>
 
 ## Original Owners Info
 
@@ -34,18 +34,20 @@ Maintained by the [Glogger Team](https://github.com/Glogger-Team). Originally [d
 
 ## Initial Setup
 
-Instructions available in short (<2 minutes) video form here. Featuring Cheb! https://www.youtube.com/watch?v=9BhzbM92rv4
+Instructions available in short (<2 minutes) video form here. Featuring Cheb! <https://www.youtube.com/watch?v=9BhzbM92rv4>
 
 1. Go to your VIP settings, export your character and storage JSONs. (If you've got alts, it is helpful to do them as well!)
 2. Go to GUI, scroll to the bottom, and turn on the chat logging! This will give you a chat history browser and allow you to set watchwords! Also turning on combat logging doesn't do a ton, but does allow you to see death reports on what killed you. (I have no plans to try to make DPS meters or anything.)
-3. Start Glogger! The setup wizard should walk you through the very fast setup with hopefully minimal issues. 
+3. Start Glogger! The setup wizard should walk you through the very fast setup with hopefully minimal issues.
 
 ## Features
 
 ### Dashboard
+
 Customizable widget grid with drag-to-reorder. Widgets include live skill tracking, item gain/loss feeds, currency changes, zone info with NPC favor, death tracker, watchword alerts, Words of Power capture (with wiki-sourced category/level grouping and CSV export), trip planner, Statehelm gifting progress (favor-aware, so maxed NPCs fall off and the next-best backfills), Vendor Council tracking (Available + Earned tabs — current-period and lifetime councils earned per NPC), Combat Wisdom tracker (session totals plus per-monster reuse-cooldown countdowns learned from your own kill history), XP Rate / Prodigy Tracker, critical resource tracking, arena tracking (Earthblood arena kill stats), mushroom farming and milking timers, garden/harvest almanacs, roulette, stat tracking, and personal notes.
 
 ### Character
+
 - **Skills** — Live XP tracking with session gains, progression charts, and CDN-enriched skill details (including snapshot-known abilities imported from character reports)
 - **Stats** — Character report import and snapshot management
 - **NPCs** — Favor progression, services, and gift preferences
@@ -56,11 +58,13 @@ Customizable widget grid with drag-to-reorder. Widgets include live skill tracki
 - **Account** — Aggregate view across all characters on a server
 
 ### Inventory
+
 - **Live Inventory** — Real-time tracking of items as they enter and leave your inventory
 - **Snapshots** — Point-in-time inventory browsing from `/outputitems` exports
 - **Storage Vaults** — Area-grouped vault browser with capacity tracking
 
 ### Crafting
+
 - **Projects** — Multi-recipe material breakdowns with pickup lists, shopping lists, and live crafting detection
 - **Price Helper** — Pricing mode with customer-provides and fee configuration
 - **XP Leveling Optimizer** — Find the best recipes to level a crafting skill
@@ -71,6 +75,7 @@ Customizable widget grid with drag-to-reorder. Widgets include live skill tracki
 - **Dynamic Items** — Configure wildcard ingredient slot preferences
 
 ### Economics
+
 - **Market Prices** — Player-maintained price database
 - **Farming** — Session-based profitability tracking, with a per-item drop-rate hover (active session and history) and skinning/butchering harvest detail (skill level, equipment bonus, anatomy level at the time of harvest)
 - **Drop-Rate Database** — Community-sharable kill/loot dataset under the Farming tab. Tracks every lootable corpse search (not just chat kill messages), is zone-aware (the same monster drops differently in different areas) and combat-loadout-aware (drop tables filtered by your equipped combat-skill pair, with an "unattributed" baseline for legacy/imported data). CSV import/export (auto-detects aggregated or raw per-kill event sheets), permanent merged imports, and a searchable Monsters/Items/Harvested browser
@@ -78,15 +83,19 @@ Customizable widget grid with drag-to-reorder. Widgets include live skill tracki
 - **Stall Tracker** — Shop log parsing with sales, revenue, and inventory analytics, plus a **Trends** tab charting sales over time
 
 ### Chat Logs
+
 Full-text search across all chat channels. Browse by channel, tells, party, nearby, guild, or system. Watchword alerts let you set up keyword-based notifications for trade chat and more. Item references in chat are linked to the data browser.
 
 ### Data Browser
+
 Browse the full Project: Gorgon CDN dataset — items, skills, abilities, recipes, quests, NPCs, enemies, areas, effects, lorebooks, titles, achievements, and treasure effects. Hover tooltips, click-to-navigate, search, and favorites. Enemy detail pages show Kill Stats and Harvest Stats (what a monster skins/butchers into) pulled from your own logged data.
 
 ### Unified Search
+
 Scryfall-inspired structured query syntax across 11 searchable categories. Quick search overlay with `Ctrl+F` (or `Ctrl+K`).
 
 ### Trip Planner
+
 Multi-zone route planner with teleport-aware pathfinding. Respects bind locations and known teleport abilities.
 
 ## Screenshots
@@ -169,7 +178,7 @@ mise x yamllint -- yamllint .github/             # YAML / workflows
 
 glogger tails Project: Gorgon's `Player.log` and `Chat.log` files in real time. A Rust event parser processes raw log lines into structured events, which flow through feature-specific coordinators into a SQLite database. The Vue frontend renders live dashboards from that data.
 
-```
+```text
 Player.log → PlayerEventParser → Feature Coordinators → SQLite → Vue Frontend
 ```
 

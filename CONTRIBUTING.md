@@ -32,17 +32,20 @@ See [docs/index.md](docs/index.md) for a full documentation map.
 ## Running Tests
 
 **Rust unit tests** (fast, runs 387+ tests):
+
 ```bash
 cd src-tauri
 cargo test
 ```
 
 **Frontend type check + build**:
+
 ```bash
 npm run build
 ```
 
 **Survey replay integration tests** (slow, requires CDN sample data):
+
 ```bash
 npm run survey-test
 ```
@@ -57,7 +60,8 @@ We use prefixed commit messages for changelog generation:
 - `release:` — Release commits (auto-generated, don't use manually)
 
 Examples:
-```
+
+```text
 feat: add recipe browser with ingredient search
 fix: survey session not ending when leaving area
 impv: faster item tooltip loading with cached lookups
@@ -84,7 +88,7 @@ impv: faster item tooltip loading with cached lookups
 
 glogger tails Project: Gorgon's `Player.log` in real time, parsing events through a Rust pipeline:
 
-```
+```text
 Player.log → PlayerEventParser → Feature Coordinators → SQLite → Vue Frontend
 ```
 

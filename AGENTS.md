@@ -4,7 +4,7 @@ Guidance for AI assistants working on **glogger** — a Tauri v2 desktop app tha
 
 ## Architecture & Data Flow
 
-```
+```text
 Project Gorgon logs (Player.log / Chat.log)
         │  filesystem watchers (500ms polling thread)
         ▼
@@ -17,7 +17,7 @@ SQLite (WAL) via r2d2 pool          ──►  Tauri events (game-state-updated,
 Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_handler!
 ```
 
- - **Single Rust lib crate** (`glogger_lib` in `src-tauri/`); `main.rs` is a 5-line shim calling `run()`. `lib.rs` is the wiring hub: numbered, commented startup sequence, `tauri::generate_handler![...]` with command groups per `// <area>` comment sections (count via `grep -rc '#\[tauri::command\]' src-tauri/src`).
+- **Single Rust lib crate** (`glogger_lib` in `src-tauri/`); `main.rs` is a 5-line shim calling `run()`. `lib.rs` is the wiring hub: numbered, commented startup sequence, `tauri::generate_handler![...]` with command groups per `// <area>` comment sections (count via `grep -rc '#\[tauri::command\]' src-tauri/src`).
 - **FE→BE**: `invoke('snake_case_cmd', { camelCaseArgs })` from `@tauri-apps/api/core`. Commands mostly sync `fn -> Result<T, String>`, registered in `lib.rs`.
 - **BE→FE**: `app_handle.emit(...)` → `listen(...)` in stores. Key contract: `game-state-updated` payload is a **list of domain names** (e.g. `["arena"]`) — handlers must refresh only the named domains.
 - **State split**: Rust `app.manage()` holds durable state (`DbPool`, `SettingsManager` JSON-file settings, `GameDataState` CDN data, `DataIngestCoordinator`, `StallOpsLock`). Pinia stores are session caches, hydrated via invoke and kept fresh by events — game-state durability flows through backend settings/DB, not `localStorage` (which holds only UI prefs: pinned NPCs, timers).
@@ -83,6 +83,7 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 - **Component naming**: PascalCase with role suffixes (`*Widget.vue`, `*Tab.vue`, `*View.vue`, `*Panel.vue`, `*Overlay.vue`). Rust: `<domain>_commands.rs`, `<domain>_parser.rs`.
 - **Rust↔TS contract**: Rust snake_case structs, hand-mirrored camelCase types in `src/types/`. When adding a setting: update both `toBackendSettings`/`fromBackendSettings` converters + defaults in `settingsStore.ts`.
 - **Default directories** (never guess; all from `settings.rs::get_default_game_data_path` / `get_default_player_log_path`): game data root is `%APPDATA%\..\LocalLow\Elder Game\Project Gorgon\` on Windows (`~/Library/Application Support/unity.Elder Game.Project Gorgon/` on macOS). `Player.log` sits under the game root on Windows but under the separate `~/Library/Logs/Elder Game/Project Gorgon/` on macOS (game-rotated `Player-prev.log` is its sibling either way); `ChatLogs/`, `Reports/` (`Character_*.json`, `*_items_*.json`), `Books/` hang off the game root. glogger-side lives under Tauri's `app_data_dir` (per-build identifier: `glogger.Dev` / `glogger.Release` / `glogger.Experimental`): `glogger.db` (or custom `db_path`), `settings.json`, `data/` (CDN cache), `icons/`, `gst/`, `tesseract/`, `player-logs/` (rotated-Player.log archive; derived from the settings file's parent, not the game dir). Survey replay fixtures resolve via relative paths (`test_data/`, `docs/CDN-full-examples/`), not these defaults; live-export/smoke `#[ignore]` tests fall back to the real game dirs when fixtures are absent.
+
 ## Important Files
 
 | File | Why it matters |
@@ -141,11 +142,13 @@ Optional extras installed but not gated: `pinact`, `gasa` (action pinning). Not 
 ## Gotchas
 
 - **`acceptHMRUpdate` on every Pinia store**: without it, `tauri dev` HMR leaves stale store singletons causing silent no-op bugs. Mirror the pattern at the bottom of `buildPlannerStore.ts`:
+
   ```ts
   if (import.meta.hot) {
     import.meta.hot.accept(acceptHMRUpdate(useBuildPlannerStore, import.meta.hot))
   }
   ```
+
   Only stores already migrated have it — add it when touching a store. (The old claim that stores use `persist: true` is wrong: no `pinia-plugin-persistedstate` exists; durability goes through the backend settings file or per-character DB rows.)
   Changing a composable export + its consumer in one HMR pass can unmount the widget — verify export changes with a reload, not just HMR. Guard recurring timers with `globalThis` so HMR re-execution does not double-tick.
 - **Time math**: never parse display-formatted time strings (`formatTimeFull` honors 12/24h user setting; 12h strings break `tsToSeconds` → NaN). Parse machine formats; format only at render; guard comparisons with `Number.isFinite`.

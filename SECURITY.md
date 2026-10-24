@@ -9,7 +9,7 @@ glogger is a desktop companion app for Project: Gorgon. It reads local game log 
 If you discover a security issue, please report it responsibly:
 
 1. **Do not** open a public GitHub issue for security vulnerabilities
-2. Email **danielout@gmail.com** with a description of the issue
+2. Email **<danielout@gmail.com>** with a description of the issue
 3. Include steps to reproduce if possible
 4. Allow reasonable time for a fix before public disclosure
 
