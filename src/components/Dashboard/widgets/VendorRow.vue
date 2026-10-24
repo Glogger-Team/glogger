@@ -5,8 +5,16 @@
   >
     <div class="flex items-center justify-between">
       <div class="flex items-center gap-1.5 min-w-0 flex-1">
+        <button
+          class="shrink-0 text-[11px] leading-none cursor-pointer transition-colors"
+          :class="isFavorite ? 'text-accent-gold' : 'text-text-dim opacity-0 hover:opacity-100 hover:text-accent-gold'"
+          :title="isFavorite ? 'Remove from favorites' : 'Add to favorites'"
+          @click.stop="emit('toggle-favorite', entry)"
+        >★</button>
         <NpcInline :reference="entry.npcKey" class="shrink-0" />
-        <span v-if="entry.area" class="text-[10px] text-text-dim truncate">{{ entry.area }}</span>
+        <span v-if="otherCategories.length > 0" class="text-[10px] text-text-dim truncate" :title="'Also in: ' + otherCategories.join(', ')">
+          · {{ otherCategories.join(' · ') }}
+        </span>
       </div>
       <div class="flex items-center gap-1.5 shrink-0">
         <!-- Untracked vendor: show quick-set actions -->
@@ -115,6 +123,10 @@ const props = defineProps<{
   viewMode: 'character' | 'all'
   quickEditKey: string | null
   quickEditValue: number
+  /** Bucket the row is rendered under — hidden from the "also in" hint. */
+  currentCategory?: string | null
+  /** Whether this vendor is widget-favorited (gold star). */
+  isFavorite?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -124,6 +136,7 @@ const emit = defineEmits<{
   cancelQuickEdit: []
   'update:quickEditValue': [value: number]
   openContextMenu: [payload: { entry: VendorEntry; x: number; y: number }]
+  'toggle-favorite': [entry: VendorEntry]
 }>()
 
 // Right-click menu is only meaningful in single-character mode, since edits
@@ -144,4 +157,8 @@ const goldColorClass = computed(() => {
   if (ratio >= 0.3) return 'text-yellow-400'
   return 'text-value-negative'
 })
+
+const otherCategories = computed(() =>
+  props.entry.itemCategories.filter(c => c !== props.currentCategory),
+)
 </script>

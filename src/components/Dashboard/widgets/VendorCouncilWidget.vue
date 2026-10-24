@@ -42,6 +42,20 @@
       >
         All Characters
       </button>
+      <button
+        class="px-2 py-0.5 text-[10px] rounded cursor-pointer transition-colors text-text-muted hover:text-text-secondary"
+        title="Expand all categories"
+        @click="expandAllCategories"
+      >
+        Expand all
+      </button>
+      <button
+        class="px-2 py-0.5 text-[10px] rounded cursor-pointer transition-colors text-text-muted hover:text-text-secondary"
+        title="Collapse all categories"
+        @click="collapseAllCategories"
+      >
+        Collapse
+      </button>
       <select
         v-model="itemTypeFilter"
         class="ml-auto px-1.5 py-0.5 text-[10px] bg-surface-base border border-border-default rounded text-text-primary cursor-pointer focus:outline-none focus:border-accent-gold/50"
@@ -83,14 +97,23 @@
         </span>
       </div>
 
-      <!-- Flat list when filtered -->
-      <template v-if="itemTypeFilter">
+      <!-- Favorites (only when pinned) -->
+      <div v-if="favoriteEntries.length > 0" class="flex flex-col">
+        <div class="flex items-center gap-1.5 px-1.5 py-1">
+          <span class="text-xs font-semibold text-accent-gold">★ Favorites</span>
+          <span class="text-[10px] text-text-dim">({{ favoriteEntries.length }})</span>
+          <span class="ml-auto text-xs font-mono text-text-secondary">
+            {{ favoriteEntries.reduce((sum, v) => sum + (v.goldAvailable ?? 0), 0).toLocaleString() }}
+          </span>
+        </div>
         <div class="flex flex-col gap-0.5 px-1">
           <VendorRow
-            v-for="v in vendorEntries"
-            :key="v.npcKey"
+            v-for="v in favoriteEntries"
+            :key="'fav-' + v.npcKey"
             :entry="v"
             :view-mode="viewMode"
+            :current-category="null"
+            :is-favorite="true"
             :quick-edit-key="quickEditKey"
             :quick-edit-value="quickEditValue"
             @set-to-cap="setToCap"
@@ -99,6 +122,27 @@
             @cancel-quick-edit="quickEditKey = null"
             @update:quick-edit-value="quickEditValue = $event"
             @open-context-menu="openContextMenu"
+            @toggle-favorite="toggleFavorite(v.npcKey)"
+          />
+        </div>
+      </div>
+      <template v-if="itemTypeFilter">
+        <div class="flex flex-col gap-0.5 px-1">
+          <VendorRow
+            v-for="v in vendorEntries"
+            :key="v.npcKey"
+            :entry="v"
+            :view-mode="viewMode"
+            :is-favorite="isFavorite(v.npcKey)"
+            :quick-edit-key="quickEditKey"
+            :quick-edit-value="quickEditValue"
+            @set-to-cap="setToCap"
+            @start-quick-edit="startQuickEdit"
+            @save-quick-edit="saveQuickEdit"
+            @cancel-quick-edit="quickEditKey = null"
+            @update:quick-edit-value="quickEditValue = $event"
+            @open-context-menu="openContextMenu"
+            @toggle-favorite="toggleFavorite(v.npcKey)"
           />
         </div>
       </template>
@@ -122,10 +166,13 @@
               <span class="text-xs font-semibold text-text-secondary">{{ cat.name }}</span>
               <span class="text-[10px] text-text-dim">({{ cat.vendors.length }})</span>
             </span>
-            <span class="text-xs font-mono" :class="categoryColorClass(cat)">
+            <span class="text-xs font-mono" :class="categoryColorClass(cat)" :title="sharedTotalTitle(cat)">
               {{ cat.totalAvailable.toLocaleString() }}
               <span v-if="cat.totalMax > 0" class="text-text-dim">
                 / {{ cat.totalMax.toLocaleString() }}
+              </span>
+              <span v-if="hasSharedVendors(cat)" class="text-[10px] text-text-dim italic">
+                ({{ cat.exclusiveAvailable.toLocaleString() }} only here)
               </span>
             </span>
           </button>
@@ -139,6 +186,8 @@
               :key="v.npcKey"
               :entry="v"
               :view-mode="viewMode"
+              :current-category="cat.name"
+              :is-favorite="isFavorite(v.npcKey)"
               :quick-edit-key="quickEditKey"
               :quick-edit-value="quickEditValue"
               @set-to-cap="setToCap"
@@ -147,6 +196,7 @@
               @cancel-quick-edit="quickEditKey = null"
               @update:quick-edit-value="quickEditValue = $event"
               @open-context-menu="openContextMenu"
+              @toggle-favorite="toggleFavorite(v.npcKey)"
             />
           </div>
         </div>
@@ -168,8 +218,36 @@
           {{ grandTotalEarnedLifetime.toLocaleString() }}
         </span>
       </div>
+      <!-- Filter + expand controls (mirrors available tab) -->
+      <div class="flex items-center gap-1.5 px-1 flex-wrap">
+        <button
+          class="px-2 py-0.5 text-[10px] rounded cursor-pointer transition-colors text-text-muted hover:text-text-secondary"
+          title="Expand all categories"
+          @click="expandAllCategories"
+        >
+          Expand all
+        </button>
+        <button
+          class="px-2 py-0.5 text-[10px] rounded cursor-pointer transition-colors text-text-muted hover:text-text-secondary"
+          title="Collapse all categories"
+          @click="collapseAllCategories"
+        >
+          Collapse
+        </button>
+        <select
+          v-model="itemTypeFilter"
+          class="ml-auto px-1.5 py-0.5 text-[10px] bg-surface-base border border-border-default rounded text-text-primary cursor-pointer focus:outline-none focus:border-accent-gold/50"
+        >
+          <option value="">All Categories</option>
+          <optgroup label="Categories">
+            <option v-for="cat in CATEGORY_ORDER" :key="cat" :value="'cat:' + cat">{{ cat }}</option>
+          </optgroup>
+          <optgroup label="Item Types">
+            <option v-for="t in allItemTypes" :key="t" :value="t">{{ t }}</option>
+          </optgroup>
+        </select>
+      </div>
 
-      <!-- Flat list when filtered -->
       <template v-if="itemTypeFilter">
         <div class="flex flex-col gap-0.5 px-1">
           <EarnedVendorRow
@@ -213,6 +291,7 @@
               v-for="v in cat.vendors"
               :key="v.npcKey"
               :entry="v"
+              :current-category="cat.name"
             />
           </div>
         </div>
@@ -233,18 +312,18 @@
         :style="{ left: ctxMenu.x + 'px', top: ctxMenu.y + 'px' }"
       >
         <div class="px-2.5 py-1 text-[10px] text-text-dim truncate border-b border-border-default/60">
-          {{ ctxMenu.entry.npcName }}
+          {{ ctxMenu.entry?.npcName }}
         </div>
         <button
           class="w-full text-left px-2.5 py-1 text-xs text-text-primary hover:bg-surface-hover cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-          :disabled="!ctxMenu.entry.goldMax"
+          :disabled="!ctxMenu.entry?.goldMax"
           @click="setToZeroFromMenu"
         >
           Set councils to 0
         </button>
         <button
           class="w-full text-left px-2.5 py-1 text-xs text-text-primary hover:bg-surface-hover cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-          :disabled="ctxMenu.entry.goldMax == null"
+          :disabled="ctxMenu.entry?.goldMax == null"
           @click="setToCapFromMenu"
         >
           Set to full cap
@@ -267,6 +346,7 @@ import { useGameStateStore } from '../../../stores/gameStateStore'
 import { useGameDataStore } from '../../../stores/gameDataStore'
 import { useCharacterStore } from '../../../stores/characterStore'
 import { useSettingsStore } from '../../../stores/settingsStore'
+import { useViewPrefs } from '../../../composables/useViewPrefs'
 import { hasBuyCapacity, getStoreService, goldCapAtTier } from '../../../composables/useNpcServices'
 import VendorRow from './VendorRow.vue'
 import EarnedVendorRow from './EarnedVendorRow.vue'
@@ -274,84 +354,158 @@ import EarnedVendorRow from './EarnedVendorRow.vue'
 const VENDOR_RESET_HOURS = 168
 
 // ── Category mapping ────────────────────────────────────────────
+//     appear under Armor, Weapons AND Jewelry.
+//   Recipe = cooking recipes AND lore recipes → Food + Books.
+//   Mushroom/MushroomParts = food AND alchemy reagent → both.
+// Unmapped tokens fall through to 'Other' — audit new CDN drops via
+// docs/CDN-full-examples/npcs.json CapIncreases when that happens.
 
-const CATEGORY_MAP: Record<string, string> = {
+const CATEGORY_MAP: Record<string, string[]> = {
   // Armor & Shields — worn armor and generic equippable gear
-  Armor: 'Armor & Shields',
-  Shield: 'Armor & Shields',
-  ClothArmor: 'Armor & Shields',
-  ClothEquipment: 'Armor & Shields',
-  LeatherArmor: 'Armor & Shields',
-  MetalArmor: 'Armor & Shields',
-  Clothing: 'Armor & Shields',
-  Equipment: 'Armor & Shields',
+  Armor: ['Armor & Shields'],
+  Shield: ['Armor & Shields'],
+  ClothArmor: ['Armor & Shields'],
+  ClothEquipment: ['Armor & Shields'],
+  LeatherArmor: ['Armor & Shields'],
+  MetalArmor: ['Armor & Shields'],
+  Clothing: ['Armor & Shields'],
+  // Generic equippable gear spans all three gear buckets
+  Equipment: ['Armor & Shields', 'Weapons', 'Jewelry'],
 
   // Weapons
-  Weapon: 'Weapons',
-  Arrow: 'Weapons',
+  Weapon: ['Weapons'],
+  Arrow: ['Weapons'],
 
-  // Jewelry & Gems
-  Jewelry: 'Jewelry & Gems',
-  Gem: 'Jewelry & Gems',
-  Crystal: 'Jewelry & Gems',
-  MassiveCrystal: 'Jewelry & Gems',
-  Seashell: 'Jewelry & Gems',
-  Ring: 'Jewelry & Gems',
-  Amulet: 'Jewelry & Gems',
+  // Jewelry — wearable rings/amulets only (NOT gems or ore)
+  Jewelry: ['Jewelry'],
+  Ring: ['Jewelry'],
+  Amulet: ['Jewelry'],
+  Racial: ['Jewelry'],
+
+  // Gems & Crystals — raw stones, not finished jewelry
+  Gem: ['Gems & Crystals'],
+  Crystal: ['Gems & Crystals'],
+  MassiveCrystal: ['Gems & Crystals'],
+  Seashell: ['Gems & Crystals'],
+
+  // Metals & Ores — smithing raw stock
+  Ore: ['Metals & Ores'],
+  MetalSlab: ['Metals & Ores'],
 
   // Skins & Trophies — animal hides and corpse-harvested parts
-  Skin: 'Skins & Trophies',
-  Skinning: 'Skins & Trophies',
-  Fur: 'Skins & Trophies',
-  Hide: 'Skins & Trophies',
-  CorpseTrophy: 'Skins & Trophies',
-  Skull: 'Skins & Trophies',
-  Bone: 'Skins & Trophies',
-  BodyOrgan: 'Skins & Trophies',
+  Skin: ['Skins & Trophies'],
+  Skinning: ['Skins & Trophies'],
+  Fur: ['Skins & Trophies'],
+  Hide: ['Skins & Trophies'],
+  CorpseTrophy: ['Skins & Trophies'],
+  Skull: ['Skins & Trophies'],
+  Bone: ['Skins & Trophies'],
+  BodyOrgan: ['Skins & Trophies'],
 
-  // Potions & Alchemy — alchemy consumables and outputs
-  Potion: 'Potions & Alchemy',
-  RestorativePotion: 'Potions & Alchemy',
-  AlchemyIngredient: 'Potions & Alchemy',
-  Alchemy: 'Potions & Alchemy',
-  AlchemyRelated: 'Potions & Alchemy',
-  Drug: 'Potions & Alchemy',
-  MagicOil: 'Potions & Alchemy',
-  MagicDust: 'Potions & Alchemy',
-  BottledItem: 'Potions & Alchemy',
+  // Potions & Alchemy — consumables, reagents, first aid
+  Potion: ['Potions & Alchemy'],
+  RestorativePotion: ['Potions & Alchemy'],
+  AlchemyIngredient: ['Potions & Alchemy'],
+  Alchemy: ['Potions & Alchemy'],
+  AlchemyRelated: ['Potions & Alchemy'],
+  Drug: ['Potions & Alchemy'],
+  MagicOil: ['Potions & Alchemy'],
+  MagicDust: ['Potions & Alchemy'],
+  BottledItem: ['Potions & Alchemy'],
+  FirstAidKit: ['Potions & Alchemy'],
+  FirstAidBomb: ['Potions & Alchemy'],
+  // Mushrooms are food AND alchemy reagents — both buckets
+  Mushroom: ['Food & Cooking', 'Potions & Alchemy'],
+  MushroomParts: ['Food & Cooking', 'Potions & Alchemy'],
 
   // Food & Cooking
-  Food: 'Food & Cooking',
-  Edible: 'Food & Cooking',
-  PreparedFood: 'Food & Cooking',
-  CookingIngredient: 'Food & Cooking',
-  Cheese: 'Food & Cooking',
-  Butter: 'Food & Cooking',
-  BreadDish: 'Food & Cooking',
-  BrewingIngredient: 'Food & Cooking',
-  BrewingRelated: 'Food & Cooking',
-  Meat: 'Food & Cooking',
-  Fish: 'Food & Cooking',
-  Egg: 'Food & Cooking',
-  Dairy: 'Food & Cooking',
-  Vegetable: 'Food & Cooking',
-  Fruit: 'Food & Cooking',
-  Mushroom: 'Food & Cooking',
-  Drink: 'Food & Cooking',
+  Food: ['Food & Cooking'],
+  Edible: ['Food & Cooking'],
+  PreparedFood: ['Food & Cooking'],
+  CookingIngredient: ['Food & Cooking'],
+  Cheese: ['Food & Cooking'],
+  CheesemakingIngredient: ['Food & Cooking'],
+  Butter: ['Food & Cooking'],
+  BreadDish: ['Food & Cooking'],
+  BrewingIngredient: ['Food & Cooking'],
+  BrewingRelated: ['Food & Cooking'],
+  Meat: ['Food & Cooking'],
+  Fish: ['Food & Cooking'],
+  Egg: ['Food & Cooking'],
+  Dairy: ['Food & Cooking'],
+  Vegetable: ['Food & Cooking'],
+  Fruit: ['Food & Cooking'],
+  Drink: ['Food & Cooking'],
+  Hellfreeze: ['Food & Cooking'],
+  // Recipes are bought by cooks and lore collectors alike
+  Recipe: ['Food & Cooking', 'Books & Lore'],
+
+  // Books & Lore
+  Book: ['Books & Lore'],
+  Document: ['Books & Lore'],
+  Scroll: ['Books & Lore'],
+  KhyrulekLore: ['Books & Lore'],
+  Parchment: ['Books & Lore'],
+  Textbook: ['Books & Lore'],
+  TextbookSkill_FireMagic: ['Books & Lore'],
+  TextbookSkill_IceMagic: ['Books & Lore'],
+
+  // Gardening & Dye
+  Dye: ['Gardening & Dye'],
+  Flower: ['Gardening & Dye'],
+  Plant: ['Gardening & Dye'],
+  Seed: ['Gardening & Dye'],
+  Seedling: ['Gardening & Dye'],
+  Nature: ['Gardening & Dye'],
+  GardeningRelated: ['Gardening & Dye'],
+
+  // Tools & Crafting — work gear and craft mats
+  Tool: ['Tools & Crafting'],
+  SkillIngredient: ['Tools & Crafting'],
+  Carpentry: ['Tools & Crafting'],
+  Blacksmithing: ['Tools & Crafting'],
+  Gadgeteering: ['Tools & Crafting'],
+  Gizmo: ['Tools & Crafting'],
+  Wood: ['Tools & Crafting'],
+  Wooden: ['Tools & Crafting'],
+  Furniture: ['Tools & Crafting'],
+  Textiles: ['Tools & Crafting'],
+  Candle: ['Tools & Crafting'],
+  CandleRelated: ['Tools & Crafting'],
+
+  // Art & Valuables — sell-for-cash curios
+  Art: ['Art & Valuables'],
+  Artwork: ['Art & Valuables'],
+  Antique: ['Art & Valuables'],
+  VendorTrash: ['Art & Valuables'],
+  CouncilCertificate: ['Art & Valuables'],
+  GoblinCallingCard: ['Art & Valuables'],
+  SnailShell: ['Art & Valuables'],
+
+  // Augments — socketables, their own system
+  Augment: ['Augments'],
+  AugmentationRelated: ['Augments'],
 }
 
 const CATEGORY_ORDER = [
   'Armor & Shields',
   'Weapons',
-  'Jewelry & Gems',
+  'Jewelry',
+  'Gems & Crystals',
+  'Metals & Ores',
   'Skins & Trophies',
   'Potions & Alchemy',
   'Food & Cooking',
+  'Books & Lore',
+  'Gardening & Dye',
+  'Tools & Crafting',
+  'Art & Valuables',
+  'Augments',
   'Other',
 ]
 
-function getCategoryName(itemType: string): string {
-  return CATEGORY_MAP[itemType] ?? 'Other'
+function getCategoryNames(itemType: string): string[] {
+  return CATEGORY_MAP[itemType] ?? ['Other']
 }
 
 // ── Stores ──────────────────────────────────────────────────────
@@ -375,7 +529,11 @@ interface AggregateVendorEntry {
     vendor_gold_available: number | null
     vendor_gold_max: number | null
     vendor_gold_timer_start: string | null
+    live_confirmed_at: string | null
     favor_tier: string | null
+    snapshot_spent: number | null
+    snapshot_vendor_reset: string | null
+    snapshot_timestamp: string | null
   }[]
 }
 
@@ -416,6 +574,36 @@ function toggleCategory(name: string) {
   } else {
     expandedCategories.value.add(name)
   }
+}
+
+function expandAllCategories() {
+  expandedCategories.value = new Set(CATEGORY_ORDER)
+}
+
+function collapseAllCategories() {
+  expandedCategories.value = new Set()
+}
+// ── Favorites (widget-local) ────────────────────────────────────
+// npcKeys pinned inside this widget; persisted via viewPreferences so they
+// survive restarts. Section renders only when non-empty.
+const { prefs: widgetPrefs, update: updateWidgetPrefs } = useViewPrefs('dashboard.vendor-councils', {
+  favoriteNpcKeys: [] as string[],
+})
+
+const favoriteNpcKeys = computed<string[]>({
+  get: () => widgetPrefs.value.favoriteNpcKeys ?? [],
+  set: (keys) => updateWidgetPrefs({ favoriteNpcKeys: keys }),
+})
+
+function isFavorite(npcKey: string): boolean {
+  return favoriteNpcKeys.value.includes(npcKey)
+}
+
+function toggleFavorite(npcKey: string) {
+  const keys = favoriteNpcKeys.value
+  favoriteNpcKeys.value = keys.includes(npcKey)
+    ? keys.filter(k => k !== npcKey)
+    : [...keys, npcKey]
 }
 
 // ── Quick edit ──────────────────────────────────────────────────
@@ -595,7 +783,7 @@ function getRawItemTypes(npcKey: string): string[] {
 function getItemCategories(npcKey: string): string[] {
   const raw = getRawItemTypes(npcKey)
   if (raw.length === 0) return ['Other']
-  return [...new Set(raw.map(getCategoryName))]
+  return [...new Set(raw.flatMap(getCategoryNames))]
 }
 
 // ── Item type filter ────────────────────────────────────────────
@@ -623,6 +811,38 @@ function spentToAvailable(spent: number, cap: number): number | null {
   return null
 }
 
+/**
+ * Newest-wins vendor gold resolution. Live log lines (`last_confirmed_at`)
+ * only advance when you talk to that vendor; a zone + /outputcharacter
+ * refreshes the snapshot for every NPC at once — so a newer snapshot must
+ * beat a stale live figure, and a newer sale must beat a stale snapshot.
+ * Returns the winning { available, timerStart } or nulls when neither side
+ * has data (non-VIP: no snapshot fields → live-only behaviour).
+ */
+function resolveVendorGold(
+  liveAvailable: number | null,
+  liveConfirmedAt: string | null | undefined,
+  liveTimer: string | null,
+  snapshotSpent: number | null | undefined,
+  snapshotReset: string | null | undefined,
+  snapshotTimestamp: string | null | undefined,
+  cap: number | null,
+): { available: number | null; timerStart: string | null } {
+  // Normalize "YYYY-MM-DD HH:MM:SS" (live) vs ISO (snapshot) to comparable ms.
+  const liveMs = liveConfirmedAt ? Date.parse(liveConfirmedAt.replace(' ', 'T') + (/[zZ]$/.test(liveConfirmedAt.trim()) ? '' : 'Z')) : NaN
+  const snapMs = snapshotTimestamp ? Date.parse(snapshotTimestamp.replace(' ', 'T') + (/[zZ]$/.test(snapshotTimestamp.trim()) ? '' : 'Z')) : NaN
+  const snapshotNewer = Number.isFinite(snapMs) && (!Number.isFinite(liveMs) || snapMs > liveMs)
+  if (snapshotNewer && cap != null) {
+    const derived = spentToAvailable(snapshotSpent ?? 0, cap)
+    return { available: derived, timerStart: snapshotReset ?? null }
+  }
+  if (liveAvailable != null) return { available: liveAvailable, timerStart: liveTimer }
+  if (cap != null && snapshotSpent != null) {
+    return { available: spentToAvailable(snapshotSpent, cap), timerStart: snapshotReset ?? null }
+  }
+  return { available: null, timerStart: null }
+}
+
 const characterEntries = computed<VendorEntry[]>(() => {
   const entries: VendorEntry[] = []
 
@@ -634,21 +854,22 @@ const characterEntries = computed<VendorEntry[]>(() => {
     const capAtTier = goldCapAtTier(npc, playerTier)
     const maxGold = vendorState?.vendor_gold_max ?? capAtTier?.maxGold ?? null
 
-    // Snapshot anchor: the 10/21 export names `spent` (not `available`), and
-    // the only log line that yields a live row is the similarly-named
-    // `ProcessVendorUpdateAvailableGold(currentGold, …)` — the capitalized
-    // `Available` misleads. Derive available = cap − spent (capped at 0) and
-    // anchor the 168h reset timer on the snapshot's reset time so gold reads
-    // are estimates until the player next sells to the vendor live.
+    // Newest-wins: live log vs snapshot, per-NPC. Snapshot covers every NPC
+    // on each export; live only advances when you talk to that vendor.
+    // Non-VIP: no snapshot fields → live-only, unchanged behaviour.
     const snapFavor = characterStore.npcFavor.find(f => f.npc_key === key)
-    // Live NULL (vendor at cap, no timer) is meaningful, not missing — only
-    // fall back to the snapshot reset when there is no live row at all.
-    const snapTimer = vendorState ? vendorState.vendor_gold_timer_start : snapFavor?.vendor_reset_time ?? null
-    const earnedSnap = vendorState?.councils_earned_current ?? snapFavor?.councils_spent_at_vendor ?? 0
-
+    const resolved = resolveVendorGold(
+      vendorState?.vendor_gold_available ?? null,
+      vendorState?.last_confirmed_at,
+      vendorState?.vendor_gold_timer_start ?? null,
+      snapFavor?.councils_spent_at_vendor,
+      snapFavor?.vendor_reset_time,
+      snapFavor?.snapshot_timestamp,
+      maxGold,
+    )
+    const snapTimer = vendorState ? (resolved.timerStart ?? vendorState.vendor_gold_timer_start) : (snapFavor?.vendor_reset_time ?? null)
     // Determine effective gold: if timer has expired, assume reset to cap
-    let goldAvailable = vendorState?.vendor_gold_available
-      ?? (maxGold != null ? spentToAvailable(earnedSnap, maxGold) : null)
+    let goldAvailable = resolved.available
     let assumedReset = false
     let resetLabel: string | null = null
 
@@ -708,14 +929,24 @@ const aggregateEntries = computed<VendorEntry[]>(() => {
     const fallbackCap = goldCapAtTier(npc, fallbackTier)?.maxGold ?? null
 
     if (agg) {
-      // Has DB data — resolve per-character with their own favor tier for cap
+      // Has DB data — newest-wins per character, same as single-character.
       const resolvedCharacters = agg.characters.map(c => {
-        let goldAvail = c.vendor_gold_available
         // Use per-character favor tier from DB for accurate cap, fall back to active character's tier
         const charTier = c.favor_tier ?? fallbackTier
         const charCap = goldCapAtTier(npc, charTier)?.maxGold ?? null
         const goldMax = c.vendor_gold_max ?? charCap
-        if (goldAvail != null && hasTimerExpired(c.vendor_gold_timer_start)) {
+        const resolved = resolveVendorGold(
+          c.vendor_gold_available ?? null,
+          c.live_confirmed_at,
+          c.vendor_gold_timer_start ?? null,
+          c.snapshot_spent,
+          c.snapshot_vendor_reset,
+          c.snapshot_timestamp,
+          goldMax,
+        )
+        let goldAvail = resolved.available
+        const timerStart = resolved.timerStart ?? c.vendor_gold_timer_start ?? null
+        if (goldAvail != null && hasTimerExpired(timerStart)) {
           goldAvail = goldMax
         }
         return { ...c, vendor_gold_available: goldAvail, vendor_gold_max: goldMax }
@@ -798,6 +1029,16 @@ const vendorEntries = computed(() => {
   return base.filter(v => v.rawItemTypes.includes(filter))
 })
 
+// ── Favorites ───────────────────────────────────────────────────
+// VendorEntry rows for pinned keys, in pin order; stale keys (no longer
+// vendors, e.g. CDN drift) drop out silently.
+const favoriteEntries = computed(() => {
+  const keys = favoriteNpcKeys.value
+  if (keys.length === 0) return []
+  const byKey = new Map(vendorEntries.value.map(v => [v.npcKey, v]))
+  return keys.map(k => byKey.get(k)).filter((v): v is VendorEntry => v != null)
+})
+
 // ── Category grouping ───────────────────────────────────────────
 
 interface CategoryGroup {
@@ -805,6 +1046,9 @@ interface CategoryGroup {
   vendors: VendorEntry[]
   totalAvailable: number
   totalMax: number
+  /** Vendors appearing ONLY in this bucket — the spendable-here councils. */
+  exclusiveAvailable: number
+  exclusiveMax: number
 }
 
 const categories = computed<CategoryGroup[]>(() => {
@@ -818,6 +1062,19 @@ const categories = computed<CategoryGroup[]>(() => {
   }
 
   const groups: CategoryGroup[] = []
+  const buildGroup = (name: string, vendors: VendorEntry[]): CategoryGroup => {
+    // Vendors listed ONLY here — shared vendors' gold is spendable in
+    // several buckets, so the exclusive sum is the "only-here" number.
+    const exclusive = vendors.filter(v => v.itemCategories.length === 1)
+    return {
+      name,
+      vendors,
+      totalAvailable: vendors.reduce((sum, v) => sum + (v.goldAvailable ?? 0), 0),
+      totalMax: vendors.reduce((sum, v) => sum + (v.goldMax ?? 0), 0),
+      exclusiveAvailable: exclusive.reduce((sum, v) => sum + (v.goldAvailable ?? 0), 0),
+      exclusiveMax: exclusive.reduce((sum, v) => sum + (v.goldMax ?? 0), 0),
+    }
+  }
   for (const name of CATEGORY_ORDER) {
     const vendors = catMap.get(name)
     if (!vendors || vendors.length === 0) continue
@@ -828,12 +1085,7 @@ const categories = computed<CategoryGroup[]>(() => {
       if (a.goldAvailable != null && b.goldAvailable != null) return b.goldAvailable - a.goldAvailable
       return a.npcName.localeCompare(b.npcName)
     })
-    groups.push({
-      name,
-      vendors,
-      totalAvailable: vendors.reduce((sum, v) => sum + (v.goldAvailable ?? 0), 0),
-      totalMax: vendors.reduce((sum, v) => sum + (v.goldMax ?? 0), 0),
-    })
+    groups.push(buildGroup(name, vendors))
   }
 
   // Add any uncategorized
@@ -846,12 +1098,7 @@ const categories = computed<CategoryGroup[]>(() => {
       if (a.goldAvailable != null && b.goldAvailable != null) return b.goldAvailable - a.goldAvailable
       return a.npcName.localeCompare(b.npcName)
     })
-    groups.push({
-      name,
-      vendors,
-      totalAvailable: vendors.reduce((sum, v) => sum + (v.goldAvailable ?? 0), 0),
-      totalMax: vendors.reduce((sum, v) => sum + (v.goldMax ?? 0), 0),
-    })
+    groups.push(buildGroup(name, vendors))
   }
 
   return groups
@@ -885,6 +1132,18 @@ function categoryColorClass(cat: CategoryGroup): string {
   return 'text-value-negative'
 }
 
+/** True when some bucket gold is shared with other buckets. */
+function hasSharedVendors(cat: CategoryGroup): boolean {
+  return cat.exclusiveAvailable !== cat.totalAvailable || cat.exclusiveMax !== cat.totalMax
+}
+
+/** Tooltip explaining shared vs exclusive bucket totals. */
+function sharedTotalTitle(cat: CategoryGroup): string {
+  if (!hasSharedVendors(cat)) return ''
+  return 'Includes vendors also listed elsewhere; ' +
+    cat.exclusiveAvailable.toLocaleString() + ' is only spendable here'
+}
+
 // ── Earned councils data ────────────────────────────────────────
 
 interface EarnedVendorEntry {
@@ -904,7 +1163,7 @@ interface EarnedCategoryGroup {
   totalLifetime: number
 }
 
-const earnedVendorEntries = computed<EarnedVendorEntry[]>(() => {
+const earnedVendorEntriesBase = computed<EarnedVendorEntry[]>(() => {
   const entries: EarnedVendorEntry[] = []
 
   for (const [key, npc] of Object.entries(gameData.npcsByKey)) {
@@ -942,6 +1201,17 @@ const earnedVendorEntries = computed<EarnedVendorEntry[]>(() => {
   })
 
   return entries
+})
+
+/** Earned list honours the shared category/item-type filter. */
+const earnedVendorEntries = computed<EarnedVendorEntry[]>(() => {
+  const filter = itemTypeFilter.value
+  if (!filter) return earnedVendorEntriesBase.value
+  if (filter.startsWith('cat:')) {
+    const catName = filter.slice(4)
+    return earnedVendorEntriesBase.value.filter(v => v.itemCategories.includes(catName))
+  }
+  return earnedVendorEntriesBase.value.filter(v => v.rawItemTypes.includes(filter))
 })
 
 const earnedCategories = computed<EarnedCategoryGroup[]>(() => {

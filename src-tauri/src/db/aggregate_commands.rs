@@ -75,7 +75,17 @@ pub struct CharacterVendorBreakdown {
     pub vendor_gold_available: Option<i64>,
     pub vendor_gold_max: Option<i64>,
     pub vendor_gold_timer_start: Option<String>,
+    /// Live row's `last_confirmed_at` for newest-wins comparison.
+    pub live_confirmed_at: Option<String>,
     pub favor_tier: Option<String>,
+    /// Snapshot `councils_spent_at_vendor` for this character+NPC (latest
+    /// snapshot). Lets the frontend derive available = cap − spent when
+    /// live gold is stale or missing (newest-wins vs live).
+    pub snapshot_spent: Option<i64>,
+    /// Snapshot `vendor_reset_time` fallback when the live row has no timer.
+    pub snapshot_vendor_reset: Option<String>,
+    /// Owning snapshot's game timestamp for newest-wins comparison.
+    pub snapshot_timestamp: Option<String>,
 }
 
 // ── Commands ────────────────────────────────────────────────────────────────
@@ -228,8 +238,7 @@ pub fn get_aggregate_wealth(
         std::collections::BTreeMap::new();
     for (character_name, stack_size, market_val, vendor_val) in &inv_rows {
         let effective = resolve_item_value(valuation_mode, *vendor_val, *market_val);
-        *char_market.entry(character_name.clone()).or_default() +=
-            *stack_size as f64 * effective;
+        *char_market.entry(character_name.clone()).or_default() += *stack_size as f64 * effective;
     }
 
     let total_market_value: f64 = char_market.values().sum();
@@ -327,7 +336,10 @@ pub fn get_aggregate_vendor(
 ) -> Result<Vec<AggregateVendorEntry>, String> {
     let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
 
-    // Join vendor data with favor data (game_state_favor preferred, snapshot as fallback)
+    // Join vendor data with favor data (game_state_favor preferred, snapshot as fallback).
+    // Snapshot spend/reset subselects let the frontend derive available =
+    // cap − spent for characters with no live gold yet (same math as the
+    // single-character view).
     let mut stmt = conn
         .prepare(
             "SELECT
@@ -336,6 +348,7 @@ pub fn get_aggregate_vendor(
                 v.vendor_gold_available,
                 v.vendor_gold_max,
                 v.vendor_gold_timer_start,
+                v.last_confirmed_at,
                 COALESCE(
                     f.favor_tier,
                     (SELECT cnf.favor_level
@@ -345,7 +358,28 @@ pub fn get_aggregate_vendor(
                        AND cs.server_name = v.server_name
                        AND cnf.npc_key = v.npc_key
                      ORDER BY cs.id DESC LIMIT 1)
-                ) AS favor_tier
+                ) AS favor_tier,
+                (SELECT cnf.councils_spent_at_vendor
+                 FROM character_npc_favor cnf
+                 JOIN character_snapshots cs ON cnf.snapshot_id = cs.id
+                 WHERE cs.character_name = v.character_name
+                   AND cs.server_name = v.server_name
+                   AND cnf.npc_key = v.npc_key
+                 ORDER BY cs.id DESC LIMIT 1) AS snapshot_spent,
+                (SELECT cnf.vendor_reset_time
+                 FROM character_npc_favor cnf
+                 JOIN character_snapshots cs ON cnf.snapshot_id = cs.id
+                 WHERE cs.character_name = v.character_name
+                   AND cs.server_name = v.server_name
+                   AND cnf.npc_key = v.npc_key
+                 ORDER BY cs.id DESC LIMIT 1) AS snapshot_vendor_reset,
+                (SELECT cs.snapshot_timestamp
+                 FROM character_npc_favor cnf
+                 JOIN character_snapshots cs ON cnf.snapshot_id = cs.id
+                 WHERE cs.character_name = v.character_name
+                   AND cs.server_name = v.server_name
+                   AND cnf.npc_key = v.npc_key
+                 ORDER BY cs.id DESC LIMIT 1) AS snapshot_timestamp
              FROM game_state_npc_vendor v
              LEFT JOIN game_state_favor f
                 ON f.character_name = v.character_name
@@ -356,9 +390,20 @@ pub fn get_aggregate_vendor(
         )
         .map_err(|e| format!("Query error: {e}"))?;
 
-    let rows: Vec<(String, String, Option<i64>, Option<i64>, Option<String>, Option<String>)> = stmt
+    let rows: Vec<(String, String, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>, Option<String>)> = stmt
         .query_map(rusqlite::params![server_name], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+                row.get(8)?,
+                row.get(9)?,
+            ))
         })
         .map_err(|e| format!("Query error: {e}"))?
         .flatten()
@@ -366,7 +411,7 @@ pub fn get_aggregate_vendor(
 
     let mut vendors: std::collections::BTreeMap<String, Vec<CharacterVendorBreakdown>> =
         std::collections::BTreeMap::new();
-    for (npc_key, character_name, gold_available, gold_max, timer_start, favor_tier) in rows {
+    for (npc_key, character_name, gold_available, gold_max, timer_start, live_confirmed_at, favor_tier, snapshot_spent, snapshot_vendor_reset, snapshot_timestamp) in rows {
         vendors
             .entry(npc_key)
             .or_default()
@@ -375,7 +420,11 @@ pub fn get_aggregate_vendor(
                 vendor_gold_available: gold_available,
                 vendor_gold_max: gold_max,
                 vendor_gold_timer_start: timer_start,
+                live_confirmed_at,
                 favor_tier,
+                snapshot_spent,
+                snapshot_vendor_reset,
+                snapshot_timestamp,
             });
     }
 

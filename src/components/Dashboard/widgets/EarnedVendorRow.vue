@@ -4,6 +4,9 @@
       <div class="flex items-center gap-1.5 min-w-0 flex-1">
         <NpcInline :reference="entry.npcKey" class="shrink-0" />
         <span v-if="entry.area" class="text-[10px] text-text-dim truncate">{{ entry.area }}</span>
+        <span v-if="otherCategories.length > 0" class="text-[10px] text-text-dim truncate" :title="'Also in: ' + otherCategories.join(', ')">
+          · {{ otherCategories.join(' · ') }}
+        </span>
       </div>
       <div class="flex items-center gap-1.5 shrink-0">
         <span class="font-mono text-accent-gold">
@@ -18,6 +21,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import NpcInline from '../../Shared/NPC/NpcInline.vue'
 
 interface EarnedVendorEntry {
@@ -30,7 +34,13 @@ interface EarnedVendorEntry {
   rawItemTypes: string[]
 }
 
-defineProps<{
+const props = defineProps<{
   entry: EarnedVendorEntry
+  /** Bucket the row is rendered under — hidden from the "also in" hint. */
+  currentCategory?: string | null
 }>()
+
+const otherCategories = computed(() =>
+  props.entry.itemCategories.filter(c => c !== props.currentCategory),
+)
 </script>
