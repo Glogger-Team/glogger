@@ -125,21 +125,25 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 
 ## Linting
 
-Before committing, lint every file type you changed and fix what the linter reports — local feedback first, not CI. Commands below run from the repo root; mise-managed tools go through `mise x` (the shim needs no global default that way).
+Before committing, lint every file type you changed and fix what the linter reports — local feedback first, not CI. Tools live in `mise.toml` (`mise install` fetches them); run from the repo root:
 
-| File type | Linter | Run |
-| --------- | ------ | --- |
-| TS/Vue/JS (`.ts`, `.vue`, `.mjs`, `.cjs`) | vue-tsc (gated today); eslint (pending `npm i -D`) | `npm run build` |
-| Rust (`.rs`) | rustfmt + clippy, both advisory (823 unformatted spots, 167 findings pre-existing — report, don't gate) | from `src-tauri/`: `cargo fmt -- --check`, `cargo clippy --all-targets` |
-| Rust deps (`Cargo.lock`) | cargo-audit, gated in CI (critical/high only, CVSS ≥ 7.0; unscored advisories block unless OSV confirms unrated-for-all-locked-versions) | from `src-tauri/`: `cargo audit --json` (gate logic lives in `lint.yml: cargo-audit` — inline CVSS vector first, OSV max-score fallback per locked version; partial OSV failure with no blocking score fails closed; `--ignore <RUSTSEC-id>` only with justification) |
-| Python (`.py`) | ruff check + format --check (gated in CI) | `mise x ruff -- ruff check scripts/ && mise x ruff -- ruff format --check scripts/` |
-| Rust (clippy, local) | clippy stays advisory until the 167 pre-existing findings are burned down — run it, fix what you touched, never gate on it | from `src-tauri/`: `cargo clippy --all-targets` |
-| Shell (`.sh`, `.githooks/*`) | shellcheck (warning+; info notes don't fail) | `shellcheck -S warning scripts/*.sh .githooks/pre-push .githooks/commit-msg` |
-| YAML / Workflows (`.yml`) | yamllint + zizmor medium+ (config `.github/zizmor.yml`) | `mise x yamllint -- yamllint .github/` then `mise x zizmor -- zizmor --no-online-audits --config <repo>/.github/zizmor.yml --min-severity medium <repo>/.github/workflows/` (absolute paths: `mise x` resets CWD for the inner command; jactionlint excluded, its cache-poisoning rule can't ignore accepted drift) |
-| Markdown (`.md`) | markdownlint-cli2 (opt-in, not gated: 6k+ pre-existing) | `mise x npm:markdownlint-cli2 -- markdownlint-cli2 --fix "**/*.md"` when ready |
-| PowerShell (`.ps1`) | PSScriptAnalyzer (pending install, opt-in) | `powershell -NoProfile -Command "Invoke-ScriptAnalyzer -Path scripts -Recurse"` |
+- `mise run lint` — the blocking set (CI `lint.yml` gates runnable locally, plus `npm run build` + `check:grids` + `check-glogger-constraints.ps1`).
+- `mise run lint:all` — `lint` plus advisory (rustfmt, clippy, markdown).
 
-Optional extras installed but not gated: `pinact`, `gasa` (action pinning). Not installed, add only if wanted: stylelint (CSS), eslint-plugin-jsonc (JSON validity). Formatters are a separate job from lint: `cargo fmt`, `ruff format` (prettier is not configured).
+| File type | Linter | Covered by |
+| --------- | ------ | ---------- |
+| TS/Vue/JS (`.ts`, `.vue`, `.mjs`, `.cjs`) | vue-tsc (gated today); eslint (pending `npm i -D`) | `lint` → `npm run build` |
+| Grids | grid standards census (gated) | `lint` → `npm run check:grids` |
+| TOS/CoC | game-interaction limits gate (gated, pre-push hook) | `lint` → `scripts/check-glogger-constraints.ps1` |
+| Python (`.py`) | ruff check + format --check (gated in CI) | `lint` → `ruff check scripts/`, `ruff format --check scripts/` |
+| Shell (`.sh`, `.githooks/*`) | shellcheck (warning+; info notes don't fail) | `lint` → `python -c` wrapper that globs `scripts/*.sh` plus the two hooks into `shellcheck -S warning` (globbing in-process: portable, since mise array entries run under `cmd.exe`, which passes `*.sh` through literally) |
+| YAML / Workflows (`.yml`) | yamllint + zizmor medium+ (config `.github/zizmor.yml`) + pinact (SHA pins + version comments) | `lint` → `yamllint .github/`, `zizmor --no-online-audits --config .github/zizmor.yml --min-severity medium .github/workflows/`, `pinact run --check` (use `jactionlint` ad-hoc wherever actionlint would be called — never actionlint; its cache-poisoning rule can't ignore accepted drift) |
+| Rust (`.rs`) | rustfmt + clippy, both advisory (823 unformatted spots, 167 findings pre-existing — report, don't gate) | `lint:all` → from `src-tauri/`: `cargo fmt -- --check`, `cargo clippy --all-targets` (fix what you touched, never gate on it) |
+ | Rust deps (`Cargo.lock`) | cargo-audit, gated (critical/high only, CVSS ≥ 7.0; unscored advisories block unless OSV confirms unrated-for-all-locked-versions) | `lint` → `python scripts/cargo-audit-gate.py` (needs `cargo install cargo-audit --locked`; single source of truth shared with CI `lint.yml: cargo-audit` — inline CVSS vector first, OSV max-score fallback per locked version; partial OSV failure with no blocking score fails closed; `--ignore <RUSTSEC-id>` only with justification, documented in the script) |
+| Markdown (`.md`) | markdownlint-cli2 (opt-in, not gated: 6k+ pre-existing) | `lint:all` → `markdownlint-cli2 --config .markdownlint-cli2.json` on hand-maintained docs (same four files CI checks); `--fix "**/*.md"` when ready |
+| PowerShell (`.ps1`) | PSScriptAnalyzer (pending install, opt-in) | not in mise — `Install-Module PSScriptAnalyzer`, then `Invoke-ScriptAnalyzer -Path scripts -Recurse` |
+
+Not installed, add only if wanted: stylelint (CSS), eslint-plugin-jsonc (JSON validity), `gasa` (no mise package). Formatters are a separate job from lint: `cargo fmt`, `ruff format` (prettier is not configured).
 
 ## Gotchas
 

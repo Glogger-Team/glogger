@@ -95,117 +95,11 @@ jobs:
         run: set -euo pipefail; cargo install cargo-audit --locked
 
       - name: Audit (fail on critical/high only)
-        working-directory: src-tauri
         run: |
           set -euo pipefail
-          # Documented ignores (re-evaluate if bundle formats change):
-          # RUSTSEC-2026-0367/0368/0369 (zip 4.6.1 via tauri-plugin-updater):
-          # zip extraction is unreachable — the updater endpoint serves
-          # NSIS/DMG/AppImage only (updaterJsonPreferNsis), never zips.
-          # No patched 4.x exists; updater hasn't migrated to zip 9.
-          cargo audit --ignore RUSTSEC-2026-0367 --ignore RUSTSEC-2026-0368 --ignore RUSTSEC-2026-0369 --json > /tmp/audit.json || true
-          python3 - "$GITHUB_STEP_SUMMARY" << 'PYEOF'
-          import json, sys, urllib.request
-
-          def cvss_base(vector):
-              """Base score from a CVSS v3.x vector string (spec equation)."""
-              try:
-                  tail = vector.split('CVSS:3.', 1)[1].split('/', 1)[1]
-              except IndexError:
-                  return None
-              m = dict(part.split(':', 1) for part in tail.split('/'))
-              # metric weights per CVSS v3.1 spec
-              w = {'AV': {'N': 0.85, 'A': 0.62, 'L': 0.55, 'P': 0.2},
-                   'AC': {'L': 0.77, 'H': 0.44},
-                   'PR': {'N': 0.85, 'L': 0.62, 'H': 0.27, 'L:C': 0.68, 'H:C': 0.5},
-                   'UI': {'N': 0.85, 'R': 0.62},
-                   'C': {'H': 0.56, 'L': 0.22, 'N': 0},
-                   'I': {'H': 0.56, 'L': 0.22, 'N': 0},
-                   'A': {'H': 0.56, 'L': 0.22, 'N': 0}}
-              try:
-                  iss = 1 - (1 - w['C'][m['C']]) * (1 - w['I'][m['I']]) * (1 - w['A'][m['A']])
-                  scope_changed = m.get('S') == 'C'
-                  impact = 7.52 * (iss - 0.029) - 3.25 * pow(iss - 0.02, 15) if scope_changed \
-                      else 6.42 * iss
-                  pr_key = m['PR'] + (':C' if scope_changed else '')
-                  expl = 8.22 * w['AV'][m['AV']] * w['AC'][m['AC']] * w['PR'].get(pr_key, w['PR'][m['PR']]) * w['UI'][m['UI']]
-                  base = min(1.08 * (impact + expl), 10) if scope_changed else min(impact + expl, 10)
-                  import math
-                  return math.ceil(base * 10) / 10
-              except (KeyError, IndexError, ValueError):
-                  return None
-
-          def osv_scores(pkg, version):
-              """All CVSS base scores OSV reports for (package, version); [] if unknown."""
-              try:
-                  req = urllib.request.Request(
-                      'https://api.osv.dev/v1/query',
-                      data=json.dumps({'package': {'name': pkg, 'ecosystem': 'crates.io'},
-                                       'version': version}).encode(),
-                      headers={'Content-Type': 'application/json'})
-                  with urllib.request.urlopen(req, timeout=20) as r:
-                      scores = []
-                      for v in json.load(r).get('vulns', []):
-                          for s in v.get('severity', []):
-                              if s.get('type') == 'CVSS_V3' and s.get('score'):
-                                  parsed = cvss_base(s['score'])
-                                  if parsed is not None:
-                                      scores.append(parsed)
-                      return scores
-              except Exception as e:
-                  print(f'::warning::OSV lookup failed for {pkg}@{version}: {e}')
-                  return None
-
-          lock_versions, current = {}, None
-          for line in open('Cargo.lock'):
-              if line.startswith('name = '):
-                  current = line.split('"')[1]
-              elif line.startswith('version = ') and current:
-                  lock_versions.setdefault(current, []).append(line.split('"')[1])
-                  current = None
-
-          report = json.load(open('/tmp/audit.json'))
-          blocking, notes, unknowns = [], [], []
-          for entry in report['vulnerabilities']['list']:
-              adv = entry['advisory']
-              pkg = adv['package']
-              score = cvss_base(adv['cvss']) if adv.get('cvss') else None
-              versions = lock_versions.get(pkg, [])
-              if score is None and versions:
-                  scored, failed_versions = [], []
-                  for ver in versions:
-                      res = osv_scores(pkg, ver)
-                      if res is None:
-                          failed_versions.append(ver)
-                      else:
-                          scored.extend(res)
-                  if scored:
-                      score = max(scored)
-                  if failed_versions and (score is None or score < 7.0):
-                      # Partial data with no blocking score: fail closed.
-                      unknowns.append((adv, failed_versions))
-                      continue
-              patched = bool(adv.get('patched'))
-              label = f"{adv['id']} {pkg}: {adv['title']} (CVSS {score if score is not None else 'unrated'})"
-              (blocking if score is not None and score >= 7.0 else notes).append((label, patched))
-          for adv, versions in unknowns:
-              label = f"{adv['id']} {adv['package']}: {adv['title']} (OSV lookup failed for {', '.join(versions)} — treating as blocking)"
-              blocking.append((label, bool(adv.get('patched'))))
-          with open(sys.argv[1], 'a') as summary:
-              summary.write('## cargo audit\n\n')
-              for label, patched in blocking:
-                  summary.write(f'- CRITICAL/HIGH {label} {"[patch available]" if patched else "[no patch — add --ignore with justification]"}\n')
-              for label, patched in notes:
-                  summary.write(f'- advisory (below threshold, non-blocking) {label}\n')
-              if not blocking and not notes and not unknowns:
-                  summary.write('No advisories.\n')
-          if blocking:
-              print('::error::cargo audit found critical/high advisories (see summary)')
-              for label, _ in blocking:
-                  print('::error::' + label)
-              sys.exit(1)
-          print(f'cargo audit: {len(notes)} below-threshold advisories noted, none blocking')
-          PYEOF
+          # Gate logic lives in scripts/cargo-audit-gate.py — the single source
+          # of truth shared with `mise run lint` (ignores + scoring in one place).
+          python3 scripts/cargo-audit-gate.py --summary "$GITHUB_STEP_SUMMARY"
 
   yaml:
     name: YAML and Actions
@@ -237,6 +131,11 @@ jobs:
           config: .github/zizmor.yml
           min-severity: medium
           advanced-security: false
+
+      - name: pinact
+        uses: suzuki-shunsuke/pinact-action@2a42f29b3397967439ed46e7650f3045f49699f9 # v3.0.1
+        with:
+          verify: "true"
 
   markdown:
     name: Markdown (opt-in)
