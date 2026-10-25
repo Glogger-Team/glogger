@@ -2,6 +2,9 @@
 
 Small tasks and notes that don't belong in a dedicated plan.
 
+## Fix poetry backfill
+- **Fixed: poem backfill now covers archived copies + `Player-prev.log` + live `Player.log`, and runs at startup.** Root cause was two-layered: (1) the backfill scanned only the live `Player.log` and ran only on button press, so anything recited while glogger was closed lived only in the rotated `Player-prev.log` / `player-logs/` archive — same gap the arena-bet (`arena_commands.rs:394`) and statehelm-gift (`statehelm_commands.rs:290`) backfills already closed. Moved the scan to `db::poem_commands::backfill_from_player_logs` (archive → prev → live, per-file mtime-dated, `INSERT OR IGNORE`, single BEGIN IMMEDIATE tx; 3 unit tests) and wired it into the Step 5d startup chain (`lib.rs`) — the coordinator method and Poems tab button delegate to the same function, and the tab copy now says "game logs". (2) **This specific jam is unrecoverable**: the game stripped every `LocalPlayer:` line (all `ProcessTalkScreen` poem recitals included) from Player.log as of ~10/21 23:49 UTC — matches the 10/21 update note "remove excessive client logging" already tracked under *Log-signal items* — so no log source holds the 10/23 poems. `Chat-26-10-23.log` confirms attendance (present until the 22:18 logout) but carries no poem text; the newest stored poem is 2026-10-18 (Release DB holds 552).
+
 *Last reviewed: 2026-10-13* — **audited end-to-end the same day** against the tree at `e103595` (v1.2.0).
 Every item carries an inline **Audit 2026-10-13** verdict with `path:line` evidence:
 
@@ -206,7 +209,39 @@ exist. The narrow frontend defect this bucket produced is now fixed (see *Closed
 
 ---
 
-## Closed — kept for the record
+## Frozen-review backlog (2026-10-24 pass, working tree on 3bfb238)
+
+Findings the pass re-verdict as backlog (pre-existing, not regressions from the reviewed tree).
+Fix-now from that round is already applied (critical + 13 highs + PoemsView low); what follows
+is the remainder plus ParseFixB's out-of-budget skips. No marker was written for the pass
+(working-tree target), so these carry forward as ordinary work.
+
+### Reviewer backlog (needs design decision or is minor)
+
+- [ ] `build_planner`/`words_of_power` bare-id writes (no privilege boundary in a single-user local app — decided not-a-bug, listed for the record).
+- [ ] Roulette `CHECK (number BETWEEN 0 AND 36)` DB constraint (parser guard `>36 → None` applied; constraint is a migration).
+- [ ] NpcResolve case-insensitive match (`statehelm_commands.rs:219,730` — `COLLATE NOCASE` + trim).
+- [ ] Trip-router nits: `casino_portal` exact-lowercase match (`trip_router.rs:385-395`); unresolved friendly names silently kept (`zone_graph.rs:243-280` + `trip_router.rs:404-418`); `AreaDesert2` missing from `friendly_zone_name`; `AreaCaves1` mislabeled (Eltibule dungeon per CDN); stale trip-routing doc paragraph (lines 61-68); undocumented score-`1` tier + monster-ability skip (`unified_search.rs:310-330,759-762`).
+- [ ] Debug-capture hardening: truncation flag on `LIMIT 5000` bundles + error (not `vec![]`) on DB failure; `missing temp → vec![]` "successful" empty bundle; counters incrementing on failed writes (`debug_capture.rs:298-303,148-160`).
+- [ ] Survey Types dead arms: `Aborted` never written outside the new sweep path; `UseCompleted`/`Multihit*` emitted-never-matched arms — emit or remove; `crafted_count` guard to Crafting triggers; `update_last_loot_at` tightening guard; bound `deferred_basic_gains` queue.
+- [ ] Stall aggregation validation: unparseable inventory dates (drop with count); weekly `show_year` calendar-vs-ISO documentation; `GROUP BY name` → add id; cost `LEFT JOIN` unification; `StallScanRow.quantity` wiring or documented `Option`; chrome/price gate thresholds (`buy`/pay, sub-100).
+- [ ] Shop-log comment/BOM/owner docs (`shop_log_parser.rs:189-193`; `books_watcher.rs:399-406,464-483`): narrow the stacked-path invariant comment, strip BOM symmetric with twin, default missing owner to active character explicitly; arena degenerate pair clear on resolve + payout trigger on resolve (`arena_parser.rs:~120`).
+- [ ] Chat-status parity: wisdom comma-grouping to match councils twin; timestamp digit gate; `" stole "` anchored to `^<thief> stole <amount> Councils!`; empty ItemGained/Xp/Prodigy/Summoned arms (anatomy-guard pattern already applied to siblings).
+- [ ] `setup_commands.rs:174-210` non-empty name validation + sticky-report-source documentation; `gst_manager.rs:150-175` full-buffer download hash-before-exec + document/cap.
+- [ ] ParseFixB runtime follow-ups: mid-loop `parse_log` read errors currently `continue` without failing the job — decide if they should flip to Failed; `App.vue` now polls `get_parse_log_status` until Done/Failed (the fire-and-forget `await` on the job-id return is fixed); `debug_capture_save` `overwrite` is optional and `truncated_sections` serde-defaulted, so no other frontend changes were needed.
+
+### ParseFixB skipped (not started — out of budget)
+
+- [ ] `books_watcher.rs:205-225` mid-write TOCTOU (post-read stat, store post-read mtime, skip when changed during read).
+- [ ] `stall_ocr.rs:195-216` trigram 1.0 on empty gram sets (return `a==b ? 1 : 0`); `:549-550` panel header identity OCR pass (fallback to legacy only with explicit flag); `:367-411,705-716` chrome/price gates.
+- [ ] `stall_year_resolver.rs:53-73` day-aware year wrap (currently month-only; document single-wrap limit).
+- [ ] `setup_commands.rs` save_user_character non-empty validation + sticky source doc.
+- [ ] Survey loot single-authority (`aggregator.rs:1146-1165` + `commands.rs:328-346` double-count in stitch + chat attribution — pick the summary `NOT EXISTS` as authority, remove the other); `last_basic_use_for_bonus` clearing (`~175,590-600`); `crafted_count` trigger guard; `update_last_loot_at` tightening; `deferred_basic_gains` bounds.
+- [ ] `survey/types.rs` dead-arm sweep (see Reviewer backlog above — same item, owned here if the sweep owner doesn't take it).
+- [ ] Arena tentative-bet `take()`-only-on-match + payout trigger on resolve.
+
+---
+
 
 - [x] ~~Catch-up guard drops a non-selected character's login snapshot~~ — **FIXED 2026-10-15**: the Player.log login line now *attributes* the session that follows it instead of gating on the selection.
   - **One owner for the ingest identity.** `DataIngestCoordinator::adopt_player_log_session` (`coordinator.rs`) writes only `GameStateManager` — the single owner — and every log-derived writer reads it, including `ingest_shop_log`, which used to read `settings.active_character_name` directly and was the reason per-session attribution was unsafe before. `settings` is the durable/display selection (picker; the Chat.log marker, which writes it in both modes; the live Player.log re-arm when `active_character` is `None`; and `poll()` right after the Player.log drain, syncing character *and* server to the ingest identity — the chat drain that follows may then re-set them from its own marker). `GameStateManager::clear_active_character` is deleted.

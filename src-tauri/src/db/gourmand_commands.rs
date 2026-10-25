@@ -227,10 +227,7 @@ pub fn get_gourmand_eaten_foods(db: State<'_, DbPool>) -> Result<Vec<GourmandFoo
 /// If it's already there and was manually marked, remove it.
 /// If it was imported (not manually marked), remove it (user is overriding).
 #[tauri::command]
-pub fn toggle_food_eaten_status(
-    db: State<'_, DbPool>,
-    food_name: String,
-) -> Result<bool, String> {
+pub fn toggle_food_eaten_status(db: State<'_, DbPool>, food_name: String) -> Result<bool, String> {
     let conn = db
         .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
@@ -314,19 +311,49 @@ pub fn import_latest_gourmand_report(
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| format!("Failed to begin transaction: {e}"))?;
 
-    // Check if we already have this exact data (avoid unnecessary re-imports)
-    // Only count non-manual entries for comparison
-    let existing_count: i64 = conn
+    // Skip only when the report matches what we already store exactly. A
+    // same-sized but different report (one food swapped for another) must
+    // still import, so diff the (food_name, times_eaten) sets in both
+    // directions with EXCEPT. Only non-manual rows are compared; manual
+    // marks are preserved regardless.
+    conn.execute_batch(
+        "CREATE TEMPORARY TABLE gourmand_import_diff (food_name TEXT NOT NULL, times_eaten INTEGER NOT NULL)",
+    )
+    .map_err(|e| format!("Failed to stage import diff: {e}"))?;
+    {
+        let mut stmt = conn
+            .prepare(
+                "INSERT INTO gourmand_import_diff (food_name, times_eaten) VALUES (?1, ?2)",
+            )
+            .map_err(|e| format!("Failed to stage import diff: {e}"))?;
+        for entry in &entries {
+            stmt.execute(params![&entry.name, entry.count])
+                .map_err(|e| format!("Failed to stage import diff: {e}"))?;
+        }
+    }
+    let diff_count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM gourmand_eaten_foods WHERE manually_marked = 0",
+            "SELECT
+               (SELECT COUNT(*) FROM (
+                    SELECT food_name, times_eaten FROM gourmand_eaten_foods WHERE manually_marked = 0
+                    EXCEPT
+                    SELECT food_name, times_eaten FROM gourmand_import_diff
+                )) +
+               (SELECT COUNT(*) FROM (
+                    SELECT food_name, times_eaten FROM gourmand_import_diff
+                    EXCEPT
+                    SELECT food_name, times_eaten FROM gourmand_eaten_foods WHERE manually_marked = 0
+                ))",
             [],
             |row| row.get(0),
         )
-        .unwrap_or(0);
+        .map_err(|e| format!("Failed to compare import data: {e}"))?;
+    conn.execute_batch("DROP TABLE gourmand_import_diff")
+        .map_err(|e| format!("Failed to clean up import diff: {e}"))?;
 
-    if existing_count == entries.len() as i64 {
-        // Same count — likely the same report. Skip re-import. (Dropping the
-        // transaction rolls back the no-op.)
+    if diff_count == 0 {
+        // Identical data — skip the re-import. (Returning here drops the
+        // transaction, rolling back the no-op.)
         return Ok(None);
     }
 

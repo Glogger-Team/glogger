@@ -261,7 +261,7 @@ pub fn get_game_state_world(
                 last_confirmed_at: row.get(2)?,
             })
         },
-    ).ok();
+    ).optional().map_err(|e| format!("Query error: {e}"))?;
 
     // Combat
     let combat = conn.query_row(
@@ -273,7 +273,7 @@ pub fn get_game_state_world(
                 last_confirmed_at: row.get(1)?,
             })
         },
-    ).ok();
+    ).optional().map_err(|e| format!("Query error: {e}"))?;
 
     // Mount
     let mount = conn.query_row(
@@ -285,7 +285,7 @@ pub fn get_game_state_world(
                 last_confirmed_at: row.get(1)?,
             })
         },
-    ).ok();
+    ).optional().map_err(|e| format!("Query error: {e}"))?;
 
     // Area
     let area = conn.query_row(
@@ -297,7 +297,7 @@ pub fn get_game_state_world(
                 last_confirmed_at: row.get(1)?,
             })
         },
-    ).ok();
+    ).optional().map_err(|e| format!("Query error: {e}"))?;
 
     Ok(GameStateWorld {
         weather,
@@ -1148,12 +1148,15 @@ pub fn get_player_milking_leaderboard(
         .map_err(|e| format!("Query error: {e}"))?;
 
     let rows = stmt
-        .query_map(rusqlite::params![character_name, server_name, direction], |row| {
-            Ok(PlayerMilkingEntry {
-                player_name: row.get(0)?,
-                count: row.get(1)?,
-            })
-        })
+        .query_map(
+            rusqlite::params![character_name, server_name, direction],
+            |row| {
+                Ok(PlayerMilkingEntry {
+                    player_name: row.get(0)?,
+                    count: row.get(1)?,
+                })
+            },
+        )
         .map_err(|e| format!("Query error: {e}"))?;
 
     rows.collect::<Result<Vec<_>, _>>()
@@ -1495,7 +1498,11 @@ fn parse_time_played_hours(value: &str) -> Option<f64> {
             i += 1;
         }
     }
-    if total_hours > 0.0 { Some(total_hours) } else { None }
+    if total_hours > 0.0 {
+        Some(total_hours)
+    } else {
+        None
+    }
 }
 
 #[tauri::command]
@@ -1508,7 +1515,11 @@ pub fn get_computed_stats(
 
     // ── Skill totals ────────────────────────────────────────────────
     let (total_level, total_base_level, total_bonus_levels, skill_count, total_xp_earned): (
-        i64, i64, i64, i64, i64,
+        i64,
+        i64,
+        i64,
+        i64,
+        i64,
     ) = conn
         .query_row(
             "SELECT
@@ -1520,7 +1531,15 @@ pub fn get_computed_stats(
              FROM game_state_skills
              WHERE character_name = ?1 AND server_name = ?2",
             rusqlite::params![character_name, server_name],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .map_err(|e| format!("Skill totals query error: {e}"))?;
 
@@ -1777,7 +1796,8 @@ pub async fn get_teleportation_binds(
                 last_updated: row.get(4)?,
             })
         })
-        .ok();
+        .optional()
+        .map_err(|e| e.to_string())?;
 
     Ok(result.unwrap_or(TeleportationBinds {
         primary_bind: None,
@@ -1846,7 +1866,7 @@ pub fn get_item_ownership(
             rusqlite::params![character_name, server_name, item_name],
             |row| row.get(0),
         )
-        .unwrap_or(0);
+        .map_err(|e| format!("Query error: {e}"))?;
 
     if inv_count > 0 {
         locations.push(ItemOwnershipLocation {
@@ -1865,9 +1885,10 @@ pub fn get_item_ownership(
         .map_err(|e| format!("Query error: {e}"))?;
 
     let vault_rows = stmt
-        .query_map(rusqlite::params![character_name, server_name, item_name], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })
+        .query_map(
+            rusqlite::params![character_name, server_name, item_name],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
         .map_err(|e| format!("Query error: {e}"))?;
 
     for row in vault_rows {
@@ -1894,7 +1915,10 @@ mod tests {
 
     #[test]
     fn test_parse_time_played_hours() {
-        assert_eq!(parse_time_played_hours("40 days 13 hours"), Some(40.0 * 24.0 + 13.0));
+        assert_eq!(
+            parse_time_played_hours("40 days 13 hours"),
+            Some(40.0 * 24.0 + 13.0)
+        );
         assert_eq!(parse_time_played_hours("5 hours"), Some(5.0));
         assert_eq!(parse_time_played_hours("120 days"), Some(120.0 * 24.0));
         assert_eq!(parse_time_played_hours("1 days 0 hours"), Some(24.0));
@@ -1950,8 +1974,15 @@ mod tests {
 
         // A failed attempt records a *bound*: the flag is set and the stamp is the
         // attempt itself, so the widget can show "expiry ≤ attempt + 1h".
-        record_cow_cooldown_bound(&conn, "Zen", "Dreva", "Homer", "Serbule", "2026-10-13T01:00:00+00:00")
-            .unwrap();
+        record_cow_cooldown_bound(
+            &conn,
+            "Zen",
+            "Dreva",
+            "Homer",
+            "Serbule",
+            "2026-10-13T01:00:00+00:00",
+        )
+        .unwrap();
         let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
         assert_eq!(timers.len(), 1);
         assert!(timers[0].cooldown_unknown);
@@ -1961,33 +1992,72 @@ mod tests {
         // Later attempts keep the flag and tighten the bound to the *earliest*
         // attempt seen (a stricter statement about when the milk happened) — a
         // chronological replay therefore converges instead of drifting.
-        record_cow_cooldown_bound(&conn, "Zen", "Dreva", "Homer", "Serbule", "2026-10-13T01:30:00+00:00")
-            .unwrap();
-        record_cow_cooldown_bound(&conn, "Zen", "Dreva", "Homer", "", "2026-10-13T00:50:00+00:00")
-            .unwrap();
+        record_cow_cooldown_bound(
+            &conn,
+            "Zen",
+            "Dreva",
+            "Homer",
+            "Serbule",
+            "2026-10-13T01:30:00+00:00",
+        )
+        .unwrap();
+        record_cow_cooldown_bound(
+            &conn,
+            "Zen",
+            "Dreva",
+            "Homer",
+            "",
+            "2026-10-13T00:50:00+00:00",
+        )
+        .unwrap();
         let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
         assert!(timers[0].cooldown_unknown);
         assert_eq!(timers[0].last_milked_at, "2026-10-13T00:50:00+00:00");
-        assert_eq!(timers[0].zone, "Serbule", "blank zone must not clobber a known one");
+        assert_eq!(
+            timers[0].zone, "Serbule",
+            "blank zone must not clobber a known one"
+        );
 
         // A real milk is strictly better information: it clears the flag and
         // installs the true time.
-        record_cow_milk(&conn, "Zen", "Dreva", "Homer", "Serbule", "2026-10-13T02:05:00+00:00")
-            .unwrap();
+        record_cow_milk(
+            &conn,
+            "Zen",
+            "Dreva",
+            "Homer",
+            "Serbule",
+            "2026-10-13T02:05:00+00:00",
+        )
+        .unwrap();
         let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
         assert!(!timers[0].cooldown_unknown);
         assert_eq!(timers[0].last_milked_at, "2026-10-13T02:05:00+00:00");
 
         // …and no later bound may degrade it (only the zone merge still applies).
-        record_cow_cooldown_bound(&conn, "Zen", "Dreva", "Homer", "Eltibule", "2026-10-13T02:20:00+00:00")
-            .unwrap();
+        record_cow_cooldown_bound(
+            &conn,
+            "Zen",
+            "Dreva",
+            "Homer",
+            "Eltibule",
+            "2026-10-13T02:20:00+00:00",
+        )
+        .unwrap();
         let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
         assert!(!timers[0].cooldown_unknown);
         assert_eq!(timers[0].last_milked_at, "2026-10-13T02:05:00+00:00");
         assert_eq!(timers[0].zone, "Eltibule");
 
         // Replaying an older successful milk can't move the stamp back either.
-        record_cow_milk(&conn, "Zen", "Dreva", "Homer", "", "2026-10-13T01:00:00+00:00").unwrap();
+        record_cow_milk(
+            &conn,
+            "Zen",
+            "Dreva",
+            "Homer",
+            "",
+            "2026-10-13T01:00:00+00:00",
+        )
+        .unwrap();
         let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
         assert_eq!(timers[0].last_milked_at, "2026-10-13T02:05:00+00:00");
         assert!(!timers[0].cooldown_unknown);

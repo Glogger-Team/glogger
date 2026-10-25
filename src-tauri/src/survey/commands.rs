@@ -130,10 +130,10 @@ pub fn survey_tracker_status(
         let conn = coord.db_pool().get().map_err(|e| e.to_string())?;
         (character, server, conn)
     };
-    let active_session = persistence::active_session(&conn, &character, &server)
-        .map_err(|e| e.to_string())?;
-    let open_multihit_nodes = list_multihit_summaries(&conn, &character, &server)
-        .map_err(|e| e.to_string())?;
+    let active_session =
+        persistence::active_session(&conn, &character, &server).map_err(|e| e.to_string())?;
+    let open_multihit_nodes =
+        list_multihit_summaries(&conn, &character, &server).map_err(|e| e.to_string())?;
     Ok(SurveyTrackerStatus {
         active_session,
         open_multihit_nodes,
@@ -224,16 +224,14 @@ pub fn survey_tracker_session_detail(
     };
     let server = session.server_name.clone();
     let uses = persistence::uses_for_session(&conn, session_id).map_err(|e| e.to_string())?;
-    let loot_summary =
-        loot_summary_for_session(&conn, session_id, &server, &valuation_mode)
-            .map_err(|e| e.to_string())?;
+    let loot_summary = loot_summary_for_session(&conn, session_id, &server, &valuation_mode)
+        .map_err(|e| e.to_string())?;
     let economics =
         economics_from_loot_and_uses(&conn, session_id, &server, &valuation_mode, &loot_summary)
             .map_err(|e| e.to_string())?;
 
-    let craft_materials =
-        craft_materials_for_session(&conn, session_id, &server, &valuation_mode)
-            .map_err(|e| e.to_string())?;
+    let craft_materials = craft_materials_for_session(&conn, session_id, &server, &valuation_mode)
+        .map_err(|e| e.to_string())?;
 
     Ok(Some(SurveySessionDetail {
         session,
@@ -431,9 +429,9 @@ fn session_cost_from_recipes<C: DbRead + ?Sized>(
         let ingredients: Vec<(Option<i64>, i64, Option<f64>, Option<f64>)> = ing_stmt
             .query_map(params![recipe_id, server], |r| {
                 Ok((
-                    r.get::<_, Option<i64>>(0)?,  // item_id
-                    r.get::<_, i64>(1)?,           // stack_size
-                    r.get::<_, Option<f64>>(3)?,   // vendor_value
+                    r.get::<_, Option<i64>>(0)?,                   // item_id
+                    r.get::<_, i64>(1)?,                           // stack_size
+                    r.get::<_, Option<f64>>(3)?,                   // vendor_value
                     r.get::<_, Option<f64>>(4)?.map(|v| v as f64), // market_value
                 ))
             })?
@@ -486,7 +484,9 @@ fn craft_materials_for_session<C: DbRead + ?Sized>(
           ORDER BY i.name",
     )?;
     let rows = stmt.query_map(params![session_id, server], |row| {
-        let item_name: String = row.get::<_, Option<String>>(0)?.unwrap_or_else(|| "Unknown".to_string());
+        let item_name: String = row
+            .get::<_, Option<String>>(0)?
+            .unwrap_or_else(|| "Unknown".to_string());
         let item_type_id: Option<i64> = row.get(1)?;
         let stack_size: i64 = row.get(2)?;
         let use_count: i64 = row.get(3)?;
@@ -628,8 +628,14 @@ fn historical_session_rows<C: DbRead + ?Sized>(
     let partial: Vec<(HistoricalSessionRow, String)> = stmt
         .query_map(params![character, server, limit], |row| {
             let session = persistence::row_to_session_offset(row, 0)?;
-            let eff_start = session.user_started_at.as_deref().unwrap_or(&session.started_at);
-            let eff_end = session.user_ended_at.as_deref().or(session.ended_at.as_deref());
+            let eff_start = session
+                .user_started_at
+                .as_deref()
+                .unwrap_or(&session.started_at);
+            let eff_end = session
+                .user_ended_at
+                .as_deref()
+                .or(session.ended_at.as_deref());
             let duration = compute_duration_seconds(eff_start, eff_end);
             let server_name = session.server_name.clone();
             Ok((
@@ -1189,18 +1195,15 @@ fn items_for_survey_type<C: DbRead + ?Sized>(
          GROUP BY t.item_name
          ORDER BY total_qty DESC",
     )?;
-    let rows = stmt.query_map(
-        params![character, server, map_internal_name, area],
-        |row| {
-            Ok(ItemSummary {
-                item_name: row.get(0)?,
-                total_qty: row.get(1)?,
-                primary_qty: row.get(2)?,
-                bonus_qty: row.get(3)?,
-                times_received: row.get(4)?,
-            })
-        },
-    )?;
+    let rows = stmt.query_map(params![character, server, map_internal_name, area], |row| {
+        Ok(ItemSummary {
+            item_name: row.get(0)?,
+            total_qty: row.get(1)?,
+            primary_qty: row.get(2)?,
+            bonus_qty: row.get(3)?,
+            times_received: row.get(4)?,
+        })
+    })?;
     rows.collect()
 }
 
@@ -1458,9 +1461,8 @@ fn item_cost_analysis_rows<C: DbRead + ?Sized>(
     // same map can have entries in two zones, but the cost is a property
     // of the map itself (same recipe regardless of where you use it),
     // so one lookup per map is enough.
-    let mut cost_stmt = conn.prepare(
-        "SELECT internal_name, COALESCE(crafting_cost, 0.0) FROM survey_types",
-    )?;
+    let mut cost_stmt =
+        conn.prepare("SELECT internal_name, COALESCE(crafting_cost, 0.0) FROM survey_types")?;
     let mut costs = std::collections::HashMap::new();
     let cost_rows = cost_stmt.query_map([], |row| {
         Ok::<(String, f64), rusqlite::Error>((row.get(0)?, row.get(1)?))
@@ -1534,9 +1536,7 @@ mod tests {
         persistence::add_loot_qty(conn, u2, 7).unwrap();
 
         // Two item_transactions rows linked to the uses via JSON path.
-        let details_for = |use_id: i64| -> String {
-            format!(r#"{{"survey_use_id":{use_id}}}"#)
-        };
+        let details_for = |use_id: i64| -> String { format!(r#"{{"survey_use_id":{use_id}}}"#) };
         let now = "2026-04-15 12:05:00";
         conn.execute(
             "INSERT INTO item_transactions
@@ -1551,7 +1551,14 @@ mod tests {
                 (timestamp, character_name, server_name, item_name, quantity,
                  context, source, source_kind, source_details, confidence)
              VALUES (?1, ?2, ?3, ?4, ?5, 'loot', 'player_log', 'mining', ?6, 'probable')",
-            params![now, "Zenith", "Dreva", "Marvelous Metal Slab", 7, details_for(u2)],
+            params![
+                now,
+                "Zenith",
+                "Dreva",
+                "Marvelous Metal Slab",
+                7,
+                details_for(u2)
+            ],
         )
         .unwrap();
 
@@ -1563,7 +1570,8 @@ mod tests {
         let conn = fresh_db();
         let session_id = seed_session(&conn);
 
-        let rows = historical_session_rows(&conn, "Zenith", "Dreva", "highest_market_vendor", 50).unwrap();
+        let rows =
+            historical_session_rows(&conn, "Zenith", "Dreva", "highest_market_vendor", 50).unwrap();
         assert_eq!(rows.len(), 1);
         let r = &rows[0];
         assert_eq!(r.session.id, session_id);
@@ -1572,7 +1580,7 @@ mod tests {
         assert_eq!(r.multihit_uses, 1);
         assert_eq!(r.motherlode_uses, 0);
         assert_eq!(r.total_loot_qty, 12); // 5 + 7
-        // Active session — duration is None until ended_at is set
+                                          // Active session — duration is None until ended_at is set
         assert_eq!(r.duration_seconds, None);
     }
 
@@ -1590,7 +1598,8 @@ mod tests {
             None,
         )
         .unwrap();
-        let rows = historical_session_rows(&conn, "Zenith", "Dreva", "highest_market_vendor", 50).unwrap();
+        let rows =
+            historical_session_rows(&conn, "Zenith", "Dreva", "highest_market_vendor", 50).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].total_uses, 0);
         assert_eq!(rows[0].total_loot_qty, 0);
@@ -1609,7 +1618,8 @@ mod tests {
         )
         .unwrap();
         persistence::end_session(&conn, session, "2026-04-15 13:30:00").unwrap();
-        let rows = historical_session_rows(&conn, "Zenith", "Dreva", "highest_market_vendor", 50).unwrap();
+        let rows =
+            historical_session_rows(&conn, "Zenith", "Dreva", "highest_market_vendor", 50).unwrap();
         // 1h 30m = 5400 seconds
         assert_eq!(rows[0].duration_seconds, Some(5400));
     }
@@ -1659,7 +1669,10 @@ mod tests {
             .expect("slab present");
         assert_eq!(slab.total_qty, 7);
         assert_eq!(slab.times_received, 1);
-        assert_eq!(slab.primary_qty, 7, "no bonus flag set → all qty is primary");
+        assert_eq!(
+            slab.primary_qty, 7,
+            "no bonus flag set → all qty is primary"
+        );
         assert_eq!(slab.bonus_qty, 0);
     }
 
@@ -1727,9 +1740,13 @@ mod tests {
         )
         .unwrap();
 
-        let loot = loot_summary_for_session(&conn, session, "Dreva", "highest_market_vendor").unwrap();
+        let loot =
+            loot_summary_for_session(&conn, session, "Dreva", "highest_market_vendor").unwrap();
         assert_eq!(loot.len(), 2);
-        let rubywall = loot.iter().find(|r| r.item_name == "Rubywall Crystal").unwrap();
+        let rubywall = loot
+            .iter()
+            .find(|r| r.item_name == "Rubywall Crystal")
+            .unwrap();
         assert_eq!(rubywall.unit_value, Some(50));
         assert_eq!(rubywall.total_value, Some(100));
         assert_eq!(rubywall.bonus_qty, 2);
@@ -1737,7 +1754,9 @@ mod tests {
         assert_eq!(spinel.unit_value, None);
         assert_eq!(spinel.total_value, None);
 
-        let econ = economics_from_loot_and_uses(&conn, session, "Dreva", "highest_market_vendor", &loot).unwrap();
+        let econ =
+            economics_from_loot_and_uses(&conn, session, "Dreva", "highest_market_vendor", &loot)
+                .unwrap();
         assert_eq!(econ.cost_total, 150);
         assert_eq!(econ.revenue_total, 100); // only priced item contributes
         assert_eq!(econ.bonus_revenue_total, 100); // all revenue came from the bonus
@@ -1753,14 +1772,24 @@ mod tests {
         // and the Player.log row must NOT be double-counted.
         let conn = fresh_db();
         let session = persistence::insert_session(
-            &conn, "Zenith", "Dreva", "2026-04-15 12:00:00",
-            SessionStartTrigger::Manual, None,
+            &conn,
+            "Zenith",
+            "Dreva",
+            "2026-04-15 12:00:00",
+            SessionStartTrigger::Manual,
+            None,
         )
         .unwrap();
         let use_id = persistence::insert_use(
-            &conn, Some(session), "Zenith", "Dreva", "2026-04-15 12:05:00",
-            "GeologySurveySerbule1", "Serbule Blue Mineral Survey",
-            SurveyUseKind::Basic, Some("Serbule"),
+            &conn,
+            Some(session),
+            "Zenith",
+            "Dreva",
+            "2026-04-15 12:05:00",
+            "GeologySurveySerbule1",
+            "Serbule Blue Mineral Survey",
+            SurveyUseKind::Basic,
+            Some("Serbule"),
         )
         .unwrap();
         let details = format!(r#"{{"survey_use_id":{use_id}}}"#);
@@ -1791,14 +1820,24 @@ mod tests {
         // Player.log rows and no 'survey_chat' rows — those must still render.
         let conn = fresh_db();
         let session = persistence::insert_session(
-            &conn, "Zenith", "Dreva", "2026-04-15 12:00:00",
-            SessionStartTrigger::Manual, None,
+            &conn,
+            "Zenith",
+            "Dreva",
+            "2026-04-15 12:00:00",
+            SessionStartTrigger::Manual,
+            None,
         )
         .unwrap();
         let use_id = persistence::insert_use(
-            &conn, Some(session), "Zenith", "Dreva", "2026-04-15 12:05:00",
-            "GeologySurveySerbule1", "Serbule Blue Mineral Survey",
-            SurveyUseKind::Basic, Some("Serbule"),
+            &conn,
+            Some(session),
+            "Zenith",
+            "Dreva",
+            "2026-04-15 12:05:00",
+            "GeologySurveySerbule1",
+            "Serbule Blue Mineral Survey",
+            SurveyUseKind::Basic,
+            Some("Serbule"),
         )
         .unwrap();
         let details = format!(r#"{{"survey_use_id":{use_id}}}"#);
@@ -1845,7 +1884,8 @@ mod tests {
             Some("Serbule"),
         )
         .unwrap();
-        let cost = session_cost_from_recipes(&conn, session, "Dreva", "highest_market_vendor").unwrap();
+        let cost =
+            session_cost_from_recipes(&conn, session, "Dreva", "highest_market_vendor").unwrap();
         assert_eq!(cost, 0);
     }
 
@@ -1954,7 +1994,10 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM item_transactions", [], |r| r.get(0))
             .unwrap();
         assert_eq!(post_uses, 0, "uses should be deleted");
-        assert_eq!(post_tx, 2, "transactions should be preserved as historical record");
+        assert_eq!(
+            post_tx, 2,
+            "transactions should be preserved as historical record"
+        );
     }
 
     #[test]
@@ -2066,7 +2109,10 @@ mod tests {
         // 60s per session / 1 use per session = 60.0 avg
         assert!((blue.avg_seconds_per_survey - 60.0).abs() < 0.001);
 
-        let ruby = rows.iter().find(|r| r.item_name == "Rubywall Crystal").unwrap();
+        let ruby = rows
+            .iter()
+            .find(|r| r.item_name == "Rubywall Crystal")
+            .unwrap();
         assert_eq!(ruby.primary_total_qty, 0);
         assert_eq!(ruby.bonus_total_qty, 2);
         assert_eq!(ruby.bonus_times_seen, 1);
@@ -2118,4 +2164,3 @@ mod tests {
         );
     }
 }
-

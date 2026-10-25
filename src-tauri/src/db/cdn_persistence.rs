@@ -1,6 +1,6 @@
 use crate::game_data::{
-    AbilityInfo, AchievementInfo, AreaInfo, GameData, ItemInfo, ItemUseInfo, QuestInfo,
-    RecipeInfo, SkillInfo, SurveyKind, TsysClientInfo, XpTableInfo,
+    AbilityInfo, AchievementInfo, AreaInfo, GameData, ItemInfo, ItemUseInfo, QuestInfo, RecipeInfo,
+    SkillInfo, SurveyKind, TsysClientInfo, XpTableInfo,
 };
 use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};
 
@@ -886,8 +886,14 @@ mod tests {
             parse_food_desc("Level 0 Instant-Snack"),
             Some((0, "Instant-Snack".to_string()))
         );
-        assert_eq!(parse_food_desc("Level 20 Meal"), Some((20, "Meal".to_string())));
-        assert_eq!(parse_food_desc("Level 5 Snack"), Some((5, "Snack".to_string())));
+        assert_eq!(
+            parse_food_desc("Level 20 Meal"),
+            Some((20, "Meal".to_string()))
+        );
+        assert_eq!(
+            parse_food_desc("Level 5 Snack"),
+            Some((5, "Snack".to_string()))
+        );
     }
 
     #[test]

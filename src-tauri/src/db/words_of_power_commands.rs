@@ -157,8 +157,8 @@ pub fn import_words_of_power_csv(
     server_name: String,
     file_path: String,
 ) -> Result<usize, String> {
-    let content = std::fs::read_to_string(&file_path)
-        .map_err(|e| format!("Failed to read CSV file: {e}"))?;
+    let content =
+        std::fs::read_to_string(&file_path).map_err(|e| format!("Failed to read CSV file: {e}"))?;
 
     let mut reader = csv::Reader::from_reader(content.as_bytes());
     let headers = reader
@@ -240,7 +240,10 @@ pub fn import_words_of_power_csv(
 
 fn find_header(headers: &csv::StringRecord, candidates: &[&str]) -> Result<usize, String> {
     for c in candidates {
-        if let Some(i) = headers.iter().position(|h| h.trim().eq_ignore_ascii_case(c)) {
+        if let Some(i) = headers
+            .iter()
+            .position(|h| h.trim().eq_ignore_ascii_case(c))
+        {
             return Ok(i);
         }
     }
@@ -252,7 +255,10 @@ fn find_header(headers: &csv::StringRecord, candidates: &[&str]) -> Result<usize
 
 fn find_header_opt(headers: &csv::StringRecord, candidates: &[&str]) -> Option<usize> {
     for c in candidates {
-        if let Some(i) = headers.iter().position(|h| h.trim().eq_ignore_ascii_case(c)) {
+        if let Some(i) = headers
+            .iter()
+            .position(|h| h.trim().eq_ignore_ascii_case(c))
+        {
             return Some(i);
         }
     }
@@ -318,7 +324,9 @@ pub fn backfill_used_words_from_chat_logs(
     // The initial saved-words query is read-only: use the read pool so the
     // app's single writer stays free until a delete actually happens.
     let saved: Vec<String> = {
-        let conn = db.get().map_err(|e| format!("Database connection error: {e}"))?;
+        let conn = db
+            .get()
+            .map_err(|e| format!("Database connection error: {e}"))?;
         let mut stmt = conn
             .prepare("SELECT discovered_at FROM words_of_power")
             .map_err(|e| format!("Query prepare error: {e}"))?;
@@ -402,8 +410,7 @@ pub fn backfill_used_words_from_chat_logs(
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| format!("Failed to begin transaction: {e}"))?;
         for word in &used {
-            deleted += delete_words_by_word(&tx, word)
-                .map_err(|e| format!("Delete error: {e}"))?;
+            deleted += delete_words_by_word(&tx, word).map_err(|e| format!("Delete error: {e}"))?;
         }
         tx.commit().map_err(|e| format!("Commit error: {e}"))?;
         drop(conn); // release the writer before the next file
@@ -473,9 +480,36 @@ mod tests {
     fn test_delete_words_by_word_removes_all_characters_copies() {
         let conn = setup();
         // Same word saved by two characters, plus an unrelated word.
-        insert_word_of_power(&conn, "Alt", "Dreva", "ABCWORD", "Haste", None, "2026-07-01T00:00:00Z").unwrap();
-        insert_word_of_power(&conn, "Main", "Dreva", "ABCWORD", "Haste", None, "2026-07-01T00:00:00Z").unwrap();
-        insert_word_of_power(&conn, "Main", "Dreva", "OTHERWORD", "Luck", None, "2026-07-02T00:00:00Z").unwrap();
+        insert_word_of_power(
+            &conn,
+            "Alt",
+            "Dreva",
+            "ABCWORD",
+            "Haste",
+            None,
+            "2026-07-01T00:00:00Z",
+        )
+        .unwrap();
+        insert_word_of_power(
+            &conn,
+            "Main",
+            "Dreva",
+            "ABCWORD",
+            "Haste",
+            None,
+            "2026-07-01T00:00:00Z",
+        )
+        .unwrap();
+        insert_word_of_power(
+            &conn,
+            "Main",
+            "Dreva",
+            "OTHERWORD",
+            "Luck",
+            None,
+            "2026-07-02T00:00:00Z",
+        )
+        .unwrap();
 
         let n = delete_words_by_word(&conn, "ABCWORD").unwrap();
         assert_eq!(n, 2);
@@ -486,7 +520,16 @@ mod tests {
     fn test_delete_words_by_word_case_and_whitespace_insensitive() {
         let conn = setup();
         // Manual entries may be lowercased or carry stray whitespace.
-        insert_word_of_power(&conn, "Main", "Dreva", " abcword ", "Haste", None, "2026-07-01T00:00:00Z").unwrap();
+        insert_word_of_power(
+            &conn,
+            "Main",
+            "Dreva",
+            " abcword ",
+            "Haste",
+            None,
+            "2026-07-01T00:00:00Z",
+        )
+        .unwrap();
 
         let n = delete_words_by_word(&conn, "ABCWORD").unwrap();
         assert_eq!(n, 1);
@@ -496,7 +539,16 @@ mod tests {
     #[test]
     fn test_delete_words_by_word_unknown_word_is_noop() {
         let conn = setup();
-        insert_word_of_power(&conn, "Main", "Dreva", "ABCWORD", "Haste", None, "2026-07-01T00:00:00Z").unwrap();
+        insert_word_of_power(
+            &conn,
+            "Main",
+            "Dreva",
+            "ABCWORD",
+            "Haste",
+            None,
+            "2026-07-01T00:00:00Z",
+        )
+        .unwrap();
 
         let n = delete_words_by_word(&conn, "NEVERSPOKEN").unwrap();
         assert_eq!(n, 0);

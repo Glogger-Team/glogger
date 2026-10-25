@@ -14,12 +14,10 @@ pub mod combat_wisdom_commands;
 pub mod crafting_commands;
 pub mod death_commands;
 pub mod farming_commands;
-pub mod kill_tracking_commands;
-pub mod resuscitate_commands;
-pub mod roulette_commands;
 pub mod game_state_commands;
 pub mod gourmand_commands;
 pub mod inventory_commands;
+pub mod kill_tracking_commands;
 pub mod market_commands;
 pub mod message_commands;
 pub mod migrations;
@@ -28,16 +26,18 @@ pub mod poem_commands;
 #[allow(dead_code)]
 pub mod price_helper_commands;
 pub mod queries;
+pub mod resuscitate_commands;
+pub mod roulette_commands;
 pub mod stall_commands;
 pub mod stall_tracker_commands;
 // Reads survey_types (CDN-populated reference table) — useful raw material
 // for the future Analytics rebuild. No active consumer right now since the
 // legacy survey screen was removed; allow dead_code until that work lands.
+pub mod hoplology_commands;
+pub mod statehelm_commands;
 #[allow(dead_code)]
 pub mod survey_commands;
-pub mod statehelm_commands;
 pub mod timer_commands;
-pub mod hoplology_commands;
 pub mod word_of_power_catalog;
 pub mod words_of_power_commands;
 
@@ -184,7 +184,10 @@ impl DbPool {
 
 /// Initialize the database pool pair with the given path.
 /// `tz_offset_seconds` is needed for one-time migration to fix historical timestamps.
-pub fn init_pool(db_path: PathBuf, tz_offset_seconds: Option<i32>) -> Result<DbPool, Box<dyn std::error::Error>> {
+pub fn init_pool(
+    db_path: PathBuf,
+    tz_offset_seconds: Option<i32>,
+) -> Result<DbPool, Box<dyn std::error::Error>> {
     // Create parent directory if it doesn't exist
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -310,7 +313,8 @@ mod tests {
     #[test]
     fn get_schema_version_zero_on_empty_table() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)").unwrap();
+        conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY)")
+            .unwrap();
         assert_eq!(get_schema_version(&conn).unwrap(), 0);
     }
 }

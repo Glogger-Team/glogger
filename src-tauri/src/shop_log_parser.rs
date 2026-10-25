@@ -96,12 +96,7 @@ pub struct ShopLog {
 /// * `log_timestamp` — timestamp when the book was opened (not the entry times).
 /// * `base_year` — the year to start the resolver at; use
 ///   [`stall_year_resolver::base_year_for_live`] for live tailing.
-pub fn parse_shop_log(
-    title: &str,
-    content: &str,
-    log_timestamp: &str,
-    base_year: i32,
-) -> ShopLog {
+pub fn parse_shop_log(title: &str, content: &str, log_timestamp: &str, base_year: i32) -> ShopLog {
     let content = content.replace("\\n", "\n");
 
     let matches: Vec<_> = ENTRY_RE.find_iter(&content).collect();
@@ -174,7 +169,11 @@ fn parse_entry(entry_index: i64, timestamp: &str, message: &str) -> ShopLogEntry
         let qty_unit: f64 = c["qty_unit"].parse().unwrap_or(1.0);
         let total: i64 = c["total"].parse().unwrap_or(0);
         // Corrected per-unit price for bulk configs ("3000 per 2" → 1500).
-        let unit_price = if qty_unit > 0.0 { unit_raw / qty_unit } else { unit_raw };
+        let unit_price = if qty_unit > 0.0 {
+            unit_raw / qty_unit
+        } else {
+            unit_raw
+        };
         entry.action = "bought".into();
         entry.player = c["player"].to_string();
         entry.item = Some(c["item"].to_string());
@@ -230,7 +229,11 @@ fn parse_entry(entry_index: i64, timestamp: &str, message: &str) -> ShopLogEntry
             .name("qty")
             .and_then(|m| m.as_str().parse().ok())
             .unwrap_or(1);
-        entry.price_unit = Some(if qty_unit > 0.0 { unit / qty_unit } else { unit });
+        entry.price_unit = Some(if qty_unit > 0.0 {
+            unit / qty_unit
+        } else {
+            unit
+        });
         return entry;
     }
 
@@ -244,7 +247,11 @@ fn parse_entry(entry_index: i64, timestamp: &str, message: &str) -> ShopLogEntry
             .name("qty")
             .and_then(|m| m.as_str().parse().ok())
             .unwrap_or(1);
-        entry.price_unit = Some(if qty_unit > 0.0 { unit / qty_unit } else { unit });
+        entry.price_unit = Some(if qty_unit > 0.0 {
+            unit / qty_unit
+        } else {
+            unit
+        });
         return entry;
     }
 
@@ -433,9 +440,7 @@ mod tests {
 
     #[test]
     fn test_parse_visible_with_space_before_quantity() {
-        let e = single(
-            "Deradon made Barley Seeds x36 visible in shop at a cost of 3000 per 2",
-        );
+        let e = single("Deradon made Barley Seeds x36 visible in shop at a cost of 3000 per 2");
         assert_eq!(e.action, "visible");
         assert_eq!(e.item.as_deref(), Some("Barley Seeds"));
         assert_eq!(e.quantity, 36);
@@ -456,7 +461,10 @@ mod tests {
         // Hire-duration message that doesn't match any action regex.
         let e = single("Deradon paid 5000 Councils to hire a stall for 24 hours");
         assert_eq!(e.action, "unknown");
-        assert_eq!(e.raw_message, "Deradon paid 5000 Councils to hire a stall for 24 hours");
+        assert_eq!(
+            e.raw_message,
+            "Deradon paid 5000 Councils to hire a stall for 24 hours"
+        );
     }
 
     #[test]
@@ -473,7 +481,10 @@ Mon Apr 13 09:00 - Deradon added Quality Reins to shop";
         // After reversal, index 0 is the OLDEST (the `added`).
         assert_eq!(log.entries[0].action, "added");
         assert_eq!(log.entries[0].entry_index, 0);
-        assert_eq!(log.entries[0].event_at.as_deref(), Some("2026-04-13 09:00:00"));
+        assert_eq!(
+            log.entries[0].event_at.as_deref(),
+            Some("2026-04-13 09:00:00")
+        );
         assert_eq!(log.entries[1].action, "visible");
         assert_eq!(log.entries[2].action, "bought");
         assert_eq!(log.entries[2].entry_index, 2);
@@ -565,8 +576,7 @@ Mon Apr 13 14:29 - MrBonq bought Nice Saddle at a cost of 4000 per 1 = 4000";
     #[test]
     fn test_bought_only_log_has_no_owner_hint() {
         // No owner actions (added/removed/etc.) → owner hint is None.
-        let content =
-            "Mon Apr 13 14:29 - MrBonq bought Nice Saddle at a cost of 4000 per 1 = 4000";
+        let content = "Mon Apr 13 14:29 - MrBonq bought Nice Saddle at a cost of 4000 per 1 = 4000";
         let log = parse_shop_log("x", content, "t", 2026);
         assert_eq!(log.owner, None);
     }

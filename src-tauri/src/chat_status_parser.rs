@@ -138,10 +138,17 @@ fn try_word_of_power_used(text: &str, ts: &str) -> Option<ChatStatusEvent> {
 }
 
 /// "Roulette ball ended on N!" — casino roulette spin outcome.
+/// N is a European-wheel number, 0..=36. Anything else is not a roulette
+/// result (future format drift) and returns None. (DB CHECK on
+/// `roulette_results.number` is backlog — this parser guard is the
+/// enforcement point for now.)
 fn try_roulette_result(text: &str, ts: &str) -> Option<ChatStatusEvent> {
     let prefix = "Roulette ball ended on ";
     let inner = text.strip_prefix(prefix)?.strip_suffix('!')?;
     let number: u32 = inner.parse().ok()?;
+    if number > 36 {
+        return None;
+    }
     Some(ChatStatusEvent::RouletteResult {
         timestamp: ts.to_string(),
         number,
@@ -155,9 +162,18 @@ fn try_item_gained(text: &str, ts: &str) -> Option<ChatStatusEvent> {
         return None;
     }
     let prefix = &text[..text.len() - suffix.len()];
+    // Reject empty item names (" added to inventory." with no prefix).
+    if prefix.trim().is_empty() {
+        return None;
+    }
 
     // Check for "ItemName xN" pattern
     let (item_name, quantity) = parse_name_and_quantity(prefix);
+    // parse_name_and_quantity returns qty=1 with an empty name for a bare
+    // " xN" prefix — reject that too.
+    if item_name.trim().is_empty() {
+        return None;
+    }
 
     Some(ChatStatusEvent::ItemGained {
         timestamp: ts.to_string(),
@@ -231,6 +247,9 @@ fn try_prodigy_xp_gained(text: &str, ts: &str) -> Option<ChatStatusEvent> {
     let xp_pos = inner.find(" Prodigy XP in ")?;
     let amount: u32 = inner[..xp_pos].parse().ok()?;
     let skill = &inner[xp_pos + " Prodigy XP in ".len()..];
+    if skill.trim().is_empty() {
+        return None;
+    }
 
     Some(ChatStatusEvent::ProdigyXpGained {
         timestamp: ts.to_string(),
@@ -255,6 +274,9 @@ fn try_xp_gained(text: &str, ts: &str) -> Option<ChatStatusEvent> {
     let xp_pos = inner.find(" XP in ")?;
     let amount: u32 = inner[..xp_pos].parse().ok()?;
     let skill = &inner[xp_pos + " XP in ".len()..];
+    if skill.trim().is_empty() {
+        return None;
+    }
 
     Some(ChatStatusEvent::XpGained {
         timestamp: ts.to_string(),
@@ -406,9 +428,19 @@ fn try_councils_misc(text: &str, ts: &str) -> Option<ChatStatusEvent> {
     }
 
     // "<mob> stole N Councils!" — a wallet loss (often partly recovered later).
-    if let Some(idx) = text.find(" stole ") {
-        if let Some(n) = text[idx + " stole ".len()..].strip_suffix(" Councils!") {
-            return num(n).map(|amount| signed(-amount));
+    // Anchored form: `<thief> stole <amount> Councils!` with a non-empty
+    // thief prefix and a numeric amount (previously an unanchored `find`,
+    // which could match a quoted/truncated line). Verified against
+    // parser tests: "Ratkin Mugger stole 320 Councils!" parses; "You ..."
+    // lines never reach here (matched by earlier arms).
+    if let Some(body) = text.strip_suffix(" Councils!") {
+        if let Some((thief, amount)) = body.split_once(" stole ") {
+            let t = thief.trim();
+            // Prefix anchor: reject quoted/channel chatter
+            // (e.g. `Bob says "Rat stole 5 Councils!"` must not parse as theft).
+            if !t.is_empty() && !t.contains('"') && !t.contains(" says ") && !amount.trim().is_empty() {
+                return num(amount).map(|a| signed(-a));
+            }
         }
     }
 
@@ -421,7 +453,15 @@ fn try_summoned(text: &str, ts: &str) -> Option<ChatStatusEvent> {
         return None;
     }
     let rest = &text["Summoned ".len()..];
+    // Reject "Summoned " with no item (matches the style of the sibling
+    // empty-name guards).
+    if rest.trim().is_empty() {
+        return None;
+    }
     let (item_name, quantity) = parse_name_and_quantity(rest);
+    if item_name.trim().is_empty() {
+        return None;
+    }
 
     Some(ChatStatusEvent::Summoned {
         timestamp: ts.to_string(),
@@ -830,6 +870,13 @@ mod tests {
             ChatStatusEvent::CouncilsChanged { amount, .. } => assert_eq!(amount, -320),
             other => panic!("Expected CouncilsChanged(-320), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_misc_quoted_stole_is_not_theft() {
+        // Quoted player chatter ending in Councils! must not parse as a loss.
+        let msg = status_msg("Bob says \"Rat stole 5 Councils!\"");
+        assert!(parse_status_message(&msg).is_none());
     }
 
     #[test]

@@ -36,19 +36,22 @@ pub fn get_player_messages(
         .map_err(|e| e.to_string())?;
 
     let rows = stmt
-        .query_map(rusqlite::params![&character_name, &server_name, limit], |row| {
-            Ok(PlayerMessageRow {
-                id: row.get(0)?,
-                character_name: row.get(1)?,
-                server_name: row.get(2)?,
-                timestamp: row.get(3)?,
-                message_type: row.get(4)?,
-                direction: row.get(5)?,
-                other_player: row.get(6)?,
-                body: row.get(7)?,
-                item_name: row.get(8)?,
-            })
-        })
+        .query_map(
+            rusqlite::params![&character_name, &server_name, limit],
+            |row| {
+                Ok(PlayerMessageRow {
+                    id: row.get(0)?,
+                    character_name: row.get(1)?,
+                    server_name: row.get(2)?,
+                    timestamp: row.get(3)?,
+                    message_type: row.get(4)?,
+                    direction: row.get(5)?,
+                    other_player: row.get(6)?,
+                    body: row.get(7)?,
+                    item_name: row.get(8)?,
+                })
+            },
+        )
         .map_err(|e| e.to_string())?;
 
     let mut messages = Vec::new();

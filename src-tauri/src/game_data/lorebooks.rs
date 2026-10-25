@@ -60,8 +60,8 @@ impl LorebookData {
             .collect();
 
         // Parse categories from lorebookinfo.json
-        let info: serde_json::Value = serde_json::from_str(info_json)
-            .map_err(|e| format!("lorebookinfo.json: {e}"))?;
+        let info: serde_json::Value =
+            serde_json::from_str(info_json).map_err(|e| format!("lorebookinfo.json: {e}"))?;
 
         let mut categories = HashMap::new();
         if let Some(cats) = info.get("Categories").and_then(|c| c.as_object()) {

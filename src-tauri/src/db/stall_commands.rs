@@ -67,12 +67,12 @@ pub fn get_stall_price_observations(
                 source, observed_at, notes
          FROM stall_price_observations",
     );
-    let mut clauses: Vec<&str> = Vec::new();
+    let mut clauses: Vec<String> = Vec::new();
     if server_name.is_some() {
-        clauses.push("server_name = ?1");
+        clauses.push(format!("server_name = ?{}", clauses.len() + 1));
     }
     if item_type_id.is_some() {
-        clauses.push("item_type_id = ?2");
+        clauses.push(format!("item_type_id = ?{}", clauses.len() + 1));
     }
     if !clauses.is_empty() {
         sql.push_str(" WHERE ");
@@ -81,17 +81,17 @@ pub fn get_stall_price_observations(
     sql.push_str(" ORDER BY observed_at DESC, id DESC LIMIT ");
     sql.push_str(&limit.unwrap_or(200).max(1).to_string());
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| format!("Query error: {e}"))?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("Query error: {e}"))?;
 
-    // rusqlite needs fixed parameter positions; build params conditionally.
+    // Placeholders are numbered by position among the *present* filters, so
+    // each `?N` lines up with the params bound below in every (server?, item?) case.
     let rows = match (server_name.as_deref(), item_type_id) {
-        (Some(server), Some(item_id)) => stmt.query_map(
-            rusqlite::params![server, item_id],
-            map_observation_row,
-        ),
-        (Some(server), None) => {
-            stmt.query_map(rusqlite::params![server], map_observation_row)
+        (Some(server), Some(item_id)) => {
+            stmt.query_map(rusqlite::params![server, item_id], map_observation_row)
         }
+        (Some(server), None) => stmt.query_map(rusqlite::params![server], map_observation_row),
         (None, Some(item_id)) => stmt.query_map(rusqlite::params![item_id], map_observation_row),
         (None, None) => stmt.query_map([], map_observation_row),
     }
@@ -135,7 +135,13 @@ fn resolve_item_query<C: DbRead + ?Sized>(
             .query_row(
                 "SELECT id, name, internal_name FROM items WHERE id = ?1",
                 rusqlite::params![id],
-                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)),
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ))
+                },
             )
             .optional()
         {
@@ -337,7 +343,9 @@ mod tests {
             [],
         )
         .unwrap();
-        let id: i64 = conn.query_row("SELECT id FROM stall_price_observations", [], |r| r.get(0)).unwrap();
+        let id: i64 = conn
+            .query_row("SELECT id FROM stall_price_observations", [], |r| r.get(0))
+            .unwrap();
 
         // Apply the same UPDATE the command issues.
         conn.execute(

@@ -155,14 +155,11 @@ pub async fn ocr_download(app: tauri::AppHandle) -> Result<OcrStatus, String> {
     // /NCRC to skip the CRC prompt, and /D=<dir> (no quotes, must be the
     // LAST argument) to target the sidecar dir.
     let installer_path = dir.join("tesseract-setup.exe");
-    std::fs::write(&installer_path, &bytes).map_err(|e| format!("Failed to write download: {e}"))?;
+    std::fs::write(&installer_path, &bytes)
+        .map_err(|e| format!("Failed to write download: {e}"))?;
 
     let status = std::process::Command::new(&installer_path)
-        .args([
-            "/S",
-            "/NCRC",
-            &format!("/D={}", dir.display()),
-        ])
+        .args(["/S", "/NCRC", &format!("/D={}", dir.display())])
         .status()
         .map_err(|e| format!("Failed to run installer: {e}"))?;
     let _ = std::fs::remove_file(&installer_path);
@@ -275,8 +272,7 @@ fn run_tesseract(
         .arg("--oem")
         .arg("3");
     if digit_whitelist {
-        cmd.arg("-c")
-            .arg("tessedit_char_whitelist=0123456789,");
+        cmd.arg("-c").arg("tessedit_char_whitelist=0123456789,");
     }
     let output = cmd
         .output()
@@ -301,20 +297,14 @@ pub fn parse_stall_header(text: &str) -> (Option<String>, Option<String>) {
         None => return (None, None),
     };
     // Walk back to the start of the header line.
-    let line_start = text[..idx]
-        .rfind('\n')
-        .map(|i| i + 1)
-        .unwrap_or(0);
+    let line_start = text[..idx].rfind('\n').map(|i| i + 1).unwrap_or(0);
     let owner_full = text[line_start..idx].trim();
     if owner_full.is_empty() {
         return (None, None);
     }
     // Slot is a bracketed `[AA-9]` code inside the owner text.
     let (name, slot) = match (owner_full.find('['), owner_full.find(']')) {
-        (Some(bs), Some(be)) if be > bs => (
-            owner_full[..bs].trim(),
-            owner_full[bs + 1..be].trim(),
-        ),
+        (Some(bs), Some(be)) if be > bs => (owner_full[..bs].trim(), owner_full[bs + 1..be].trim()),
         _ => (owner_full, ""),
     };
     (
@@ -474,7 +464,11 @@ pub fn scan_panel(
                 + u32::from(pixels[i + 1]) * 587
                 + u32::from(pixels[i + 2]) * 114)
                 / 1000;
-            gray_bin[y * cw + x] = if g > u32::from(PANEL_TEXT_THRESHOLD) { 0 } else { 255 };
+            gray_bin[y * cw + x] = if g > u32::from(PANEL_TEXT_THRESHOLD) {
+                0
+            } else {
+                255
+            };
         }
     }
 
@@ -485,11 +479,11 @@ pub fn scan_panel(
     let mut rows: Vec<StallScanRow> = Vec::new();
     let mut price_raws: Vec<String> = Vec::new();
     for (by0, by1) in &bands {
-        let nx0 = panel_x0 + (panel_x1 - panel_x0) / 100;      // skip icon edge
+        let nx0 = panel_x0 + (panel_x1 - panel_x0) / 100; // skip icon edge
         let nx1 = panel_x0 + (panel_x1 - panel_x0) * 55 / 100; // names end before Buy/Pay boxes
-        // Price digits sit in the rightmost ~8% of the panel; the crop starts
-        // at 89% to skip the council-glyph column and ends 2% past the panel
-        // edge (the last digit can touch it).
+                                                               // Price digits sit in the rightmost ~8% of the panel; the crop starts
+                                                               // at 89% to skip the council-glyph column and ends 2% past the panel
+                                                               // edge (the last digit can touch it).
         let px0 = panel_x0 + (panel_x1 - panel_x0) * 89 / 100;
         let px1 = (panel_x1 + (panel_x1 - panel_x0) * 2 / 100).min(w);
         // ±4px vertical padding gives Tesseract breathing room around the
@@ -497,14 +491,30 @@ pub fn scan_panel(
         let py0 = panel_y0 + (*by0 as u32).saturating_sub(4);
         let py1 = panel_y0 + *by1 as u32 + 4;
         let name_text = ocr_bin_region(
-            exe, &gray_bin, cw, ch, (panel_x0, panel_y0),
-            nx0, nx1, py0, py1,
-            3, "7",
+            exe,
+            &gray_bin,
+            cw,
+            ch,
+            (panel_x0, panel_y0),
+            nx0,
+            nx1,
+            py0,
+            py1,
+            3,
+            "7",
         )?;
         let price_raw = ocr_bin_region(
-            exe, &gray_bin, cw, ch, (panel_x0, panel_y0),
-            px0, px1, py0, py1,
-            4, "7",
+            exe,
+            &gray_bin,
+            cw,
+            ch,
+            (panel_x0, panel_y0),
+            px0,
+            px1,
+            py0,
+            py1,
+            4,
+            "7",
         )?;
         let name = {
             let trimmed = name_text.trim();
@@ -518,7 +528,9 @@ pub fn scan_panel(
             cleaned
         };
         let price = extract_price(&price_raw);
-        price_raws.push(format!("band {by0}-{by1}: name={name:?} raw={price_raw:?} -> {price}"));
+        price_raws.push(format!(
+            "band {by0}-{by1}: name={name:?} raw={price_raw:?} -> {price}"
+        ));
         let (item_name, confidence) = match match_item_name(&name, item_name_index) {
             Some((canonical, _id, score)) => (Some(canonical), score),
             None => (None, 0.0),
@@ -531,7 +543,10 @@ pub fn scan_panel(
         if item_name.is_none() && price == 0 {
             continue;
         }
-        if rows.iter().any(|r: &StallScanRow| r.item_name == key.0 && r.price == Some(price)) {
+        if rows
+            .iter()
+            .any(|r: &StallScanRow| r.item_name == key.0 && r.price == Some(price))
+        {
             continue;
         }
         rows.push(StallScanRow {
@@ -650,7 +665,10 @@ fn detect_row_bands(gray_bin: &[u8], cw: usize, ch: usize) -> Vec<(usize, usize)
     let bright: Vec<usize> = (0..ch)
         .map(|y| {
             let row = y * cw;
-            (0..cw).step_by(2).filter(|&x| gray_bin[row + x] == 0).count()
+            (0..cw)
+                .step_by(2)
+                .filter(|&x| gray_bin[row + x] == 0)
+                .count()
         })
         .collect();
     let mut bands = Vec::new();
@@ -710,7 +728,9 @@ mod rust_helpers {
                 while j < b.len() && b[j].is_ascii_digit() && j - start < 3 {
                     j += 1;
                 }
-                if j < b.len() && b[j] == b',' && j + 4 <= b.len()
+                if j < b.len()
+                    && b[j] == b','
+                    && j + 4 <= b.len()
                     && b[j + 1..j + 4].iter().all(|c| c.is_ascii_digit())
                 {
                     // `end` = one past the last digit of the group:
@@ -722,7 +742,10 @@ mod rust_helpers {
                     {
                         end += 4;
                     }
-                    let cleaned: String = s[start..end].chars().filter(|c| c.is_ascii_digit()).collect();
+                    let cleaned: String = s[start..end]
+                        .chars()
+                        .filter(|c| c.is_ascii_digit())
+                        .collect();
                     return cleaned.parse().ok();
                 }
             }
@@ -803,8 +826,7 @@ fn ocr_bin_region(
         let src = std::mem::take(&mut padded);
         let mut out = vec![0u8; row_stride * uh];
         for y in 0..uh {
-            out[y * row_stride..y * row_stride + uw]
-                .copy_from_slice(&src[y * uw..(y + 1) * uw]);
+            out[y * row_stride..y * row_stride + uw].copy_from_slice(&src[y * uw..(y + 1) * uw]);
         }
         padded = out;
     }
@@ -902,7 +924,12 @@ pub fn scan_legacy(
     let pairs = parse_vendor_text(&text);
     let names: Vec<String> = pairs.iter().map(|(n, _)| n.clone()).collect();
     let prices: Vec<i64> = pairs.iter().map(|(_, p)| *p).collect();
-    Ok((pair_rows(&names, &prices, item_name_index), text, stall_name, stall_slot))
+    Ok((
+        pair_rows(&names, &prices, item_name_index),
+        text,
+        stall_name,
+        stall_slot,
+    ))
 }
 
 // ── Window capture (Windows GDI) ────────────────────────────────────────────
@@ -916,7 +943,7 @@ mod capture {
     use windows::Win32::Graphics::Gdi::{
         BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
         GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, CAPTUREBLT,
-        DIB_RGB_COLORS, SRCCOPY, HGDIOBJ,
+        DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         FindWindowW, GetClientRect, GetWindowRect, IsWindowVisible,
@@ -927,8 +954,7 @@ mod capture {
     pub fn find_game_window() -> Option<HWND> {
         // The game window title is "Project Gorgon".
         let title: Vec<u16> = "Project Gorgon\0".encode_utf16().collect();
-        let hwnd = unsafe { FindWindowW(PCWSTR::null(), PCWSTR::from_raw(title.as_ptr())) }
-            .ok()?;
+        let hwnd = unsafe { FindWindowW(PCWSTR::null(), PCWSTR::from_raw(title.as_ptr())) }.ok()?;
         if hwnd.is_invalid() {
             return None;
         }
@@ -1108,16 +1134,17 @@ mod capture {
         hwnd: HWND,
         exe: &PathBuf,
         item_name_index: &std::collections::HashMap<String, u32>,
-    ) -> Result<(
-        Vec<super::StallScanRow>,
+    ) -> Result<
+        (
+            Vec<super::StallScanRow>,
+            String,
+            Option<String>,
+            Option<String>,
+        ),
         String,
-        Option<String>,
-        Option<String>,
-    ), String> {
+    > {
         let (w, h, pixels) = capture_client_bgra(hwnd)?;
-        if let Some(rows) = super::scan_panel(
-            &pixels, w, h, exe, item_name_index,
-        )? {
+        if let Some(rows) = super::scan_panel(&pixels, w, h, exe, item_name_index)? {
             return Ok(rows);
         }
         let img = bgra_to_bmp(&pixels, w, h)?;
@@ -1151,9 +1178,7 @@ pub async fn scan_stall_window(
     }
     let exe = ocr_exe_path(&app)?;
     if !exe.exists() {
-        return Err(
-            "OCR engine not installed — click \"Install OCR engine…\" first.".to_string(),
-        );
+        return Err("OCR engine not installed — click \"Install OCR engine…\" first.".to_string());
     }
 
     #[cfg(target_os = "windows")]
@@ -1263,7 +1288,11 @@ Basic Stoneskin Potion
 Buy 1
 Pay 20,000";
         let pairs = parse_vendor_text(&text);
-        assert_eq!(pairs.len(), 3, "three Pay lines with name candidates: {pairs:?}");
+        assert_eq!(
+            pairs.len(),
+            3,
+            "three Pay lines with name candidates: {pairs:?}"
+        );
         assert_eq!(pairs[0].0, "Astounding Throwing Knife");
         assert_eq!(pairs[0].1, 400);
         assert_eq!(pairs[2].0, "Basic Stoneskin Potion");

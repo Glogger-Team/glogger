@@ -81,9 +81,10 @@ impl ItemInfo {
     /// 3. Has `MineralSurvey` or `MiningSurvey` keyword → `Basic`
     /// 4. Otherwise → `None` (not a survey map)
     pub fn survey_kind(&self) -> Option<SurveyKind> {
-        let is_survey = self.keywords.iter().any(|k| {
-            k == "MineralSurvey" || k == "MiningSurvey" || k == "MotherlodeMap"
-        });
+        let is_survey = self
+            .keywords
+            .iter()
+            .any(|k| k == "MineralSurvey" || k == "MiningSurvey" || k == "MotherlodeMap");
         if !is_survey {
             return None;
         }

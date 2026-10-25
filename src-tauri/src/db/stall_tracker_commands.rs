@@ -936,8 +936,7 @@ pub fn export_shop_log_files(
         .to_string();
 
     let dir = std::path::PathBuf::from(&directory);
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Failed to create export directory: {e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create export directory: {e}"))?;
 
     let conn = db
         .get()
@@ -1037,8 +1036,16 @@ pub fn seed_stall_events_dev(
         ("Cured Pelt", 950),
     ];
     const BUYERS: &[&str] = &[
-        "MrBonq", "AlestiarWolf", "Zangariel", "Brynn", "Kork",
-        "Ashbringer", "Vexis", "Tomlin", "Sylvae", "Galadwen",
+        "MrBonq",
+        "AlestiarWolf",
+        "Zangariel",
+        "Brynn",
+        "Kork",
+        "Ashbringer",
+        "Vexis",
+        "Tomlin",
+        "Sylvae",
+        "Galadwen",
     ];
 
     let now = chrono::Local::now();
@@ -1072,7 +1079,9 @@ pub fn seed_stall_events_dev(
                 1,
                 Some(base_price as f64),
                 Some(base_price),
-                format!("{buyer} bought {item_name} at a cost of {base_price} per 1 = {base_price}"),
+                format!(
+                    "{buyer} bought {item_name} at a cost of {base_price} per 1 = {base_price}"
+                ),
             ),
             6 => (
                 "added",
@@ -1090,9 +1099,7 @@ pub fn seed_stall_events_dev(
                 1,
                 Some(base_price as f64),
                 None,
-                format!(
-                    "{owner} made {item_name} visible in shop at a cost of {base_price} per 1"
-                ),
+                format!("{owner} made {item_name} visible in shop at a cost of {base_price} per 1"),
             ),
             8 => (
                 "configured",
@@ -1228,8 +1235,14 @@ mod tests {
         // These mirror what export_shop_log_files writes for one date group:
         // entries newest-first, separated by `\n\n`, trailing `\n`.
         let entries = vec![
-            ("Wed Apr 15 11:45", "MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500"),
-            ("Tue Apr 14 10:30", "Deradon made Quality Reins visible in shop at a cost of 4500 per 1"),
+            (
+                "Wed Apr 15 11:45",
+                "MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500",
+            ),
+            (
+                "Tue Apr 14 10:30",
+                "Deradon made Quality Reins visible in shop at a cost of 4500 per 1",
+            ),
             ("Mon Apr 13 09:00", "Deradon added Quality Reins to shop"),
         ];
         let mut body = String::new();
@@ -1253,7 +1266,13 @@ mod tests {
         // Owner detection survives the round trip.
         assert_eq!(parsed.owner.as_deref(), Some("Deradon"));
         // event_at resolution survives.
-        assert_eq!(parsed.entries[0].event_at.as_deref(), Some("2026-04-13 09:00:00"));
-        assert_eq!(parsed.entries[2].event_at.as_deref(), Some("2026-04-15 11:45:00"));
+        assert_eq!(
+            parsed.entries[0].event_at.as_deref(),
+            Some("2026-04-13 09:00:00")
+        );
+        assert_eq!(
+            parsed.entries[2].event_at.as_deref(),
+            Some("2026-04-15 11:45:00")
+        );
     }
 }

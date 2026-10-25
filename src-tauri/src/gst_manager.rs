@@ -2,8 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::Manager;
 
-const GST_RELEASES_URL: &str =
-    "https://api.github.com/repos/kaeus/GorgonSurveyTracker/releases";
+const GST_RELEASES_URL: &str = "https://api.github.com/repos/kaeus/GorgonSurveyTracker/releases";
 const GST_EXE_NAME: &str = "GorgonSurveyTracker.exe";
 const GST_SUBFOLDER: &str = "gst";
 
@@ -60,7 +59,9 @@ fn gst_exe_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 
 fn read_installed_version(app: &tauri::AppHandle) -> Option<String> {
     let path = gst_dir(app).ok()?.join(GST_VERSION_FILE);
-    std::fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 fn write_installed_version(app: &tauri::AppHandle, version: &str) -> Result<(), String> {
@@ -73,6 +74,7 @@ fn write_installed_version(app: &tauri::AppHandle, version: &str) -> Result<(), 
 async fn fetch_latest_release() -> Result<GitHubRelease, String> {
     let client = reqwest::Client::builder()
         .user_agent("glogger-gst-manager")
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
@@ -81,6 +83,8 @@ async fn fetch_latest_release() -> Result<GitHubRelease, String> {
         .send()
         .await
         .map_err(|e| format!("Failed to reach GitHub: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("GitHub request failed: {e}"))?
         .json()
         .await
         .map_err(|e| format!("Failed to parse releases: {e}"))?;
@@ -166,8 +170,7 @@ pub async fn gst_download(app: tauri::AppHandle) -> Result<GstStatus, String> {
 
     // Atomic-ish rename
     if final_path.exists() {
-        std::fs::remove_file(&final_path)
-            .map_err(|e| format!("Failed to remove old exe: {e}"))?;
+        std::fs::remove_file(&final_path).map_err(|e| format!("Failed to remove old exe: {e}"))?;
     }
     std::fs::rename(&tmp_path, &final_path)
         .map_err(|e| format!("Failed to rename downloaded file: {e}"))?;

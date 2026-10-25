@@ -115,7 +115,20 @@ pub fn parse_chat_line(line: &str) -> Option<ChatMessage> {
                     None
                 }
             } else {
-                None
+                // Arrow-less [Tell] (server notice, truncated line): keep it as
+                // a system message like the sibling colon-less arm below,
+                // instead of dropping it.
+                let msg_text = remaining.to_string();
+                let item_links = extract_item_links(&msg_text);
+                Some(ChatMessage {
+                    timestamp,
+                    channel: Some(channel),
+                    sender: None,
+                    message: msg_text,
+                    is_system: true,
+                    from_player: None,
+                    item_links,
+                })
             }
         } else if let Some(colon_pos) = remaining.find(':') {
             let potential_sender = &remaining[..colon_pos];
@@ -410,7 +423,10 @@ pub struct ChatLoginInfo {
 /// Parse a chat log login line to extract character name and server name.
 /// Format: "**************************************** Logged In As PlayerName. Server Dreva. Timezone Offset -07:00:00."
 pub fn parse_chat_login_line(line: &str) -> Option<ChatLoginInfo> {
-    if !line.contains("Logged In As") {
+    // Gated on the game's own marker (same anchor the watcher matches):
+    // a guild line merely containing the phrase "Logged In As" must not
+    // rotate sessions. Mirror the logout arm's strictness.
+    if !line.contains("******** Logged In As") {
         return None;
     }
 
@@ -945,6 +961,9 @@ Dying together\n\
                 })
             );
         }
-        assert!(tagged[2].0.message.contains("still talking here, I Logged Out yesterday"));
+        assert!(tagged[2]
+            .0
+            .message
+            .contains("still talking here, I Logged Out yesterday"));
     }
 }

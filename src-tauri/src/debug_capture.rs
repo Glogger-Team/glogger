@@ -34,6 +34,9 @@ pub struct CapturedLine {
 }
 
 /// Snapshot of game state tables taken at a point in time.
+/// `truncated_sections` names the tables capped at `SNAPSHOT_ROW_LIMIT`
+/// rows (see `query_table_as_json`) so a capped snapshot is never mistaken
+/// for a complete one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameStateSnapshot {
     pub taken_at: String,
@@ -48,8 +51,9 @@ pub struct GameStateSnapshot {
     pub currencies: Vec<serde_json::Value>,
     pub world: serde_json::Value,
     pub active_skills: serde_json::Value,
+    #[serde(default)]
+    pub truncated_sections: Vec<String>,
 }
-
 /// Status of the debug capture, sent to the frontend.
 #[derive(Debug, Clone, Serialize)]
 pub struct DebugCaptureStatus {
@@ -90,6 +94,31 @@ pub struct DebugCaptureState {
     temp_writer: Option<BufWriter<fs::File>>,
 }
 
+/// Canonicalize an output path: make absolute (relative to CWD) and
+/// lexically normalize `.`/`..` without touching the filesystem.
+fn canonical_output_path(output_path: &str) -> Result<PathBuf, String> {
+    let p = PathBuf::from(output_path);
+    let abs = if p.is_absolute() {
+        p
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(p))
+            .map_err(|e| format!("Failed to resolve output path: {e}"))?
+    };
+    let mut out = PathBuf::new();
+    for comp in abs.components() {
+        use std::path::Component;
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c.as_os_str()),
+        }
+    }
+    Ok(out)
+}
+
 impl DebugCaptureState {
     pub fn new() -> Self {
         Self {
@@ -128,11 +157,21 @@ impl DebugCaptureState {
 
     /// Start a new capture. Takes an initial game state snapshot.
     /// `temp_dir` is the directory to create the temp file in (typically app data dir).
+    ///
+    /// Refuses to start while a stopped-but-unsaved capture is pending:
+    /// starting would `cleanup_temp()` the stopped capture's temp file and
+    /// snapshots. Call `save()` or `discard()` first.
     pub fn start(
         &mut self,
         snapshot: GameStateSnapshot,
         temp_dir: &std::path::Path,
     ) -> Result<(), String> {
+        if self.pending_save {
+            return Err(
+                "A stopped capture is waiting to be saved — save or discard it before starting a new one"
+                    .to_string(),
+            );
+        }
         // Clean up any leftover temp file from a previous capture
         self.cleanup_temp();
 
@@ -187,15 +226,39 @@ impl DebugCaptureState {
     }
 
     /// Save the stopped capture to a file. `filter_mode` is "normal" (filter
-    /// noise) or "full" (keep everything).
+    /// noise), "full" (keep everything), "player-only" (player lines only),
+    /// or "chat-only" (chat lines only). Anything else is rejected — the old
+    /// code treated an unknown mode as full, silently keeping noise the
+    /// caller asked to filter. `overwrite` must be true to replace an
+    /// existing file. `output_path` is canonicalized (absolute, lexically
+    /// normalized) so the bundle lands where the caller expects.
     pub fn save(
         &mut self,
         notes: String,
         filter_mode: String,
         output_path: &str,
+        overwrite: bool,
     ) -> Result<DebugCaptureResult, String> {
         if !self.pending_save {
             return Err("No stopped capture is pending save".to_string());
+        }
+        let mode = match filter_mode.as_str() {
+            "normal" => FilterMode::Normal,
+            "full" => FilterMode::Full,
+            "player-only" => FilterMode::PlayerOnly,
+            "chat-only" => FilterMode::ChatOnly,
+            other => {
+                return Err(format!(
+                    "Unknown filter_mode {other:?} (expected normal|full|player-only|chat-only)"
+                ));
+            }
+        };
+        let out_path = canonical_output_path(output_path)?;
+        if out_path.exists() && !overwrite {
+            return Err(format!(
+                "Output file already exists (pass overwrite=true to replace): {}",
+                out_path.display()
+            ));
         }
 
         let started_at = self.started_at.take().unwrap_or_default();
@@ -208,11 +271,13 @@ impl DebugCaptureState {
             .state_at_stop
             .take()
             .ok_or_else(|| "Missing stop snapshot".to_string())?;
-        let app_version = self.app_version.take().unwrap_or_else(|| "unknown".to_string());
+        let app_version = self
+            .app_version
+            .take()
+            .unwrap_or_else(|| "unknown".to_string());
 
         // Read captured lines from temp file
-        let use_filter = filter_mode == "normal";
-        let lines = self.read_temp_lines(use_filter);
+        let lines = self.read_temp_lines(mode);
 
         let filtered_player = lines.iter().filter(|l| l.source == "player").count();
         let filtered_chat = lines.iter().filter(|l| l.source == "chat").count();
@@ -241,7 +306,13 @@ impl DebugCaptureState {
             "lines": lines,
         });
 
-        let out_file = fs::File::create(output_path)
+        if let Some(parent) = out_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)
+                    .map_err(|e| format!("Failed to create output dir: {e}"))?;
+            }
+        }
+        let out_file = fs::File::create(&out_path)
             .map_err(|e| format!("Failed to create output file: {e}"))?;
         let writer = BufWriter::new(out_file);
         serde_json::to_writer_pretty(writer, &bundle)
@@ -291,8 +362,9 @@ impl DebugCaptureState {
     }
 
     /// Read all captured lines from the temp file into CapturedLine structs.
-    /// When `filter_noise` is true, known noise patterns are excluded.
-    fn read_temp_lines(&self, filter_noise: bool) -> Vec<CapturedLine> {
+    /// `Normal` drops known player-log noise; `PlayerOnly`/`ChatOnly` keep
+    /// one source; `Full` keeps everything.
+    fn read_temp_lines(&self, mode: FilterMode) -> Vec<CapturedLine> {
         let path = match &self.temp_path {
             Some(p) if p.exists() => p,
             _ => return vec![],
@@ -311,7 +383,12 @@ impl DebugCaptureState {
                 let captured_at = parts.next()?.to_string();
                 let content = parts.next()?.to_string();
 
-                if filter_noise && source == "player" && is_noise_line(&content) {
+                match mode {
+                    FilterMode::PlayerOnly if source != "player" => return None,
+                    FilterMode::ChatOnly if source != "chat" => return None,
+                    _ => {}
+                }
+                if matches!(mode, FilterMode::Normal) && source == "player" && is_noise_line(&content) {
                     return None;
                 }
 
@@ -331,6 +408,15 @@ impl DebugCaptureState {
             let _ = fs::remove_file(&path);
         }
     }
+}
+
+/// Capture line filter selected by `filter_mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilterMode {
+    Normal,
+    Full,
+    PlayerOnly,
+    ChatOnly,
 }
 
 impl Drop for DebugCaptureState {
@@ -386,99 +472,107 @@ fn is_noise_line(line: &str) -> bool {
 }
 
 /// Take a snapshot of all game state tables from the database.
+/// Returns `Err` when the pool or any table query fails (the old code
+/// returned partial/empty snapshots that looked complete).
 pub fn snapshot_game_state(
     db: &DbPool,
     character: Option<&str>,
     server: Option<&str>,
-) -> GameStateSnapshot {
-    let conn = match db.get() {
-        Ok(c) => c,
-        Err(_) => {
-            return GameStateSnapshot {
-                taken_at: Utc::now().to_rfc3339(),
-                character: character.map(String::from),
-                server: server.map(String::from),
-                skills: vec![],
-                attributes: vec![],
-                inventory: vec![],
-                equipment: vec![],
-                effects: vec![],
-                favor: vec![],
-                currencies: vec![],
-                world: serde_json::Value::Null,
-                active_skills: serde_json::Value::Null,
-            };
-        }
-    };
+) -> Result<GameStateSnapshot, String> {
+    let conn = db
+        .get()
+        .map_err(|e| format!("Snapshot DB connection failed: {e}"))?;
 
     let (char_filter, server_filter) = match (character, server) {
         (Some(c), Some(s)) => (c.to_string(), s.to_string()),
         _ => (String::new(), String::new()),
     };
 
-    GameStateSnapshot {
+    let mut truncated_sections: Vec<String> = Vec::new();
+    macro_rules! load {
+        ($table:literal) => {{
+            let (rows, truncated) =
+                query_table_as_json(&conn, $table, &char_filter, &server_filter)?;
+            if truncated {
+                truncated_sections.push($table.to_string());
+            }
+            rows
+        }};
+    }
+    let skills = load!("game_state_skills");
+    let attributes = load!("game_state_attributes");
+    let inventory = load!("game_state_inventory");
+    let equipment = load!("game_state_equipment");
+    let effects = load!("game_state_effects");
+    let favor = load!("game_state_favor");
+    let currencies = load!("game_state_currencies");
+    let world = query_world_state(&conn, &char_filter, &server_filter)?;
+    let active_skills = query_active_skills(&conn, &char_filter, &server_filter)?;
+    // World/active-skills sub-tables cap the same way; fold their names in.
+    for (key, table) in &[
+        ("weather", "game_state_weather"),
+        ("combat", "game_state_combat"),
+        ("mount", "game_state_mount"),
+        ("area", "game_state_area"),
+    ] {
+        let (_, truncated) = query_table_as_json(&conn, table, &char_filter, &server_filter)?;
+        if truncated {
+            truncated_sections.push(format!("{key}({table})"));
+        }
+    }
+    let (_, active_truncated) =
+        query_table_as_json(&conn, "game_state_active_skills", &char_filter, &server_filter)?;
+    if active_truncated {
+        truncated_sections.push("game_state_active_skills".to_string());
+    }
+
+    Ok(GameStateSnapshot {
         taken_at: Utc::now().to_rfc3339(),
         character: character.map(String::from),
         server: server.map(String::from),
-        skills: query_table_as_json(&conn, "game_state_skills", &char_filter, &server_filter),
-        attributes: query_table_as_json(
-            &conn,
-            "game_state_attributes",
-            &char_filter,
-            &server_filter,
-        ),
-        inventory: query_table_as_json(
-            &conn,
-            "game_state_inventory",
-            &char_filter,
-            &server_filter,
-        ),
-        equipment: query_table_as_json(
-            &conn,
-            "game_state_equipment",
-            &char_filter,
-            &server_filter,
-        ),
-        effects: query_table_as_json(&conn, "game_state_effects", &char_filter, &server_filter),
-        favor: query_table_as_json(&conn, "game_state_favor", &char_filter, &server_filter),
-        currencies: query_table_as_json(
-            &conn,
-            "game_state_currencies",
-            &char_filter,
-            &server_filter,
-        ),
-        world: query_world_state(&conn, &char_filter, &server_filter),
-        active_skills: query_active_skills(&conn, &char_filter, &server_filter),
-    }
+        skills,
+        attributes,
+        inventory,
+        equipment,
+        effects,
+        favor,
+        currencies,
+        world,
+        active_skills,
+        truncated_sections,
+    })
 }
 
-/// Generic helper: query all rows from a game_state table as JSON values.
+/// Query a game_state table as JSON, capped at `SNAPSHOT_ROW_LIMIT` rows per
+/// table. Returns `(rows, truncated)`: `truncated` is true when the table
+/// held more than the cap (the bundle manifest records it per section, so a
+/// capped snapshot is never mistaken for a complete one). DB errors are
+/// returned to the caller (the old code swallowed prepare/query failures
+/// into an empty vec, indistinguishable from "no data").
+const SNAPSHOT_ROW_LIMIT: usize = 5000;
 fn query_table_as_json<C: DbRead + ?Sized>(
     conn: &C,
     table: &str,
     character: &str,
     server: &str,
-) -> Vec<serde_json::Value> {
+) -> Result<(Vec<serde_json::Value>, bool), String> {
     // These tables are safe — names come from our own code, not user input.
+    // LIMIT+1 detects truncation: a full page means more rows exist.
     let sql = if character.is_empty() {
-        format!("SELECT * FROM {} LIMIT 5000", table)
+        format!("SELECT * FROM {} LIMIT {}", table, SNAPSHOT_ROW_LIMIT + 1)
     } else {
         format!(
-            "SELECT * FROM {} WHERE character_name = ?1 AND server_name = ?2 LIMIT 5000",
-            table
+            "SELECT * FROM {} WHERE character_name = ?1 AND server_name = ?2 LIMIT {}",
+            table,
+            SNAPSHOT_ROW_LIMIT + 1
         )
     };
 
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(_) => return vec![],
-    };
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("Snapshot query prepare failed for {table}: {e}"))?;
 
-    let column_names: Vec<String> = stmt
-        .column_names()
-        .iter()
-        .map(|c| c.to_string())
-        .collect();
+    let column_names: Vec<String> = stmt.column_names().iter().map(|c| c.to_string()).collect();
 
     let params: Vec<&dyn rusqlite::types::ToSql> = if character.is_empty() {
         vec![]
@@ -486,41 +580,48 @@ fn query_table_as_json<C: DbRead + ?Sized>(
         vec![&character, &server]
     };
 
-    let rows = stmt.query_map(params.as_slice(), |row| {
-        let mut map = serde_json::Map::new();
-        for (i, name) in column_names.iter().enumerate() {
-            let val: rusqlite::Result<rusqlite::types::Value> = row.get(i);
-            match val {
-                Ok(rusqlite::types::Value::Null) => {
-                    map.insert(name.clone(), serde_json::Value::Null);
-                }
-                Ok(rusqlite::types::Value::Integer(n)) => {
-                    map.insert(name.clone(), serde_json::json!(n));
-                }
-                Ok(rusqlite::types::Value::Real(f)) => {
-                    map.insert(name.clone(), serde_json::json!(f));
-                }
-                Ok(rusqlite::types::Value::Text(s)) => {
-                    map.insert(name.clone(), serde_json::json!(s));
-                }
-                Ok(rusqlite::types::Value::Blob(b)) => {
-                    map.insert(
-                        name.clone(),
-                        serde_json::json!(format!("<blob {} bytes>", b.len())),
-                    );
-                }
-                Err(_) => {
-                    map.insert(name.clone(), serde_json::Value::Null);
+    let rows = stmt
+        .query_map(params.as_slice(), |row| {
+            let mut map = serde_json::Map::new();
+            for (i, name) in column_names.iter().enumerate() {
+                let val: rusqlite::Result<rusqlite::types::Value> = row.get(i);
+                match val {
+                    Ok(rusqlite::types::Value::Null) => {
+                        map.insert(name.clone(), serde_json::Value::Null);
+                    }
+                    Ok(rusqlite::types::Value::Integer(n)) => {
+                        map.insert(name.clone(), serde_json::json!(n));
+                    }
+                    Ok(rusqlite::types::Value::Real(f)) => {
+                        map.insert(name.clone(), serde_json::json!(f));
+                    }
+                    Ok(rusqlite::types::Value::Text(s)) => {
+                        map.insert(name.clone(), serde_json::json!(s));
+                    }
+                    Ok(rusqlite::types::Value::Blob(b)) => {
+                        map.insert(
+                            name.clone(),
+                            serde_json::json!(format!("<blob {} bytes>", b.len())),
+                        );
+                    }
+                    Err(_) => {
+                        map.insert(name.clone(), serde_json::Value::Null);
+                    }
                 }
             }
-        }
-        Ok(serde_json::Value::Object(map))
-    });
+            Ok(serde_json::Value::Object(map))
+        })
+        .map_err(|e| format!("Snapshot query failed for {table}: {e}"))?;
 
-    match rows {
-        Ok(mapped) => mapped.filter_map(|r| r.ok()).collect(),
-        Err(_) => vec![],
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| format!("Snapshot row decode failed for {table}: {e}"))?);
     }
+    let truncated = out.len() > SNAPSHOT_ROW_LIMIT;
+    if truncated {
+        out.truncate(SNAPSHOT_ROW_LIMIT);
+    }
+    Ok((out, truncated))
 }
 
 /// Query the composite world state (weather, combat, mount, area).
@@ -528,7 +629,7 @@ fn query_world_state<C: DbRead + ?Sized>(
     conn: &C,
     character: &str,
     server: &str,
-) -> serde_json::Value {
+) -> Result<serde_json::Value, String> {
     let mut world = serde_json::Map::new();
 
     for (key, table) in &[
@@ -537,13 +638,13 @@ fn query_world_state<C: DbRead + ?Sized>(
         ("mount", "game_state_mount"),
         ("area", "game_state_area"),
     ] {
-        let rows = query_table_as_json(conn, table, character, server);
+        let (rows, _) = query_table_as_json(conn, table, character, server)?;
         if let Some(row) = rows.into_iter().next() {
             world.insert(key.to_string(), row);
         }
     }
 
-    serde_json::Value::Object(world)
+    Ok(serde_json::Value::Object(world))
 }
 
 /// Query active skills.
@@ -551,9 +652,9 @@ fn query_active_skills<C: DbRead + ?Sized>(
     conn: &C,
     character: &str,
     server: &str,
-) -> serde_json::Value {
-    let rows = query_table_as_json(conn, "game_state_active_skills", character, server);
-    rows.into_iter().next().unwrap_or(serde_json::Value::Null)
+) -> Result<serde_json::Value, String> {
+    let (rows, _) = query_table_as_json(conn, "game_state_active_skills", character, server)?;
+    Ok(rows.into_iter().next().unwrap_or(serde_json::Value::Null))
 }
 
 // ── Capture Replay ───────────────────────────────────────────────────────
@@ -628,10 +729,7 @@ pub fn replay_capture_file(path: String) -> Result<CaptureReplayResult, String> 
             .get("source")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let line = line_val
-            .get("line")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let line = line_val.get("line").and_then(|v| v.as_str()).unwrap_or("");
 
         match source {
             "player" => {

@@ -86,7 +86,9 @@ pub async fn scan_chat_logs(
         // same single-writer checkout, so no concurrent tail can interleave.
         let inserted = if messages.is_empty() {
             // No rows: still record the position (empty read at EOF).
-            let conn = db_pool.get_write().map_err(|e| format!("Database error: {e}"))?;
+            let conn = db_pool
+                .get_write()
+                .map_err(|e| format!("Database error: {e}"))?;
             log_positions::update_position(
                 &conn,
                 &file_path_str,
@@ -104,7 +106,9 @@ pub async fn scan_chat_logs(
             .map_err(|e| format!("Failed to update log position: {e}"))?;
             0
         } else {
-            let conn = db_pool.get_write().map_err(|e| format!("Database error: {e}"))?;
+            let conn = db_pool
+                .get_write()
+                .map_err(|e| format!("Database error: {e}"))?;
             let inserted = chat_commands::insert_chat_messages(
                 &conn,
                 &messages,
@@ -136,7 +140,9 @@ pub async fn scan_chat_logs(
     // Bulk backfill done: rebuild the FTS index so it's guaranteed consistent
     // even if any historical insert missed the sync trigger.
     if total_messages > 0 {
-        let conn = db_pool.get_write().map_err(|e| format!("Database error: {e}"))?;
+        let conn = db_pool
+            .get_write()
+            .map_err(|e| format!("Database error: {e}"))?;
         chat_commands::rebuild_chat_fts(&conn)
             .map_err(|e| format!("Failed to rebuild chat search index: {e}"))?;
     }
@@ -444,7 +450,9 @@ pub async fn scan_chat_log_file(
         })
         .collect();
 
-    let conn = db_pool.get_write().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db_pool
+        .get_write()
+        .map_err(|e| format!("Database error: {e}"))?;
 
     let mut messages_imported = 0;
     if !messages.is_empty() {
@@ -639,7 +647,9 @@ pub async fn tail_chat_log(
         None
     };
 
-    let conn = db_pool.get_write().map_err(|e| format!("Database error: {e}"))?;
+    let conn = db_pool
+        .get_write()
+        .map_err(|e| format!("Database error: {e}"))?;
     chat_commands::insert_chat_messages(&conn, &messages, file_name, &excluded_channels)
         .map_err(|e| format!("Failed to insert messages: {e}"))?;
 
@@ -715,7 +725,9 @@ pub async fn get_tell_conversations(
 
 #[tauri::command]
 pub async fn purge_chat_messages(days: u32, db_pool: State<'_, DbPool>) -> Result<usize, String> {
-    let mut conn = db_pool.get_write().map_err(|e| format!("Database error: {e}"))?;
+    let mut conn = db_pool
+        .get_write()
+        .map_err(|e| format!("Database error: {e}"))?;
 
     let cutoff_date = chrono::Utc::now() - chrono::Duration::days(days as i64);
     let cutoff_str = cutoff_date.format("%Y-%m-%d %H:%M:%S").to_string();
@@ -747,7 +759,9 @@ pub async fn purge_chat_messages(days: u32, db_pool: State<'_, DbPool>) -> Resul
 
 #[tauri::command]
 pub async fn delete_all_chat_messages(db_pool: State<'_, DbPool>) -> Result<usize, String> {
-    let mut conn = db_pool.get_write().map_err(|e| format!("Database error: {e}"))?;
+    let mut conn = db_pool
+        .get_write()
+        .map_err(|e| format!("Database error: {e}"))?;
 
     let deleted = delete_all_chat_messages_impl(&mut conn)?;
 
@@ -940,7 +954,10 @@ mod tests {
         assert_eq!(messages[0].sender.as_deref(), Some("TwinkleofToes"));
         assert_eq!(messages[0].message, "Collect Milk on TwinkleofToes!");
         assert_eq!(
-            messages[0].timestamp.format("%Y-%m-%d %H:%M:%S").to_string(),
+            messages[0]
+                .timestamp
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string(),
             "2026-10-12 20:14:16"
         );
         assert_eq!(messages[1].message, "Poop on TwinkleofToes!");
@@ -959,8 +976,7 @@ mod tests {
         )
         .unwrap();
 
-        let (messages, file_offset) =
-            ability_lines_in_file(&path, &[POOP_LINE_MARKER]).unwrap();
+        let (messages, file_offset) = ability_lines_in_file(&path, &[POOP_LINE_MARKER]).unwrap();
         let _ = std::fs::remove_file(&path);
 
         // Caller falls back to the settings offset for such files.
@@ -982,12 +998,11 @@ mod tests {
                 let home = std::env::var("USERPROFILE")
                     .or_else(|_| std::env::var("HOME"))
                     .expect("no USERPROFILE/HOME");
-                PathBuf::from(home)
-                    .join("AppData/LocalLow/Elder Game/Project Gorgon/ChatLogs")
+                PathBuf::from(home).join("AppData/LocalLow/Elder Game/Project Gorgon/ChatLogs")
             }
         };
-        let character =
-            std::env::var("GLOGGER_POOP_SMOKE_CHAR").unwrap_or_else(|_| "TwinkleofToes".to_string());
+        let character = std::env::var("GLOGGER_POOP_SMOKE_CHAR")
+            .unwrap_or_else(|_| "TwinkleofToes".to_string());
         // Fallback only: every real archive file carries its own login line, so the
         // recorded instants must not depend on this value (asserted below).
         let fallback_tz: i32 = std::env::var("GLOGGER_TZ_OFFSET_SECONDS")
@@ -996,7 +1011,11 @@ mod tests {
             .unwrap_or(0);
 
         let files = chat_parser::get_chat_log_files(&dir).unwrap();
-        assert!(!files.is_empty(), "no Chat-*.log files in {}", dir.display());
+        assert!(
+            !files.is_empty(),
+            "no Chat-*.log files in {}",
+            dir.display()
+        );
 
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::db::migrations::run_migrations(&conn, None).unwrap();
@@ -1008,11 +1027,9 @@ mod tests {
             for f in &files {
                 // Same helper the command uses — exercises the byte-level
                 // pre-filter and the per-file offset too.
-                let (messages, file_offset) = ability_lines_in_file(
-                    &f.file_path,
-                    &[POOP_LINE_MARKER, SELF_MILK_LINE_MARKER],
-                )
-                .unwrap();
+                let (messages, file_offset) =
+                    ability_lines_in_file(&f.file_path, &[POOP_LINE_MARKER, SELF_MILK_LINE_MARKER])
+                        .unwrap();
                 let file_tz = file_offset.unwrap_or(fallback);
                 for (target, ts) in self_milk_events_in_messages(&messages, &character, file_tz) {
                     instants.push(ts.clone());
@@ -1031,9 +1048,7 @@ mod tests {
                     }
                 }
                 for (target, ts) in poop_events_in_messages(&messages, &character) {
-                    if record
-                        && record_poop(conn, &character, "Dreva", &target, &ts).unwrap()
-                    {
+                    if record && record_poop(conn, &character, "Dreva", &target, &ts).unwrap() {
                         poops += 1;
                     }
                 }
@@ -1043,7 +1058,8 @@ mod tests {
 
         let (poops, self_milks, instants) = scan(&conn, fallback_tz, true);
         let stats =
-            crate::db::game_state_commands::get_pooping_stats_for(&conn, &character, "Dreva").unwrap();
+            crate::db::game_state_commands::get_pooping_stats_for(&conn, &character, "Dreva")
+                .unwrap();
         println!(
             "ability history smoke: {poops} poop(s) + {self_milks} self-milk(s) over {} files; {character} total_poops={} days={} first={:?} last={:?}",
             files.len(),
@@ -1053,7 +1069,10 @@ mod tests {
             stats.last_poop
         );
         assert!(poops > 0, "expected poops in the archived chat logs");
-        assert!(self_milks > 0, "expected self-milks in the archived chat logs");
+        assert!(
+            self_milks > 0,
+            "expected self-milks in the archived chat logs"
+        );
         assert_eq!(stats.total_poops as usize, poops);
         let second_pass = scan(&conn, fallback_tz, true);
         assert_eq!(

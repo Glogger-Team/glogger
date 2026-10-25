@@ -59,10 +59,7 @@ pub fn scan_gift_notes(path: &Path, week_start: &str) -> Vec<GiftNote> {
         // Not silently "no notes in this file": this is the difference between
         // "nothing to reconcile" and "the scan could not read the log".
         Err(e) => {
-            startup_log!(
-                "Statehelm gift scan skipped {}: {e}",
-                path.display()
-            );
+            startup_log!("Statehelm gift scan skipped {}: {e}", path.display());
             return Vec::new();
         }
     };
@@ -313,24 +310,23 @@ pub fn backfill_from_player_logs(
     // this week's notes. (All files are still scanned for the week filter.)
     if let Some(dir) = crate::replay::player_log_archive_dir(settings) {
         if let Some(threshold) = archive_mtime_threshold(&week_start) {
-            let mut archived: Vec<(std::time::SystemTime, PathBuf)> =
-                std::fs::read_dir(&dir)
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .filter_map(|entry| {
-                        let path = entry.path();
-                        let name = path.file_name()?.to_str()?;
-                        if !name.starts_with("Player-") || !name.ends_with(".log") {
-                            return None;
-                        }
-                        let mtime = entry.metadata().ok()?.modified().ok()?;
-                        if mtime < threshold {
-                            return None;
-                        }
-                        Some((mtime, path))
-                    })
-                    .collect();
+            let mut archived: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    let name = path.file_name()?.to_str()?;
+                    if !name.starts_with("Player-") || !name.ends_with(".log") {
+                        return None;
+                    }
+                    let mtime = entry.metadata().ok()?.modified().ok()?;
+                    if mtime < threshold {
+                        return None;
+                    }
+                    Some((mtime, path))
+                })
+                .collect();
             archived.sort_by_key(|(mtime, _)| *mtime);
             paths.extend(archived.into_iter().map(|(_, p)| p));
         }
@@ -682,13 +678,8 @@ mod tests {
         let path = write_log(&log);
 
         assert_eq!(
-            backfill_gifts_from_paths(
-                std::slice::from_ref(&path),
-                WEEK_START,
-                "TestServer",
-                &pool
-            )
-            .unwrap(),
+            backfill_gifts_from_paths(std::slice::from_ref(&path), WEEK_START, "TestServer", &pool)
+                .unwrap(),
             0,
             "no NPC rows to resolve display names against"
         );
@@ -703,13 +694,8 @@ mod tests {
 
         insert_npc(&pool.get_write().unwrap(), "NPC_Corinth", "Corinth");
         assert_eq!(
-            backfill_gifts_from_paths(
-                std::slice::from_ref(&path),
-                WEEK_START,
-                "TestServer",
-                &pool
-            )
-            .unwrap(),
+            backfill_gifts_from_paths(std::slice::from_ref(&path), WEEK_START, "TestServer", &pool)
+                .unwrap(),
             1,
             "the same log reconciles once the CDN is persisted"
         );
@@ -746,11 +732,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        let index_pick = crate::game_data::build_npc_name_index(
-            pairs.iter().map(|(key, name)| (key, name)),
-        )
-        .remove("Twin")
-        .unwrap();
+        let index_pick =
+            crate::game_data::build_npc_name_index(pairs.iter().map(|(key, name)| (key, name)))
+                .remove("Twin")
+                .unwrap();
 
         assert_eq!(sql_pick, "NPC_TwinA", "the lowest key wins");
         assert_eq!(index_pick, sql_pick, "one key for both resolvers");
@@ -774,13 +759,9 @@ mod tests {
         );
         let path = write_log(&log);
 
-        let changed = backfill_gifts_from_paths(
-            std::slice::from_ref(&path),
-            WEEK_START,
-            "TestServer",
-            &pool,
-        )
-        .unwrap();
+        let changed =
+            backfill_gifts_from_paths(std::slice::from_ref(&path), WEEK_START, "TestServer", &pool)
+                .unwrap();
         assert_eq!(changed, 1, "Corinth reconciled");
 
         {
@@ -807,13 +788,9 @@ mod tests {
         }
 
         // Idempotent: second run changes nothing.
-        let changed_again = backfill_gifts_from_paths(
-            std::slice::from_ref(&path),
-            WEEK_START,
-            "TestServer",
-            &pool,
-        )
-        .unwrap();
+        let changed_again =
+            backfill_gifts_from_paths(std::slice::from_ref(&path), WEEK_START, "TestServer", &pool)
+                .unwrap();
         assert_eq!(changed_again, 0, "second call is a no-op");
         {
             let conn = pool.get().unwrap();
@@ -860,13 +837,9 @@ mod tests {
         );
         let path = write_log(&log);
 
-        let changed = backfill_gifts_from_paths(
-            std::slice::from_ref(&path),
-            WEEK_START,
-            "TestServer",
-            &pool,
-        )
-        .unwrap();
+        let changed =
+            backfill_gifts_from_paths(std::slice::from_ref(&path), WEEK_START, "TestServer", &pool)
+                .unwrap();
         assert_eq!(changed, 1, "over-count reconcile counts as a change");
 
         {

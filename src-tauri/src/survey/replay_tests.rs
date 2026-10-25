@@ -239,9 +239,7 @@ fn replay_dataset(player_log: &Path, chat_log: &Path) -> Result<Connection, Stri
         // Drain any chat gains whose UTC time is at or before this line's
         // timestamp. This is the time-merge: chat gains land in the parser's
         // buffer just-in-time for the AddItem they belong to.
-        while next_chat_idx < resolved_gains.len()
-            && resolved_gains[next_chat_idx].0 <= line_secs
-        {
+        while next_chat_idx < resolved_gains.len() && resolved_gains[next_chat_idx].0 <= line_secs {
             let (_, g, internal) = &resolved_gains[next_chat_idx];
             parser.feed_chat_gain(internal.clone(), g.quantity, &g.utc_hms);
             next_chat_idx += 1;
@@ -301,35 +299,34 @@ fn replay_dataset_chat_only(player_log: &Path, chat_log: &Path) -> Result<Connec
         })
         .collect();
 
-    let feed_gain = |aggregator: &mut SurveySessionAggregator,
-                         g: &ChatGain,
-                         internal: &Option<String>| {
-        let ts = format!("{} {}", base_date_str, g.utc_hms);
-        let attributed = aggregator.attribute_chat_gain(
-            &conn,
-            CHARACTER,
-            SERVER,
-            internal.as_deref(),
-            g.quantity,
-            &ts,
-        );
-        let (kind, details): (Option<&str>, Option<String>) = match attributed {
-            Some(id) => (
-                Some("survey_chat"),
-                Some(format!("{{\"survey_use_id\":{id}}}")),
-            ),
-            None => (None, None),
-        };
-        let row_name = internal.as_deref().unwrap_or(&g.item_display);
-        conn.execute(
-            "INSERT INTO item_transactions
+    let feed_gain =
+        |aggregator: &mut SurveySessionAggregator, g: &ChatGain, internal: &Option<String>| {
+            let ts = format!("{} {}", base_date_str, g.utc_hms);
+            let attributed = aggregator.attribute_chat_gain(
+                &conn,
+                CHARACTER,
+                SERVER,
+                internal.as_deref(),
+                g.quantity,
+                &ts,
+            );
+            let (kind, details): (Option<&str>, Option<String>) = match attributed {
+                Some(id) => (
+                    Some("survey_chat"),
+                    Some(format!("{{\"survey_use_id\":{id}}}")),
+                ),
+                None => (None, None),
+            };
+            let row_name = internal.as_deref().unwrap_or(&g.item_display);
+            conn.execute(
+                "INSERT INTO item_transactions
                 (timestamp, character_name, server_name, item_name, internal_name,
                  quantity, context, source, source_kind, source_details)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'loot', 'chat_status', ?7, ?8)",
-            params![ts, CHARACTER, SERVER, row_name, row_name, g.quantity, kind, details],
-        )
-        .expect("insert chat row");
-    };
+                params![ts, CHARACTER, SERVER, row_name, row_name, g.quantity, kind, details],
+            )
+            .expect("insert chat row");
+        };
 
     let mut next_chat_idx = 0usize;
     let player_content = fs::read_to_string(player_log).map_err(|e| e.to_string())?;
@@ -357,9 +354,7 @@ fn replay_dataset_chat_only(player_log: &Path, chat_log: &Path) -> Result<Connec
             }
         };
 
-        while next_chat_idx < resolved_gains.len()
-            && resolved_gains[next_chat_idx].0 <= line_secs
-        {
+        while next_chat_idx < resolved_gains.len() && resolved_gains[next_chat_idx].0 <= line_secs {
             let (_, g, internal) = &resolved_gains[next_chat_idx];
             feed_gain(&mut aggregator, g, internal);
             next_chat_idx += 1;
@@ -386,8 +381,7 @@ fn push_through_aggregator(
     mut events: Vec<crate::player_event_parser::PlayerEvent>,
 ) {
     for ev in events.iter_mut() {
-        let _agg_events =
-            aggregator.process_event(ev, conn, CHARACTER, SERVER, None);
+        let _agg_events = aggregator.process_event(ev, conn, CHARACTER, SERVER, None);
         // game_state would persist the event normally; for the tests we
         // skip game_state and instead persist a minimal `item_transactions`
         // row directly when the provenance carries a survey_use_id. This
@@ -410,7 +404,11 @@ fn persist_for_test(conn: &Connection, ev: &crate::player_event_parser::PlayerEv
             provenance,
             timestamp,
             ..
-        } => (item_name.clone(), *initial_quantity as i32, (provenance.clone(), timestamp.clone())),
+        } => (
+            item_name.clone(),
+            *initial_quantity as i32,
+            (provenance.clone(), timestamp.clone()),
+        ),
         PlayerEvent::ItemStackChanged {
             item_name,
             delta,
@@ -509,8 +507,7 @@ fn loot_gap_report(
 ) -> Vec<(String, i64, i64, i64)> {
     // (display_name, chat_qty, pipeline_qty, delta)
     let mut out = Vec::new();
-    let mut seen_display: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut seen_display: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (display, &chat_qty) in chat_totals {
         let internal = item_display_to_internal.get(display).cloned();
         // Pipeline writes by internal name (it doesn't have a display name in
@@ -613,7 +610,8 @@ fn use_count(conn: &Connection, kind: Option<SurveyUseKind>) -> i64 {
         ),
         None => "SELECT COUNT(*) FROM survey_uses".to_string(),
     };
-    conn.query_row(&sql, [], |r| r.get::<_, i64>(0)).unwrap_or(0)
+    conn.query_row(&sql, [], |r| r.get::<_, i64>(0))
+        .unwrap_or(0)
 }
 
 #[test]
@@ -785,10 +783,8 @@ fn replay_50x_povus_marvelous() {
     // The pipeline writes loot rows by INTERNAL name (e.g., "MetalSlab9"),
     // while results.txt uses display names ("Marvelous Metal Slab"). Resolve
     // each results.txt entry through CDN and compare.
-    let expected = parse_results_file(
-        &Path::new(dataset).join("results.txt"),
-    )
-    .expect("results.txt should parse");
+    let expected = parse_results_file(&Path::new(dataset).join("results.txt"))
+        .expect("results.txt should parse");
     let mut mismatches = Vec::new();
     for (display, expected_qty) in &expected {
         let internal = {
@@ -807,7 +803,10 @@ fn replay_50x_povus_marvelous() {
     if !mismatches.is_empty() {
         println!("[replay-50x-povus] mismatches vs results.txt:");
         for (item, expected, actual) in &mismatches {
-            println!("  {:>40}  expected={:>4}  actual={:>4}", item, expected, actual);
+            println!(
+                "  {:>40}  expected={:>4}  actual={:>4}",
+                item, expected, actual
+            );
         }
     }
     // Empirical baseline: with the Mining-wins-over-passive heuristic, this
@@ -915,7 +914,10 @@ fn cdn_items_load_smoke() {
     match load_game_data_from_cdn() {
         Ok(gd) => {
             let count = gd.try_read().unwrap().items.len();
-            assert!(count > 1000, "expected many items in CDN snapshot, got {count}");
+            assert!(
+                count > 1000,
+                "expected many items in CDN snapshot, got {count}"
+            );
         }
         Err(e) => {
             // Tolerate missing fixtures in CI — print a hint and pass. The
@@ -1134,9 +1136,7 @@ fn evaluate_dataset(
             .push((display.clone(), expected_qty as i64, pipeline_qty, delta));
     }
     // Sort by |delta| descending for readability.
-    result
-        .item_details
-        .sort_by_key(|(_, _, _, d)| -d.abs());
+    result.item_details.sort_by_key(|(_, _, _, d)| -d.abs());
 
     // Detect extra items: pipeline attributed items not in results.txt.
     // Build a set of internal names we've already matched above.
@@ -1326,8 +1326,10 @@ fn run_accuracy_report(chat_only: bool) {
     println!("════════════════════════════════════════════════════════════════════════════");
     println!("  SUMMARY ({} datasets)", results.len());
     println!("────────────────────────────────────────────────────────────────────────────");
-    println!("  Item-level:  {} exact, {} close (±1-2), {} off (>2)  of {} total items",
-        grand_exact, grand_close, grand_large, grand_expected_items);
+    println!(
+        "  Item-level:  {} exact, {} close (±1-2), {} off (>2)  of {} total items",
+        grand_exact, grand_close, grand_large, grand_expected_items
+    );
     if grand_extra_items > 0 {
         println!(
             "  Extra items: {} items with {} total qty attributed but not in ground truth",
@@ -1343,11 +1345,7 @@ fn run_accuracy_report(chat_only: bool) {
 
     // Hard assertions. Every dataset must replay successfully in both modes.
     for r in &results {
-        assert!(
-            r.ok,
-            "dataset '{}' failed to replay: {:?}",
-            r.name, r.error
-        );
+        assert!(r.ok, "dataset '{}' failed to replay: {:?}", r.name, r.error);
     }
 
     if chat_only {

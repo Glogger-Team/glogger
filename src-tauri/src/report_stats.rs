@@ -206,9 +206,12 @@ pub fn persist_stats(
 
 /// Extract text between `<b>` and `</b>` tags.
 fn extract_bold(line: &str) -> Option<String> {
-    let start = line.find("<b>")? + 3;
-    let end = line.find("</b>")?;
-    Some(line[start..end].to_string())
+    let open = line.find("<b>")?;
+    let start = open + 3;
+    // Search for the close tag *after* the open tag: a `</b>` that precedes
+    // `<b>` (stray/mismatched markup) must not produce a backwards slice.
+    let rel = line[start..].find("</b>")?;
+    Some(line[start..start + rel].to_string())
 }
 
 /// Extract section name from `<b><color=#hex>Name</color></b>` or similar.
@@ -218,7 +221,9 @@ fn extract_color_header(line: &str) -> Option<String> {
     let tag_end = line[color_start..].find('>')? + color_start + 1;
     let rest = &line[tag_end..];
     // Content runs until `</color>`
-    let end = rest.find("</color>").unwrap_or_else(|| rest.find('<').unwrap_or(rest.len()));
+    let end = rest
+        .find("</color>")
+        .unwrap_or_else(|| rest.find('<').unwrap_or(rest.len()));
     let name = rest[..end].trim().to_string();
     if name.is_empty() {
         None
@@ -250,7 +255,11 @@ fn extract_italic_stat(line: &str) -> Option<(String, String)> {
     let i_start = line.find("<i>")?;
     let i_end = line.find("</i>")?;
     let value = line[i_start + 3..i_end].to_string();
-    let label = line[..i_start].trim().trim_end_matches('?').trim().to_string();
+    let label = line[..i_start]
+        .trim()
+        .trim_end_matches('?')
+        .trim()
+        .to_string();
     if label.is_empty() {
         return None;
     }
@@ -347,8 +356,10 @@ You have used <b>71 days</b> of VIP from a Steam subscription.
 "#;
         let stats = parse_behavior_report(content);
 
-        let challenges: Vec<&ParsedStat> =
-            stats.iter().filter(|s| s.category == "challenges").collect();
+        let challenges: Vec<&ParsedStat> = stats
+            .iter()
+            .filter(|s| s.category == "challenges")
+            .collect();
         assert!(challenges.len() >= 2);
         assert!(challenges
             .iter()
@@ -364,11 +375,17 @@ You have used <b>71 days</b> of VIP from a Steam subscription.
             .iter()
             .filter(|s| s.category == "killing_stats")
             .collect();
-        assert!(kills.iter().any(|s| s.name == "killed_foes_any" && s.value == "61453"));
-        assert!(kills.iter().any(|s| s.name == "attacks_made" && s.value == "196208"));
+        assert!(kills
+            .iter()
+            .any(|s| s.name == "killed_foes_any" && s.value == "61453"));
+        assert!(kills
+            .iter()
+            .any(|s| s.name == "attacks_made" && s.value == "196208"));
 
-        let misc: Vec<&ParsedStat> =
-            stats.iter().filter(|s| s.category == "misc_stats").collect();
+        let misc: Vec<&ParsedStat> = stats
+            .iter()
+            .filter(|s| s.category == "misc_stats")
+            .collect();
         assert!(misc
             .iter()
             .any(|s| s.name == "time_spent_online" && s.value == "40 days 13 hours"));
@@ -388,7 +405,12 @@ You have used <b>71 days</b> of VIP from a Steam subscription.
         // This is how content actually arrives from ProcessBook — literal \n escapes, not real newlines
         let content = r#"Zenith was created on <b>Sat Jan 31 09:40:49 EST 2026</b>.\nYou have spent <b>40 days 13 hours</b> logged into the game.\nYou have died <b>829</b> times.\nYou have performed <b>196,208</b> attacks.\nYou have killed <b>61,453</b> monsters.\nYou have dealt <b>134,065,964</b> damage.\nYou have taken <b>5,933,874</b> damage.\nYou have used <b>71 days</b> of VIP from a Steam subscription."#;
         let stats = parse_player_age(content);
-        assert_eq!(stats.len(), 8, "Expected 8 stats, got: {:?}", stats.iter().map(|s| &s.name).collect::<Vec<_>>());
+        assert_eq!(
+            stats.len(),
+            8,
+            "Expected 8 stats, got: {:?}",
+            stats.iter().map(|s| &s.name).collect::<Vec<_>>()
+        );
 
         let by_name: std::collections::HashMap<&str, &str> = stats
             .iter()

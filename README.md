@@ -161,9 +161,9 @@ Before committing, lint what you changed (see `AGENTS.md` → `## Linting` for t
 
 ```bash
 npm run build                                    # TS/Vue typecheck
-mise x ruff -- ruff check scripts/               # Python
-shellcheck -S warning scripts/*.sh               # Shell
-mise x yamllint -- yamllint .github/             # YAML / workflows
+mise x ruff -- ruff check scripts/               # Python (also: ruff format --check scripts/)
+shellcheck -S warning scripts/*.sh               # Shell (CI also scans .githooks/ — full table in AGENTS.md)
+mise x yamllint -- yamllint .github/             # YAML / workflows (full table in AGENTS.md)
 ```
 
 ## Tech Stack

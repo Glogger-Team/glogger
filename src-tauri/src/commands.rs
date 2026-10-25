@@ -1,7 +1,8 @@
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::BufRead;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -26,10 +27,40 @@ use crate::survey::aggregator::SurveySessionAggregator;
 /// machines or otherwise had its mtime clobbered, results will be off by
 /// that amount.
 #[tauri::command]
-pub async fn parse_log(path: String, app: AppHandle) -> Result<(), String> {
+pub async fn parse_log(path: String, app: AppHandle) -> Result<String, String> {
+    let job_id = format!("parse_log-{}", chrono::Utc::now().timestamp_millis());
     let path = PathBuf::from(&path);
-    if !path.exists() {
-        return Err(format!("File not found: {}", path.display()));
+    // Gate: must exist, be a regular file, have a log-ish extension, and fit
+    // the 512 MiB upload cap (matches the frontend's guard; keeps a hostile
+    // path from feeding directories / device nodes / giant dumps to the
+    // line reader).
+    const MAX_PARSE_LOG_BYTES: u64 = 512 * 1024 * 1024;
+    let meta = std::fs::metadata(&path)
+        .map_err(|_| format!("File not found: {}", path.display()))?;
+    if !meta.is_file() {
+        return Err(format!("Not a file: {}", path.display()));
+    }
+    let ext_ok = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("log") || e.eq_ignore_ascii_case("txt"));
+    if !ext_ok {
+        return Err(format!(
+            "Unsupported file type (expected .log/.txt): {}",
+            path.display()
+        ));
+    }
+    if meta.len() > MAX_PARSE_LOG_BYTES {
+        return Err(format!(
+            "File too large ({} bytes, cap 512 MiB): {}",
+            meta.len(),
+            path.display()
+        ));
+    }
+    {
+        let states = app.state::<ParseLogJobs>();
+        let mut jobs = states.0.lock().map_err(|e| format!("Job registry poisoned: {e}"))?;
+        jobs.insert(job_id.clone(), ParseLogStatus::Running);
     }
 
     let db = app.state::<DbPool>().inner().clone();
@@ -39,7 +70,16 @@ pub async fn parse_log(path: String, app: AppHandle) -> Result<(), String> {
     let base_date = file_mtime_utc_date(&path).unwrap_or_else(|| chrono::Utc::now().date_naive());
     eprintln!("[parse_log] Base date (from file mtime): {}", base_date);
 
+    let job_id_worker = job_id.clone();
+    let app_worker = app.clone();
     tokio::task::spawn_blocking(move || {
+        let finish = |status: ParseLogStatus| {
+            if let Some(jobs) = app_worker.try_state::<ParseLogJobs>() {
+                if let Ok(mut guard) = jobs.0.lock() {
+                    guard.insert(job_id_worker.clone(), status);
+                }
+            }
+        };
         let mut player_parser = PlayerEventParser::new();
         let mut game_state = GameStateManager::new(game_data.clone());
         game_state.set_base_date(base_date);
@@ -62,7 +102,9 @@ pub async fn parse_log(path: String, app: AppHandle) -> Result<(), String> {
         let file = match File::open(&path) {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("[parse_log] open error: {e}");
+                let msg = format!("[parse_log] open error: {e}");
+                eprintln!("{msg}");
+                finish(ParseLogStatus::Failed { error: msg });
                 return;
             }
         };
@@ -97,9 +139,11 @@ pub async fn parse_log(path: String, app: AppHandle) -> Result<(), String> {
 
             // Run survey aggregator before batching
             for pe in events.iter_mut() {
-                if let (Some(character), Some(server), Ok(conn)) =
-                    (active_char.as_deref(), active_server.as_deref(), db.get_write())
-                {
+                if let (Some(character), Some(server), Ok(conn)) = (
+                    active_char.as_deref(),
+                    active_server.as_deref(),
+                    db.get_write(),
+                ) {
                     let _ = survey_aggregator.process_event(pe, &conn, character, server, None);
                 }
             }
@@ -161,9 +205,11 @@ pub async fn parse_log(path: String, app: AppHandle) -> Result<(), String> {
         let mut flush_events = player_parser.flush_all_pending();
         if !flush_events.is_empty() {
             for pe in flush_events.iter_mut() {
-                if let (Some(character), Some(server), Ok(conn)) =
-                    (active_char.as_deref(), active_server.as_deref(), db.get_write())
-                {
+                if let (Some(character), Some(server), Ok(conn)) = (
+                    active_char.as_deref(),
+                    active_server.as_deref(),
+                    db.get_write(),
+                ) {
                     let _ = survey_aggregator.process_event(pe, &conn, character, server, None);
                 }
             }
@@ -176,9 +222,30 @@ pub async fn parse_log(path: String, app: AppHandle) -> Result<(), String> {
                 app.emit("game-state-updated", &domains).ok();
             }
         }
+        finish(ParseLogStatus::Done);
     });
 
-    Ok(())
+    Ok(job_id)
+}
+
+/// Parse-log job status for `parse_log`'s background worker. The worker
+/// marks the job `Failed` on open/read errors (previously only `eprintln!`)
+/// and `Done` on clean completion; an entry that is still `Running` after
+/// the command returned means the worker is mid-file.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ParseLogStatus {
+    Running,
+    Done,
+    Failed { error: String },
+}
+
+/// In-memory registry of parse-log jobs (managed in `lib.rs`).
+pub struct ParseLogJobs(pub Mutex<HashMap<String, ParseLogStatus>>);
+
+#[tauri::command]
+pub fn get_parse_log_status(jobs: tauri::State<'_, ParseLogJobs>, job_id: String) -> Option<ParseLogStatus> {
+    jobs.0.lock().ok()?.get(&job_id).cloned()
 }
 
 /// Read the file's last-modified time and return it as a UTC `NaiveDate`.
@@ -190,4 +257,3 @@ fn file_mtime_utc_date(path: &PathBuf) -> Option<chrono::NaiveDate> {
     let dt: chrono::DateTime<chrono::Utc> = mtime.into();
     Some(dt.date_naive())
 }
-

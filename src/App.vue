@@ -266,7 +266,20 @@ async function parseLog() {
   parsing.value = true;
   try {
     const path = settingsStore.settings.logFilePath || settingsStore.getPlayerLogPath();
-    await invoke("parse_log", { path });
+    const jobId = await invoke<string>("parse_log", { path });
+    // parse_log returns immediately; poll the job registry for the outcome.
+    // Poll is bounded (~10 min): a stuck Running job must time out rather
+    // than spin parsing=true forever. A missing registry entry is a failure,
+    // not success (entry absent = evicted backend or lock failure).
+    let finished = false;
+    for (let i = 0; i < 1200; i++) {
+      await new Promise(r => setTimeout(r, 500));
+      const status = await invoke<{ state: string; error?: string } | null>("get_parse_log_status", { jobId });
+      if (!status) throw new Error("Log parse job not found — please retry");
+      if (status.state === "done") { finished = true; break; }
+      if (status.state === "failed") throw new Error(status.error ?? "Log parse failed");
+    }
+    if (!finished) throw new Error("Log parse timed out");
   } catch (e) {
     error.value = String(e);
   } finally {

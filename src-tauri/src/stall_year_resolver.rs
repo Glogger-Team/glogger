@@ -41,10 +41,7 @@ fn month_num(mon: &str) -> Option<u32> {
 
 fn format_iso(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> Option<String> {
     let date = NaiveDate::from_ymd_opt(year, month, day)?;
-    let dt = NaiveDateTime::new(
-        date,
-        chrono::NaiveTime::from_hms_opt(hour, minute, 0)?,
-    );
+    let dt = NaiveDateTime::new(date, chrono::NaiveTime::from_hms_opt(hour, minute, 0)?);
     Some(dt.format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
@@ -53,10 +50,7 @@ fn format_iso(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> Option
 ///
 /// Caller MUST reverse the book's newest-first content before passing it here,
 /// matching the parser's `raw_entries.reverse()` contract.
-pub fn resolve_timestamps_oldest_first(
-    timestamps: &[&str],
-    base_year: i32,
-) -> Vec<Option<String>> {
+pub fn resolve_timestamps_oldest_first(timestamps: &[&str], base_year: i32) -> Vec<Option<String>> {
     let mut out = Vec::with_capacity(timestamps.len());
     let mut year = base_year;
     let mut prev_month: Option<u32> = None;
@@ -162,24 +156,25 @@ mod tests {
             (now.month(), now.day() + 1)
         } else {
             (
-                if now.month() == 12 { 1 } else { now.month() + 1 },
+                if now.month() == 12 {
+                    1
+                } else {
+                    now.month() + 1
+                },
                 1,
             )
         };
         // Edge: Jan 1 of next month isn't "future in same year" when month wraps,
         // so only assert on non-wrapping case.
         if future_month > now.month() || (future_month == now.month() && future_day > now.day()) {
-            let ts = format!(
-                "Mon {} {:02} 09:00",
-                month_abbr(future_month),
-                future_day
-            );
+            let ts = format!("Mon {} {:02} 09:00", month_abbr(future_month), future_day);
             assert_eq!(base_year_for_live(&ts), now.year() - 1);
         }
     }
 
     fn month_abbr(m: u32) -> &'static str {
-        ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-            [(m - 1) as usize]
+        [
+            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        ][(m - 1) as usize]
     }
 }

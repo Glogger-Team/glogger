@@ -1,4 +1,4 @@
-use super::{WriteConn, DbPool};
+use super::{DbPool, WriteConn};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 /// Advanced database administration commands
@@ -87,7 +87,9 @@ pub fn get_database_stats(db: State<'_, DbPool>) -> Result<DatabaseStats, String
         .unwrap_or(0);
 
     let item_transactions_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM item_transactions", [], |row| row.get(0))
+        .query_row("SELECT COUNT(*) FROM item_transactions", [], |row| {
+            row.get(0)
+        })
         .unwrap_or(0);
 
     let chat_messages_count: i64 = conn
@@ -377,10 +379,16 @@ mod tests {
         )
         .unwrap();
         for t in ["2000-01-01 00:00:00", "2000-01-02 00:00:00"] {
-            c.execute("INSERT INTO item_transactions(timestamp) VALUES (?1)", params![t])
-                .unwrap();
-            c.execute("INSERT INTO chat_messages(timestamp) VALUES (?1)", params![t])
-                .unwrap();
+            c.execute(
+                "INSERT INTO item_transactions(timestamp) VALUES (?1)",
+                params![t],
+            )
+            .unwrap();
+            c.execute(
+                "INSERT INTO chat_messages(timestamp) VALUES (?1)",
+                params![t],
+            )
+            .unwrap();
         }
         c.execute(
             "INSERT INTO item_transactions(timestamp) VALUES (datetime('now'))",
@@ -405,7 +413,10 @@ mod tests {
         let remaining: i64 = c
             .query_row("SELECT COUNT(*) FROM item_transactions", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(remaining, 1, "the current row survives an age-bounded purge");
+        assert_eq!(
+            remaining, 1,
+            "the current row survives an age-bounded purge"
+        );
     }
 
     #[test]

@@ -60,8 +60,8 @@ const OVERWORLD_EDGES: &[(&str, &str)] = &[
     (AREA_SERBULE, AREA_SUN_VALE), // boatman
     (AREA_ELTIBULE, AREA_CASINO),
     (AREA_ELTIBULE, AREA_KUR_MOUNTAINS),
-    (AREA_CASINO, AREA_RAHU),       // portal during major moon phases
-    (AREA_CASINO, AREA_STATEHELM),  // portal during crescent/gibbous phases
+    (AREA_CASINO, AREA_RAHU),      // portal during major moon phases
+    (AREA_CASINO, AREA_STATEHELM), // portal during crescent/gibbous phases
     (AREA_KUR_MOUNTAINS, AREA_ILMARI),
     (AREA_ILMARI, AREA_RAHU),
     (AREA_KUR_MOUNTAINS, AREA_GAZLUK),
@@ -143,19 +143,16 @@ impl ZoneGraph {
         }
         zone_set.sort();
 
-        let zone_index: HashMap<&'static str, usize> = zone_set
-            .iter()
-            .enumerate()
-            .map(|(i, &z)| (z, i))
-            .collect();
+        let zone_index: HashMap<&'static str, usize> =
+            zone_set.iter().enumerate().map(|(i, &z)| (z, i)).collect();
 
         let n = zone_set.len();
         let mut adjacency = vec![Vec::new(); n];
         for &(a, b) in OVERWORLD_EDGES {
             // Skip excluded edges (check both directions).
-            let dominated = excluded.iter().any(|&(ea, eb)| {
-                (a == ea && b == eb) || (a == eb && b == ea)
-            });
+            let dominated = excluded
+                .iter()
+                .any(|&(ea, eb)| (a == ea && b == eb) || (a == eb && b == ea));
             if dominated {
                 continue;
             }
@@ -454,8 +451,14 @@ mod tests {
     fn test_resolve_friendly_names() {
         let g = ZoneGraph::new();
         assert_eq!(g.resolve_friendly_name("Serbule"), Some(AREA_SERBULE));
-        assert_eq!(g.resolve_friendly_name("Red Wing Casino"), Some(AREA_CASINO));
-        assert_eq!(g.resolve_friendly_name("Caves Beneath Gazluk"), Some(AREA_GAZLUK_CAVES));
+        assert_eq!(
+            g.resolve_friendly_name("Red Wing Casino"),
+            Some(AREA_CASINO)
+        );
+        assert_eq!(
+            g.resolve_friendly_name("Caves Beneath Gazluk"),
+            Some(AREA_GAZLUK_CAVES)
+        );
         assert_eq!(g.resolve_friendly_name("Ilmari Desert"), Some(AREA_ILMARI));
         assert_eq!(g.resolve_friendly_name("AreaSerbule"), Some(AREA_SERBULE)); // CDN key passthrough
         assert_eq!(g.resolve_friendly_name("Nonexistent Zone"), None);

@@ -12,8 +12,8 @@
 //! coffee break can all happen within it. Losing that state would lose real
 //! loot attribution, so we persist it. See
 //! `docs/architecture/survey-mechanics.md` for the full mechanics.
-use rusqlite::{params, Connection, OptionalExtension, Result};
 use crate::db::DbRead;
+use rusqlite::{params, Connection, OptionalExtension, Result};
 use serde::{Deserialize, Serialize};
 
 /// One row from `open_multihit_nodes`.
@@ -249,9 +249,7 @@ mod tests {
         assert_eq!(n.opened_at, "12:30:00");
 
         close_node(&conn, "Zenith", "Dreva", 12345).unwrap();
-        assert!(get_node(&conn, "Zenith", "Dreva", 12345)
-            .unwrap()
-            .is_none());
+        assert!(get_node(&conn, "Zenith", "Dreva", 12345).unwrap().is_none());
     }
 
     #[test]

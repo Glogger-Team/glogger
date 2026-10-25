@@ -34,21 +34,31 @@ Wrap in quotes for exact phrase matching:
 | Filter | Example | Effect |
 |--------|---------|--------|
 | `type:` | `type:item`, `type:npc` | Restrict to a single entity type |
-| `skill:` | `skill:Sword`, `skill:cooking` | Entities associated with a skill |
-| `area:` | `area:Serbule` | Entities in a zone |
-| `level:` | `level:30`, `level:30-50` | Level or level range |
+| `skill:` | `skill:Sword`, `skill:cooking` | Recipes (skill), NPCs (trainers), abilities (skill) |
+| `area:` | `area:Serbule` | NPCs and quests in a zone |
+| `level:` | `level:30`, `level:30-50` | Items (crafting target level) and recipes (skill requirement) |
 | `keyword:` | `keyword:Food` | Items with a specific keyword |
 | `has:` | `has:recipe`, `has:description` | Items with recipes or descriptions |
 | `slot:` | `slot:MainHand` | Items for an equipment slot |
-| `name:` | `name:sword` | Restrict text match to name field only |
+| `name:` | `name:sword` | Items only — restricts text match to the name field |
+
+Filters only apply to the types listed above. A positive filter outside a
+type's scope returns no rows for that type (reject-or-empty) instead of
+being silently ignored — e.g. `keyword:` on NPCs or `level:` on quests
+yields nothing for that type. Negated filters on unsupported properties
+pass vacuously (an NPC can't have an item-only keyword, so `-keyword:X`
+excludes nothing there).
 
 ### Negation
-Prefix any filter with `-` to exclude:
+Prefix any filter with `-` to exclude. Negation applies to type, skill,
+area, level, keyword, has, slot, and name filters (e.g. `-skill:Cooking`
+excludes recipes/NPCs/abilities of that skill; `-level:30-50` excludes
+items/recipes in that range; `-area:Serbule` excludes NPCs/quests there;
+`-name:sword` excludes items with "sword" in the name):
 ```
 -keyword:NotObtainable sword       → swords without the NotObtainable keyword
 -type:effect fire                  → everything mentioning "fire" except effects
 ```
-
 ### Combining filters
 All filters AND together. Combine text with filters freely:
 ```

@@ -278,17 +278,27 @@ impl GameStateManager {
     pub fn process_events_batch(&mut self, events: &[PlayerEvent], db: &DbPool) -> ProcessResult {
         let character = match &self.active_character {
             Some(c) => c.clone(),
-            None => return ProcessResult { domains_updated: vec![] },
+            None => {
+                return ProcessResult {
+                    domains_updated: vec![],
+                }
+            }
         };
         let server = match &self.active_server {
             Some(s) => s.clone(),
-            None => return ProcessResult { domains_updated: vec![] },
+            None => {
+                return ProcessResult {
+                    domains_updated: vec![],
+                }
+            }
         };
         let mut conn = match db.get_write() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[game_state] DB error on process_events_batch: {e}");
-                return ProcessResult { domains_updated: vec![] };
+                return ProcessResult {
+                    domains_updated: vec![],
+                };
             }
         };
         let game_data_arc = self.game_data.clone();
@@ -299,12 +309,21 @@ impl GameStateManager {
             Ok(tx) => tx,
             Err(e) => {
                 eprintln!("[game_state] begin transaction failed: {e}");
-                return ProcessResult { domains_updated: vec![] };
+                return ProcessResult {
+                    domains_updated: vec![],
+                };
             }
         };
         for event in events {
             let mut domains = Vec::new();
-            self.process_event_inner(event, &tx, &character, &server, &game_data_guard, &mut domains);
+            self.process_event_inner(
+                event,
+                &tx,
+                &character,
+                &server,
+                &game_data_guard,
+                &mut domains,
+            );
             all_domains.extend(domains);
         }
         if let Err(e) = tx.commit() {
@@ -313,7 +332,9 @@ impl GameStateManager {
 
         all_domains.sort_unstable();
         all_domains.dedup();
-        ProcessResult { domains_updated: all_domains }
+        ProcessResult {
+            domains_updated: all_domains,
+        }
     }
 
     /// Inner implementation shared by process_events_batch (and formerly process_event).
@@ -326,7 +347,6 @@ impl GameStateManager {
         game_data_guard: &Option<tokio::sync::RwLockReadGuard<'_, crate::game_data::GameData>>,
         domains: &mut Vec<&'static str>,
     ) {
-
         match event {
             PlayerEvent::LogSessionAnchored { utc } => {
                 // Not a persisted event: it only tells us which UTC day the
@@ -582,7 +602,11 @@ impl GameStateManager {
                         .as_deref()
                         .and_then(|n| game_data_guard.as_ref().and_then(|gd| gd.resolve_item(n)));
                     let display_name = resolved.map(|info| info.name.as_str()).unwrap_or(name);
-                    let item_type_id_i64 = if *item_type_id != 0 { Some(*item_type_id as i64) } else { None };
+                    let item_type_id_i64 = if *item_type_id != 0 {
+                        Some(*item_type_id as i64)
+                    } else {
+                        None
+                    };
                     Self::record_transaction(
                         &conn,
                         character,
@@ -1021,9 +1045,7 @@ impl GameStateManager {
             }
 
             PlayerEvent::VendorSold {
-                timestamp,
-                price,
-                ..
+                timestamp, price, ..
             } => {
                 if let Some(npc_key) = self.current_vendor_npc.clone() {
                     let dt = self.to_utc(timestamp);
@@ -1090,12 +1112,13 @@ impl GameStateManager {
                     }
                     domains.push("vendor");
                 } else {
-                    eprintln!("[game_state] VendorGoldChanged with no current interaction NPC — skipping");
+                    eprintln!(
+                        "[game_state] VendorGoldChanged with no current interaction NPC — skipping"
+                    );
                 }
             }
 
             // ── New game state events ──────────────────────────────────
-
             PlayerEvent::MoonPhaseChanged { timestamp, phase } => {
                 let dt = self.to_utc(timestamp);
                 conn.execute(
@@ -1241,11 +1264,10 @@ impl GameStateManager {
         };
 
         // Resolve display name to internal name via CDN data
-        let internal_name = self
-            .game_data
-            .try_read()
-            .ok()
-            .and_then(|gd| gd.resolve_item(display_name).and_then(|info| info.internal_name.clone()));
+        let internal_name = self.game_data.try_read().ok().and_then(|gd| {
+            gd.resolve_item(display_name)
+                .and_then(|info| info.internal_name.clone())
+        });
 
         let mut domains = Vec::new();
 
@@ -1557,7 +1579,10 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(rows_last_week, 0, "nothing is written into last week either");
+        assert_eq!(
+            rows_last_week, 0,
+            "nothing is written into last week either"
+        );
 
         // The same note *inside* this week still reconciles (5 → 2).
         manager.set_base_date(week_start_date);
@@ -1630,8 +1655,7 @@ mod tests {
         )
         .expect("parse npcs");
 
-        let mut manager =
-            GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(data)));
+        let mut manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(data)));
         manager.set_active_character_name("TestPlayer");
         manager.set_active_server_name("Dreva");
         // Mid-week, so the lines' own `[HH:MM:SS]` values land after Monday
@@ -1676,7 +1700,13 @@ mod tests {
         assert_eq!(favors.len(), 5, "every payout is still favor: {favors:?}");
         assert_eq!(
             favors.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
-            vec!["NPC_Cheb", "NPC_Corinth", "NPC_Gossamyr", "NPC_Nobody", "NPC_Selaxi"]
+            vec![
+                "NPC_Cheb",
+                "NPC_Corinth",
+                "NPC_Gossamyr",
+                "NPC_Nobody",
+                "NPC_Selaxi"
+            ]
         );
         // Row *existence* alone would not notice a regression that kept the row
         // but zeroed the amount for a dropped line, so pin the accrued favor
@@ -1848,7 +1878,11 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(level("TestPlayer"), 7, "first session's dump survived");
-        assert_eq!(level("OtherAlt"), 99, "second session landed under its own identity");
+        assert_eq!(
+            level("OtherAlt"),
+            99,
+            "second session landed under its own identity"
+        );
 
         // Drop the pool first: Windows won't delete a file with an open handle.
         drop(pool);
@@ -1895,8 +1929,7 @@ mod tests {
         };
 
         // Session-keyed: only OtherAlt's slice is corrected.
-        let domains =
-            manager.correct_stack_for_session("OtherAlt", "Dreva", "Fluorite", 5, &pool);
+        let domains = manager.correct_stack_for_session("OtherAlt", "Dreva", "Fluorite", 5, &pool);
         assert!(domains.contains(&"inventory"));
         assert_eq!(stack("OtherAlt"), 5, "staged session corrected");
         assert_eq!(stack("TestPlayer"), 1, "other session untouched");

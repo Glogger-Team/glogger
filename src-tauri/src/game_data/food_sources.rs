@@ -178,9 +178,7 @@ pub fn classify(
 }
 
 /// Build the `internal name → display name` lookup `classify` expects.
-pub fn skill_display_names(
-    skills: &HashMap<u32, super::skills::SkillInfo>,
-) -> HashMap<&str, &str> {
+pub fn skill_display_names(skills: &HashMap<u32, super::skills::SkillInfo>) -> HashMap<&str, &str> {
     skills
         .values()
         .map(|s| (s.internal_name.as_str(), s.name.as_str()))
@@ -284,7 +282,12 @@ mod tests {
             entries: vec![entry("Recipe", Some(1))],
         };
 
-        let out = classify(&item("Bread", &[]), Some(&sources), &recipes, &HashMap::new());
+        let out = classify(
+            &item("Bread", &[]),
+            Some(&sources),
+            &recipes,
+            &HashMap::new(),
+        );
 
         assert_eq!(out.craft_skills, vec!["Cooking"]);
     }
@@ -300,7 +303,12 @@ mod tests {
             ],
         };
 
-        let out = classify(&item("Cheese", &[]), Some(&sources), &recipes, &HashMap::new());
+        let out = classify(
+            &item("Cheese", &[]),
+            Some(&sources),
+            &recipes,
+            &HashMap::new(),
+        );
 
         assert_eq!(out.kinds, vec![KIND_CRAFTED, KIND_VENDOR, KIND_NPC_GIFT]);
     }

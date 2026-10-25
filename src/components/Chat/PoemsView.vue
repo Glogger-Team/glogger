@@ -14,8 +14,8 @@
               @click="scanLog"
               :disabled="scanning"
               class="px-3 py-1.5 bg-surface-elevated border border-border-light rounded text-text-secondary text-sm cursor-pointer transition-all hover:bg-border-default hover:text-text-primary disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
-              title="Scan the full Player.log for poems recited before glogger started watching"
-            >{{ scanning ? 'Scanning…' : 'Scan Player.log' }}</button>
+              title="Scan Player.log, Player-prev.log and archived logs for poems recited while glogger was closed"
+            >{{ scanning ? 'Scanning…' : 'Scan logs' }}</button>
             <button
               @click="refresh"
               :disabled="loading"
@@ -49,7 +49,7 @@
               @click="scanLog"
               :disabled="scanning"
               class="px-4 py-2 bg-surface-elevated border border-border-light rounded text-text-primary text-sm cursor-pointer transition-all hover:bg-border-default hover:border-border-hover disabled:opacity-50 disabled:cursor-not-allowed"
-            >{{ scanning ? 'Scanning…' : 'Scan Player.log for past poems' }}</button>
+            >{{ scanning ? 'Scanning…' : 'Scan logs for past poems' }}</button>
           </template>
           <template v-else><span class="italic">No poems match "{{ searchQuery }}".</span></template>
         </div>
@@ -223,8 +223,8 @@ async function scanLog() {
     scanError.value = false
     scanMessage.value =
       added > 0
-        ? `Found ${added} new poem${added === 1 ? '' : 's'} in Player.log.`
-        : 'No new poems found in Player.log.'
+        ? `Found ${added} new poem${added === 1 ? '' : 's'} in the game logs.`
+        : 'No new poems found in the game logs.'
   } catch (e) {
     scanError.value = true
     scanMessage.value = `Scan failed: ${e}`

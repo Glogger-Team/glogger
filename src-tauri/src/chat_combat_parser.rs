@@ -83,20 +83,13 @@ pub fn parse_self_ability_line(
 }
 
 /// Parse the cow-curse "Poop" ability line; returns the poop's target.
-pub fn parse_self_poop_line(
-    sender: Option<&str>,
-    text: &str,
-    player_name: &str,
-) -> Option<String> {
+pub fn parse_self_poop_line(sender: Option<&str>, text: &str, player_name: &str) -> Option<String> {
     parse_self_ability_line(sender, text, player_name, "Poop")
 }
 
 /// Try to parse a Combat channel ChatMessage into a combat event.
 /// Returns None if the message is not a Combat message or not relevant to the player.
-pub fn parse_combat_message(
-    msg: &ChatMessage,
-    player_name: &str,
-) -> Option<ChatCombatEvent> {
+pub fn parse_combat_message(msg: &ChatMessage, player_name: &str) -> Option<ChatCombatEvent> {
     if msg.channel.as_deref() != Some("Combat") {
         return None;
     }
@@ -154,7 +147,23 @@ fn try_player_death(text: &str, ts: &str, player_name: &str) -> Option<ChatComba
 /// But the chat parser splits the sender out, so we receive:
 ///   sender = Some("PlayerName")
 ///   text (msg.message) = "AbilityName on EnemyName #EntityID! Dmg: N health, N armor. (FATALITY!)"
-fn try_enemy_kill(text: &str, ts: &str, player_name: &str, sender: Option<&str>) -> Option<ChatCombatEvent> {
+fn try_enemy_kill(
+    text: &str,
+    ts: &str,
+    player_name: &str,
+    sender: Option<&str>,
+) -> Option<ChatCombatEvent> {
+    // Mirror parse_attack_line's "(CRIT" strip: a crit kill reads
+    // "... on Enemy #ID (CRIT!) Dmg: ... (FATALITY!)" — splitting at the
+    // first '!' would cut the entity id at "(CRIT!" and drop the kill.
+    // Owned splice on the rare crit path; the common path borrows `text`.
+    let cleaned;
+    let text: &str = if text.contains(" (CRIT") {
+        cleaned = strip_crit_marker_owned(text);
+        &cleaned
+    } else {
+        text
+    };
     if !text.ends_with("(FATALITY!)") {
         return None;
     }
@@ -175,7 +184,6 @@ fn try_enemy_kill(text: &str, ts: &str, player_name: &str, sender: Option<&str>)
     // Find the entity ID separator in the target portion
     let hash_pos = find_entity_id_separator(after_on)?;
     let enemy_name = &after_on[..hash_pos];
-
     let after_hash = &after_on[hash_pos + 2..];
 
     // Entity ID ends at "!"
@@ -238,6 +246,19 @@ fn try_damage_on_player(text: &str, ts: &str, player_name: &str) -> Option<ChatC
     })
 }
 
+/// Strip the " (CRIT...)" target suffix the same way `parse_attack_line`
+/// does ("Target (CRIT!) ..." → "Target ..."). Owned splice for the rare
+/// crit-kill path; the common path never allocates.
+fn strip_crit_marker_owned(text: &str) -> String {
+    if let Some(idx) = text.find(" (CRIT") {
+        // " (CRIT" runs to the next ')' ("(CRIT!)"); drop the marker.
+        let tail = &text[idx + " (CRIT".len()..];
+        let rest = tail.find(')').map(|p| &tail[p + 1..]).unwrap_or(tail);
+        return format!("{}{}", &text[..idx], rest);
+    }
+    text.to_string()
+}
+
 /// Common fields extracted from an attack line.
 struct ParsedAttackLine<'a> {
     attacker_name: &'a str,
@@ -286,7 +307,9 @@ fn parse_attack_line<'a>(text: &'a str, player_name: &str) -> Option<ParsedAttac
     }
 
     let dmg_marker = "Dmg: ";
-    let dmg_text = after_on.find(dmg_marker).map(|pos| &after_on[pos + dmg_marker.len()..]);
+    let dmg_text = after_on
+        .find(dmg_marker)
+        .map(|pos| &after_on[pos + dmg_marker.len()..]);
 
     Some(ParsedAttackLine {
         attacker_name,
@@ -377,9 +400,8 @@ mod tests {
 
     #[test]
     fn test_player_death_kuvou() {
-        let msg = combat_msg(
-            "Kuvou #7681191: Bash on Zenith! Dmg: 108 health, 11 armor. (FATALITY!)",
-        );
+        let msg =
+            combat_msg("Kuvou #7681191: Bash on Zenith! Dmg: 108 health, 11 armor. (FATALITY!)");
         let event = parse_combat_message(&msg, "Zenith").unwrap();
         let ChatCombatEvent::PlayerDeath {
             killer_name,
@@ -512,9 +534,8 @@ mod tests {
 
     #[test]
     fn test_enemy_killed_health_only() {
-        let msg = combat_msg(
-            "Zenith: Fire Bolt 5 on Skeleton #1234567! Dmg: 500 health. (FATALITY!)",
-        );
+        let msg =
+            combat_msg("Zenith: Fire Bolt 5 on Skeleton #1234567! Dmg: 500 health. (FATALITY!)");
         let event = parse_combat_message(&msg, "Zenith").unwrap();
         let ChatCombatEvent::EnemyKilled {
             health_damage,
@@ -577,9 +598,8 @@ mod tests {
 
     #[test]
     fn test_damage_on_player_basic() {
-        let msg = combat_msg(
-            "Demon Scout #6937326: Demon Bolt on Zenith! Dmg: 171 health, 171 armor",
-        );
+        let msg =
+            combat_msg("Demon Scout #6937326: Demon Bolt on Zenith! Dmg: 171 health, 171 armor");
         let event = parse_combat_message(&msg, "Zenith").unwrap();
         let ChatCombatEvent::DamageOnPlayer {
             attacker_name,
@@ -603,9 +623,7 @@ mod tests {
 
     #[test]
     fn test_damage_on_player_health_only() {
-        let msg = combat_msg(
-            "Demon Scout #6937326: Tracking Stare on Zenith! Dmg: 144 health",
-        );
+        let msg = combat_msg("Demon Scout #6937326: Tracking Stare on Zenith! Dmg: 144 health");
         let event = parse_combat_message(&msg, "Zenith").unwrap();
         let ChatCombatEvent::DamageOnPlayer {
             health_damage,
@@ -621,9 +639,8 @@ mod tests {
 
     #[test]
     fn test_damage_on_player_crit() {
-        let msg = combat_msg(
-            "Brain Demon #7463620: Bite on Zenith (CRIT!) Dmg: 205 health, 205 armor",
-        );
+        let msg =
+            combat_msg("Brain Demon #7463620: Bite on Zenith (CRIT!) Dmg: 205 health, 205 armor");
         let event = parse_combat_message(&msg, "Zenith").unwrap();
         let ChatCombatEvent::DamageOnPlayer {
             attacker_name,
@@ -645,17 +662,14 @@ mod tests {
 
     #[test]
     fn test_evaded_attack_ignored() {
-        let msg = combat_msg(
-            "Demon Scout #6937326: Demon Bolt on Zenith (EVADED!)",
-        );
+        let msg = combat_msg("Demon Scout #6937326: Demon Bolt on Zenith (EVADED!)");
         assert!(parse_combat_message(&msg, "Zenith").is_none());
     }
 
     #[test]
     fn test_none_damage_ignored() {
-        let msg = combat_msg(
-            "Ranalon Guardian #7681185: Ranalon Guardian Stab on Zenith! Dmg:  none",
-        );
+        let msg =
+            combat_msg("Ranalon Guardian #7681185: Ranalon Guardian Stab on Zenith! Dmg:  none");
         assert!(parse_combat_message(&msg, "Zenith").is_none());
     }
 
@@ -677,9 +691,7 @@ mod tests {
 
     #[test]
     fn test_indirect_damage_ignored() {
-        let msg = combat_msg(
-            "Demonic Swarmer #7537641: Suffered indirect dmg: -2 health",
-        );
+        let msg = combat_msg("Demonic Swarmer #7537641: Suffered indirect dmg: -2 health");
         assert!(parse_combat_message(&msg, "Zenith").is_none());
     }
 
@@ -717,22 +729,35 @@ mod tests {
     fn test_poop_line_unsplit_prefix_accepted_and_other_lines_rejected() {
         // Unsplit variant (chat parser keeps some lines whole).
         assert_eq!(
-            parse_self_poop_line(None, "TwinkleofToes: Poop on TwinkleofToes!", "TwinkleofToes"),
+            parse_self_poop_line(
+                None,
+                "TwinkleofToes: Poop on TwinkleofToes!",
+                "TwinkleofToes"
+            ),
             Some("TwinkleofToes".to_string())
         );
         // Same shape as the sibling self-milking line — must not count as a poop.
         assert_eq!(
-            parse_self_poop_line(None, "TwinkleofToes: Collect Milk on TwinkleofToes!", "TwinkleofToes"),
+            parse_self_poop_line(
+                None,
+                "TwinkleofToes: Collect Milk on TwinkleofToes!",
+                "TwinkleofToes"
+            ),
             None
         );
         // Combat damage lines never match.
-        let msg = combat_msg("Zenith: Rib Shatter 9 on Orcish Ranger #7442047! Dmg: 3790 health, 1741 armor");
+        let msg = combat_msg(
+            "Zenith: Rib Shatter 9 on Orcish Ranger #7442047! Dmg: 3790 health, 1741 armor",
+        );
         assert_eq!(
             parse_self_poop_line(msg.sender.as_deref(), &msg.message, "Zenith"),
             None
         );
         // Bare prefix without a target is not an event.
-        assert_eq!(parse_self_poop_line(None, "Poop on !", "TwinkleofToes"), None);
+        assert_eq!(
+            parse_self_poop_line(None, "Poop on !", "TwinkleofToes"),
+            None
+        );
     }
 
     #[test]
@@ -757,10 +782,7 @@ mod tests {
         // recorded anything.
         assert_ne!(
             msg.message.trim(),
-            format!(
-                "{}: Collect Milk on {}!",
-                "TwinkleofToes", "TwinkleofToes"
-            )
+            format!("{}: Collect Milk on {}!", "TwinkleofToes", "TwinkleofToes")
         );
     }
 

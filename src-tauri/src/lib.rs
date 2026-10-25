@@ -3,17 +3,19 @@ mod books_watcher;
 mod cdn;
 mod cdn_commands;
 mod cdn_diff;
+mod chat_combat_parser;
 mod chat_commands;
 mod chat_parser;
-mod chat_combat_parser;
 mod chat_resuscitate_parser;
 mod chat_status_parser;
 mod commands;
 mod coordinator;
-mod debug_capture;
 mod db;
+mod debug_capture;
+mod external_fetch;
 mod game_data;
 mod game_state;
+mod gst_manager;
 mod log_watchers;
 mod parsers;
 mod player_event_parser;
@@ -27,11 +29,9 @@ mod stall_aggregations;
 mod stall_ocr;
 mod stall_year_resolver;
 mod survey;
-mod external_fetch;
-mod gst_manager;
 mod trip_router;
-mod watch_rules;
 mod unified_search;
+mod watch_rules;
 mod zone_graph;
 
 use chrono::Local;
@@ -41,61 +41,74 @@ use tauri::{Emitter, Manager};
 use tokio::sync::RwLock;
 
 use cdn_commands::{
+    cdn_diff_file,
+    cdn_diff_summary,
     check_cdn_version,
+    compute_ability_build_stats,
+    find_recipe_items_in_inventory,
     force_refresh_cdn,
     get_abilities_for_skill,
+    get_abilities_for_tsys,
     get_ability_families_for_skill,
     get_ability_family,
     get_ability_sources,
-    get_skills_with_ability_counts,
-    search_ability_families,
     get_all_achievements,
-    search_achievements,
+    get_all_areas,
+    // Enemy (AI) queries
+    get_all_enemies,
     get_all_item_keywords,
     get_all_lorebooks,
+    get_all_monsters,
     get_all_npcs,
     get_all_player_titles,
     get_all_quests,
     get_all_skills,
+    get_all_tsys,
+    get_brewing_ingredients,
+    get_brewing_recipes,
     get_cache_status,
     get_combat_skills,
     get_cp_recipes_for_slot,
+    get_current_moon_phase,
     get_effect,
+    get_enemy,
     get_equip_slots,
+    // Gardening chain
+    get_gardening_product_chain,
     get_icon_path,
     get_item_sources,
     get_items_by_keyword,
     get_lorebook_categories,
-    get_recipe_ingredient_keywords,
-    get_npcs_in_area,
     get_monsters_in_area,
-    get_all_areas,
-    get_all_monsters,
+    get_npc_vendor_items,
+    get_npcs_in_area,
+    get_npcs_training_skill,
+    // Cross-reference commands
+    get_npcs_wanting_item,
     get_quest_sources,
+    get_quests_by_moon_phase,
+    get_quests_for_npc,
+    get_quests_for_skill,
+    get_recipe_ingredient_keywords,
     get_recipe_sources,
     get_recipes_for_item,
+    get_recipes_for_keyword,
     get_recipes_for_skill,
     get_recipes_producing_items,
-    get_brewing_recipes,
-    get_brewing_ingredients,
     get_recipes_using_item,
-    get_vendor_purchasable_item_ids,
-    get_npc_vendor_items,
-    get_vendor_item_counts,
-    get_vendors_for_item,
+    get_skills_with_ability_counts,
     get_storage_vault_metadata,
     get_storage_vault_zones,
     get_storage_vaults_in_area,
-    get_all_tsys,
+    get_tsys_ability_map,
+    get_tsys_for_ability,
     get_tsys_power_info,
     get_tsys_power_info_batch,
-    compute_ability_build_stats,
     get_tsys_powers_for_slot,
     get_tsys_profiles,
-    get_tsys_for_ability,
-    get_abilities_for_tsys,
-    get_tsys_ability_map,
-    search_tsys,
+    get_vendor_item_counts,
+    get_vendor_purchasable_item_ids,
+    get_vendors_for_item,
     get_xp_table_for_skill,
     init_game_data,
     resolve_ability,
@@ -108,77 +121,58 @@ use cdn_commands::{
     resolve_quest,
     resolve_recipe,
     resolve_skill,
+    search_ability_families,
+    search_achievements,
     search_effects,
-    search_lorebooks,
+    search_enemies,
     // Query/filter commands (not replaced by resolvers)
     search_items,
+    search_lorebooks,
     search_npcs,
     search_player_titles,
     search_quests,
     search_recipes,
-    // Cross-reference commands
-    get_npcs_wanting_item,
-    get_npcs_training_skill,
-    get_quests_for_npc,
-    get_quests_for_skill,
-    get_quests_by_moon_phase,
-    get_current_moon_phase,
-    get_recipes_for_keyword,
-    find_recipe_items_in_inventory,
-    cdn_diff_summary,
-    cdn_diff_file,
-    // Enemy (AI) queries
-    get_all_enemies,
-    search_enemies,
-    get_enemy,
-    // Gardening chain
-    get_gardening_product_chain,
+    search_tsys,
     GameDataState,
 };
-use db::brewing_commands::{
-    add_brewing_discovery_manual,
-    get_brewing_discoveries,
-    import_brewing_discoveries_csv,
-    delete_brewing_discovery,
-    scan_all_snapshots_for_brewing,
-    scan_snapshot_for_brewing_discoveries,
-};
 use chat_commands::{
-    delete_all_chat_messages, count_chat_messages, get_chat_channel_stats, get_chat_channels,
-    get_chat_days, get_chat_messages, get_chat_stats, get_tell_conversations,
-    get_watch_rule_messages, purge_chat_messages, scan_chat_log_file, scan_chat_logs,
-    tail_chat_log, backfill_ability_history,
+    backfill_ability_history, count_chat_messages, delete_all_chat_messages,
+    get_chat_channel_stats, get_chat_channels, get_chat_days, get_chat_messages, get_chat_stats,
+    get_tell_conversations, get_watch_rule_messages, purge_chat_messages, scan_chat_log_file,
+    scan_chat_logs, tail_chat_log,
 };
-use commands::parse_log;
-use debug_capture::replay_capture_file;
+use commands::{get_parse_log_status, parse_log, ParseLogJobs};
 use coordinator::{
     debug_capture_discard, debug_capture_save, debug_capture_start, debug_capture_status,
-    debug_capture_stop,
-    get_coordinator_status, poll_watchers, start_background_polling, stop_background_polling,
-    start_chat_tailing, start_player_tailing,
-    stop_chat_tailing, stop_player_tailing, scan_player_log_for_poems,
-    spawn_polling_thread, DataIngestCoordinator, PollingHandle,
+    debug_capture_stop, get_coordinator_status, poll_watchers, scan_player_log_for_poems,
+    spawn_polling_thread, start_background_polling, start_chat_tailing, start_player_tailing,
+    stop_background_polling, stop_chat_tailing, stop_player_tailing, DataIngestCoordinator,
+    PollingHandle,
 };
 use db::admin_commands::{
     compact_database, force_rebuild_cdn_tables, get_database_stats, purge_player_data,
 };
-use db::aggregate_commands::{get_aggregate_inventory, get_aggregate_skills, get_aggregate_vendor, get_aggregate_wealth};
+use db::aggregate_commands::{
+    get_aggregate_inventory, get_aggregate_skills, get_aggregate_vendor, get_aggregate_wealth,
+};
+use db::brewing_commands::{
+    add_brewing_discovery_manual, delete_brewing_discovery, get_brewing_discoveries,
+    import_brewing_discoveries_csv, scan_all_snapshots_for_brewing,
+    scan_snapshot_for_brewing_discoveries,
+};
 use db::build_planner_commands::{
     clear_build_preset_slot_item, clone_build_preset, create_build_preset, delete_build_preset,
     export_build_preset, get_build_preset_abilities, get_build_preset_cp_recipes,
     get_build_preset_mods, get_build_preset_slot_items, get_build_presets,
     get_equipped_gear_candidates, import_build_preset, set_build_preset_abilities,
-    set_build_preset_cp_recipes,
-    set_build_preset_mods, set_build_preset_slot_item, update_build_preset,
-    update_build_preset_slot_props,
+    set_build_preset_cp_recipes, set_build_preset_mods, set_build_preset_slot_item,
+    update_build_preset, update_build_preset_slot_props,
 };
 use db::character_commands::{
     compare_snapshots, get_character_snapshots, get_characters, get_snapshot_active_quests,
     get_snapshot_currencies, get_snapshot_npc_favor, get_snapshot_recipes,
     get_snapshot_skill_abilities, get_snapshot_skills, get_snapshot_stats, import_character_report,
 };
-use db::death_commands::{get_character_deaths, get_death_damage_sources};
-use db::resuscitate_commands::get_character_resuscitations;
 use db::crafting_commands::{
     add_project_entry, batch_update_entry_expansions, check_material_availability,
     create_crafting_project, delete_crafting_project, duplicate_crafting_project,
@@ -186,41 +180,35 @@ use db::crafting_commands::{
     get_work_orders_from_snapshot, import_crafting_project, remove_project_entry,
     reorder_project_entries, update_crafting_project, update_project_entry,
 };
+use db::death_commands::{get_character_deaths, get_death_damage_sources};
 use db::farming_commands::{
     delete_farming_session, get_farming_sessions, save_farming_session, update_farming_session,
 };
-use db::kill_tracking_commands::{
-    delete_imported_source, export_kill_loot_database, get_corpse_extract_details,
-    get_enemy_harvest_stats, get_enemy_kill_stats, get_item_drop_sources, import_kill_loot_database,
-    list_imported_sources, search_database_enemies, search_database_harvested, search_database_items,
-};
 use db::game_state_commands::{
-    get_currency_estimate,
-    get_game_state_active_skills, get_game_state_attributes, get_game_state_currencies,
-    get_game_state_effects, get_game_state_equipment, get_game_state_favor,
-    get_game_state_inventory, get_game_state_recipes, get_game_state_skills,
-    get_character_report_stats, get_game_state_books, get_game_state_storage,
-    get_game_state_vendor, get_game_state_world, get_gift_log, get_milking_timers,
-    add_manual_gift, remove_last_gift, set_manual_vendor_gold, get_tracked_skills, set_tracked_skills,
-    get_computed_stats, get_item_ownership,
-    get_attribute_extremes,
-    get_player_milking_leaderboard,
-    get_pooping_stats,
-    get_teleportation_binds,
-    set_mushroom_circles,
-    get_garden_almanac,
-    get_garden_almanac_history,
-    get_harvest_almanac,
+    add_manual_gift, get_attribute_extremes, get_character_report_stats, get_computed_stats,
+    get_currency_estimate, get_game_state_active_skills, get_game_state_attributes,
+    get_game_state_books, get_game_state_currencies, get_game_state_effects,
+    get_game_state_equipment, get_game_state_favor, get_game_state_inventory,
+    get_game_state_recipes, get_game_state_skills, get_game_state_storage, get_game_state_vendor,
+    get_game_state_world, get_garden_almanac, get_garden_almanac_history, get_gift_log,
+    get_harvest_almanac, get_item_ownership, get_milking_timers, get_player_milking_leaderboard,
+    get_pooping_stats, get_teleportation_binds, get_tracked_skills, remove_last_gift,
+    set_manual_vendor_gold, set_mushroom_circles, set_tracked_skills,
 };
 use db::gourmand_commands::{
-    export_text_file, get_all_foods, get_gourmand_eaten_foods,
-    import_gourmand_report, import_latest_gourmand_report, toggle_food_eaten_status,
+    export_text_file, get_all_foods, get_gourmand_eaten_foods, import_gourmand_report,
+    import_latest_gourmand_report, toggle_food_eaten_status,
 };
 use db::inventory_commands::{
     get_all_character_items, get_inventory_snapshots, get_inventory_summary, get_snapshot_items,
     import_inventory_report,
 };
-use db::timer_commands::{delete_user_timer, get_user_timers, save_user_timer};
+use db::kill_tracking_commands::{
+    delete_imported_source, export_kill_loot_database, get_corpse_extract_details,
+    get_enemy_harvest_stats, get_enemy_kill_stats, get_item_drop_sources,
+    import_kill_loot_database, list_imported_sources, search_database_enemies,
+    search_database_harvested, search_database_items,
+};
 use db::market_commands::{
     bulk_delete_market_values, bulk_update_market_values, delete_market_value,
     export_market_values, get_market_value, get_market_values, import_market_values,
@@ -230,11 +218,12 @@ use db::player_commands::{
     add_market_price, add_sale, get_market_prices_for_item, get_recent_events, get_recent_sales,
     log_event,
 };
-use replay::{ingest_player_log, replay_dual_logs};
-use trip_router::plan_trip;
+use db::resuscitate_commands::get_character_resuscitations;
+use db::timer_commands::{delete_user_timer, get_user_timers, save_user_timer};
+use debug_capture::replay_capture_file;
 use external_fetch::{fetch_github_releases, fetch_pg_news};
 use gst_manager::{gst_check_status, gst_download, gst_launch};
-use unified_search::unified_search;
+use replay::{ingest_player_log, replay_dual_logs};
 use settings::{
     get_default_game_data_path_command, get_default_player_log_path_command, get_server_list,
     get_settings_file_path, load_settings, save_settings, SettingsManager,
@@ -245,6 +234,8 @@ use setup_commands::{
     import_reports_for_server, save_user_character, scan_reports_for_characters,
     set_active_character, validate_game_data_path,
 };
+use trip_router::plan_trip;
+use unified_search::unified_search;
 
 /// Timestamped log line for startup diagnostics.
 macro_rules! startup_log {
@@ -281,7 +272,10 @@ fn seed_experimental_data(app_data_dir: &std::path::Path, current_version: &Opti
     };
 
     if !release_data_dir.exists() {
-        startup_log!("Experimental seed: no release data dir found at {:?}, starting fresh", release_data_dir);
+        startup_log!(
+            "Experimental seed: no release data dir found at {:?}, starting fresh",
+            release_data_dir
+        );
         return;
     }
 
@@ -590,6 +584,12 @@ pub fn run() {
                         }
                         Err(e) => eprintln!("Arena bet backfill failed: {e}"),
                     }
+                    match db::poem_commands::backfill_from_player_logs_with_emit(&sm, &dbp, &ah) {
+                        Ok(n) => {
+                            startup_log!("Poem backfill: {} new poem(s)", n);
+                        }
+                        Err(e) => eprintln!("Poem backfill failed: {e}"),
+                    }
                     match db::words_of_power_commands::backfill_used_words_from_chat_logs(&sm, &dbp)
                     {
                         Ok(0) => {}
@@ -600,6 +600,7 @@ pub fn run() {
                         Err(e) => eprintln!("Words of Power usage backfill failed: {e}"),
                     }
                 });
+
             }
 
             // Step 5e: Auto-purge old user data on startup, if enabled in
@@ -638,6 +639,7 @@ pub fn run() {
             app.manage(coordinator.clone());
             app.manage(polling_handle.clone());
             app.manage(db::stall_tracker_commands::StallOpsLock::default());
+            app.manage(ParseLogJobs(std::sync::Mutex::new(std::collections::HashMap::new())));
 
             startup_log!("Splash screen displayed (frontend rendering)");
 
@@ -719,6 +721,7 @@ pub fn run() {
             log_startup,
             // Log parsing (manual upload)
             parse_log,
+            get_parse_log_status,
             replay_dual_logs,
             ingest_player_log,
             // Combat Wisdom tracking

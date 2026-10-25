@@ -33,11 +33,31 @@ pub struct AiSummary {
 
 impl AiInfo {
     pub fn to_summary(&self, key: &str) -> AiSummary {
-        let strategy = self.raw.get("Strategy").and_then(|v| v.as_str()).map(String::from);
-        let mobility_type = self.raw.get("MobilityType").and_then(|v| v.as_str()).map(String::from);
-        let comment = self.raw.get("Comment").and_then(|v| v.as_str()).map(String::from);
-        let swimming = self.raw.get("Swimming").and_then(|v| v.as_bool()).unwrap_or(false);
-        let uncontrolled_pet = self.raw.get("UncontrolledPet").and_then(|v| v.as_bool()).unwrap_or(false);
+        let strategy = self
+            .raw
+            .get("Strategy")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let mobility_type = self
+            .raw
+            .get("MobilityType")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let comment = self
+            .raw
+            .get("Comment")
+            .and_then(|v| v.as_str())
+            .map(String::from);
+        let swimming = self
+            .raw
+            .get("Swimming")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let uncontrolled_pet = self
+            .raw
+            .get("UncontrolledPet")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let abilities = self.raw.get("Abilities").and_then(|v| v.as_object());
         let ability_count = abilities.map(|m| m.len()).unwrap_or(0);

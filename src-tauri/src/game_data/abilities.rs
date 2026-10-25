@@ -353,8 +353,14 @@ mod tests {
         assert_eq!(stats.health_specific_damage, Some(369.0));
         assert_eq!(stats.armor_specific_damage, Some(45.0));
         assert_eq!(stats.dots.len(), 1);
-        assert!(stats.extra.get("HealthSpecificDamage").is_none(), "HSD should be typed, not in extra");
-        assert!(stats.extra.get("ArmorSpecificDamage").is_none(), "ASD should be typed, not in extra");
+        assert!(
+            stats.extra.get("HealthSpecificDamage").is_none(),
+            "HSD should be typed, not in extra"
+        );
+        assert!(
+            stats.extra.get("ArmorSpecificDamage").is_none(),
+            "ASD should be typed, not in extra"
+        );
     }
 
     /// When plain `Damage` and a specific-damage component coexist (e.g. Finishing Blow =

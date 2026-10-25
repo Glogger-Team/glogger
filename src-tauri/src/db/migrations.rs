@@ -121,8 +121,10 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
     }
 
     if current_version < 18 {
-        migration_v18_fix_timestamps(conn, tz_offset_seconds)?;
-        super::record_migration(conn, 18)?;
+        let applied = migration_v18_fix_timestamps(conn, tz_offset_seconds)?;
+        if applied {
+            super::record_migration(conn, 18)?;
+        }
     }
 
     if current_version < 19 {
@@ -947,7 +949,7 @@ fn migration_v53_persist_imported_drop_data(conn: &Connection) -> Result<()> {
         ALTER TABLE imported_enemy_kill_loot_agg_new RENAME TO imported_enemy_kill_loot_agg;
         CREATE INDEX idx_imported_loot_source ON imported_enemy_kill_loot_agg(source_label);
         CREATE INDEX idx_imported_loot_enemy ON imported_enemy_kill_loot_agg(enemy_name);
-        CREATE INDEX idx_imported_loot_item ON imported_enemy_kill_loot_agg(item_name);"
+        CREATE INDEX idx_imported_loot_item ON imported_enemy_kill_loot_agg(item_name);",
     )?;
     Ok(())
 }
@@ -966,7 +968,7 @@ fn migration_v21_build_preset_cp_recipes(conn: &Connection) -> Result<()> {
             effect_key TEXT NOT NULL,
             sort_order INTEGER DEFAULT 0
         );
-        CREATE INDEX idx_build_preset_cp_recipes_preset ON build_preset_cp_recipes(preset_id);"
+        CREATE INDEX idx_build_preset_cp_recipes_preset ON build_preset_cp_recipes(preset_id);",
     )?;
     Ok(())
 }
@@ -987,7 +989,7 @@ fn migration_v22_resuscitations(conn: &Connection) -> Result<()> {
         CREATE INDEX idx_resuscitations_character_server
             ON character_resuscitations(character_name, server_name);
         CREATE INDEX idx_resuscitations_occurred_at
-            ON character_resuscitations(occurred_at);"
+            ON character_resuscitations(occurred_at);",
     )?;
     Ok(())
 }
@@ -1022,7 +1024,7 @@ fn migration_v68_stall_price_observations(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX idx_spo_item ON stall_price_observations(item_type_id);
         CREATE INDEX idx_spo_observed ON stall_price_observations(observed_at DESC);
-        CREATE INDEX idx_spo_stall ON stall_price_observations(stall_npc_entity_id);"
+        CREATE INDEX idx_spo_stall ON stall_price_observations(stall_npc_entity_id);",
     )?;
     Ok(())
 }
@@ -1062,7 +1064,7 @@ fn migration_v23_stall_events(conn: &Connection) -> Result<()> {
         CREATE INDEX idx_stall_events_action_event_at ON stall_events(action, event_at DESC);
         CREATE INDEX idx_stall_events_player          ON stall_events(player);
         CREATE INDEX idx_stall_events_item            ON stall_events(item);
-        CREATE INDEX idx_stall_events_owner           ON stall_events(owner);"
+        CREATE INDEX idx_stall_events_owner           ON stall_events(owner);",
     )?;
     Ok(())
 }
@@ -1415,9 +1417,7 @@ fn migration_v12_game_state_area(conn: &Connection) -> Result<()> {
 
 /// Migration V13: Add damage_type column to character_deaths for CDN ability enrichment.
 fn migration_v13_death_damage_type(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "ALTER TABLE character_deaths ADD COLUMN damage_type TEXT DEFAULT NULL;",
-    )?;
+    conn.execute_batch("ALTER TABLE character_deaths ADD COLUMN damage_type TEXT DEFAULT NULL;")?;
     Ok(())
 }
 
@@ -2473,14 +2473,14 @@ fn migration_v17_gift_log(conn: &Connection) -> Result<()> {
 ///
 /// 2) Chat.log timestamps are local time but were stored as-is (treated as UTC).
 ///    For UTC-7 (offset=-25200): stored = local = utc + (-offset) = utc - 25200
-///    The stored value is 7 hours too early.
-///    Fix: correct = stored - offset  (chat_modifier, opposite direction)
-fn migration_v18_fix_timestamps(conn: &Connection, tz_offset_seconds: Option<i32>) -> Result<()> {
+fn migration_v18_fix_timestamps(conn: &Connection, tz_offset_seconds: Option<i32>) -> Result<bool> {
     let offset = match tz_offset_seconds {
         Some(o) if o != 0 => o,
         _ => {
-            // No offset known or offset is zero — nothing to fix
-            return Ok(());
+            // No offset known or offset is zero — nothing to fix; defer
+            // record_migration(18) so the fix still runs once a real offset
+            // is available (caller records only when this returns true).
+            return Ok(false);
         }
     };
 
@@ -2582,7 +2582,7 @@ fn migration_v18_fix_timestamps(conn: &Connection, tz_offset_seconds: Option<i32
         player_modifier, chat_modifier
     );
 
-    Ok(())
+    Ok(true)
 }
 
 /// Migration V19: Price Helper — persistent crafting price quotes.
@@ -2640,7 +2640,7 @@ fn migration_v16_survey_data_imports(conn: &Connection) -> Result<()> {
             REFERENCES survey_data_imports(id) ON DELETE CASCADE;
 
         CREATE INDEX idx_survey_session_stats_import ON survey_session_stats(import_id);
-        "
+        ",
     )?;
 
     Ok(())
@@ -2907,7 +2907,7 @@ fn migration_v41_garden_almanac(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_garden_almanac_history_char_server
             ON garden_almanac_history(character_name, server_name);
         CREATE INDEX IF NOT EXISTS idx_garden_almanac_history_crop
-            ON garden_almanac_history(crop_name, zone_name);"
+            ON garden_almanac_history(crop_name, zone_name);",
     )?;
     Ok(())
 }
@@ -2923,7 +2923,7 @@ fn migration_v39_teleportation_binds(conn: &Connection) -> Result<()> {
             mushroom_circle_2 TEXT,
             last_updated TEXT NOT NULL,
             PRIMARY KEY (character_name, server_name)
-        );"
+        );",
     )?;
     Ok(())
 }
@@ -2944,7 +2944,7 @@ fn migration_v42_player_messages(conn: &Connection) -> Result<()> {
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         CREATE INDEX IF NOT EXISTS idx_player_messages_char_server
-            ON player_messages(character_name, server_name, timestamp DESC);"
+            ON player_messages(character_name, server_name, timestamp DESC);",
     )?;
     Ok(())
 }
@@ -2962,7 +2962,7 @@ fn migration_v43_hoplology_studies(conn: &Connection) -> Result<()> {
             UNIQUE(character_name, server_name, item_name)
         );
         CREATE INDEX IF NOT EXISTS idx_hoplology_char_server
-            ON hoplology_studies(character_name, server_name, studied_at DESC);"
+            ON hoplology_studies(character_name, server_name, studied_at DESC);",
     )?;
     Ok(())
 }
@@ -3006,7 +3006,7 @@ fn migration_v45_kill_tracking(conn: &Connection) -> Result<()> {
             kill_count INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY (session_id) REFERENCES farming_sessions(id) ON DELETE CASCADE
         );
-        CREATE INDEX idx_farming_kills_session ON farming_session_kills(session_id);"
+        CREATE INDEX idx_farming_kills_session ON farming_session_kills(session_id);",
     )?;
     Ok(())
 }
@@ -3128,7 +3128,7 @@ fn migration_v48_kill_dedup_and_ingest_tracking(conn: &Connection) -> Result<()>
              ingested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
              kills_added INTEGER NOT NULL DEFAULT 0,
              loot_added INTEGER NOT NULL DEFAULT 0
-         );"
+         );",
     )?;
     Ok(())
 }
@@ -3160,7 +3160,7 @@ fn migration_v49_corpse_search_loot_model(conn: &Connection) -> Result<()> {
          ALTER TABLE enemy_kill_loot ADD COLUMN instance_id INTEGER;
 
          CREATE UNIQUE INDEX idx_kill_loot_dedup
-             ON enemy_kill_loot(kill_id, instance_id);"
+             ON enemy_kill_loot(kill_id, instance_id);",
     )?;
     Ok(())
 }
@@ -3191,7 +3191,7 @@ fn migration_v50_corpse_extracts(conn: &Connection) -> Result<()> {
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         CREATE INDEX idx_corpse_extracts_item ON corpse_extracts(item_name);
-        CREATE INDEX idx_corpse_extracts_corpse ON corpse_extracts(corpse_name);"
+        CREATE INDEX idx_corpse_extracts_corpse ON corpse_extracts(corpse_name);",
     )?;
     Ok(())
 }
@@ -3413,7 +3413,10 @@ mod tests {
         let versions: i64 = c
             .query_row("SELECT COUNT(*) FROM cdn_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(versions, 0, "cdn_version must be cleared to force a repersist");
+        assert_eq!(
+            versions, 0,
+            "cdn_version must be cleared to force a repersist"
+        );
     }
 
     /// v70 repairs the token drift where CDN 486 writes `'Instant Snack'` but
@@ -3453,7 +3456,11 @@ mod tests {
             .unwrap()
         };
         assert_eq!(category(1), "Instant-Snack");
-        assert_eq!(category(2), "Instant-Snack", "case-insensitive, separator-agnostic");
+        assert_eq!(
+            category(2),
+            "Instant-Snack",
+            "case-insensitive, separator-agnostic"
+        );
         assert_eq!(category(3), "Instant-Snack");
         assert_eq!(category(4), "Meal");
         assert_eq!(category(5), "Brunch", "unknown categories stay as-is");
@@ -3612,7 +3619,10 @@ mod tests {
         let total: i64 = c
             .query_row("SELECT COUNT(*) FROM player_milking_log", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(total, 4, "the byte-identical duplicate collapses, distinct keys stay");
+        assert_eq!(
+            total, 4,
+            "the byte-identical duplicate collapses, distinct keys stay"
+        );
 
         // The index is what makes INSERT ... ON CONFLICT DO NOTHING dedup from now on.
         let idx: i64 = c
