@@ -933,9 +933,7 @@ mod tests {
         let tags: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
-                LogEvent::ChatMessage(msg, tag)
-                    if msg.channel.as_deref() == Some("Status") =>
-                {
+                LogEvent::ChatMessage(msg, tag) if msg.channel.as_deref() == Some("Status") => {
                     Some(tag.clone())
                 }
                 _ => None,

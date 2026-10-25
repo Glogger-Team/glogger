@@ -17,10 +17,10 @@ macro_rules! startup_log {
 
 // ── Module declarations ──────────────────────────────────────────────────────
 mod abilities;
-mod achievements;
-pub mod ability_stats;
 mod ability_dynamic;
 mod ability_keywords;
+pub mod ability_stats;
+mod achievements;
 mod advancement_tables;
 mod ai;
 mod areas;
@@ -44,10 +44,10 @@ mod tsys;
 mod xp_tables;
 
 // ── Re-exports so cdn_commands.rs doesn't need updating ──────────────────────
-pub use achievements::AchievementInfo;
 pub use abilities::AbilityFamily;
 pub use abilities::AbilityInfo;
 pub use abilities::{CombatStats, DotEffect};
+pub use achievements::AchievementInfo;
 pub use areas::AreaInfo;
 pub use effects::EffectInfo;
 pub use item_uses::ItemUseInfo;
@@ -65,14 +65,14 @@ pub use npcs::NpcInfo;
 // them without making the whole module public — same shape as
 // `parse_items_json` above. `GIFT_CAPPED_AREAS` is deliberately not
 // re-exported: callers use `is_gift_capped_area`, never the list itself.
+pub use ai::AiSummary;
+pub use brewing::{BrewingIngredient, BrewingRecipe};
 pub use npcs::{has_gift_tastes, is_gift_capped_area, parse as parse_npcs_json};
 pub use player_titles::PlayerTitleInfo;
 pub use quests::QuestInfo;
 pub use recipes::RecipeInfo;
 pub use skills::SkillInfo;
 pub use sources::SourceEntry;
-pub use ai::AiSummary;
-pub use brewing::{BrewingIngredient, BrewingRecipe};
 pub use tsys::TsysClientInfo;
 pub use tsys::TsysTierInfo;
 pub use xp_tables::XpTableInfo;
@@ -754,7 +754,11 @@ pub async fn load_from_cache_with_progress(
         startup_log!("  landmarks: {} entries", landmarks.len());
 
         let lorebooks = lorebooks::LorebookData::parse(&lorebooks_json, &lorebook_info_json)?;
-        startup_log!("  lorebooks: {} books, {} categories", lorebooks.books.len(), lorebooks.categories.len());
+        startup_log!(
+            "  lorebooks: {} books, {} categories",
+            lorebooks.books.len(),
+            lorebooks.categories.len()
+        );
 
         let player_titles = player_titles::parse(&player_titles_json)?;
         startup_log!("  player_titles: {} entries", player_titles.len());
@@ -773,7 +777,6 @@ pub async fn load_from_cache_with_progress(
         let achievements = achievements::parse(&achievements_json)?;
         startup_log!("  achievements: {} entries", achievements.len());
 
-
         let tsys = tsys::TsysData::parse(&tsys_client_info_json, &tsys_profiles_json)?;
         startup_log!("  tsys: parsed");
 
@@ -784,8 +787,7 @@ pub async fn load_from_cache_with_progress(
         } else {
             startup_log!("Building indices from scratch...");
             let idx = build_all_indices(
-                &items, &skills, &abilities, &recipes, &npcs, &quests,
-                &sources, &areas, &tsys,
+                &items, &skills, &abilities, &recipes, &npcs, &quests, &sources, &areas, &tsys,
             );
             // Save indices to disk for next startup
             match serde_json::to_string(&idx) {
@@ -796,7 +798,9 @@ pub async fn load_from_cache_with_progress(
                         startup_log!("Indices cached to disk");
                     }
                 }
-                Err(e) => { startup_log!("Failed to serialize indices: {e}"); }
+                Err(e) => {
+                    startup_log!("Failed to serialize indices: {e}");
+                }
             }
             idx
         };
@@ -804,7 +808,11 @@ pub async fn load_from_cache_with_progress(
         // Build brewing data (derived from recipes + items)
         let (brewing_recipes, brewing_ingredients, brewing_keyword_to_items) =
             brewing::build_brewing_data(&recipes, &items);
-        startup_log!("  brewing: {} recipes, {} ingredients", brewing_recipes.len(), brewing_ingredients.len());
+        startup_log!(
+            "  brewing: {} recipes, {} ingredients",
+            brewing_recipes.len(),
+            brewing_ingredients.len()
+        );
 
         Ok(GameData {
             version,
@@ -865,7 +873,9 @@ pub async fn load_from_cache_with_progress(
             ability_to_tsys: indices.ability_to_tsys,
             tsys_internal_name_index: indices.tsys_internal_name_index,
         })
-    }).await.map_err(|e| format!("Parsing task panicked: {e}"))??;
+    })
+    .await
+    .map_err(|e| format!("Parsing task panicked: {e}"))??;
 
     if !has_cached_indices {
         on_progress("Indices built and cached");
@@ -890,9 +900,8 @@ fn build_ability_name_index(
     abilities: &HashMap<u32, abilities::AbilityInfo>,
     ability_families: &HashMap<String, abilities::AbilityFamily>,
 ) -> HashMap<String, u32> {
-    let is_monster = |a: &abilities::AbilityInfo| {
-        a.keywords.iter().any(|k| k == "Lint_MonsterAbility")
-    };
+    let is_monster =
+        |a: &abilities::AbilityInfo| a.keywords.iter().any(|k| k == "Lint_MonsterAbility");
     let mut index: HashMap<String, u32> = HashMap::new();
     for (id, ability) in abilities {
         match index.entry(ability.name.clone()) {
@@ -912,7 +921,9 @@ fn build_ability_name_index(
         if family.is_monster_ability {
             continue;
         }
-        let Some(&first_id) = family.tier_ids.first() else { continue };
+        let Some(&first_id) = family.tier_ids.first() else {
+            continue;
+        };
         let claimable = match index.get(&family.base_name) {
             None => true,
             Some(existing) => abilities.get(existing).map(is_monster).unwrap_or(true),
@@ -1247,9 +1258,7 @@ fn build_all_indices(
         });
 
         // Get base ability info for shared properties
-        let base_ability = tier_ids
-            .first()
-            .and_then(|id| abilities.get(id));
+        let base_ability = tier_ids.first().and_then(|id| abilities.get(id));
 
         if let Some(base) = base_ability {
             let base_name = base
@@ -1332,9 +1341,8 @@ fn build_all_indices(
     }
 
     // ── Build TSys ↔ Ability cross-reference index ──────────────────────
-    let (tsys_to_abilities, ability_to_tsys) = build_tsys_ability_index(
-        tsys, abilities, &ability_families, &ability_to_family,
-    );
+    let (tsys_to_abilities, ability_to_tsys) =
+        build_tsys_ability_index(tsys, abilities, &ability_families, &ability_to_family);
     startup_log!(
         "TSys↔Ability index built: {} TSys entries mapped, {} abilities mapped",
         tsys_to_abilities.len(),
@@ -1383,7 +1391,9 @@ fn build_all_indices(
 fn extract_effect_tokens(effect_descs: &[String]) -> Vec<String> {
     let mut tokens = Vec::new();
     for desc in effect_descs {
-        if !desc.starts_with('{') { continue; }
+        if !desc.starts_with('{') {
+            continue;
+        }
         let parts: Vec<&str> = desc.split('{').filter(|s| !s.is_empty()).collect();
         if let Some(first) = parts.first() {
             let token = first.trim_end_matches('}');
@@ -1399,7 +1409,9 @@ fn extract_effect_tokens(effect_descs: &[String]) -> Vec<String> {
 fn extract_icon_ids(effect_descs: &[String]) -> std::collections::HashSet<u32> {
     let mut icons = std::collections::HashSet::new();
     for desc in effect_descs {
-        if desc.starts_with('{') { continue; }
+        if desc.starts_with('{') {
+            continue;
+        }
         let mut remaining = desc.as_str();
         while let Some(start) = remaining.find("<icon=") {
             let after = &remaining[start + 6..];
@@ -1431,23 +1443,50 @@ fn strip_icon_tags(text: &str) -> String {
 }
 
 /// Collect all attribute tokens from an ability's PvE/PvP combat stats.
-fn collect_ability_attribute_tokens(ability: &abilities::AbilityInfo) -> std::collections::HashSet<String> {
+fn collect_ability_attribute_tokens(
+    ability: &abilities::AbilityInfo,
+) -> std::collections::HashSet<String> {
     let mut tokens = std::collections::HashSet::new();
     for stats in [&ability.pve, &ability.pvp].into_iter().flatten() {
-        for t in &stats.attributes_that_delta_damage { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_mod_base_damage { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_mod_damage { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_mod_crit_damage { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_delta_power_cost { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_mod_power_cost { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_delta_rage { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_mod_rage { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_delta_taunt { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_mod_taunt { tokens.insert(t.clone()); }
+        for t in &stats.attributes_that_delta_damage {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_mod_base_damage {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_mod_damage {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_mod_crit_damage {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_delta_power_cost {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_mod_power_cost {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_delta_rage {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_mod_rage {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_delta_taunt {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_mod_taunt {
+            tokens.insert(t.clone());
+        }
         if let Some(dots) = stats.extra.get("DoTs").and_then(|v| v.as_array()) {
             for dot in dots {
-                for key in ["AttributesThatDelta", "AttributesThatMod", "AttributesThatDeltaDamage",
-                            "AttributesThatModDamage", "AttributesThatModBaseDamage"] {
+                for key in [
+                    "AttributesThatDelta",
+                    "AttributesThatMod",
+                    "AttributesThatDeltaDamage",
+                    "AttributesThatModDamage",
+                    "AttributesThatModBaseDamage",
+                ] {
                     if let Some(arr) = dot.get(key).and_then(|v| v.as_array()) {
                         for val in arr {
                             if let Some(s) = val.as_str() {
@@ -1467,7 +1506,9 @@ fn text_contains_ability_name(text: &str, name: &str, longer_names: &[&str]) -> 
     let mut search_from = 0;
     while let Some(idx) = text[search_from..].find(name) {
         let abs_idx = search_from + idx;
-        let is_prefix_of_longer = longer_names.iter().any(|longer| text[abs_idx..].starts_with(longer));
+        let is_prefix_of_longer = longer_names
+            .iter()
+            .any(|longer| text[abs_idx..].starts_with(longer));
         if !is_prefix_of_longer {
             return true;
         }
@@ -1504,12 +1545,16 @@ fn build_tsys_ability_index(
 
     // For each ability family, use the highest-level tier as representative
     for family in ability_families.values() {
-        if family.is_monster_ability { continue; }
+        if family.is_monster_ability {
+            continue;
+        }
 
         // Use highest tier for matching
         let best_id = family.tier_ids.last().copied();
         let Some(best_id) = best_id else { continue };
-        let Some(ability) = abilities.get(&best_id) else { continue };
+        let Some(ability) = abilities.get(&best_id) else {
+            continue;
+        };
 
         let tokens = collect_ability_attribute_tokens(ability);
         let base_name = family.base_name.clone();
@@ -1531,7 +1576,9 @@ fn build_tsys_ability_index(
 
     // For each TSys entry, find matching abilities
     for (tsys_key, info) in &tsys.client_info {
-        if info.is_unavailable == Some(true) { continue; }
+        if info.is_unavailable == Some(true) {
+            continue;
+        }
 
         let mut matched_family_ids: Vec<u32> = Vec::new();
 
@@ -1559,13 +1606,18 @@ fn build_tsys_ability_index(
 
                     // 3. Text name matching
                     if !matches && amd.base_name.len() >= 4 {
-                        let longer: Vec<&str> = base_names.iter()
-                            .filter(|n| n.len() > amd.base_name.len() && n.starts_with(&amd.base_name))
+                        let longer: Vec<&str> = base_names
+                            .iter()
+                            .filter(|n| {
+                                n.len() > amd.base_name.len() && n.starts_with(&amd.base_name)
+                            })
                             .map(|s| s.as_str())
                             .collect();
 
                         for desc in &tier.effect_descs {
-                            if desc.starts_with('{') { continue; }
+                            if desc.starts_with('{') {
+                                continue;
+                            }
                             let clean = strip_icon_tags(desc);
                             if text_contains_ability_name(&clean, &amd.base_name, &longer) {
                                 matches = true;
@@ -1596,7 +1648,10 @@ fn build_tsys_ability_index(
 
             // Build reverse index
             for &aid in &all_ability_ids {
-                ability_to_tsys.entry(aid).or_default().push(tsys_key.clone());
+                ability_to_tsys
+                    .entry(aid)
+                    .or_default()
+                    .push(tsys_key.clone());
             }
 
             tsys_to_abilities.insert(tsys_key.clone(), all_ability_ids);
@@ -1646,7 +1701,11 @@ mod tests {
             icon_id: None,
             skill: None,
             level: None,
-            keywords: if monster { vec!["Lint_MonsterAbility".to_string()] } else { Vec::new() },
+            keywords: if monster {
+                vec!["Lint_MonsterAbility".to_string()]
+            } else {
+                Vec::new()
+            },
             damage_type: None,
             reset_time: None,
             target: None,
@@ -1668,7 +1727,12 @@ mod tests {
         }
     }
 
-    fn family(base: &str, base_name: &str, monster: bool, tiers: Vec<u32>) -> abilities::AbilityFamily {
+    fn family(
+        base: &str,
+        base_name: &str,
+        monster: bool,
+        tiers: Vec<u32>,
+    ) -> abilities::AbilityFamily {
         abilities::AbilityFamily {
             base_internal_name: base.to_string(),
             base_name: base_name.to_string(),
@@ -1711,7 +1775,12 @@ mod tests {
         .into();
         let families = HashMap::from([(
             "WitheringShroud1".to_string(),
-            family("WitheringShroud1", "Withering Shroud", false, vec![4926, 4937]),
+            family(
+                "WitheringShroud1",
+                "Withering Shroud",
+                false,
+                vec![4926, 4937],
+            ),
         )]);
         let index = build_ability_name_index(&abilities, &families);
         assert_eq!(index.get("Withering Shroud"), Some(&4926));
@@ -1728,8 +1797,14 @@ mod tests {
         ]
         .into();
         let families = HashMap::from([
-            ("Screech".to_string(), family("Screech", "Screech", false, vec![100])),
-            ("MonsterScreech".to_string(), family("MonsterScreech", "Screech", true, vec![200])),
+            (
+                "Screech".to_string(),
+                family("Screech", "Screech", false, vec![100]),
+            ),
+            (
+                "MonsterScreech".to_string(),
+                family("MonsterScreech", "Screech", true, vec![200]),
+            ),
         ]);
         let index = build_ability_name_index(&abilities, &families);
         assert_eq!(index.get("Screech"), Some(&100));

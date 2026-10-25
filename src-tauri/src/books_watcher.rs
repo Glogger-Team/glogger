@@ -19,9 +19,7 @@ use crate::coordinator::{
     ingest_hoplology_content, ingest_report_stats_content, ingest_teleport_binds_content,
     persist_book_content,
 };
-use crate::db::stall_tracker_commands::{
-    insert_stall_events, StallEventInput, StallOpsLock,
-};
+use crate::db::stall_tracker_commands::{insert_stall_events, StallEventInput, StallOpsLock};
 use crate::db::DbPool;
 use crate::settings::SettingsManager;
 use crate::shop_log_parser::parse_shop_log;
@@ -40,11 +38,7 @@ const SCAN_INTERVAL_SECS: u64 = 30;
 /// Spawn the Books-directory watcher thread. Runs for the process lifetime;
 /// re-reads settings each tick so `game_data_path` changes take effect
 /// without a restart.
-pub fn spawn_books_watcher(
-    settings: std::sync::Arc<SettingsManager>,
-    db: DbPool,
-    app: AppHandle,
-) {
+pub fn spawn_books_watcher(settings: std::sync::Arc<SettingsManager>, db: DbPool, app: AppHandle) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(INITIAL_DELAY_SECS));
         let mut seen: HashMap<PathBuf, SystemTime> = HashMap::new();
@@ -75,8 +69,11 @@ const GIVE_UP_AFTER_ATTEMPTS: u32 = 3;
 /// a file stuck behind transient contention waits indefinitely instead of
 /// being dropped after 3 × `SCAN_INTERVAL_SECS`.
 const TRANSIENT_ERROR_MARKERS: &[&str] = &[
-    "Database error:",          // DbPool::get_write r2d2 error prefix
+    "Database error:", // DbPool::get_write r2d2 error prefix
+    "Database connection error:", // coordinator::persist_book_content / books_watcher gourmand + stall paths
+    "Failed to persist report stats:", // coordinator::ingest_report_stats_content gate
     "Game data not loaded yet", // coordinator::ingest_hoplology_content gate
+    "GameDataState not managed yet", // books_watcher hoplology path before GameDataState is provided
 ];
 
 /// One scan pass. First pass ingests everything on disk (backfill); later
@@ -137,10 +134,7 @@ fn scan_books_dir(
         if !is_txt {
             continue;
         }
-        let Ok(mtime) = entry
-            .metadata()
-            .and_then(|m| m.modified())
-        else {
+        let Ok(mtime) = entry.metadata().and_then(|m| m.modified()) else {
             continue;
         };
         if seen.get(&path) != Some(&mtime) {
@@ -242,15 +236,17 @@ fn scan_books_dir(
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => {
                 record_failure(
-                    failures, seen, &path, mtime, &file_name,
+                    failures,
+                    seen,
+                    &path,
+                    mtime,
+                    &file_name,
                     &format!("unreadable: {err}"),
                 );
             }
             Ok(bytes) => {
                 let content = String::from_utf8_lossy(&bytes);
-                match process_book_file(
-                    &path, &content, &character, &server, db, &ops_lock, app,
-                ) {
+                match process_book_file(&path, &content, &character, &server, db, &ops_lock, app) {
                     Ok(note) => {
                         // Success — including a stats-report attribution
                         // skip for another alt: the file belongs to that
@@ -264,9 +260,7 @@ fn scan_books_dir(
                         eprintln!("[books-watcher] {file_name}: {note}");
                     }
                     Err(err) => {
-                        record_failure(
-                            failures, seen, &path, mtime, &file_name, &err,
-                        );
+                        record_failure(failures, seen, &path, mtime, &file_name, &err);
                     }
                 }
             }
@@ -417,8 +411,9 @@ pub(crate) fn process_book_file(
                     .try_state::<GameDataState>()
                     .map(|s| s.inner().clone())
                     .ok_or_else(|| "GameDataState not managed yet".to_string())?;
-                let inserted = ingest_hoplology_content(db, &game_data, app, character, server, &content)
-                    .map_err(|e| format!("hoplology ingest failed: {e}"))?;
+                let inserted =
+                    ingest_hoplology_content(db, &game_data, app, character, server, &content)
+                        .map_err(|e| format!("hoplology ingest failed: {e}"))?;
                 if inserted > 0 {
                     notes.push(format!("hoplology +{inserted}"));
                 }
@@ -784,7 +779,10 @@ mod tests {
             stats_attribution_skip("TwinkleofToes was created on ...", "TwinkleofToes"),
             None
         );
-        assert_eq!(stats_attribution_skip("no attribution line here", "TestChar"), None);
+        assert_eq!(
+            stats_attribution_skip("no attribution line here", "TestChar"),
+            None
+        );
         // Case-insensitivity on the comparison only: the note preserves the
         // content's own casing.
         assert_eq!(
@@ -831,12 +829,29 @@ mod tests {
         let path = Path::new("C:/books/SkillReport_261001_212859.txt");
         let m = mtime();
         for i in 0..10 {
-            record_failure(&mut failures, &mut seen, path, m, "file.txt", "Database error: pool timed out");
+            record_failure(
+                &mut failures,
+                &mut seen,
+                path,
+                m,
+                "file.txt",
+                "Database error: pool timed out",
+            );
             assert!(seen.is_empty(), "transient failure {i} must not mark seen");
         }
-        assert!(failures.is_empty(), "transient failures must not enter the map");
+        assert!(
+            failures.is_empty(),
+            "transient failures must not enter the map"
+        );
         // Hoplology CDN gate marker too.
-        record_failure(&mut failures, &mut seen, path, m, "file.txt", "Game data not loaded yet; retrying later");
+        record_failure(
+            &mut failures,
+            &mut seen,
+            path,
+            m,
+            "file.txt",
+            "Game data not loaded yet; retrying later",
+        );
         assert!(seen.is_empty() && failures.is_empty());
     }
 
@@ -847,13 +862,30 @@ mod tests {
         let path = Path::new("C:/books/SkillReport_261001_212859.txt");
         let m = mtime();
         for count in 1..GIVE_UP_AFTER_ATTEMPTS {
-            record_failure(&mut failures, &mut seen, path, m, "file.txt", "no parseable shop-log entries");
+            record_failure(
+                &mut failures,
+                &mut seen,
+                path,
+                m,
+                "file.txt",
+                "no parseable shop-log entries",
+            );
             assert!(seen.is_empty(), "not yet at threshold");
             assert_eq!(failures.get(&(path.to_path_buf(), m)), Some(&count));
         }
-        record_failure(&mut failures, &mut seen, path, m, "file.txt", "no parseable shop-log entries");
+        record_failure(
+            &mut failures,
+            &mut seen,
+            path,
+            m,
+            "file.txt",
+            "no parseable shop-log entries",
+        );
         assert_eq!(seen.get(path), Some(&m), "threshold reached → marked seen");
-        assert!(!failures.contains_key(&(path.to_path_buf(), m)), "counter cleared");
+        assert!(
+            !failures.contains_key(&(path.to_path_buf(), m)),
+            "counter cleared"
+        );
     }
 
     #[test]
@@ -864,10 +896,34 @@ mod tests {
         let path = Path::new("C:/books/SkillReport_261001_212859.txt");
         let m1 = SystemTime::UNIX_EPOCH;
         let m2 = SystemTime::UNIX_EPOCH + Duration::from_secs(1);
-        record_failure(&mut failures, &mut seen, path, m1, "file.txt", "no parseable shop-log entries");
-        record_failure(&mut failures, &mut seen, path, m2, "file.txt", "no parseable shop-log entries");
-        record_failure(&mut failures, &mut seen, path, m2, "file.txt", "no parseable shop-log entries");
-        assert!(seen.is_empty(), "2 failures at m2 + 1 at m1 never reaches 3");
+        record_failure(
+            &mut failures,
+            &mut seen,
+            path,
+            m1,
+            "file.txt",
+            "no parseable shop-log entries",
+        );
+        record_failure(
+            &mut failures,
+            &mut seen,
+            path,
+            m2,
+            "file.txt",
+            "no parseable shop-log entries",
+        );
+        record_failure(
+            &mut failures,
+            &mut seen,
+            path,
+            m2,
+            "file.txt",
+            "no parseable shop-log entries",
+        );
+        assert!(
+            seen.is_empty(),
+            "2 failures at m2 + 1 at m1 never reaches 3"
+        );
     }
 
     // ── gourmand ──────────────────────────────────────────────────
@@ -878,9 +934,11 @@ mod tests {
         let conn = pool.get_write().unwrap();
         let content =
             "Foods Consumed:\n\n  \"Meaty\" Tomato Soup: 7\n  8-Year Steamed Cake (HAS DAIRY): 1\n";
-        let n1 = crate::db::gourmand_commands::import_gourmand_from_content(&conn, content).unwrap();
+        let n1 =
+            crate::db::gourmand_commands::import_gourmand_from_content(&conn, content).unwrap();
         assert_eq!(n1, 2);
-        let n2 = crate::db::gourmand_commands::import_gourmand_from_content(&conn, content).unwrap();
+        let n2 =
+            crate::db::gourmand_commands::import_gourmand_from_content(&conn, content).unwrap();
         assert_eq!(n2, 2, "re-import stays stable");
         let soup: i64 = conn
             .query_row(
@@ -891,7 +949,9 @@ mod tests {
             .unwrap();
         assert_eq!(soup, 7, "count preserved across re-import");
         let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM gourmand_eaten_foods", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM gourmand_eaten_foods", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(total, 2, "idempotent import keeps one row per food");
     }
@@ -925,7 +985,8 @@ mod tests {
     #[test]
     fn hoplology_content_split_skips_header() {
         // Post-normalization shape: real newlines, one item per line.
-        let content = "Equipment Studied:\n\n  CrudBurst's Hammer of Thumping\n  Thentree Harness\n";
+        let content =
+            "Equipment Studied:\n\n  CrudBurst's Hammer of Thumping\n  Thentree Harness\n";
         let items: Vec<&str> = content
             .split('\n')
             .map(str::trim)

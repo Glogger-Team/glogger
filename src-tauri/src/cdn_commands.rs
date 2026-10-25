@@ -74,7 +74,9 @@ pub async fn init_game_data(app: &AppHandle, state: &GameDataState) -> Result<()
                 emit_startup_detail(app, 0, "Loading cached data...");
                 match game_data::load_from_cache_with_progress(&data_dir, cached, |detail| {
                     emit_startup_detail(app, 0, detail);
-                }).await {
+                })
+                .await
+                {
                     Ok(data) => {
                         *state.write().await = data;
                         return Ok(());
@@ -118,7 +120,8 @@ pub async fn init_game_data(app: &AppHandle, state: &GameDataState) -> Result<()
 
     let data = game_data::load_from_cache_with_progress(&data_dir, remote_version, |detail| {
         emit_startup_detail(app, 0, detail);
-    }).await?;
+    })
+    .await?;
     *state.write().await = data;
 
     Ok(())
@@ -131,7 +134,14 @@ pub fn emit_startup_detail(app: &AppHandle, task: u32, detail: &str) {
         task: u32,
         detail: String,
     }
-    app.emit("startup-detail", StartupDetail { task, detail: detail.to_string() }).ok();
+    app.emit(
+        "startup-detail",
+        StartupDetail {
+            task,
+            detail: detail.to_string(),
+        },
+    )
+    .ok();
 }
 
 // ── CDN management commands ───────────────────────────────────────────────────
@@ -155,9 +165,7 @@ pub struct CdnVersionCheck {
 /// Lightweight check: is there a newer CDN version than what we currently have loaded?
 /// Only fetches the single-integer version file, not the full cache status.
 #[tauri::command]
-pub async fn check_cdn_version(
-    state: State<'_, GameDataState>,
-) -> Result<CdnVersionCheck, String> {
+pub async fn check_cdn_version(state: State<'_, GameDataState>) -> Result<CdnVersionCheck, String> {
     let current_version = state.read().await.version;
     let remote_version = cdn::fetch_remote_version()
         .await
@@ -392,7 +400,9 @@ pub async fn search_items(
                     });
                     if !has_match {
                         // Also check the item description as fallback
-                        let desc_match = item.description.as_ref()
+                        let desc_match = item
+                            .description
+                            .as_ref()
                             .map(|d| d.to_lowercase().contains(eq))
                             .unwrap_or(false);
                         if !desc_match {
@@ -420,11 +430,7 @@ pub async fn get_items_by_keyword(
     let mut results: Vec<ItemInfo> = data
         .items
         .values()
-        .filter(|item| {
-            item.keywords
-                .iter()
-                .any(|k| k.to_lowercase() == kw_lower)
-        })
+        .filter(|item| item.keywords.iter().any(|k| k.to_lowercase() == kw_lower))
         .cloned()
         .collect();
     results.sort_by(|a, b| a.name.cmp(&b.name));
@@ -445,7 +451,8 @@ pub async fn get_recipe_ingredient_keywords(
     state: State<'_, GameDataState>,
 ) -> Result<Vec<IngredientKeywordInfo>, String> {
     let data = state.read().await;
-    let mut keyword_descs: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut keyword_descs: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
 
     // Iterate recipes to collect keyword → first description mapping
     for recipe in data.recipes.values() {
@@ -466,7 +473,10 @@ pub async fn get_recipe_ingredient_keywords(
 
     let mut results: Vec<IngredientKeywordInfo> = keyword_descs
         .into_iter()
-        .map(|(keyword, description)| IngredientKeywordInfo { keyword, description })
+        .map(|(keyword, description)| IngredientKeywordInfo {
+            keyword,
+            description,
+        })
         .collect();
     results.sort_by(|a, b| a.description.cmp(&b.description));
     Ok(results)
@@ -601,8 +611,7 @@ pub async fn get_ability_families_for_skill(
         .ability_families
         .values()
         .filter(|f| {
-            f.skill.as_deref() == Some(match_name)
-                && (show_monster || !f.is_monster_ability)
+            f.skill.as_deref() == Some(match_name) && (show_monster || !f.is_monster_ability)
         })
         .cloned()
         .collect();
@@ -898,8 +907,7 @@ const GAME_PHASE_NAMES: &[(&str, &str)] = &[
 
 /// Mean elongation of the moon (Meeus 47.2).
 fn meeus_d(t: f64) -> f64 {
-    297.8501921
-        + t * (445267.1114034 + t * (-0.0018819 + t * (1.0 / 545868.0 - t / 113065000.0)))
+    297.8501921 + t * (445267.1114034 + t * (-0.0018819 + t * (1.0 / 545868.0 - t / 113065000.0)))
 }
 
 /// Sun's mean anomaly (Meeus 47.3).
@@ -909,8 +917,7 @@ fn meeus_m(t: f64) -> f64 {
 
 /// Moon's mean anomaly (Meeus 47.4).
 fn meeus_m_prime(t: f64) -> f64 {
-    134.9633964
-        + t * (477198.8675055 + t * (0.0087414 + t * (1.0 / 69699.0 - t / 14712000.0)))
+    134.9633964 + t * (477198.8675055 + t * (0.0087414 + t * (1.0 / 69699.0 - t / 14712000.0)))
 }
 
 /// Phase angle between sun, moon, and earth (Meeus 48.4).
@@ -918,9 +925,7 @@ fn meeus_phase_angle(t: f64) -> f64 {
     let d = meeus_d(t);
     let m = meeus_m(t);
     let mp = meeus_m_prime(t);
-    180.0 - d
-        - 6.289 * mp.to_radians().sin()
-        + 2.100 * m.to_radians().sin()
+    180.0 - d - 6.289 * mp.to_radians().sin() + 2.100 * m.to_radians().sin()
         - 1.274 * (2.0 * d - mp).to_radians().sin()
         - 0.658 * (2.0 * d).to_radians().sin()
         - 0.214 * (2.0 * mp).to_radians().sin()
@@ -1315,8 +1320,8 @@ pub async fn search_achievements(
             .unwrap_or(&a.id)
             .cmp(b.name.as_deref().unwrap_or(&b.id))
     });
-     Ok(results)
- }
+    Ok(results)
+}
 
 /// Get all NPCs in a specific area.
 #[tauri::command]
@@ -1429,10 +1434,7 @@ fn load_monster_counts_by_area(app: &AppHandle) -> HashMap<String, usize> {
 /// Get monsters that spawn in a specific area, extracted from translation strings.
 /// Returns a sorted list of unique monster display names.
 #[tauri::command]
-pub async fn get_monsters_in_area(
-    app: AppHandle,
-    area: String,
-) -> Result<Vec<String>, String> {
+pub async fn get_monsters_in_area(app: AppHandle, area: String) -> Result<Vec<String>, String> {
     let data_dir = data_cache_dir(&app)?;
     let path = data_dir.join("translation").join("strings_requested.json");
 
@@ -1757,9 +1759,10 @@ pub async fn get_vendor_purchasable_item_ids(
     let mut ids = Vec::new();
 
     for (&item_id, source_info) in &data.sources.items {
-        let is_vendor = source_info.entries.iter().any(|e| {
-            e.source_type == "Barter" || e.source_type == "Vendor"
-        });
+        let is_vendor = source_info
+            .entries
+            .iter()
+            .any(|e| e.source_type == "Barter" || e.source_type == "Vendor");
         if is_vendor {
             ids.push(item_id);
         }
@@ -2059,9 +2062,11 @@ pub async fn get_tsys_power_info(
     }
 
     // Resolve skill internal name to display name
-    let resolved_skill = info.skill.as_deref().and_then(|s| {
-        data.resolve_skill(s).map(|si| si.name.clone())
-    }).or_else(|| info.skill.clone());
+    let resolved_skill = info
+        .skill
+        .as_deref()
+        .and_then(|s| data.resolve_skill(s).map(|si| si.name.clone()))
+        .or_else(|| info.skill.clone());
 
     Ok(Some(TsysPowerInfo {
         internal_name: power_name,
@@ -2093,7 +2098,9 @@ pub async fn get_tsys_power_info_batch(
             .values()
             .find(|info| info.internal_name.as_deref() == Some(&power_name));
 
-        let Some(info) = entry else { continue; };
+        let Some(info) = entry else {
+            continue;
+        };
 
         let tier_key = format!("id_{}", tier);
         let mut tier_effects = Vec::new();
@@ -2121,21 +2128,26 @@ pub async fn get_tsys_power_info_batch(
             }
         }
 
-        let resolved_skill = info.skill.as_deref().and_then(|s| {
-            data.resolve_skill(s).map(|si| si.name.clone())
-        }).or_else(|| info.skill.clone());
+        let resolved_skill = info
+            .skill
+            .as_deref()
+            .and_then(|s| data.resolve_skill(s).map(|si| si.name.clone()))
+            .or_else(|| info.skill.clone());
 
         let key = format!("{}:{}", power_name, tier);
-        result.insert(key, TsysPowerInfo {
-            internal_name: power_name,
-            skill: resolved_skill,
-            prefix: info.prefix.clone(),
-            suffix: info.suffix.clone(),
-            slots: info.slots.clone(),
-            tier_effects,
-            tier_effects_structured,
-            icon_id,
-        });
+        result.insert(
+            key,
+            TsysPowerInfo {
+                internal_name: power_name,
+                skill: resolved_skill,
+                prefix: info.prefix.clone(),
+                suffix: info.suffix.clone(),
+                slots: info.slots.clone(),
+                tier_effects,
+                tier_effects_structured,
+                icon_id,
+            },
+        );
     }
 
     Ok(result)
@@ -2204,7 +2216,13 @@ fn parse_conditional_indirect_text(desc: &str) -> Vec<(String, f64, String)> {
                 .iter()
                 .any(|t| t.eq_ignore_ascii_case(&c[1]))
         })
-        .map(|c| (format!("MOD_{}_INDIRECT", c[1].to_uppercase()), pct, skill.clone()))
+        .map(|c| {
+            (
+                format!("MOD_{}_INDIRECT", c[1].to_uppercase()),
+                pct,
+                skill.clone(),
+            )
+        })
         .collect()
 }
 
@@ -2238,12 +2256,20 @@ fn parse_conditional_direct_text(desc: &str) -> Vec<(String, f64, String)> {
         let skill = caps[7].to_string();
         for i in [1usize, 2] {
             if let Some(t) = caps.get(i) {
-                out.push((format!("BOOST_{}_DIRECT", t.as_str().to_uppercase()), flat_direct, skill.clone()));
+                out.push((
+                    format!("BOOST_{}_DIRECT", t.as_str().to_uppercase()),
+                    flat_direct,
+                    skill.clone(),
+                ));
             }
         }
         for i in [4usize, 5] {
             if let Some(t) = caps.get(i) {
-                out.push((format!("BOOST_{}_INDIRECT", t.as_str().to_uppercase()), flat_indirect, skill.clone()));
+                out.push((
+                    format!("BOOST_{}_INDIRECT", t.as_str().to_uppercase()),
+                    flat_indirect,
+                    skill.clone(),
+                ));
             }
         }
         return out;
@@ -2253,7 +2279,11 @@ fn parse_conditional_direct_text(desc: &str) -> Vec<(String, f64, String)> {
             let pct = tail[1].parse::<f64>().unwrap_or(0.0) / 100.0;
             let skill = tail[2].to_string();
             for t in RE_DIRECT_TYPE.captures_iter(d) {
-                out.push((format!("MOD_{}_DIRECT", t[1].to_uppercase()), pct, skill.clone()));
+                out.push((
+                    format!("MOD_{}_DIRECT", t[1].to_uppercase()),
+                    pct,
+                    skill.clone(),
+                ));
             }
         }
     }
@@ -2305,10 +2335,10 @@ fn extract_leading_abilities_rest(desc: &str, data: &GameData) -> (Vec<u32>, Str
             let cand = words[i..i + len].join(" ");
             let cand = cand.trim_end_matches([',', '.', ':']).trim();
             // Possessive form too ("Fairy Fire's damage type becomes Fire").
-            let id = data
-                .ability_name_index
-                .get(cand)
-                .or_else(|| cand.strip_suffix("'s").and_then(|c| data.ability_name_index.get(c)));
+            let id = data.ability_name_index.get(cand).or_else(|| {
+                cand.strip_suffix("'s")
+                    .and_then(|c| data.ability_name_index.get(c))
+            });
             if let Some(&id) = id {
                 matched = Some((len, id));
                 break;
@@ -2359,8 +2389,10 @@ fn parse_named_damage_rest(rest: &str) -> Option<(f64, bool)> {
     static RE_DAMAGE: Lazy<regex::Regex> =
         Lazy::new(|| regex::Regex::new(r"^[Dd]amage (?:is )?\+(\d+)(%)?").unwrap());
     static RE_DEAL: Lazy<regex::Regex> = Lazy::new(|| {
-        regex::Regex::new(r"^deals? (\+)?(\d+)(%)?(?: ([A-Za-z]+))? [Dd]amage( to (?:[Aa]rmor|[Hh]ealth))?")
-            .unwrap()
+        regex::Regex::new(
+            r"^deals? (\+)?(\d+)(%)?(?: ([A-Za-z]+))? [Dd]amage( to (?:[Aa]rmor|[Hh]ealth))?",
+        )
+        .unwrap()
     });
     // A leading type-conversion clause ("deals Fire damage (instead of Darkness) and damage is
     // +2") hides the damage clause from the anchored patterns below — skip past it. The
@@ -2376,7 +2408,11 @@ fn parse_named_damage_rest(rest: &str) -> Option<(f64, bool)> {
         if conditional_tail(&rest[caps.get(0).unwrap().end()..]) {
             return None;
         }
-        return Some(if pct { (value / 100.0, true) } else { (value, false) });
+        return Some(if pct {
+            (value / 100.0, true)
+        } else {
+            (value, false)
+        });
     }
     if let Some(caps) = RE_DEAL.captures(rest) {
         let has_plus = caps.get(1).is_some();
@@ -2391,7 +2427,11 @@ fn parse_named_damage_rest(rest: &str) -> Option<(f64, bool)> {
         if conditional_tail(&rest[caps.get(0).unwrap().end()..]) {
             return None;
         }
-        return Some(if pct { (value / 100.0, true) } else { (value, false) });
+        return Some(if pct {
+            (value / 100.0, true)
+        } else {
+            (value, false)
+        });
     }
     None
 }
@@ -2442,18 +2482,26 @@ fn parse_base_damage(body: &str) -> Option<(String, f64, bool)> {
 /// first entry. Any token from the bucket is arithmetically equivalent — the effects list is
 /// computed per ability, so the grant can't leak to other abilities.
 fn pick_bucket_token(arr: &[String]) -> Option<&String> {
-    arr.iter().find(|t| t.contains("_ABILITY_")).or_else(|| arr.first())
+    arr.iter()
+        .find(|t| t.contains("_ABILITY_"))
+        .or_else(|| arr.first())
 }
 
 /// Parse a skill-scoped damage-type conversion ("Staff abilities that normally deal Crushing
 /// damage instead deal Slashing damage"). Returns `(skill, from_type, to_type)`.
 fn parse_skill_type_conversion(body: &str) -> Option<(String, String, String)> {
     static RE: Lazy<regex::Regex> = Lazy::new(|| {
-        regex::Regex::new(r"^(\w+) abilities that normally deal (\w+) damage instead deal (\w+) damage")
-            .unwrap()
+        regex::Regex::new(
+            r"^(\w+) abilities that normally deal (\w+) damage instead deal (\w+) damage",
+        )
+        .unwrap()
     });
     let caps = RE.captures(body)?;
-    Some((caps[1].to_string(), caps[2].to_string(), caps[3].to_string()))
+    Some((
+        caps[1].to_string(),
+        caps[2].to_string(),
+        caps[3].to_string(),
+    ))
 }
 
 /// Parse a named-ability damage-type conversion from the text remaining after the leading
@@ -2479,7 +2527,9 @@ fn parse_named_type_conversion(rest: &str) -> Option<String> {
     if let Some(caps) = RE_BECOMES.captures(rest) {
         return Some(caps[1].to_string());
     }
-    RE_DEALS_INSTEAD.captures(rest).map(|caps| caps[1].to_string())
+    RE_DEALS_INSTEAD
+        .captures(rest)
+        .map(|caps| caps[1].to_string())
 }
 
 /// Parse the "X, Y and Z deal direct Fire damage" conversion form (Vanquisher's Blade, Flaming
@@ -2496,9 +2546,16 @@ fn parse_names_deal_direct(body: &str, ability_name: &str) -> Option<String> {
     let caps = RE.captures(body)?;
     let to = caps[2].to_string();
     fn norm(s: &str) -> String {
-        s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase()
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .collect::<String>()
+            .to_lowercase()
     }
-    let want = norm(ability_name.trim_end_matches(|c: char| c.is_ascii_digit()).trim_end());
+    let want = norm(
+        ability_name
+            .trim_end_matches(|c: char| c.is_ascii_digit())
+            .trim_end(),
+    );
     if want.is_empty() {
         return None;
     }
@@ -2521,7 +2578,11 @@ fn parse_dot_apply(body: &str) -> Option<(String, String, f64)> {
             .unwrap()
     });
     let caps = RE.captures(body)?;
-    Some((caps[1].to_string(), caps[2].to_string(), caps[3].parse().ok()?))
+    Some((
+        caps[1].to_string(),
+        caps[2].to_string(),
+        caps[3].parse().ok()?,
+    ))
 }
 
 /// Best-effort damage type of a prose-named DoT ("Poison Slice", "Psychic scream", "Flaming
@@ -2579,7 +2640,10 @@ fn harvest_type_rules(
         // Crushing damage…"), in-game these equip conversions apply to EVERY ability of the
         // from-type regardless of skill (verified against live tooltips with a Viper Halberd:
         // the second combat skill's Crushing attacks convert too). Gate on damage type only.
-        let from_match = ability.damage_type.as_deref().is_some_and(|d| d.eq_ignore_ascii_case(&from));
+        let from_match = ability
+            .damage_type
+            .as_deref()
+            .is_some_and(|d| d.eq_ignore_ascii_case(&from));
         if from_match {
             conversions.push(to);
         }
@@ -2588,7 +2652,9 @@ fn harvest_type_rules(
     } else if let Some(tf) = target_family {
         let (ids, rest) = extract_leading_abilities_rest(desc, data);
         if !ids.is_empty()
-            && ids.iter().any(|id| data.ability_to_family.get(id).map(|s| s.as_str()) == Some(tf))
+            && ids
+                .iter()
+                .any(|id| data.ability_to_family.get(id).map(|s| s.as_str()) == Some(tf))
         {
             if let Some(to) = parse_named_type_conversion(&rest) {
                 conversions.push(to);
@@ -2608,8 +2674,16 @@ fn attr_label(data: &GameData, token: &str) -> (String, String) {
         .get(token)
         .map(|attr| {
             (
-                attr.raw.get("Label").and_then(|v| v.as_str()).unwrap_or(token).to_string(),
-                attr.raw.get("DisplayType").and_then(|v| v.as_str()).unwrap_or("AsInt").to_string(),
+                attr.raw
+                    .get("Label")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(token)
+                    .to_string(),
+                attr.raw
+                    .get("DisplayType")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("AsInt")
+                    .to_string(),
             )
         })
         .unwrap_or_else(|| (token.to_string(), String::new()))
@@ -2675,8 +2749,12 @@ fn resolve_dot_add(
     if desc.contains('{') {
         return; // token form — handled elsewhere
     }
-    let Some(target_family) = target_family else { return };
-    let Some((total, dtype, seconds)) = parse_dot_clause(desc) else { return };
+    let Some(target_family) = target_family else {
+        return;
+    };
+    let Some((total, dtype, seconds)) = parse_dot_clause(desc) else {
+        return;
+    };
     let ids = extract_leading_abilities(desc, data);
     if ids.is_empty() {
         return;
@@ -2702,8 +2780,19 @@ fn resolve_dot_add(
         .iter()
         .find(|d| type_matches(d) && d.duration == Some(seconds as f32))
         .or_else(|| stats.dots.iter().find(type_matches))
-        .or_else(|| stats.dots.iter().find(|d| d.duration == Some(seconds as f32)))
-        .or_else(|| if stats.dots.len() == 1 { stats.dots.first() } else { None });
+        .or_else(|| {
+            stats
+                .dots
+                .iter()
+                .find(|d| d.duration == Some(seconds as f32))
+        })
+        .or_else(|| {
+            if stats.dots.len() == 1 {
+                stats.dots.first()
+            } else {
+                None
+            }
+        });
 
     match dot {
         // Feed an existing dormant DoT through its own per-tick token.
@@ -2767,7 +2856,9 @@ fn resolve_direct_add(
         return; // DoT-add prose — owned by resolve_dot_add
     }
 
-    let push = |token: &String, value: f64, effects: &mut Vec<crate::game_data::ability_stats::ModEffect>| {
+    let push = |token: &String,
+                value: f64,
+                effects: &mut Vec<crate::game_data::ability_stats::ModEffect>| {
         let (label, display_type) = attr_label(data, token);
         effects.push(crate::game_data::ability_stats::ModEffect {
             token: token.clone(),
@@ -2787,12 +2878,22 @@ fn resolve_direct_add(
     // Checked before the named-ability path so a leading skill word ("Kick", "Necromancy") isn't
     // mis-consumed as an ability name.
     let apply_skill_wide =
-        |subject: String, value: f64, pct: bool, effects: &mut Vec<crate::game_data::ability_stats::ModEffect>| {
+        |subject: String,
+         value: f64,
+         pct: bool,
+         effects: &mut Vec<crate::game_data::ability_stats::ModEffect>| {
             let subj = subject.to_lowercase();
-            let applies = ability.skill.as_deref().is_some_and(|s| s.to_lowercase() == subj)
+            let applies = ability
+                .skill
+                .as_deref()
+                .is_some_and(|s| s.to_lowercase() == subj)
                 || ability.keywords.iter().any(|k| k.to_lowercase() == subj);
             if applies {
-                let bucket = if pct { &stats.attributes_that_mod_damage } else { &stats.attributes_that_delta_damage };
+                let bucket = if pct {
+                    &stats.attributes_that_mod_damage
+                } else {
+                    &stats.attributes_that_delta_damage
+                };
                 if let Some(token) = pick_bucket_token(bucket) {
                     push(&token.clone(), value, effects);
                 }
@@ -2808,7 +2909,9 @@ fn resolve_direct_add(
     }
 
     // Named-ability form, gated on the target's family like resolve_dot_add.
-    let Some(target_family) = target_family else { return };
+    let Some(target_family) = target_family else {
+        return;
+    };
     let (ids, rest) = extract_leading_abilities_rest(desc, data);
     if ids.is_empty() {
         return;
@@ -2821,13 +2924,20 @@ fn resolve_direct_add(
     }
 
     if let Some((value, pct)) = parse_named_damage_rest(&rest) {
-        let bucket = if pct { &stats.attributes_that_mod_damage } else { &stats.attributes_that_delta_damage };
+        let bucket = if pct {
+            &stats.attributes_that_mod_damage
+        } else {
+            &stats.attributes_that_delta_damage
+        };
         if let Some(token) = pick_bucket_token(bucket) {
             push(&token.clone(), value, effects);
         }
     }
     if let Some(caps) = RE_POWER_COST.captures(&rest) {
-        if let (Ok(v), Some(token)) = (caps[1].parse::<f64>(), stats.attributes_that_delta_power_cost.first()) {
+        if let (Ok(v), Some(token)) = (
+            caps[1].parse::<f64>(),
+            stats.attributes_that_delta_power_cost.first(),
+        ) {
             push(&token.clone(), -v, effects);
         }
     }
@@ -2912,7 +3022,11 @@ pub async fn compute_ability_build_stats(
     let Some(ability) = data.abilities.get(&ability_id) else {
         return Ok(None);
     };
-    let stats = if pvp { ability.pvp.as_ref() } else { ability.pve.as_ref() };
+    let stats = if pvp {
+        ability.pvp.as_ref()
+    } else {
+        ability.pve.as_ref()
+    };
     let Some(stats) = stats else {
         // No combat stats for this side — nothing to compute, but the ability exists.
         return Ok(Some(AbilityBuildStats::default()));
@@ -2951,35 +3065,97 @@ pub async fn compute_ability_build_stats(
         let source = format!("{} ({})", display_name, mref.slot_label);
 
         let tier_key = format!("id_{}", mref.tier);
-        let Some(tier_info) = info.tiers.get(&tier_key) else { continue };
+        let Some(tier_info) = info.tiers.get(&tier_key) else {
+            continue;
+        };
         let mut src_rules: Vec<(String, String, f64)> = Vec::new();
         let mut src_tokens: Vec<String> = Vec::new();
         for desc in &tier_info.effect_descs {
             resolve_mod_effects(desc, &source, &data, &equipped, &mut effects);
-            resolve_dot_add(desc, &source, target_family, stats, &data, &mut effects, &mut synthetic_dots);
-            resolve_direct_add(desc, &source, target_family, ability, stats, &data, &mut effects);
-            harvest_type_rules(desc, ability, target_family, &data, &mut conversions, &mut src_rules, &mut src_tokens);
+            resolve_dot_add(
+                desc,
+                &source,
+                target_family,
+                stats,
+                &data,
+                &mut effects,
+                &mut synthetic_dots,
+            );
+            resolve_direct_add(
+                desc,
+                &source,
+                target_family,
+                ability,
+                stats,
+                &data,
+                &mut effects,
+            );
+            harvest_type_rules(
+                desc,
+                ability,
+                target_family,
+                &data,
+                &mut conversions,
+                &mut src_rules,
+                &mut src_tokens,
+            );
         }
         for (subject, dot_name, seconds) in src_rules {
-            dot_apply_rules.push(DotApplyRule { subject, dot_name, seconds, tokens: src_tokens.clone() });
+            dot_apply_rules.push(DotApplyRule {
+                subject,
+                dot_name,
+                seconds,
+                tokens: src_tokens.clone(),
+            });
         }
     }
 
     // Equipped items' own innate bonuses (e.g. a focus's flat Direct/Indirect Psychic damage),
     // which the in-game tooltip folds in the same way as gear mods.
     for iref in &items {
-        let Some(item) = data.items.get(&iref.item_id) else { continue };
+        let Some(item) = data.items.get(&iref.item_id) else {
+            continue;
+        };
         let source = format!("{} ({})", item.name, iref.slot_label);
         let mut src_rules: Vec<(String, String, f64)> = Vec::new();
         let mut src_tokens: Vec<String> = Vec::new();
         for desc in &item.effect_descs {
             resolve_mod_effects(desc, &source, &data, &equipped, &mut effects);
-            resolve_dot_add(desc, &source, target_family, stats, &data, &mut effects, &mut synthetic_dots);
-            resolve_direct_add(desc, &source, target_family, ability, stats, &data, &mut effects);
-            harvest_type_rules(desc, ability, target_family, &data, &mut conversions, &mut src_rules, &mut src_tokens);
+            resolve_dot_add(
+                desc,
+                &source,
+                target_family,
+                stats,
+                &data,
+                &mut effects,
+                &mut synthetic_dots,
+            );
+            resolve_direct_add(
+                desc,
+                &source,
+                target_family,
+                ability,
+                stats,
+                &data,
+                &mut effects,
+            );
+            harvest_type_rules(
+                desc,
+                ability,
+                target_family,
+                &data,
+                &mut conversions,
+                &mut src_rules,
+                &mut src_tokens,
+            );
         }
         for (subject, dot_name, seconds) in src_rules {
-            dot_apply_rules.push(DotApplyRule { subject, dot_name, seconds, tokens: src_tokens.clone() });
+            dot_apply_rules.push(DotApplyRule {
+                subject,
+                dot_name,
+                seconds,
+                tokens: src_tokens.clone(),
+            });
         }
     }
 
@@ -2987,14 +3163,22 @@ pub async fn compute_ability_build_stats(
     // type and which generic typed tokens the engine injects — e.g. with a Viper Halberd
     // (Staff Crushing → Slashing), "Direct Crushing Damage" gear stops applying to Headcracker
     // and Slashing-typed gear starts.
-    let damage_type = conversions.into_iter().next().or_else(|| ability.damage_type.clone());
+    let damage_type = conversions
+        .into_iter()
+        .next()
+        .or_else(|| ability.damage_type.clone());
 
     // "Apply <DoT> damage for N seconds" riders: gate on the (converted) damage type or the
     // ability's skill, then synthesize a DoT fed by the granting source's own BOOST_DOT_* token
     // (labeled "(Per Second)" — so one tick per second at the token's value).
     for rule in &dot_apply_rules {
-        let applies = damage_type.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(&rule.subject))
-            || ability.skill.as_deref().is_some_and(|s| s.eq_ignore_ascii_case(&rule.subject));
+        let applies = damage_type
+            .as_deref()
+            .is_some_and(|t| t.eq_ignore_ascii_case(&rule.subject))
+            || ability
+                .skill
+                .as_deref()
+                .is_some_and(|s| s.eq_ignore_ascii_case(&rule.subject));
         if !applies || rule.tokens.is_empty() {
             continue;
         }
@@ -3092,7 +3276,9 @@ pub async fn get_storage_vaults_in_area(
         .iter()
         .filter(|(_, v)| v.area.as_ref().map(|a| a == &area).unwrap_or(false))
         .map(|(key, v)| {
-            let max_slots = v.levels.as_ref()
+            let max_slots = v
+                .levels
+                .as_ref()
                 .and_then(|lvls| lvls.values().copied().max())
                 .or(v.num_slots)
                 .unwrap_or(0);
@@ -3287,12 +3473,10 @@ pub async fn get_tsys_powers_for_slot(
         }
 
         // Must include this equipment slot (map build planner IDs to CDN slot names)
-        let slot_matches = info.slots.iter().any(|s| {
-            match equip_slot.as_str() {
-                "OffHand" => s == "OffHand" || s == "OffHandShield",
-                "Belt" => s == "Waist",
-                _ => s == &equip_slot,
-            }
+        let slot_matches = info.slots.iter().any(|s| match equip_slot.as_str() {
+            "OffHand" => s == "OffHand" || s == "OffHandShield",
+            "Belt" => s == "Waist",
+            _ => s == &equip_slot,
         });
         if !slot_matches {
             continue;
@@ -3316,7 +3500,8 @@ pub async fn get_tsys_powers_for_slot(
             let skill_level_prereq = tier.skill_level_prereq.map(|v| v as i64);
 
             let mut tier_icon_id: Option<u32> = None;
-            let effects: Vec<String> = tier.effect_descs
+            let effects: Vec<String> = tier
+                .effect_descs
                 .iter()
                 .map(|desc| {
                     if let Some(resolved) = resolve_single_effect(desc, &data) {
@@ -3350,19 +3535,25 @@ pub async fn get_tsys_powers_for_slot(
         let mut best_icon_id: Option<u32> = None;
 
         // Helper to resolve effects from a tier
-        let resolve_tier = |tier: &TsysTierInfo, data: &GameData| -> (Vec<String>, Vec<String>, Option<u32>) {
-            let raw = tier.effect_descs.clone();
-            let mut icon: Option<u32> = None;
-            let resolved: Vec<String> = raw.iter().map(|desc| {
-                if let Some(r) = resolve_single_effect(desc, data) {
-                    if icon.is_none() { icon = r.icon_id; }
-                    r.formatted
-                } else {
-                    desc.clone()
-                }
-            }).collect();
-            (resolved, raw, icon)
-        };
+        let resolve_tier =
+            |tier: &TsysTierInfo, data: &GameData| -> (Vec<String>, Vec<String>, Option<u32>) {
+                let raw = tier.effect_descs.clone();
+                let mut icon: Option<u32> = None;
+                let resolved: Vec<String> = raw
+                    .iter()
+                    .map(|desc| {
+                        if let Some(r) = resolve_single_effect(desc, data) {
+                            if icon.is_none() {
+                                icon = r.icon_id;
+                            }
+                            r.formatted
+                        } else {
+                            desc.clone()
+                        }
+                    })
+                    .collect();
+                (resolved, raw, icon)
+            };
 
         // Default the mod to the tier the target level qualifies for (deterministic
         // — see select_default_tier_key). This is what feeds `tier_id` below, which
@@ -3379,9 +3570,11 @@ pub async fn get_tsys_powers_for_slot(
 
         if best_tier_id.is_some() {
             // Resolve skill internal name to display name (e.g. "FireMagic" -> "Fire Magic")
-            let resolved_skill = info.skill.as_deref().and_then(|s| {
-                data.resolve_skill(s).map(|si| si.name.clone())
-            }).or_else(|| info.skill.clone());
+            let resolved_skill = info
+                .skill
+                .as_deref()
+                .and_then(|s| data.resolve_skill(s).map(|si| si.name.clone()))
+                .or_else(|| info.skill.clone());
 
             results.push(SlotTsysPower {
                 key: key.clone(),
@@ -3395,17 +3588,25 @@ pub async fn get_tsys_powers_for_slot(
                 min_rarity: best_min_rarity,
                 skill_level_prereq: best_skill_prereq,
                 icon_id: best_icon_id,
-                available_tiers: if available_tiers.len() > 1 { available_tiers } else { vec![] },
-                slots: info.slots.iter().map(|s| {
-                    // Map CDN slot names back to display names
-                    match s.as_str() {
-                        "Waist" => "Belt".to_string(),
-                        "OffHandShield" => "Off Hand".to_string(),
-                        "OffHand" => "Off Hand".to_string(),
-                        "MainHand" => "Main Hand".to_string(),
-                        _ => s.clone(),
-                    }
-                }).collect(),
+                available_tiers: if available_tiers.len() > 1 {
+                    available_tiers
+                } else {
+                    vec![]
+                },
+                slots: info
+                    .slots
+                    .iter()
+                    .map(|s| {
+                        // Map CDN slot names back to display names
+                        match s.as_str() {
+                            "Waist" => "Belt".to_string(),
+                            "OffHandShield" => "Off Hand".to_string(),
+                            "OffHand" => "Off Hand".to_string(),
+                            "MainHand" => "Main Hand".to_string(),
+                            _ => s.clone(),
+                        }
+                    })
+                    .collect(),
             });
         }
     }
@@ -3533,10 +3734,7 @@ pub async fn search_tsys(
                 .as_ref()
                 .map(|s| s.to_lowercase().contains(&q))
                 .unwrap_or(false);
-            let slot_match = info
-                .slots
-                .iter()
-                .any(|s| s.to_lowercase().contains(&q));
+            let slot_match = info.slots.iter().any(|s| s.to_lowercase().contains(&q));
             key_match || name_match || skill_match || prefix_match || suffix_match || slot_match
         })
         .map(|(key, info)| TsysBrowserEntry::from_entry(key, info))
@@ -3553,9 +3751,7 @@ pub async fn search_tsys(
 
 /// Get TSys profiles (raw JSON).
 #[tauri::command]
-pub async fn get_tsys_profiles(
-    state: State<'_, GameDataState>,
-) -> Result<Value, String> {
+pub async fn get_tsys_profiles(state: State<'_, GameDataState>) -> Result<Value, String> {
     let data = state.read().await;
     Ok(data.tsys.profiles.clone())
 }
@@ -3589,7 +3785,11 @@ pub async fn get_npcs_wanting_item(
     if let Some(entries) = data.npc_favor_by_item_name.get(&name_lower) {
         for (npc_key, desire, pref) in entries {
             if seen_npc_keys.insert(npc_key.clone()) {
-                let npc_name = data.npcs.get(npc_key).map(|n| n.name.clone()).unwrap_or_default();
+                let npc_name = data
+                    .npcs
+                    .get(npc_key)
+                    .map(|n| n.name.clone())
+                    .unwrap_or_default();
                 results.push(NpcFavorEntry {
                     npc_key: npc_key.clone(),
                     npc_name,
@@ -3606,7 +3806,11 @@ pub async fn get_npcs_wanting_item(
         if let Some(entries) = data.npc_favor_by_keyword.get(keyword) {
             for (npc_key, desire, pref) in entries {
                 if seen_npc_keys.insert(npc_key.clone()) {
-                    let npc_name = data.npcs.get(npc_key).map(|n| n.name.clone()).unwrap_or_default();
+                    let npc_name = data
+                        .npcs
+                        .get(npc_key)
+                        .map(|n| n.name.clone())
+                        .unwrap_or_default();
                     results.push(NpcFavorEntry {
                         npc_key: npc_key.clone(),
                         npc_name,
@@ -3620,7 +3824,11 @@ pub async fn get_npcs_wanting_item(
     }
 
     // Sort by pref value descending
-    results.sort_by(|a, b| b.pref.partial_cmp(&a.pref).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| {
+        b.pref
+            .partial_cmp(&a.pref)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     Ok(results)
 }
 
@@ -3648,7 +3856,11 @@ pub async fn get_quests_for_npc(
     state: State<'_, GameDataState>,
 ) -> Result<Vec<QuestInfo>, String> {
     let data = state.read().await;
-    let quest_keys = data.quests_by_npc.get(&npc_key).cloned().unwrap_or_default();
+    let quest_keys = data
+        .quests_by_npc
+        .get(&npc_key)
+        .cloned()
+        .unwrap_or_default();
     let results: Vec<QuestInfo> = quest_keys
         .iter()
         .filter_map(|key| data.quests.get(key).cloned())
@@ -3663,7 +3875,11 @@ pub async fn get_quests_for_skill(
     state: State<'_, GameDataState>,
 ) -> Result<Vec<QuestInfo>, String> {
     let data = state.read().await;
-    let quest_keys = data.quests_by_work_order_skill.get(&skill).cloned().unwrap_or_default();
+    let quest_keys = data
+        .quests_by_work_order_skill
+        .get(&skill)
+        .cloned()
+        .unwrap_or_default();
     let results: Vec<QuestInfo> = quest_keys
         .iter()
         .filter_map(|key| data.quests.get(key).cloned())
@@ -3709,8 +3925,16 @@ pub async fn get_quests_by_moon_phase(
         .collect();
 
     results.sort_by(|a, b| {
-        let a_name = a.raw.get("DisplayName").and_then(|v| v.as_str()).unwrap_or("");
-        let b_name = b.raw.get("DisplayName").and_then(|v| v.as_str()).unwrap_or("");
+        let a_name = a
+            .raw
+            .get("DisplayName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let b_name = b
+            .raw
+            .get("DisplayName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         a_name.cmp(b_name)
     });
 
@@ -3724,7 +3948,11 @@ pub async fn get_recipes_for_keyword(
     state: State<'_, GameDataState>,
 ) -> Result<Vec<RecipeInfo>, String> {
     let data = state.read().await;
-    let recipe_ids = data.recipes_by_ingredient_keyword.get(&keyword).cloned().unwrap_or_default();
+    let recipe_ids = data
+        .recipes_by_ingredient_keyword
+        .get(&keyword)
+        .cloned()
+        .unwrap_or_default();
     let results: Vec<RecipeInfo> = recipe_ids
         .iter()
         .filter_map(|id| data.recipes.get(id).cloned())
@@ -3769,35 +3997,50 @@ pub async fn get_cp_recipes_for_slot(
     for recipe in data.recipes.values() {
         for effect in &recipe.result_effects {
             // Shamanic Infusion: "AddItemTSysPower(PowerName,Tier)"
-            if let Some(inner) = effect.strip_prefix("AddItemTSysPower(").and_then(|s| s.strip_suffix(')')) {
+            if let Some(inner) = effect
+                .strip_prefix("AddItemTSysPower(")
+                .and_then(|s| s.strip_suffix(')'))
+            {
                 let parts: Vec<&str> = inner.split(',').collect();
-                if parts.len() != 2 { continue; }
+                if parts.len() != 2 {
+                    continue;
+                }
                 let power_name = parts[0].trim();
 
                 // Look up the TSys power to check skill and slot compatibility
-                let tsys_entry = data.tsys.client_info.values()
+                let tsys_entry = data
+                    .tsys
+                    .client_info
+                    .values()
                     .find(|info| info.internal_name.as_deref() == Some(power_name));
 
-                let Some(tsys_info) = tsys_entry else { continue };
+                let Some(tsys_info) = tsys_entry else {
+                    continue;
+                };
 
                 // Must be a ShamanicInfusion power
-                if tsys_info.skill.as_deref() != Some("ShamanicInfusion") { continue; }
+                if tsys_info.skill.as_deref() != Some("ShamanicInfusion") {
+                    continue;
+                }
 
                 // Must be compatible with this equipment slot
-                let slot_matches = tsys_info.slots.iter().any(|s| {
-                    match cdn_slot {
-                        "OffHand" => s == "OffHand" || s == "OffHandShield",
-                        _ => s == cdn_slot,
-                    }
+                let slot_matches = tsys_info.slots.iter().any(|s| match cdn_slot {
+                    "OffHand" => s == "OffHand" || s == "OffHandShield",
+                    _ => s == cdn_slot,
                 });
-                if !slot_matches { continue; }
+                if !slot_matches {
+                    continue;
+                }
 
                 // Resolve effect description from the power's tier data
                 let tier_str = parts[1].trim();
                 let tier_key = format!("id_{}", tier_str);
-                let description = tsys_info.tiers.get(&tier_key)
+                let description = tsys_info
+                    .tiers
+                    .get(&tier_key)
                     .map(|tier| {
-                        tier.effect_descs.iter()
+                        tier.effect_descs
+                            .iter()
                             .filter_map(|desc| resolve_single_effect(desc, &data))
                             .map(|r| r.formatted)
                             .collect::<Vec<_>>()
@@ -3820,11 +4063,14 @@ pub async fn get_cp_recipes_for_slot(
 
             // Crafting Enhancement: "CraftingEnhanceItemXxx(value,cpCost)"
             if effect.starts_with("CraftingEnhanceItem") {
-                if let Some(inner) = effect.find('(').and_then(|start| {
-                    effect.strip_suffix(')').map(|s| &s[start + 1..])
-                }) {
+                if let Some(inner) = effect
+                    .find('(')
+                    .and_then(|start| effect.strip_suffix(')').map(|s| &s[start + 1..]))
+                {
                     let parts: Vec<&str> = inner.split(',').collect();
-                    if parts.len() != 2 { continue; }
+                    if parts.len() != 2 {
+                        continue;
+                    }
                     let cp_cost: u32 = match parts[1].trim().parse() {
                         Ok(v) => v,
                         Err(_) => continue,
@@ -3832,7 +4078,9 @@ pub async fn get_cp_recipes_for_slot(
 
                     // Crafting enhancements apply to armor slots only
                     let armor_slots = ["Head", "Chest", "Legs", "Hands", "Feet"];
-                    if !armor_slots.contains(&cdn_slot) { continue; }
+                    if !armor_slots.contains(&cdn_slot) {
+                        continue;
+                    }
 
                     // Filter by item type in recipe name — recipes target specific
                     // body parts via name patterns like "...Cloth Pants", "...Leather Shirt"
@@ -3841,14 +4089,27 @@ pub async fn get_cp_recipes_for_slot(
                         "Head" => name_lower.contains("helmet") || name_lower.contains("head"),
                         "Chest" => name_lower.contains("shirt") || name_lower.contains("chest"),
                         "Legs" => name_lower.contains("pants") || name_lower.contains("legs"),
-                        "Hands" => name_lower.contains("gloves") || name_lower.contains("hands") || name_lower.contains("gauntlets"),
-                        "Feet" => name_lower.contains("boots") || name_lower.contains("feet") || name_lower.contains("shoes"),
+                        "Hands" => {
+                            name_lower.contains("gloves")
+                                || name_lower.contains("hands")
+                                || name_lower.contains("gauntlets")
+                        }
+                        "Feet" => {
+                            name_lower.contains("boots")
+                                || name_lower.contains("feet")
+                                || name_lower.contains("shoes")
+                        }
                         _ => false,
                     };
-                    if !slot_matches { continue; }
+                    if !slot_matches {
+                        continue;
+                    }
 
                     // Use recipe description as the effect description
-                    let description = recipe.description.clone().unwrap_or_else(|| recipe.name.clone());
+                    let description = recipe
+                        .description
+                        .clone()
+                        .unwrap_or_else(|| recipe.name.clone());
 
                     results.push(CpRecipeOption {
                         recipe_id: recipe.id,
@@ -3867,7 +4128,11 @@ pub async fn get_cp_recipes_for_slot(
     }
 
     // Sort by effect_type (shamanic first), then by name
-    results.sort_by(|a, b| a.effect_type.cmp(&b.effect_type).then(a.recipe_name.cmp(&b.recipe_name)));
+    results.sort_by(|a, b| {
+        a.effect_type
+            .cmp(&b.effect_type)
+            .then(a.recipe_name.cmp(&b.recipe_name))
+    });
 
     Ok(results)
 }
@@ -3906,7 +4171,9 @@ pub async fn get_tsys_ability_map(
 fn extract_effect_tokens(effect_descs: &[String]) -> Vec<String> {
     let mut tokens = Vec::new();
     for desc in effect_descs {
-        if !desc.starts_with('{') { continue; }
+        if !desc.starts_with('{') {
+            continue;
+        }
         // Format: "{TOKEN}{VALUE}" — extract the TOKEN part
         let parts: Vec<&str> = desc.split('{').filter(|s| !s.is_empty()).collect();
         if let Some(first) = parts.first() {
@@ -3924,7 +4191,9 @@ fn extract_icon_ids(effect_descs: &[String]) -> std::collections::HashSet<u32> {
     let mut icons = std::collections::HashSet::new();
     for desc in effect_descs {
         // Only process text-format (non-token) descriptions
-        if desc.starts_with('{') { continue; }
+        if desc.starts_with('{') {
+            continue;
+        }
         let mut remaining = desc.as_str();
         while let Some(start) = remaining.find("<icon=") {
             let after = &remaining[start + 6..];
@@ -3945,22 +4214,47 @@ fn collect_ability_attribute_tokens(ability: &AbilityInfo) -> std::collections::
     let mut tokens = std::collections::HashSet::new();
 
     for stats in [&ability.pve, &ability.pvp].into_iter().flatten() {
-        for t in &stats.attributes_that_delta_damage { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_mod_base_damage { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_mod_damage { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_mod_crit_damage { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_delta_power_cost { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_mod_power_cost { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_delta_rage { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_mod_rage { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_delta_taunt { tokens.insert(t.clone()); }
-        for t in &stats.attributes_that_mod_taunt { tokens.insert(t.clone()); }
+        for t in &stats.attributes_that_delta_damage {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_mod_base_damage {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_mod_damage {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_mod_crit_damage {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_delta_power_cost {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_mod_power_cost {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_delta_rage {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_mod_rage {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_delta_taunt {
+            tokens.insert(t.clone());
+        }
+        for t in &stats.attributes_that_mod_taunt {
+            tokens.insert(t.clone());
+        }
 
         // Also check DoTs in the extra field (e.g., DoTs[].AttributesThatDelta)
         if let Some(dots) = stats.extra.get("DoTs").and_then(|v| v.as_array()) {
             for dot in dots {
-                for key in ["AttributesThatDelta", "AttributesThatMod", "AttributesThatDeltaDamage",
-                            "AttributesThatModDamage", "AttributesThatModBaseDamage"] {
+                for key in [
+                    "AttributesThatDelta",
+                    "AttributesThatMod",
+                    "AttributesThatDeltaDamage",
+                    "AttributesThatModDamage",
+                    "AttributesThatModBaseDamage",
+                ] {
                     if let Some(arr) = dot.get(key).and_then(|v| v.as_array()) {
                         for val in arr {
                             if let Some(s) = val.as_str() {
@@ -3984,9 +4278,9 @@ fn text_contains_ability_name(text: &str, name: &str, longer_names: &[&str]) -> 
     while let Some(idx) = text[search_from..].find(name) {
         let abs_idx = search_from + idx;
         // Check: does a longer ability name also match at this position?
-        let is_prefix_of_longer = longer_names.iter().any(|longer| {
-            text[abs_idx..].starts_with(longer)
-        });
+        let is_prefix_of_longer = longer_names
+            .iter()
+            .any(|longer| text[abs_idx..].starts_with(longer));
         if !is_prefix_of_longer {
             return true;
         }
@@ -4031,7 +4325,9 @@ fn tsys_matches_ability(
         // Only match names that are 4+ chars to avoid false positives on short names
         if ability_name.len() >= 4 {
             for desc in &tier.effect_descs {
-                if desc.starts_with('{') { continue; }
+                if desc.starts_with('{') {
+                    continue;
+                }
                 let (clean, _) = strip_icon_tags(desc);
                 if text_contains_ability_name(&clean, ability_name, longer_ability_names) {
                     return true;
@@ -4058,15 +4354,20 @@ pub struct TsysAbilityXref {
 }
 
 fn resolve_top_tier_effects(info: &TsysClientInfo, data: &GameData) -> Vec<String> {
-    let top_tier = info.tiers.iter()
+    let top_tier = info
+        .tiers
+        .iter()
         .max_by_key(|(k, _)| {
-            k.strip_prefix("id_").and_then(|n| n.parse::<u32>().ok()).unwrap_or(0)
+            k.strip_prefix("id_")
+                .and_then(|n| n.parse::<u32>().ok())
+                .unwrap_or(0)
         })
         .map(|(_, tier)| tier);
 
     top_tier
         .map(|tier| {
-            tier.effect_descs.iter()
+            tier.effect_descs
+                .iter()
                 .map(|desc| {
                     resolve_single_effect(desc, data)
                         .map(|r| r.formatted)
@@ -4096,27 +4397,45 @@ pub async fn get_tsys_for_ability(
 
     // Get the base ability name (without trailing number) for text matching
     // e.g., "Reckless Slam 3" → "Reckless Slam"
-    let base_display_name = ability.name.trim_end_matches(|c: char| c.is_ascii_digit())
+    let base_display_name = ability
+        .name
+        .trim_end_matches(|c: char| c.is_ascii_digit())
         .trim()
         .to_string();
 
     // Build list of longer ability names that start with this one + space
     // e.g., for "Pound" → ["Pound To Slag"]
     // This prevents "Pound" from matching text about "Pound To Slag"
-    let all_base_names: Vec<String> = data.abilities.values()
-        .map(|a| a.name.trim_end_matches(|c: char| c.is_ascii_digit()).trim().to_string())
+    let all_base_names: Vec<String> = data
+        .abilities
+        .values()
+        .map(|a| {
+            a.name
+                .trim_end_matches(|c: char| c.is_ascii_digit())
+                .trim()
+                .to_string()
+        })
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
-    let longer_names: Vec<&str> = all_base_names.iter()
-        .filter(|n| n.len() > base_display_name.len() && n.starts_with(&format!("{} ", base_display_name)))
+    let longer_names: Vec<&str> = all_base_names
+        .iter()
+        .filter(|n| {
+            n.len() > base_display_name.len() && n.starts_with(&format!("{} ", base_display_name))
+        })
         .map(|n| n.as_str())
         .collect();
 
     let mut results: Vec<TsysAbilityXref> = Vec::new();
 
     for (key, info) in &data.tsys.client_info {
-        if tsys_matches_ability(info, &ability_tokens, &base_display_name, ability.icon_id, &longer_names) {
+        if tsys_matches_ability(
+            info,
+            &ability_tokens,
+            &base_display_name,
+            ability.icon_id,
+            &longer_names,
+        ) {
             let top_tier_effects = resolve_top_tier_effects(info, &data);
 
             results.push(TsysAbilityXref {
@@ -4160,7 +4479,11 @@ pub async fn get_abilities_for_tsys(
     state: State<'_, GameDataState>,
 ) -> Result<Vec<AbilityTsysXref>, String> {
     let data = state.read().await;
-    let info = data.tsys.client_info.get(&tsys_key).ok_or("TSys entry not found")?;
+    let info = data
+        .tsys
+        .client_info
+        .get(&tsys_key)
+        .ok_or("TSys entry not found")?;
 
     // Collect attribute tokens from {TOKEN}{VALUE} format effect descs
     let mut tsys_tokens = std::collections::HashSet::new();
@@ -4178,9 +4501,14 @@ pub async fn get_abilities_for_tsys(
 
     // Collect ability display names from text-format effect descs
     // Build a set of all known ability base names for matching
-    let mut ability_base_names: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
+    let mut ability_base_names: std::collections::HashMap<String, Vec<u32>> =
+        std::collections::HashMap::new();
     for ab in data.abilities.values() {
-        let base = ab.name.trim_end_matches(|c: char| c.is_ascii_digit()).trim().to_string();
+        let base = ab
+            .name
+            .trim_end_matches(|c: char| c.is_ascii_digit())
+            .trim()
+            .to_string();
         if base.len() >= 4 {
             ability_base_names.entry(base).or_default().push(ab.id);
         }
@@ -4216,12 +4544,17 @@ pub async fn get_abilities_for_tsys(
 
     if let Some(tier) = info.tiers.values().next() {
         for desc in &tier.effect_descs {
-            if desc.starts_with('{') { continue; }
+            if desc.starts_with('{') {
+                continue;
+            }
             let (clean, _) = strip_icon_tags(desc);
             for base_name in &sorted_names {
                 // Build longer-names list for this specific name
-                let longer: Vec<&str> = sorted_names.iter()
-                    .filter(|n| n.len() > base_name.len() && n.starts_with(&format!("{} ", base_name)))
+                let longer: Vec<&str> = sorted_names
+                    .iter()
+                    .filter(|n| {
+                        n.len() > base_name.len() && n.starts_with(&format!("{} ", base_name))
+                    })
                     .map(|n| n.as_str())
                     .collect();
                 if text_contains_ability_name(&clean, base_name, &longer) {
@@ -4241,24 +4574,34 @@ pub async fn get_abilities_for_tsys(
 
     for &ability_id in &matched_ability_ids {
         if let Some(ability) = data.abilities.get(&ability_id) {
-            let base_name = ability.internal_name.as_deref()
+            let base_name = ability
+                .internal_name
+                .as_deref()
                 .unwrap_or(&ability.name)
                 .trim_end_matches(char::is_numeric)
                 .to_string();
 
-            if seen_base_names.contains(&base_name) { continue; }
+            if seen_base_names.contains(&base_name) {
+                continue;
+            }
 
             // Find the highest-level version of this ability
-            let best = data.abilities.values()
+            let best = data
+                .abilities
+                .values()
                 .filter(|a| {
-                    let a_base = a.internal_name.as_deref()
+                    let a_base = a
+                        .internal_name
+                        .as_deref()
                         .unwrap_or(&a.name)
                         .trim_end_matches(char::is_numeric)
                         .to_string();
                     a_base == base_name
                 })
                 .max_by(|a, b| {
-                    a.level.unwrap_or(0.0).partial_cmp(&b.level.unwrap_or(0.0))
+                    a.level
+                        .unwrap_or(0.0)
+                        .partial_cmp(&b.level.unwrap_or(0.0))
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .unwrap_or(ability);
@@ -4327,61 +4670,87 @@ pub async fn find_recipe_items_in_inventory(
     let data = state.read().await;
 
     // Get all inventory items
-    let mut inv_stmt = conn.prepare(
-        "SELECT item_name, item_type_id, stack_size
+    let mut inv_stmt = conn
+        .prepare(
+            "SELECT item_name, item_type_id, stack_size
          FROM game_state_inventory
-         WHERE character_name = ?1 AND server_name = ?2"
-    ).map_err(|e| format!("Query error: {e}"))?;
+         WHERE character_name = ?1 AND server_name = ?2",
+        )
+        .map_err(|e| format!("Query error: {e}"))?;
 
     let inv_items: Vec<(String, Option<i64>, i32)> = inv_stmt
-        .query_map(rusqlite::params![character_name, server_name], |row: &rusqlite::Row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, i32>(2)?))
-        })
+        .query_map(
+            rusqlite::params![character_name, server_name],
+            |row: &rusqlite::Row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, i32>(2)?,
+                ))
+            },
+        )
         .map_err(|e| format!("Query error: {e}"))?
         .filter_map(|r: Result<_, rusqlite::Error>| r.ok())
         .collect();
 
     // Get all storage items
-    let mut storage_stmt = conn.prepare(
-        "SELECT item_name, item_type_id, stack_size
+    let mut storage_stmt = conn
+        .prepare(
+            "SELECT item_name, item_type_id, stack_size
          FROM game_state_storage
-         WHERE character_name = ?1 AND server_name = ?2"
-    ).map_err(|e| format!("Query error: {e}"))?;
+         WHERE character_name = ?1 AND server_name = ?2",
+        )
+        .map_err(|e| format!("Query error: {e}"))?;
 
     let storage_items: Vec<(String, Option<i64>, i32)> = storage_stmt
-        .query_map(rusqlite::params![character_name, server_name], |row: &rusqlite::Row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, i32>(2)?))
-        })
+        .query_map(
+            rusqlite::params![character_name, server_name],
+            |row: &rusqlite::Row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, i32>(2)?,
+                ))
+            },
+        )
         .map_err(|e| format!("Query error: {e}"))?
         .filter_map(|r: Result<_, rusqlite::Error>| r.ok())
         .collect();
 
     // Get known recipes
-    let mut recipe_stmt = conn.prepare(
-        "SELECT recipe_id FROM game_state_recipes
-         WHERE character_name = ?1 AND server_name = ?2 AND completion_count > 0"
-    ).map_err(|e| format!("Query error: {e}"))?;
+    let mut recipe_stmt = conn
+        .prepare(
+            "SELECT recipe_id FROM game_state_recipes
+         WHERE character_name = ?1 AND server_name = ?2 AND completion_count > 0",
+        )
+        .map_err(|e| format!("Query error: {e}"))?;
 
     let known_recipe_ids: std::collections::HashSet<u32> = recipe_stmt
-        .query_map(rusqlite::params![character_name, server_name], |row: &rusqlite::Row| {
-            row.get::<_, i64>(0).map(|id| id as u32)
-        })
+        .query_map(
+            rusqlite::params![character_name, server_name],
+            |row: &rusqlite::Row| row.get::<_, i64>(0).map(|id| id as u32),
+        )
         .map_err(|e| format!("Query error: {e}"))?
         .filter_map(|r: Result<_, rusqlite::Error>| r.ok())
         .collect();
 
     // Get current skill levels
-    let mut skill_stmt = conn.prepare(
-        "SELECT skill_name, level FROM game_state_skills
-         WHERE character_name = ?1 AND server_name = ?2"
-    ).map_err(|e| format!("Query error: {e}"))?;
+    let mut skill_stmt = conn
+        .prepare(
+            "SELECT skill_name, level FROM game_state_skills
+         WHERE character_name = ?1 AND server_name = ?2",
+        )
+        .map_err(|e| format!("Query error: {e}"))?;
 
     let skill_levels: std::collections::HashMap<String, u32> = skill_stmt
-        .query_map(rusqlite::params![character_name, server_name], |row: &rusqlite::Row| {
-            let name: String = row.get(0)?;
-            let level: i32 = row.get(1)?;
-            Ok((name, level as u32))
-        })
+        .query_map(
+            rusqlite::params![character_name, server_name],
+            |row: &rusqlite::Row| {
+                let name: String = row.get(0)?;
+                let level: i32 = row.get(1)?;
+                Ok((name, level as u32))
+            },
+        )
         .map_err(|e| format!("Query error: {e}"))?
         .filter_map(|r: Result<_, rusqlite::Error>| r.ok())
         .collect();
@@ -4391,7 +4760,9 @@ pub async fn find_recipe_items_in_inventory(
     for entry in inv_items.iter().chain(storage_items.iter()) {
         if let Some(type_id) = entry.1 {
             let id = type_id as u32;
-            let ts = type_stacks.entry(id).or_insert_with(|| (entry.0.clone(), 0));
+            let ts = type_stacks
+                .entry(id)
+                .or_insert_with(|| (entry.0.clone(), 0));
             ts.1 += entry.2;
         }
     }
@@ -4471,7 +4842,8 @@ pub async fn find_recipe_items_in_inventory(
 
     // Sort: known duplicates first, then learnable, then others
     results.sort_by(|a, b| {
-        b.all_known.cmp(&a.all_known)
+        b.all_known
+            .cmp(&a.all_known)
             .then(b.meets_requirements.cmp(&a.meets_requirements))
             .then(a.item_name.cmp(&b.item_name))
     });
@@ -4502,10 +4874,17 @@ pub async fn get_lorebook_categories(
     state: State<'_, GameDataState>,
 ) -> Result<Vec<LorebookCategoryInfo>, String> {
     let data = state.read().await;
-    let mut results: Vec<LorebookCategoryInfo> = data.lorebooks.categories.values().cloned().collect();
+    let mut results: Vec<LorebookCategoryInfo> =
+        data.lorebooks.categories.values().cloned().collect();
     results.sort_by(|a, b| {
-        let a_sort = a.sort_title.as_deref().unwrap_or(a.title.as_deref().unwrap_or(""));
-        let b_sort = b.sort_title.as_deref().unwrap_or(b.title.as_deref().unwrap_or(""));
+        let a_sort = a
+            .sort_title
+            .as_deref()
+            .unwrap_or(a.title.as_deref().unwrap_or(""));
+        let b_sort = b
+            .sort_title
+            .as_deref()
+            .unwrap_or(b.title.as_deref().unwrap_or(""));
         a_sort.cmp(b_sort)
     });
     Ok(results)
@@ -4584,16 +4963,14 @@ pub async fn get_brewing_ingredients(
 
 // ── CDN Diff commands ────────────────────────────────────────────────────────
 
-use crate::cdn_diff::{self, FileDiffSummary, FileDiff};
+use crate::cdn_diff::{self, FileDiff, FileDiffSummary};
 
 /// Download the prior CDN version's data files and compute a diff summary.
 /// The downloaded files are kept in `_diff_old/` and reused across sessions.
 /// They are only re-downloaded when the current cached version changes
 /// (i.e. we track which old version we downloaded via `_diff_old/version.txt`).
 #[tauri::command]
-pub async fn cdn_diff_summary(
-    app: AppHandle,
-) -> Result<Vec<FileDiffSummary>, String> {
+pub async fn cdn_diff_summary(app: AppHandle) -> Result<Vec<FileDiffSummary>, String> {
     let data_dir = data_cache_dir(&app)?;
     let cached_version = cdn::read_cached_version(&data_dir)
         .await
@@ -4605,8 +4982,7 @@ pub async fn cdn_diff_summary(
 
     let old_version = cached_version - 1;
     let old_dir = data_dir.join("_diff_old");
-    std::fs::create_dir_all(&old_dir)
-        .map_err(|e| format!("Failed to create diff dir: {e}"))?;
+    std::fs::create_dir_all(&old_dir).map_err(|e| format!("Failed to create diff dir: {e}"))?;
 
     // Only re-download if the cached old version doesn't match what we need
     let old_cached = cdn::read_cached_version(&old_dir).await;
@@ -4624,10 +5000,7 @@ pub async fn cdn_diff_summary(
 /// Reads the prior version from the `_diff_old/` directory that was populated
 /// by `cdn_diff_summary` — no additional download needed.
 #[tauri::command]
-pub async fn cdn_diff_file(
-    app: AppHandle,
-    file_name: String,
-) -> Result<FileDiff, String> {
+pub async fn cdn_diff_file(app: AppHandle, file_name: String) -> Result<FileDiff, String> {
     if !cdn::DATA_FILES.contains(&file_name.as_str())
         && !cdn::TRANSLATION_FILES.contains(&file_name.as_str())
     {
@@ -4814,9 +5187,10 @@ pub async fn get_all_monsters(
         // Try to find matching AI data: strip trailing numbers/letters
         let ai_base = ai_part
             .trim_end_matches(|c: char| c.is_ascii_digit())
-            .trim_end_matches(|c: char| c.is_ascii_uppercase() && c != ai_part.chars().next().unwrap_or('_'));
-        let ai_info = data.ai.get(&ai_part)
-            .or_else(|| data.ai.get(ai_base));
+            .trim_end_matches(|c: char| {
+                c.is_ascii_uppercase() && c != ai_part.chars().next().unwrap_or('_')
+            });
+        let ai_info = data.ai.get(&ai_part).or_else(|| data.ai.get(ai_base));
 
         let entry = if let Some(info) = ai_info {
             let summary = info.to_summary(&ai_part);
@@ -5003,7 +5377,9 @@ pub async fn get_gardening_product_chain(
     // Extract gardening level from seedling's skill_reqs
     let gardening_level = seedling_item.and_then(|s| {
         s.skill_reqs.as_ref().and_then(|reqs: &Value| {
-            reqs.get("Gardening").and_then(|v: &Value| v.as_u64()).map(|v| v as u32)
+            reqs.get("Gardening")
+                .and_then(|v: &Value| v.as_u64())
+                .map(|v| v as u32)
         })
     });
 
@@ -5040,7 +5416,9 @@ pub async fn get_gardening_product_chain(
     products.sort_by(|a, b| {
         let a_lvl = a.recipe.skill_level_req.unwrap_or(0.0);
         let b_lvl = b.recipe.skill_level_req.unwrap_or(0.0);
-        a_lvl.partial_cmp(&b_lvl).unwrap_or(std::cmp::Ordering::Equal)
+        a_lvl
+            .partial_cmp(&b_lvl)
+            .unwrap_or(std::cmp::Ordering::Equal)
     });
 
     Ok(Some(GardeningProductChain {
@@ -5107,10 +5485,22 @@ mod build_stats_parsing_tests {
         assert_eq!(
             out,
             vec![
-                ("BOOST_POISON_DIRECT".to_string(), 9.0, "Archery".to_string()),
+                (
+                    "BOOST_POISON_DIRECT".to_string(),
+                    9.0,
+                    "Archery".to_string()
+                ),
                 ("BOOST_ACID_DIRECT".to_string(), 9.0, "Archery".to_string()),
-                ("BOOST_POISON_INDIRECT".to_string(), 5.0, "Archery".to_string()),
-                ("BOOST_ACID_INDIRECT".to_string(), 5.0, "Archery".to_string()),
+                (
+                    "BOOST_POISON_INDIRECT".to_string(),
+                    5.0,
+                    "Archery".to_string()
+                ),
+                (
+                    "BOOST_ACID_INDIRECT".to_string(),
+                    5.0,
+                    "Archery".to_string()
+                ),
             ]
         );
         // Single-type variant.
@@ -5121,7 +5511,11 @@ mod build_stats_parsing_tests {
             out,
             vec![
                 ("BOOST_FIRE_DIRECT".to_string(), 12.0, "Archery".to_string()),
-                ("BOOST_FIRE_INDIRECT".to_string(), 6.0, "Archery".to_string()),
+                (
+                    "BOOST_FIRE_INDIRECT".to_string(),
+                    6.0,
+                    "Archery".to_string()
+                ),
             ]
         );
     }
@@ -5135,7 +5529,11 @@ mod build_stats_parsing_tests {
         assert_eq!(
             out,
             vec![
-                ("MOD_ELECTRICITY_DIRECT".to_string(), 0.11, "Hammer".to_string()),
+                (
+                    "MOD_ELECTRICITY_DIRECT".to_string(),
+                    0.11,
+                    "Hammer".to_string()
+                ),
                 ("MOD_FIRE_DIRECT".to_string(), 0.11, "Hammer".to_string()),
                 ("MOD_COLD_DIRECT".to_string(), 0.11, "Hammer".to_string()),
             ]
@@ -5148,7 +5546,9 @@ mod build_stats_parsing_tests {
             out
         );
         // Unrelated prose stays empty.
-        assert!(parse_conditional_direct_text("Max Armor +75 while Shield skill active").is_empty());
+        assert!(
+            parse_conditional_direct_text("Max Armor +75 while Shield skill active").is_empty()
+        );
         assert!(parse_conditional_direct_text(
             "Indirect Psychic damage is +53% per tick while Vampirism skill active"
         )
@@ -5162,10 +5562,15 @@ mod build_stats_parsing_tests {
         // Lowercase variant ("Finishing Blow and Decapitate damage +47").
         assert_eq!(parse_named_damage_rest("damage +47"), Some((47.0, false)));
         // Percent with rider ("Parry and Riposte Damage +25% and Power Cost -3").
-        assert_eq!(parse_named_damage_rest("Damage +25% and Power Cost -3"), Some((0.25, true)));
+        assert_eq!(
+            parse_named_damage_rest("Damage +25% and Power Cost -3"),
+            Some((0.25, true))
+        );
         // "damage is +N" phrasing (Pixie Flare).
         assert_eq!(
-            parse_named_damage_rest("damage is +45 and its damage becomes Fire instead of Electricity"),
+            parse_named_damage_rest(
+                "damage is +45 and its damage becomes Fire instead of Electricity"
+            ),
             Some((45.0, false))
         );
         // "deals +N% damage" with a benign rider.
@@ -5176,13 +5581,21 @@ mod build_stats_parsing_tests {
         // "deals +N damage" with a sentence rider ("Seismic Impact deals +55 Damage. If target …" —
         // the conditional part is a separate clause and must not block the unconditional bonus).
         assert_eq!(
-            parse_named_damage_rest("deals +55 Damage. If target is Knocked Down it deals a further +10% damage"),
+            parse_named_damage_rest(
+                "deals +55 Damage. If target is Knocked Down it deals a further +10% damage"
+            ),
             Some((55.0, false))
         );
         // Bare value allowed with an explicit type word ("Wind Strike and Heart Piercer deal 30 armor damage").
-        assert_eq!(parse_named_damage_rest("deal 30 armor damage"), Some((30.0, false)));
+        assert_eq!(
+            parse_named_damage_rest("deal 30 armor damage"),
+            Some((30.0, false))
+        );
         // "to Armor" qualifier is part of the hit ("Acid Arrow deals +20 damage to Armor").
-        assert_eq!(parse_named_damage_rest("deals +20 damage to Armor"), Some((20.0, false)));
+        assert_eq!(
+            parse_named_damage_rest("deals +20 damage to Armor"),
+            Some((20.0, false))
+        );
         // Conversion clause first (SoulBiteFire: "Soul Bite deals Fire damage (instead of
         // Darkness) and damage is +2") — the damage clause behind it must still parse.
         assert_eq!(
@@ -5202,16 +5615,28 @@ mod build_stats_parsing_tests {
     #[test]
     fn parse_named_damage_rest_rejects_conditional_and_nondamage() {
         // Delayed bonus damage is not part of the up-front hit.
-        assert_eq!(parse_named_damage_rest("deals 60 Poison damage after a 3-second delay"), None);
+        assert_eq!(
+            parse_named_damage_rest("deals 60 Poison damage after a 3-second delay"),
+            None
+        );
         // Bare value without a type word is ambiguous.
         assert_eq!(parse_named_damage_rest("deals 60 damage"), None);
         // Temporal buff.
         assert_eq!(parse_named_damage_rest("Damage +30 for 10 seconds"), None);
         // Target-conditional.
-        assert_eq!(parse_named_damage_rest("Damage +25 versus Elite enemies"), None);
+        assert_eq!(
+            parse_named_damage_rest("Damage +25 versus Elite enemies"),
+            None
+        );
         // Not a damage clause at all.
-        assert_eq!(parse_named_damage_rest("boosts your Nice Attack Damage +30 for 10 seconds"), None);
-        assert_eq!(parse_named_damage_rest("hastens the current reuse timer by 1 second"), None);
+        assert_eq!(
+            parse_named_damage_rest("boosts your Nice Attack Damage +30 for 10 seconds"),
+            None
+        );
+        assert_eq!(
+            parse_named_damage_rest("hastens the current reuse timer by 1 second"),
+            None
+        );
     }
 
     #[test]
@@ -5238,16 +5663,23 @@ mod build_stats_parsing_tests {
         // Necromancer's mod: percent boost; the benign "; Summoned Skeletons …" pet-damage tail
         // is ignored (that clause is intentionally excluded).
         assert_eq!(
-            parse_base_damage("Necromancy Base Damage +60%; Summoned Skeletons deal +12% direct damage"),
+            parse_base_damage(
+                "Necromancy Base Damage +60%; Summoned Skeletons deal +12% direct damage"
+            ),
             Some(("Necromancy".to_string(), 0.6, true))
         );
         // Flat low tier.
         assert_eq!(
-            parse_base_damage("Necromancy Base Damage +5; Summoned Skeletons deal +1% direct damage"),
+            parse_base_damage(
+                "Necromancy Base Damage +5; Summoned Skeletons deal +1% direct damage"
+            ),
             Some(("Necromancy".to_string(), 5.0, false))
         );
         // Trailing temporal rider rejected.
-        assert_eq!(parse_base_damage("Bat Base Damage +60% for 10 seconds"), None);
+        assert_eq!(
+            parse_base_damage("Bat Base Damage +60% for 10 seconds"),
+            None
+        );
         // Trigger-prefixed conditional never begins with the clause, so it can't match.
         assert_eq!(
             parse_base_damage(
@@ -5267,8 +5699,14 @@ mod build_stats_parsing_tests {
             Some(("Staff".to_string(), "Crushing".to_string(), "Slashing".to_string()))
         );
         assert_eq!(
-            parse_skill_type_conversion("Knife abilities that normally deal Slashing damage instead deal Cold damage"),
-            Some(("Knife".to_string(), "Slashing".to_string(), "Cold".to_string()))
+            parse_skill_type_conversion(
+                "Knife abilities that normally deal Slashing damage instead deal Cold damage"
+            ),
+            Some((
+                "Knife".to_string(),
+                "Slashing".to_string(),
+                "Cold".to_string()
+            ))
         );
         assert_eq!(parse_skill_type_conversion("Staff Base Damage % +13"), None);
     }
@@ -5281,7 +5719,9 @@ mod build_stats_parsing_tests {
             Some("Fire".to_string())
         );
         assert_eq!(
-            parse_named_type_conversion("deals +45 damage, and damage type is changed to Electricity"),
+            parse_named_type_conversion(
+                "deals +45 damage, and damage type is changed to Electricity"
+            ),
             Some("Electricity".to_string())
         );
         // Sentence-start variant ("Lethal Force deals +N damage. Damage type becomes Fire").
@@ -5301,7 +5741,9 @@ mod build_stats_parsing_tests {
         );
         // "its damage becomes <Type> instead of <Type>" (Pixie Flare).
         assert_eq!(
-            parse_named_type_conversion("damage is +45 and its damage becomes Fire instead of Electricity"),
+            parse_named_type_conversion(
+                "damage is +45 and its damage becomes Fire instead of Electricity"
+            ),
             Some("Fire".to_string())
         );
         // Sentence-start "Damage becomes <Type>" (Infuriating Fist).
@@ -5353,7 +5795,11 @@ mod build_stats_parsing_tests {
             "Debilitating Blow 3",
             "Heart Piercer 5",
         ] {
-            assert_eq!(parse_names_deal_direct(DESC, name), Some("Fire".to_string()), "{name}");
+            assert_eq!(
+                parse_names_deal_direct(DESC, name),
+                Some("Fire".to_string()),
+                "{name}"
+            );
         }
         // Sword abilities NOT in the list stay unconverted.
         assert_eq!(parse_names_deal_direct(DESC, "Parry 4"), None);
@@ -5389,10 +5835,19 @@ mod build_stats_parsing_tests {
 
     #[test]
     fn sniff_damage_type_from_dot_names() {
-        assert_eq!(sniff_damage_type("Poison Slice Poison Slice Damage over Time (Per Second)"), Some("Poison".to_string()));
-        assert_eq!(sniff_damage_type("Psychic scream"), Some("Psychic".to_string()));
+        assert_eq!(
+            sniff_damage_type("Poison Slice Poison Slice Damage over Time (Per Second)"),
+            Some("Poison".to_string())
+        );
+        assert_eq!(
+            sniff_damage_type("Psychic scream"),
+            Some("Psychic".to_string())
+        );
         // Flavor alias: "Flaming Sword" carries no literal type name.
-        assert_eq!(sniff_damage_type("Flaming Sword Flaming Sword Damage over Time (Per Second)"), Some("Fire".to_string()));
+        assert_eq!(
+            sniff_damage_type("Flaming Sword Flaming Sword Damage over Time (Per Second)"),
+            Some("Fire".to_string())
+        );
         assert_eq!(sniff_damage_type("Mystery Goo"), None);
     }
 
@@ -5400,14 +5855,25 @@ mod build_stats_parsing_tests {
     fn parse_attacks_deal_rejects_conditionals() {
         // Armor-gated.
         assert_eq!(
-            parse_attacks_deal("Kick attacks deal +30% damage when you have 33% or less of your Armor left"),
+            parse_attacks_deal(
+                "Kick attacks deal +30% damage when you have 33% or less of your Armor left"
+            ),
             None
         );
         // Target-species/Elite conditional (Gourmand food buffs).
-        assert_eq!(parse_attacks_deal("Your melee attacks deal +45 damage to Elite enemies"), None);
-        assert_eq!(parse_attacks_deal("Your attacks deal +12 damage to Elves"), None);
+        assert_eq!(
+            parse_attacks_deal("Your melee attacks deal +45 damage to Elite enemies"),
+            None
+        );
+        assert_eq!(
+            parse_attacks_deal("Your attacks deal +12 damage to Elves"),
+            None
+        );
         // Not an attacks-deal clause.
-        assert_eq!(parse_attacks_deal("Many Cuts and Debilitating Blow Damage +39"), None);
+        assert_eq!(
+            parse_attacks_deal("Many Cuts and Debilitating Blow Damage +39"),
+            None
+        );
     }
 
     #[test]
@@ -5420,18 +5886,31 @@ mod build_stats_parsing_tests {
         // Conditional gear mod: the 3rd segment is the required skill.
         assert_eq!(
             parse_token_value("{MOD_NATURE_INDIRECT}{0.1}{Druid}"),
-            Some(("MOD_NATURE_INDIRECT".to_string(), 0.1, Some("Druid".to_string())))
+            Some((
+                "MOD_NATURE_INDIRECT".to_string(),
+                0.1,
+                Some("Druid".to_string())
+            ))
         );
         // Fractional value with trailing whitespace.
         assert_eq!(
             parse_token_value("{MOD_PSYCHIC_INDIRECT}{0.05}{Rabbit} "),
-            Some(("MOD_PSYCHIC_INDIRECT".to_string(), 0.05, Some("Rabbit".to_string())))
+            Some((
+                "MOD_PSYCHIC_INDIRECT".to_string(),
+                0.05,
+                Some("Rabbit".to_string())
+            ))
         );
     }
 
     #[test]
     fn parse_token_value_rejects_prose_and_malformed() {
-        assert_eq!(parse_token_value("Indirect Psychic damage is +53% per tick while Vampirism skill active"), None);
+        assert_eq!(
+            parse_token_value(
+                "Indirect Psychic damage is +53% per tick while Vampirism skill active"
+            ),
+            None
+        );
         assert_eq!(parse_token_value("{ONLY_ONE_SEGMENT}"), None);
         assert_eq!(parse_token_value("{TOKEN}{not_a_number}"), None);
     }
@@ -5442,7 +5921,14 @@ mod build_stats_parsing_tests {
         let out = parse_conditional_indirect_text(
             "Indirect Psychic damage is +53% per tick while Vampirism skill active",
         );
-        assert_eq!(out, vec![("MOD_PSYCHIC_INDIRECT".to_string(), 0.53, "Vampirism".to_string())]);
+        assert_eq!(
+            out,
+            vec![(
+                "MOD_PSYCHIC_INDIRECT".to_string(),
+                0.53,
+                "Vampirism".to_string()
+            )]
+        );
     }
 
     #[test]
@@ -5454,8 +5940,16 @@ mod build_stats_parsing_tests {
         assert_eq!(
             out,
             vec![
-                ("MOD_POISON_INDIRECT".to_string(), 0.05, "Warden".to_string()),
-                ("MOD_TRAUMA_INDIRECT".to_string(), 0.05, "Warden".to_string()),
+                (
+                    "MOD_POISON_INDIRECT".to_string(),
+                    0.05,
+                    "Warden".to_string()
+                ),
+                (
+                    "MOD_TRAUMA_INDIRECT".to_string(),
+                    0.05,
+                    "Warden".to_string()
+                ),
             ]
         );
     }
@@ -5472,7 +5966,11 @@ mod build_stats_parsing_tests {
             vec![
                 ("MOD_POISON_INDIRECT".to_string(), 0.30, "Sword".to_string()),
                 ("MOD_TRAUMA_INDIRECT".to_string(), 0.30, "Sword".to_string()),
-                ("MOD_PSYCHIC_INDIRECT".to_string(), 0.30, "Sword".to_string()),
+                (
+                    "MOD_PSYCHIC_INDIRECT".to_string(),
+                    0.30,
+                    "Sword".to_string()
+                ),
             ]
         );
     }
@@ -5495,10 +5993,9 @@ mod build_stats_parsing_tests {
     #[test]
     fn parse_conditional_text_ignores_unrelated_prose() {
         // Mitigation / proc prose must not be misread as a damage boost.
-        assert!(parse_conditional_indirect_text(
-            "Max Armor +75 while Shield skill active"
-        )
-        .is_empty());
+        assert!(
+            parse_conditional_indirect_text("Max Armor +75 while Shield skill active").is_empty()
+        );
         // Names indirect damage, but as a debuff on the target rather than an "Indirect <type>
         // damage +N%" grant — and the tail is temporal.
         assert!(parse_conditional_indirect_text(
@@ -5520,7 +6017,9 @@ mod build_stats_parsing_tests {
         );
         // Bare "N" (no plus), "to health" qualifier (Giant Bat VirulentBiteBleed family).
         assert_eq!(
-            parse_dot_clause("<icon=3548>Virulent Bite deals 24 Trauma damage to health over 12 seconds"),
+            parse_dot_clause(
+                "<icon=3548>Virulent Bite deals 24 Trauma damage to health over 12 seconds"
+            ),
             Some((24.0, Some("Trauma".to_string()), 12.0))
         );
         // "an additional N" (Knife/Archery families).
@@ -5540,11 +6039,15 @@ mod build_stats_parsing_tests {
         // The DoT clause is taken even when a side-effect clause trails it, and the immediate-damage
         // figure before it ("+144 direct damage plus") is skipped in favor of the over-time clause.
         assert_eq!(
-            parse_dot_clause("Squeal deals +144 direct damage plus 576 Trauma damage over 8 seconds"),
+            parse_dot_clause(
+                "Squeal deals +144 direct damage plus 576 Trauma damage over 8 seconds"
+            ),
             Some((576.0, Some("Trauma".to_string()), 8.0))
         );
         assert_eq!(
-            parse_dot_clause("Stunning Bash causes the target to take 318 Trauma damage over 12 seconds"),
+            parse_dot_clause(
+                "Stunning Bash causes the target to take 318 Trauma damage over 12 seconds"
+            ),
             Some((318.0, Some("Trauma".to_string()), 12.0))
         );
     }
@@ -5552,7 +6055,9 @@ mod build_stats_parsing_tests {
     #[test]
     fn parse_dot_clause_rejects_non_dot_prose() {
         // %-damage and instant-only forms have no "over M seconds" clause.
-        assert!(parse_dot_clause("Agonize deals +40% damage and conjures a magical field").is_none());
+        assert!(
+            parse_dot_clause("Agonize deals +40% damage and conjures a magical field").is_none()
+        );
         assert!(parse_dot_clause("Drink Blood steals 24 more Health over 12 seconds").is_none());
     }
 
@@ -5572,7 +6077,10 @@ mod build_stats_parsing_tests {
             t
         };
         for _ in 0..50 {
-            assert_eq!(select_default_tier_key(&build(), 20).as_deref(), Some("id_4"));
+            assert_eq!(
+                select_default_tier_key(&build(), 20).as_deref(),
+                Some("id_4")
+            );
         }
     }
 
@@ -5612,4 +6120,3 @@ mod build_stats_parsing_tests {
         assert!(select_default_tier_key(&t, 90).is_none());
     }
 }
-

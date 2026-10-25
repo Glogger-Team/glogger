@@ -7,13 +7,13 @@ use crate::db::queries::log_positions;
 use crate::db::stall_tracker_commands::{insert_stall_events, StallEventInput, StallOpsLock};
 use crate::db::DbPool;
 use crate::debug_capture::{self, DebugCaptureResult, DebugCaptureState, DebugCaptureStatus};
-use crate::shop_log_parser::parse_shop_log;
-use crate::stall_year_resolver::base_year_for_live;
 use crate::game_state::GameStateManager;
 use crate::log_watchers::{ChatLogWatcher, LogEvent, LogFileWatcher, PlayerLogWatcher};
 use crate::parsers::chat_local_to_utc;
 use crate::player_event_parser::{ActivitySource, ItemProvenance, PlayerEvent};
 use crate::settings::SettingsManager;
+use crate::shop_log_parser::parse_shop_log;
+use crate::stall_year_resolver::base_year_for_live;
 use crate::survey::aggregator::{SurveyAggregatorEvent, SurveySessionAggregator};
 use crate::watch_rules::evaluate_rules;
 use chrono::{Datelike, Local};
@@ -260,7 +260,11 @@ impl DataIngestCoordinator {
     /// the character's own chat login line from this catch-up's
     /// `chat_session_servers` scan, else the server in use. See
     /// `apply_catch_up_login`.
-    fn adopt_player_log_session(&mut self, character_name: &str, clear_inventory: bool) -> SessionServerSource {
+    fn adopt_player_log_session(
+        &mut self,
+        character_name: &str,
+        clear_inventory: bool,
+    ) -> SessionServerSource {
         let source = apply_catch_up_login(
             &mut self.game_state,
             &self.db_pool,
@@ -271,7 +275,9 @@ impl DataIngestCoordinator {
         startup_log!(
             "Player.log session identity: {} on {} (server from {})",
             character_name,
-            self.game_state.get_active_server().unwrap_or("(unknown server)"),
+            self.game_state
+                .get_active_server()
+                .unwrap_or("(unknown server)"),
             source.label()
         );
         source
@@ -318,22 +324,18 @@ impl DataIngestCoordinator {
         }
         let mut domains: Vec<&str> = Vec::new();
         for gain in &staged {
-            domains.extend(
-                self.game_state.correct_stack_for_session(
-                    &gain.character,
-                    &gain.server,
-                    &gain.item_name,
-                    gain.quantity,
-                    &self.db_pool,
-                ),
-            );
+            domains.extend(self.game_state.correct_stack_for_session(
+                &gain.character,
+                &gain.server,
+                &gain.item_name,
+                gain.quantity,
+                &self.db_pool,
+            ));
         }
         domains.sort();
         domains.dedup();
         if !domains.is_empty() {
-            self.app_handle
-                .emit("game-state-updated", &domains)
-                .ok();
+            self.app_handle.emit("game-state-updated", &domains).ok();
         }
     }
 
@@ -382,11 +384,9 @@ impl DataIngestCoordinator {
             .db_pool
             .get()
             .map_err(|e| format!("Database error: {}", e))?;
-        let (mut position, saved_character) = log_positions::get_position_with_player(
-            &conn,
-            player_log_path.to_str().unwrap_or(""),
-        )
-        .unwrap_or((0, None));
+        let (mut position, saved_character) =
+            log_positions::get_position_with_player(&conn, player_log_path.to_str().unwrap_or(""))
+                .unwrap_or((0, None));
 
         // Detect file rotation: if saved position is past current file size,
         // the game restarted and created a fresh Player.log
@@ -473,81 +473,21 @@ impl DataIngestCoordinator {
         Ok(())
     }
 
-    /// One-time backfill of the `poems` table from the *entire* current
-    /// Player.log.
+    /// Backfill the `poems` table from every Player.log source (archived
+    /// rotated copies, `Player-prev.log`, live `Player.log`).
     ///
     /// The live watcher resumes from a saved byte offset, so poems recited
-    /// before the app first started watching are never seen. This scans the
-    /// whole file for `Poem by X` recitals and inserts them (`INSERT OR IGNORE`,
-    /// deduped by the `UNIQUE(author, title, content)` index), touching only the
-    /// poems table — no other game state. Safe to run repeatedly. Returns the
-    /// number of newly inserted poems.
+    /// while glogger was closed live only in the rotated/archived copies.
+    /// Delegates to `db::poem_commands` so the startup chain, the Poems tab
+    /// button and (eventually) the Player-prev watcher share one scan.
+    /// `INSERT OR IGNORE` dedups on `UNIQUE(author, title, content)`; safe to
+    /// run repeatedly. Returns the number of newly inserted poems.
     pub fn backfill_poems_from_player_log(&self) -> Result<usize, String> {
-        use crate::parsers::to_utc_datetime_with_base;
-        use crate::player_event_parser::parse_poem_line;
-
-        let path = self
-            .settings
-            .get_player_log_path()
-            .ok_or_else(|| "Player.log path is not configured".to_string())?;
-
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| format!("Failed to read Player.log: {e}"))?;
-
-        // Player.log lines carry only HH:MM:SS (no date). A PG Player.log is
-        // normally a single session, so anchor backfilled poems to the file's
-        // last-modified (UTC) date rather than "today". Falls back to today's
-        // date (base = None) if the mtime is unavailable.
-        let base_date = std::fs::metadata(&path)
-            .and_then(|m| m.modified())
-            .ok()
-            .map(|mtime| chrono::DateTime::<chrono::Utc>::from(mtime).date_naive());
-
-        // Parse the whole file BEFORE taking the write lock: the parse loop is
-        // pure CPU and must not hold the sole write connection (a whole-file
-        // scan under the lock starves every other writer).
-        let mut parsed: Vec<(String, String, String, String)> = Vec::new();
-        for line in text.lines() {
-            // Cheap pre-filter before the fuller parse.
-            if !line.contains("\"Poem by ") {
-                continue;
-            }
-            if let Some(poem) = parse_poem_line(line) {
-                // Combine the log's HH:MM:SS with the file-date anchor.
-                let recorded_at = to_utc_datetime_with_base(&poem.timestamp, base_date);
-                parsed.push((poem.author, poem.title, poem.content, recorded_at));
-            }
-        }
-
-        let mut conn = self.db_pool.get_write().map_err(|e| e.to_string())?;
-        // BEGIN IMMEDIATE: runs at startup alongside other backfills; a deferred
-        // tx that upgrades read→write on its first INSERT gets an instant
-        // SQLITE_BUSY that busy_timeout can't retry. Acquiring the write lock up
-        // front makes busy_timeout apply to the acquisition instead.
-        let tx = conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(|e| e.to_string())?;
-        let mut inserted = 0usize;
-        {
-            let mut stmt = tx
-                .prepare(
-                    "INSERT OR IGNORE INTO poems (author, title, content, recorded_at)
-                     VALUES (?1, ?2, ?3, ?4)",
-                )
-                .map_err(|e| e.to_string())?;
-            for (author, title, content, recorded_at) in &parsed {
-                let changed = stmt
-                    .execute(rusqlite::params![author, title, content, recorded_at])
-                    .map_err(|e| e.to_string())?;
-                inserted += changed;
-            }
-        }
-        tx.commit().map_err(|e| e.to_string())?;
-
-        if inserted > 0 {
-            self.app_handle.emit("game-state-updated", vec!["poems"]).ok();
-        }
-        Ok(inserted)
+        crate::db::poem_commands::backfill_from_player_logs_with_emit(
+            &self.settings,
+            &self.db_pool,
+            &self.app_handle,
+        )
     }
 
     /// Stop player log tailing
@@ -607,7 +547,9 @@ impl DataIngestCoordinator {
 
         // Already tailing the same file? No-op.
         let should_switch = match &self.chat_watcher {
-            Some(existing) if existing.is_active() && existing.get_file_path() == &chat_log_path => {
+            Some(existing)
+                if existing.is_active() && existing.get_file_path() == &chat_log_path =>
+            {
                 return Ok(());
             }
             Some(_) => true,
@@ -619,18 +561,25 @@ impl DataIngestCoordinator {
             // before switching, so we don't lose messages written between
             // the last poll and this switch.
             if let Some(watcher) = &mut self.chat_watcher {
-                startup_log!("Chat log switching from {:?} → {:?}, flushing old watcher",
-                    watcher.get_file_path(), chat_log_path);
+                startup_log!(
+                    "Chat log switching from {:?} → {:?}, flushing old watcher",
+                    watcher.get_file_path(),
+                    chat_log_path
+                );
                 if let Ok(events) = watcher.poll() {
                     if !events.is_empty() {
                         startup_log!("Final flush: {} events from old chat log", events.len());
                         // Process inline to avoid borrow issues with self
-                        let conn = self.db_pool.get_write()
+                        let conn = self
+                            .db_pool
+                            .get_write()
                             .map_err(|e| format!("Database error: {}", e))?;
                         let log_file = watcher.get_file_name().to_string();
                         let excluded_channels = &self.settings.get().excluded_chat_channels;
                         let mut messages = Vec::new();
-                        let tz_offset = self.settings.get()
+                        let tz_offset = self
+                            .settings
+                            .get()
                             .manual_timezone_override
                             .or(self.settings.get().timezone_offset_seconds)
                             .unwrap_or(0);
@@ -641,7 +590,8 @@ impl DataIngestCoordinator {
                             }
                         }
                         if !messages.is_empty() {
-                            insert_chat_messages(&conn, &messages, &log_file, excluded_channels).ok();
+                            insert_chat_messages(&conn, &messages, &log_file, excluded_channels)
+                                .ok();
                         }
                     }
                 }
@@ -939,20 +889,14 @@ impl DataIngestCoordinator {
                     // Link corpse loot items to recent kills
                     $self.attribute_loot_to_kills(&$pe);
 
-                    $self
-                        .app_handle
-                        .emit("player-events-batch", &$pe)
-                        .ok();
+                    $self.app_handle.emit("player-events-batch", &$pe).ok();
                     $pe.clear();
                 }
                 if !$dom.is_empty() {
                     // Deduplicate domains across the batch
                     $dom.sort_unstable();
                     $dom.dedup();
-                    $self
-                        .app_handle
-                        .emit("game-state-updated", &$dom)
-                        .ok();
+                    $self.app_handle.emit("game-state-updated", &$dom).ok();
                     $dom.clear();
                 }
                 $start = Instant::now();
@@ -1135,9 +1079,7 @@ impl DataIngestCoordinator {
                                                 "[coordinator] Auto-imported gourmand report: {} foods",
                                                 n
                                             );
-                                            self.app_handle
-                                                .emit("gourmand-updated", n)
-                                                .ok();
+                                            self.app_handle.emit("gourmand-updated", n).ok();
                                         }
                                         Ok(_) => {}
                                         Err(e) => {
@@ -1198,14 +1140,17 @@ impl DataIngestCoordinator {
                             self.pending_cow_interaction = None;
                         }
                         PlayerEvent::ScreenText {
-                            category, message, timestamp, ..
+                            category,
+                            message,
+                            timestamp,
+                            ..
                         } if category == "ErrorMessage" => {
                             // "You've already milked Homer in the past hour." — bounds
                             // the milk to (timestamp - 1h, timestamp]; it does not say
                             // when it happened (see `record_cow_milk_backfill`).
-                            if let Some(cow_name) =
-                                message.strip_prefix("You've already milked ")
-                                    .and_then(|s| s.strip_suffix(" in the past hour."))
+                            if let Some(cow_name) = message
+                                .strip_prefix("You've already milked ")
+                                .and_then(|s| s.strip_suffix(" in the past hour."))
                             {
                                 // `peek_utc`, not `to_utc`: this side channel runs
                                 // before the event's batch is replayed, and a
@@ -1216,12 +1161,15 @@ impl DataIngestCoordinator {
                             }
                         }
                         PlayerEvent::ScreenText {
-                            category, message, timestamp, ..
+                            category,
+                            message,
+                            timestamp,
+                            ..
                         } if category == "GeneralInfo" => {
                             // "You obtain fresh milk from PlayerName."
-                            if let Some(player_name) =
-                                message.strip_prefix("You obtain fresh milk from ")
-                                    .and_then(|s| s.strip_suffix('.'))
+                            if let Some(player_name) = message
+                                .strip_prefix("You obtain fresh milk from ")
+                                .and_then(|s| s.strip_suffix('.'))
                             {
                                 // `timestamp` is a bare "HH:MM:SS" UTC clock time;
                                 // add the date (respecting any replay override),
@@ -1231,12 +1179,13 @@ impl DataIngestCoordinator {
                             }
                         }
                         PlayerEvent::ScreenText {
-                            category, message, timestamp, ..
+                            category,
+                            message,
+                            timestamp,
+                            ..
                         } if category == "ImportantInfo" => {
                             // "PlayerName has milked you."
-                            if let Some(player_name) =
-                                message.strip_suffix(" has milked you.")
-                            {
+                            if let Some(player_name) = message.strip_suffix(" has milked you.") {
                                 if !player_name.is_empty() {
                                     let ts = self.game_state.peek_utc(timestamp);
                                     self.record_player_milk(player_name, "milked_by", &ts);
@@ -1276,18 +1225,22 @@ impl DataIngestCoordinator {
                             item_name,
                             initial_quantity,
                             timestamp,
-                            provenance: ItemProvenance::Attributed {
-                                source:
-                                    ActivitySource::VendorBrowsing {
-                                        npc_entity_id: npc_id,
-                                        ..
-                                    },
-                                ..
-                            },
+                            provenance:
+                                ItemProvenance::Attributed {
+                                    source:
+                                        ActivitySource::VendorBrowsing {
+                                            npc_entity_id: npc_id,
+                                            ..
+                                        },
+                                    ..
+                                },
                             ..
                         } => {
                             self.record_purchase_observation(
-                                *npc_id, item_name, *initial_quantity, timestamp,
+                                *npc_id,
+                                item_name,
+                                *initial_quantity,
+                                timestamp,
                             );
                         }
                         // Stall price capture: another player's stall UI
@@ -1317,14 +1270,8 @@ impl DataIngestCoordinator {
                     // Failure to acquire a DB connection is non-fatal — the
                     // aggregator's writes are deferrable, and skipping a tick
                     // is better than dropping the event entirely.
-                    let active_char = self
-                        .game_state
-                        .get_active_character()
-                        .map(String::from);
-                    let active_server = self
-                        .game_state
-                        .get_active_server()
-                        .map(String::from);
+                    let active_char = self.game_state.get_active_character().map(String::from);
+                    let active_server = self.game_state.get_active_server().map(String::from);
                     if let (Some(character), Some(server), Ok(conn)) =
                         (active_char, active_server, self.db_pool.get_write())
                     {
@@ -1387,8 +1334,7 @@ impl DataIngestCoordinator {
                     // conversion below — the Combat Wisdom store keys on local
                     // time to stay consistent with the chat-log backfill (which
                     // never converts), so live + backfill dedup correctly.
-                    let local_ts =
-                        msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
+                    let local_ts = msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
 
                     // Convert chat timestamp from local time to UTC
                     let mut msg = msg;
@@ -1491,21 +1437,19 @@ impl DataIngestCoordinator {
                                     // session that produced the line; only when
                                     // the file was resumed mid-session (`None`)
                                     // do we fall back to the drain identity.
-                                    let staged_identity: Option<(String, String)> =
-                                        session_tag.as_ref().map(|tag| {
-                                            (
-                                                tag.character_name.clone(),
-                                                tag.server_name.clone(),
-                                            )
-                                        }).or_else(|| {
+                                    let staged_identity: Option<(String, String)> = session_tag
+                                        .as_ref()
+                                        .map(|tag| {
+                                            (tag.character_name.clone(), tag.server_name.clone())
+                                        })
+                                        .or_else(|| {
                                             match (
                                                 self.game_state.get_active_character(),
                                                 self.game_state.get_active_server(),
                                             ) {
-                                                (Some(c), Some(s)) => Some((
-                                                    c.to_string(),
-                                                    s.to_string(),
-                                                )),
+                                                (Some(c), Some(s)) => {
+                                                    Some((c.to_string(), s.to_string()))
+                                                }
                                                 _ => None,
                                             }
                                         });
@@ -1530,11 +1474,12 @@ impl DataIngestCoordinator {
                                     }
 
                                     // Correct inventory/storage stack sizes
-                                    let corrected_domains = self.game_state.correct_stack_from_chat(
-                                        item_name,
-                                        *quantity,
-                                        &self.db_pool,
-                                    );
+                                    let corrected_domains =
+                                        self.game_state.correct_stack_from_chat(
+                                            item_name,
+                                            *quantity,
+                                            &self.db_pool,
+                                        );
                                     if !corrected_domains.is_empty() {
                                         self.app_handle
                                             .emit("game-state-updated", &corrected_domains)
@@ -1547,7 +1492,8 @@ impl DataIngestCoordinator {
                                     || internal_name.as_deref() == Some("BottleOfMilk"))
                                     && self.pending_cow_interaction.is_some()
                                 {
-                                    if let Some(cow_internal) = self.pending_cow_interaction.take() {
+                                    if let Some(cow_internal) = self.pending_cow_interaction.take()
+                                    {
                                         let cow_display = cow_internal
                                             .strip_prefix("Cow_")
                                             .unwrap_or(&cow_internal)
@@ -1592,14 +1538,16 @@ impl DataIngestCoordinator {
                                         } else {
                                             None
                                         };
-                                        let (source_kind, source_details): (Option<&str>, Option<String>) =
-                                            match survey_use_id {
-                                                Some(id) => (
-                                                    Some("survey_chat"),
-                                                    Some(format!("{{\"survey_use_id\":{id}}}")),
-                                                ),
-                                                None => (None, None),
-                                            };
+                                        let (source_kind, source_details): (
+                                            Option<&str>,
+                                            Option<String>,
+                                        ) = match survey_use_id {
+                                            Some(id) => (
+                                                Some("survey_chat"),
+                                                Some(format!("{{\"survey_use_id\":{id}}}")),
+                                            ),
+                                            None => (None, None),
+                                        };
                                         conn.execute(
                                             "INSERT INTO item_transactions
                                                 (timestamp, character_name, server_name, item_name,
@@ -1742,31 +1690,31 @@ impl DataIngestCoordinator {
 
                     // Check Combat channel for player combat events
                     if let Some(character_name) = self.game_state.get_active_character() {
-                        if let Some(combat_event) =
-                            parse_combat_message(&msg, character_name)
-                        {
+                        if let Some(combat_event) = parse_combat_message(&msg, character_name) {
                             match &combat_event {
-                                crate::chat_combat_parser::ChatCombatEvent::PlayerDeath { .. } => {
+                                crate::chat_combat_parser::ChatCombatEvent::PlayerDeath {
+                                    ..
+                                } => {
                                     if let Err(e) = self.persist_death_event(&combat_event) {
                                         eprintln!("Failed to persist death event: {}", e);
                                     }
-                                    self.app_handle
-                                        .emit("character-death", &combat_event)
-                                        .ok();
+                                    self.app_handle.emit("character-death", &combat_event).ok();
                                     // Clear buffer after death
                                     self.recent_damage.clear();
                                 }
-                                crate::chat_combat_parser::ChatCombatEvent::EnemyKilled { .. } => {
+                                crate::chat_combat_parser::ChatCombatEvent::EnemyKilled {
+                                    ..
+                                } => {
                                     // Drop-rate kills are now sourced from Player.log
                                     // corpse searches (see process_corpse_search), not
                                     // chat FATALITY lines — their entity_ids don't match
                                     // the loot's corpse entity_id. We still emit the live
                                     // event for the farming-session UI.
-                                    self.app_handle
-                                        .emit("enemy-killed", &combat_event)
-                                        .ok();
+                                    self.app_handle.emit("enemy-killed", &combat_event).ok();
                                 }
-                                crate::chat_combat_parser::ChatCombatEvent::DamageOnPlayer { .. } => {
+                                crate::chat_combat_parser::ChatCombatEvent::DamageOnPlayer {
+                                    ..
+                                } => {
                                     // Keep rolling buffer of last 10 damage events
                                     if self.recent_damage.len() >= 10 {
                                         self.recent_damage.remove(0);
@@ -2050,25 +1998,15 @@ impl DataIngestCoordinator {
             return Ok(());
         };
 
-        let character_name = self
-            .game_state
-            .get_active_character()
-            .unwrap_or("Unknown");
-        let server_name = self
-            .game_state
-            .get_active_server()
-            .unwrap_or("Unknown");
+        let character_name = self.game_state.get_active_character().unwrap_or("Unknown");
+        let server_name = self.game_state.get_active_server().unwrap_or("Unknown");
         let area = self.current_area.as_deref();
 
         // Resolve ability from CDN to get damage type
-        let damage_type: Option<String> = self
-            .game_data
-            .try_read()
-            .ok()
-            .and_then(|gd| {
-                let ability = gd.resolve_ability(killing_ability)?;
-                ability.damage_type.clone()
-            });
+        let damage_type: Option<String> = self.game_data.try_read().ok().and_then(|gd| {
+            let ability = gd.resolve_ability(killing_ability)?;
+            ability.damage_type.clone()
+        });
 
         let mut conn = self
             .db_pool
@@ -2361,14 +2299,8 @@ impl DataIngestCoordinator {
             } => (timestamp, caster_name, target_name, false),
         };
 
-        let character_name = self
-            .game_state
-            .get_active_character()
-            .unwrap_or("Unknown");
-        let server_name = self
-            .game_state
-            .get_active_server()
-            .unwrap_or("Unknown");
+        let character_name = self.game_state.get_active_character().unwrap_or("Unknown");
+        let server_name = self.game_state.get_active_server().unwrap_or("Unknown");
         let area = self.current_area.as_deref();
 
         let conn = self
@@ -2471,13 +2403,7 @@ impl DataIngestCoordinator {
     /// Persist a non-shop book report (behavior report, age, server status,
     /// skill reports, gardening almanac) to `game_state_books`. Upserts by
     /// (character, server, book_type, title) so re-running a report overwrites.
-    fn persist_book_report(
-        &self,
-        _timestamp: &str,
-        title: &str,
-        content: &str,
-        book_type: &str,
-    ) {
+    fn persist_book_report(&self, _timestamp: &str, title: &str, content: &str, book_type: &str) {
         let Some((character, server)) = self.active_character_server() else {
             return;
         };
@@ -2763,7 +2689,12 @@ impl DataIngestCoordinator {
             Err(_) => return,
         };
         if let Err(e) = crate::db::game_state_commands::record_cow_cooldown_bound(
-            &conn, &character, &server, cow_name, &zone, &attempt_at,
+            &conn,
+            &character,
+            &server,
+            cow_name,
+            &zone,
+            &attempt_at,
         ) {
             eprintln!("[coordinator] {e}");
             return;
@@ -2937,20 +2868,22 @@ impl DataIngestCoordinator {
 
         // Extract description: everything between the closing </size> of the name
         // and the disclaimer italic block
-        let description = content
-            .find("</size></b>")
-            .and_then(|pos| {
-                let after = content[pos + 11..].trim_start_matches("\\n").trim();
-                // Stop before the disclaimer block
-                let end = after.find("<i><size=75%>").unwrap_or(after.len());
-                let desc = after[..end].trim().trim_matches('\\').trim_matches('n').trim();
-                if desc.is_empty() {
-                    None
-                } else {
-                    // Clean up escaped newlines
-                    Some(desc.replace("\\n", "\n").trim().to_string())
-                }
-            });
+        let description = content.find("</size></b>").and_then(|pos| {
+            let after = content[pos + 11..].trim_start_matches("\\n").trim();
+            // Stop before the disclaimer block
+            let end = after.find("<i><size=75%>").unwrap_or(after.len());
+            let desc = after[..end]
+                .trim()
+                .trim_matches('\\')
+                .trim_matches('n')
+                .trim();
+            if desc.is_empty() {
+                None
+            } else {
+                // Clean up escaped newlines
+                Some(desc.replace("\\n", "\n").trim().to_string())
+            }
+        });
 
         let Some((char_name, server_name)) = self.active_character_server() else {
             return;
@@ -3056,7 +2989,6 @@ impl DataIngestCoordinator {
         }
     }
 
-
     /// Parse a PlayerShopLog book body and persist its entries to the
     /// `stall_events` table, stamped with the active character as owner.
     ///
@@ -3124,12 +3056,16 @@ impl DataIngestCoordinator {
         if self.debug_capture.is_active() {
             return Err("A debug capture is already active".to_string());
         }
+        if self.debug_capture.is_pending_save() {
+            return Err(
+                "A stopped capture is waiting to be saved — save or discard it before starting a new one"
+                    .to_string(),
+            );
+        }
 
-        let (char, server) = self
-            .active_character_server()
-            .unwrap_or_default();
+        let (char, server) = self.active_character_server().unwrap_or_default();
         let snapshot =
-            debug_capture::snapshot_game_state(&self.db_pool, Some(&char), Some(&server));
+            debug_capture::snapshot_game_state(&self.db_pool, Some(&char), Some(&server))?;
 
         let temp_dir = self
             .app_handle
@@ -3170,7 +3106,7 @@ impl DataIngestCoordinator {
 
         let (char, server) = self.active_character_server().unwrap_or_default();
         let snapshot =
-            debug_capture::snapshot_game_state(&self.db_pool, Some(&char), Some(&server));
+            debug_capture::snapshot_game_state(&self.db_pool, Some(&char), Some(&server))?;
 
         let app_version = self
             .app_handle
@@ -3191,20 +3127,23 @@ impl DataIngestCoordinator {
         Ok(result)
     }
 
-    /// Save the stopped capture to a file with the given notes and filter mode.
+    /// Save the stopped capture to a file with the given notes, filter mode,
+    /// and explicit overwrite flag (existing files are never replaced
+    /// silently).
     pub fn debug_capture_save(
         &mut self,
         notes: String,
         filter_mode: String,
         output_path: String,
+        overwrite: bool,
     ) -> Result<DebugCaptureResult, String> {
         if !self.debug_capture.is_pending_save() {
             return Err("No stopped capture is pending save".to_string());
         }
 
-        let result = self
-            .debug_capture
-            .save(notes, filter_mode.clone(), &output_path)?;
+        let result =
+            self.debug_capture
+                .save(notes, filter_mode.clone(), &output_path, overwrite)?;
 
         startup_log!(
             "[debug-capture] Capture saved ({} mode) — {} lines ({} player, {} chat)",
@@ -3275,7 +3214,7 @@ pub fn stop_player_tailing(
     coord.stop_player_log_tailing()
 }
 
-/// Scan the full Player.log for past poem recitals and backfill the poems table
+/// Scan every Player.log source for past poem recitals and backfill the poems table
 /// (called from the Poems tab). Returns the number of newly inserted poems.
 #[tauri::command]
 pub fn scan_player_log_for_poems(
@@ -3412,9 +3351,7 @@ pub fn start_background_polling(
 
 /// Stop background polling (called from frontend or on shutdown)
 #[tauri::command]
-pub fn stop_background_polling(
-    handle: State<'_, Arc<Mutex<PollingHandle>>>,
-) -> Result<(), String> {
+pub fn stop_background_polling(handle: State<'_, Arc<Mutex<PollingHandle>>>) -> Result<(), String> {
     handle.lock().unwrap().stop();
     Ok(())
 }
@@ -3439,16 +3376,18 @@ pub fn debug_capture_stop(
     coord.debug_capture_stop()
 }
 
-/// Save the stopped capture to a file with notes and filter mode.
+/// Save the stopped capture to a file with notes, filter mode, and explicit
+/// overwrite flag. Defaults to false at the call site when omitted.
 #[tauri::command]
 pub fn debug_capture_save(
     coordinator: State<'_, Arc<Mutex<DataIngestCoordinator>>>,
     notes: String,
     filter_mode: String,
     output_path: String,
+    overwrite: Option<bool>,
 ) -> Result<DebugCaptureResult, String> {
     let mut coord = coordinator.lock().unwrap();
-    coord.debug_capture_save(notes, filter_mode, output_path)
+    coord.debug_capture_save(notes, filter_mode, output_path, overwrite.unwrap_or(false))
 }
 
 /// Discard the active debug capture without saving.
@@ -3781,9 +3720,7 @@ pub fn persist_book_content(
         rusqlite::params![character, server, book_type, title, content, dt],
     )
     .map_err(|e| format!("Failed to persist book: {e}"))?;
-    app_handle
-        .emit("game-state-updated", vec!["books"])
-        .ok();
+    app_handle.emit("game-state-updated", vec!["books"]).ok();
     Ok(())
 }
 
@@ -3935,9 +3872,7 @@ pub fn ingest_hoplology_content(
     // Normalized content (real newlines) — one entry per line
     for line in content.split('\n') {
         let trimmed = line.trim();
-        if trimmed.is_empty()
-            || trimmed.starts_with("Equipment Studied:")
-        {
+        if trimmed.is_empty() || trimmed.starts_with("Equipment Studied:") {
             continue;
         }
         // Resolve to base equipment name if CDN data is available
@@ -3955,7 +3890,10 @@ pub fn ingest_hoplology_content(
                 // idempotent, so returning Err makes the Books watcher treat
                 // the file as unseen and retry it — instead of marking the
                 // mtime seen over a partial import.
-                eprintln!("[coordinator] Failed to insert hoplology study '{}': {}", trimmed, e);
+                eprintln!(
+                    "[coordinator] Failed to insert hoplology study '{}': {}",
+                    trimmed, e
+                );
                 return Err(format!("hoplology insert failed for '{}': {e}", trimmed));
             }
         }
@@ -3982,7 +3920,9 @@ pub(crate) fn normalize_combat_loadout(skill1: &str, skill2: &str) -> Option<Str
     let mut parts: Vec<String> = [skill1, skill2]
         .iter()
         .map(|s| s.trim())
-        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("none") && !s.eq_ignore_ascii_case("unknown"))
+        .filter(|s| {
+            !s.is_empty() && !s.eq_ignore_ascii_case("none") && !s.eq_ignore_ascii_case("unknown")
+        })
         .map(|s| s.to_string())
         .collect();
     if parts.is_empty() {
@@ -4047,7 +3987,7 @@ fn apply_catch_up_login(
     chat_servers: &std::collections::HashMap<String, String>,
     character_name: &str,
     clear_inventory: bool,
-    ) -> SessionServerSource {
+) -> SessionServerSource {
     let current_server = game_state.get_active_server().map(str::to_string);
     game_state.set_active_character_name(character_name);
     let (server, source) = match session_server_for(db, character_name, current_server.as_deref()) {
@@ -4164,7 +4104,10 @@ fn chat_session_servers(dir: &std::path::Path) -> std::collections::HashMap<Stri
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) => {
-            startup_log!("Catch-up chat-login scan: cannot read {}: {e}", dir.display());
+            startup_log!(
+                "Catch-up chat-login scan: cannot read {}: {e}",
+                dir.display()
+            );
             return servers;
         }
     };
@@ -4210,7 +4153,11 @@ mod harvest_almanac_tests {
         let f = &foci[0];
         assert_eq!(f.monster_name, "Skeleton Swordsmen");
         assert!(f.is_current);
-        assert!(f.description.as_deref().unwrap().starts_with("Seek out skeletal swordsmen."));
+        assert!(f
+            .description
+            .as_deref()
+            .unwrap()
+            .starts_with("Seek out skeletal swordsmen."));
         assert_eq!(f.event_start, None);
         // 22h2m past the capture time.
         assert_eq!(f.event_end.as_deref(), Some("2026-07-29T03:59:26+00:00"));
@@ -4224,7 +4171,10 @@ mod harvest_almanac_tests {
         assert_eq!(foci.len(), 1);
         assert_eq!(foci[0].monster_name, "Rock Elementals");
         assert!(!foci[0].is_current);
-        assert_eq!(foci[0].event_start.as_deref(), Some("2026-07-29T03:00:00+00:00"));
+        assert_eq!(
+            foci[0].event_start.as_deref(),
+            Some("2026-07-29T03:00:00+00:00")
+        );
         assert_eq!(foci[0].event_end, None);
     }
 
@@ -4253,13 +4203,18 @@ mod loadout_tests {
 
     #[test]
     fn drops_empty_and_placeholder_slots() {
-        assert_eq!(normalize_combat_loadout("Sword", "").as_deref(), Some("Sword"));
-        assert_eq!(normalize_combat_loadout("None", "Mentalism").as_deref(), Some("Mentalism"));
+        assert_eq!(
+            normalize_combat_loadout("Sword", "").as_deref(),
+            Some("Sword")
+        );
+        assert_eq!(
+            normalize_combat_loadout("None", "Mentalism").as_deref(),
+            Some("Mentalism")
+        );
         assert_eq!(normalize_combat_loadout("", ""), None);
         assert_eq!(normalize_combat_loadout("none", "unknown"), None);
     }
 }
-
 
 /// True when `later` falls within the rez-dedup window of `earlier`
 /// (`"YYYY-MM-DD HH:MM:SS"` UTC strings, zero-padded so lexicographic
@@ -4332,8 +4287,9 @@ mod rez_dedup_tests {
 /// `parsers::to_utc_datetime_with_base`.
 fn milking_event_timestamp(event_ts: &str) -> String {
     match chrono::NaiveDateTime::parse_from_str(event_ts.trim(), "%Y-%m-%d %H:%M:%S") {
-        Ok(dt) => chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc)
-            .to_rfc3339(),
+        Ok(dt) => {
+            chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc).to_rfc3339()
+        }
         Err(_) => chrono::Utc::now().to_rfc3339(),
     }
 }
@@ -4502,10 +4458,7 @@ mod session_identity_tests {
         );
         // (e) No server in use yet: the picker's active row wins over the
         // more recently updated one.
-        assert_eq!(
-            session_server_for(&db, "TestPlayer", None),
-            row("Dreva")
-        );
+        assert_eq!(session_server_for(&db, "TestPlayer", None), row("Dreva"));
         // (f) A read that cannot run is not an unknown character: a failing
         // statement must answer `Failed`, so the caller never falls through to
         // the chat-login tier on an error. `DROP TABLE` reproduces one: the
@@ -4580,7 +4533,10 @@ mod session_identity_tests {
             ],
         )]);
         let map = chat_session_servers(&chat_dir);
-        assert_eq!(map.get("OtherAlt").map(String::as_str), Some("OtherAltServer"));
+        assert_eq!(
+            map.get("OtherAlt").map(String::as_str),
+            Some("OtherAltServer")
+        );
 
         // The picker's row, and nothing at all for the alt.
         let (pool, db_path) = seed_pool(PICKER_ROW);
@@ -4653,10 +4609,7 @@ mod session_identity_tests {
 
         // Adopting OtherAlt's session clears only its slice; the replay burst
         // (`is_new=false` upserts + UpdateItemCode baselines) repopulates it.
-        let map = std::collections::HashMap::from([(
-            "OtherAlt".to_string(),
-            "Dreva".to_string(),
-        )]);
+        let map = std::collections::HashMap::from([("OtherAlt".to_string(), "Dreva".to_string())]);
         apply_catch_up_login(&mut gs, &pool, &map, "OtherAlt", true);
 
         let count: i64 = pool
@@ -4693,8 +4646,13 @@ mod session_identity_tests {
         let (pool, db_path) = seed_pool(PICKER_ROW);
         let mut gs = game_state("TestPlayer", "Dreva");
 
-        let source =
-            apply_catch_up_login(&mut gs, &pool, &std::collections::HashMap::new(), "Ghost", true);
+        let source = apply_catch_up_login(
+            &mut gs,
+            &pool,
+            &std::collections::HashMap::new(),
+            "Ghost",
+            true,
+        );
 
         assert_eq!(source, SessionServerSource::None);
         assert_eq!(gs.get_active_server(), Some("Dreva"));
@@ -4727,4 +4685,3 @@ mod session_identity_tests {
         let _ = std::fs::remove_file(&db_path);
     }
 }
-

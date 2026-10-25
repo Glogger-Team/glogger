@@ -229,7 +229,10 @@ pub fn parse_player_log_login_line(line: &str) -> Option<(String, chrono::NaiveD
 ///
 /// Chat.log timestamps are in the player's local timezone. The offset (seconds east of UTC)
 /// is parsed from the chat login line's "Timezone Offset" field.
-pub fn chat_local_to_utc(local_dt: chrono::NaiveDateTime, tz_offset_seconds: i32) -> chrono::NaiveDateTime {
+pub fn chat_local_to_utc(
+    local_dt: chrono::NaiveDateTime,
+    tz_offset_seconds: i32,
+) -> chrono::NaiveDateTime {
     use chrono::Duration;
     local_dt - Duration::seconds(tz_offset_seconds as i64)
 }
@@ -544,8 +547,9 @@ mod tests {
 
     #[test]
     fn test_parse_loot_with_speed_bonus() {
-        let (items, bonus) =
-            parse_loot_items("Blue Spinel collected! Also found Rubywall Crystal x2 (speed bonus!)");
+        let (items, bonus) = parse_loot_items(
+            "Blue Spinel collected! Also found Rubywall Crystal x2 (speed bonus!)",
+        );
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].item_name, "Blue Spinel");
         assert_eq!(items[0].quantity, 1);

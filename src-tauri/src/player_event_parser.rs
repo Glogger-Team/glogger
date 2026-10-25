@@ -689,15 +689,9 @@ pub enum ActivitySource {
     SurveyMapCraft,
     /// Other crafting/use actions detected via DoDelayLoop (cooking, brewing,
     /// distilling, using food, etc.).
-    GeneralCraft {
-        action_type: String,
-        label: String,
-    },
+    GeneralCraft { action_type: String, label: String },
     /// Actively searching a corpse (opened via TalkScreen "Search Corpse of X").
-    CorpseSearch {
-        entity_id: u32,
-        corpse_name: String,
-    },
+    CorpseSearch { entity_id: u32, corpse_name: String },
     /// Vendor trade window open.
     VendorBrowsing {
         npc_entity_id: u32,
@@ -1095,9 +1089,10 @@ impl PlayerEventParser {
                 // Confidence is Probable rather than Confident to mark this as a
                 // heuristic outcome — downstream code can choose to filter on
                 // confidence level if it cares.
-                let mining_idx = self.activity_contexts.iter().position(|c| {
-                    matches!(c.source, ActivitySource::Mining { .. })
-                });
+                let mining_idx = self
+                    .activity_contexts
+                    .iter()
+                    .position(|c| matches!(c.source, ActivitySource::Mining { .. }));
                 if let Some(idx) = mining_idx {
                     let others_are_passive = self
                         .activity_contexts
@@ -1184,7 +1179,13 @@ impl PlayerEventParser {
             // Flush pending deletes before processing new events
             if let Some(ev) = self.parse_add_item(line) {
                 // Track for RemoveLoot correlation
-                if let PlayerEvent::ItemAdded { instance_id, item_name, initial_quantity, .. } = &ev {
+                if let PlayerEvent::ItemAdded {
+                    instance_id,
+                    item_name,
+                    initial_quantity,
+                    ..
+                } = &ev
+                {
                     self.last_item_event = Some(LastItemEvent {
                         instance_id: *instance_id,
                         item_name: item_name.clone(),
@@ -1197,7 +1198,14 @@ impl PlayerEventParser {
         } else if line.contains("ProcessUpdateItemCode(") {
             if let Some(ev) = self.parse_update_item_code(line) {
                 // Track for RemoveLoot correlation (positive deltas only)
-                if let PlayerEvent::ItemStackChanged { instance_id, item_name, item_type_id, delta, .. } = &ev {
+                if let PlayerEvent::ItemStackChanged {
+                    instance_id,
+                    item_name,
+                    item_type_id,
+                    delta,
+                    ..
+                } = &ev
+                {
                     if *delta > 0 {
                         self.last_item_event = Some(LastItemEvent {
                             instance_id: *instance_id,
@@ -1635,14 +1643,14 @@ impl PlayerEventParser {
                 .get(&instance_id)
                 .map(|info| info.item_name.clone());
             let update_secs = timestamp_to_secs(&ts);
-            let (effective_delta, effective_provenance) =
-                if let Some(chat_qty) = item_name.as_ref().and_then(|name| {
-                    self.consume_chat_gain_for_add_item(name, update_secs)
-                }) {
-                    (chat_qty as i32, self.compute_provenance())
-                } else {
-                    (0, ItemProvenance::NotApplicable)
-                };
+            let (effective_delta, effective_provenance) = if let Some(chat_qty) = item_name
+                .as_ref()
+                .and_then(|name| self.consume_chat_gain_for_add_item(name, update_secs))
+            {
+                (chat_qty as i32, self.compute_provenance())
+            } else {
+                (0, ItemProvenance::NotApplicable)
+            };
             return Some(PlayerEvent::ItemStackChanged {
                 timestamp: ts,
                 instance_id,
@@ -2013,7 +2021,8 @@ impl PlayerEventParser {
         let (item_name, item_type_id, quantity) =
             if let Some(info) = self.instance_registry.get(&instance_id) {
                 // Direct match — this instance was seen in a ProcessAddItem
-                let qty = self.last_item_event
+                let qty = self
+                    .last_item_event
                     .as_ref()
                     .filter(|e| e.instance_id == instance_id)
                     .map(|e| e.quantity)
@@ -2024,7 +2033,11 @@ impl PlayerEventParser {
                 // preceding UpdateItemCode which is the item that grew.
                 // Take (consume) it so a second RemoveLoot in the same tick
                 // without its own UpdateItemCode won't reuse this match.
-                (Some(last.item_name.clone()), last.item_type_id, last.quantity)
+                (
+                    Some(last.item_name.clone()),
+                    last.item_type_id,
+                    last.quantity,
+                )
             } else {
                 (None, None, 1)
             };
@@ -2176,9 +2189,7 @@ impl PlayerEventParser {
             // the stack is already the same source kind and entity, just
             // extend its deadline instead of stacking.
             if let Some(top) = self.activity_contexts.last_mut() {
-                if activity_source_matches(&top.source, &source)
-                    && top.entity_id == ctx_entity_id
-                {
+                if activity_source_matches(&top.source, &source) && top.entity_id == ctx_entity_id {
                     top.close_deadline_secs = close_deadline_secs;
                     // leave started_at alone — first-seen is canonical
                 } else {
@@ -2423,7 +2434,10 @@ impl PlayerEventParser {
                         .find("Message:\\n<indent=3em>")
                         .map(|i| {
                             let s = &after_sending[i + "Message:\\n<indent=3em>".len()..];
-                            let end = s.find("</indent>").or_else(|| s.find('<')).unwrap_or(s.len());
+                            let end = s
+                                .find("</indent>")
+                                .or_else(|| s.find('<'))
+                                .unwrap_or(s.len());
                             s[..end].to_string()
                         })
                         .unwrap_or_default();
@@ -2477,8 +2491,7 @@ impl PlayerEventParser {
 
             // Denominator signal for drop-rate tracking: a loot window opened
             // for this corpse. No-permission corpses are reported but flagged.
-            let has_permission =
-                !line.contains("You do not have permission to loot this corpse");
+            let has_permission = !line.contains("You do not have permission to loot this corpse");
             events.push(PlayerEvent::CorpseSearched {
                 timestamp: ts.clone(),
                 corpse_entity_id: entity_id,
@@ -2503,11 +2516,10 @@ impl PlayerEventParser {
             };
             // Deduplicate: if we already have a CorpseSearch for this entity,
             // just refresh its deadline.
-            let already = self
-                .activity_contexts
-                .iter_mut()
-                .find(|c| c.entity_id == Some(entity_id)
-                    && matches!(&c.source, ActivitySource::CorpseSearch { .. }));
+            let already = self.activity_contexts.iter_mut().find(|c| {
+                c.entity_id == Some(entity_id)
+                    && matches!(&c.source, ActivitySource::CorpseSearch { .. })
+            });
             if let Some(existing) = already {
                 existing.close_deadline_secs = started_at_secs + DEFAULT_CONTEXT_LIFETIME_SECS;
             } else {
@@ -3172,8 +3184,7 @@ impl PlayerEventParser {
     /// ProcessGuildGeneralInfo(guildId, "GuildName", "motd")
     fn parse_guild_general_info(&self, line: &str) -> Option<PlayerEvent> {
         let ts = parse_timestamp(line)?;
-        let args_start =
-            line.find("ProcessGuildGeneralInfo(")? + "ProcessGuildGeneralInfo(".len();
+        let args_start = line.find("ProcessGuildGeneralInfo(")? + "ProcessGuildGeneralInfo(".len();
         let args = &line[args_start..];
 
         let first_comma = args.find(',')?;
@@ -3224,8 +3235,14 @@ impl PlayerEventParser {
 
         // Only persist known useful keys
         match key.as_str() {
-            "NOTEPAD" | "NOTEPAD_TAB_1" | "NOTEPAD_TAB_2" | "NOTEPAD_TAB_3"
-            | "NOTEPAD_TAB_4" | "NOTEPAD_TAB_NAMES" | "FRIEND_STATUS" | "PUBLIC_STATUS"
+            "NOTEPAD"
+            | "NOTEPAD_TAB_1"
+            | "NOTEPAD_TAB_2"
+            | "NOTEPAD_TAB_3"
+            | "NOTEPAD_TAB_4"
+            | "NOTEPAD_TAB_NAMES"
+            | "FRIEND_STATUS"
+            | "PUBLIC_STATUS"
             | "HUNTING_GROUP_TITLE" => {}
             _ => return None,
         }
@@ -3774,8 +3791,7 @@ fn parse_poem_body(raw_body: &str) -> Option<(String, String)> {
     // Resolve `\n` (and friends) to real characters, then drop the blank and
     // `---` fence lines that bookend the poem, keeping interior lines intact.
     let unescaped = unescape_log_string(&core);
-    let is_boundary =
-        |line: &str| line.trim().is_empty() || line.trim().chars().all(|c| c == '-');
+    let is_boundary = |line: &str| line.trim().is_empty() || line.trim().chars().all(|c| c == '-');
     let lines: Vec<&str> = unescaped.lines().collect();
     let mut start = 0;
     let mut end = lines.len();
@@ -4343,7 +4359,9 @@ mod tests {
         );
         assert_eq!(events.len(), 1);
         match &events[0] {
-            PlayerEvent::BookOpened { content, book_type, .. } => {
+            PlayerEvent::BookOpened {
+                content, book_type, ..
+            } => {
                 assert_eq!(book_type, "SkillReport");
                 // Content is NOT pre-unescaped by the parser — the coordinator
                 // normalizes. Prove both: raw is escaped; after the same
@@ -4433,7 +4451,8 @@ mod tests {
         );
 
         // Survey map consumed (used) — same negative instance id. Buffered.
-        let events = parser.process_line(r#"[23:55:24] LocalPlayer: ProcessDeleteItem(-1796085135)"#);
+        let events =
+            parser.process_line(r#"[23:55:24] LocalPlayer: ProcessDeleteItem(-1796085135)"#);
         assert!(events.is_empty(), "delete is buffered until the next line");
 
         // Any subsequent line flushes the pending delete.
@@ -4541,9 +4560,20 @@ mod tests {
         let events = parser.process_line(
             r#"[16:00:01] LocalPlayer: ProcessUpdateItemCode(136937342, 65536, True)"#,
         );
-        assert_eq!(events.len(), 1, "First UpdateItemCode should emit a baseline correction");
+        assert_eq!(
+            events.len(),
+            1,
+            "First UpdateItemCode should emit a baseline correction"
+        );
         match &events[0] {
-            PlayerEvent::ItemStackChanged { item_name, old_stack_size, new_stack_size, delta, provenance, .. } => {
+            PlayerEvent::ItemStackChanged {
+                item_name,
+                old_stack_size,
+                new_stack_size,
+                delta,
+                provenance,
+                ..
+            } => {
                 assert_eq!(item_name.as_deref(), Some("MetalSlab2"));
                 assert_eq!(*new_stack_size, 2); // (65536 >> 16) + 1
                 assert_eq!(*old_stack_size, 2); // no prior → old = new - 0
@@ -4559,7 +4589,13 @@ mod tests {
         );
         assert_eq!(events.len(), 1);
         match &events[0] {
-            PlayerEvent::ItemStackChanged { item_name, old_stack_size, new_stack_size, delta, .. } => {
+            PlayerEvent::ItemStackChanged {
+                item_name,
+                old_stack_size,
+                new_stack_size,
+                delta,
+                ..
+            } => {
                 assert_eq!(item_name.as_deref(), Some("MetalSlab2"));
                 assert_eq!(*old_stack_size, 2); // (65536 >> 16) + 1
                 assert_eq!(*new_stack_size, 4); // (196608 >> 16) + 1
@@ -4584,7 +4620,13 @@ mod tests {
         // (327697 >> 16) + 1 = 6, 327697 & 0xFFFF = 17
         assert_eq!(events.len(), 1);
         match &events[0] {
-            PlayerEvent::ItemStackChanged { item_name, old_stack_size, new_stack_size, delta, .. } => {
+            PlayerEvent::ItemStackChanged {
+                item_name,
+                old_stack_size,
+                new_stack_size,
+                delta,
+                ..
+            } => {
                 assert_eq!(item_name.as_deref(), Some("RoyalJelly"));
                 assert_eq!(*old_stack_size, 1); // seeded from ProcessAddItem(is_new=True)
                 assert_eq!(*new_stack_size, 6); // (327697 >> 16) + 1
@@ -4626,7 +4668,12 @@ mod tests {
         );
         assert_eq!(events.len(), 1);
         match &events[0] {
-            PlayerEvent::ItemStackChanged { old_stack_size, new_stack_size, delta, .. } => {
+            PlayerEvent::ItemStackChanged {
+                old_stack_size,
+                new_stack_size,
+                delta,
+                ..
+            } => {
                 assert_eq!(*old_stack_size, 1000);
                 // (16346571 >> 16) + 1 = 250
                 assert_eq!(*new_stack_size, 250);
@@ -4655,7 +4702,12 @@ mod tests {
         );
         assert_eq!(events.len(), 1);
         match &events[0] {
-            PlayerEvent::ItemStackChanged { old_stack_size, new_stack_size, delta, .. } => {
+            PlayerEvent::ItemStackChanged {
+                old_stack_size,
+                new_stack_size,
+                delta,
+                ..
+            } => {
                 assert_eq!(*old_stack_size, 10);
                 assert_eq!(*new_stack_size, 10); // (590977 >> 16) + 1 = 10
                 assert_eq!(*delta, 0); // No false gain!
@@ -5321,14 +5373,22 @@ mod tests {
         );
 
         let ctxs = parser.active_activities();
-        assert_eq!(ctxs.len(), 1, "Mining context should be detected despite empty name");
+        assert_eq!(
+            ctxs.len(),
+            1,
+            "Mining context should be detected despite empty name"
+        );
         match &ctxs[0].source {
             ActivitySource::Mining {
                 node_entity_id,
                 node_name,
             } => {
                 assert_eq!(*node_entity_id, Some(1176954));
-                assert_eq!(node_name.as_deref(), None, "name was empty — stored as None");
+                assert_eq!(
+                    node_name.as_deref(),
+                    None,
+                    "name was empty — stored as None"
+                );
             }
             other => panic!("Expected Mining source, got {:?}", other),
         }
@@ -5410,13 +5470,11 @@ mod tests {
         assert_eq!(parser.active_activities().len(), 1);
 
         // 6s duration + 2s slack = should still be active at 18:04:30
-        parser
-            .process_line(r#"[18:04:30] LocalPlayer: ProcessCombatModeStatus(NotInCombat, [])"#);
+        parser.process_line(r#"[18:04:30] LocalPlayer: ProcessCombatModeStatus(NotInCombat, [])"#);
         assert_eq!(parser.active_activities().len(), 1);
 
         // By 18:04:32 (9s after start) the context should have expired
-        parser
-            .process_line(r#"[18:04:32] LocalPlayer: ProcessCombatModeStatus(NotInCombat, [])"#);
+        parser.process_line(r#"[18:04:32] LocalPlayer: ProcessCombatModeStatus(NotInCombat, [])"#);
         assert_eq!(parser.active_activities().len(), 0);
     }
 
@@ -5437,7 +5495,11 @@ mod tests {
         parser.process_line(
             r#"[18:04:25] LocalPlayer: ProcessDoDelayLoop(6, ChopLumber, "Mining...", 0, AbortIfAttacked, IsInteractorDelayLoop)"#,
         );
-        assert_eq!(parser.active_activities().len(), 1, "same-entity repeated loops collapse");
+        assert_eq!(
+            parser.active_activities().len(),
+            1,
+            "same-entity repeated loops collapse"
+        );
     }
 
     #[test]
@@ -5466,7 +5528,9 @@ mod tests {
 
     /// Helper: pull the first LootPickedUp event out of a batch.
     fn first_loot_pickup(events: &[PlayerEvent]) -> Option<&PlayerEvent> {
-        events.iter().find(|e| matches!(e, PlayerEvent::LootPickedUp { .. }))
+        events
+            .iter()
+            .find(|e| matches!(e, PlayerEvent::LootPickedUp { .. }))
     }
 
     #[test]
@@ -5478,13 +5542,15 @@ mod tests {
         parser.process_line(
             r#"[18:04:38] LocalPlayer: ProcessTalkScreen(435269, "Search Corpse of Ratkin Miner", "", "", System.Int32[], System.String[], 1, Corpse)"#,
         );
-        parser.process_line(
-            r#"[18:04:38] LocalPlayer: ProcessAddItem(SpruceWood(111), -1, True)"#,
-        );
-        let events =
-            parser.process_line(r#"[18:04:38] LocalPlayer: ProcessRemoveLoot(111)"#);
+        parser.process_line(r#"[18:04:38] LocalPlayer: ProcessAddItem(SpruceWood(111), -1, True)"#);
+        let events = parser.process_line(r#"[18:04:38] LocalPlayer: ProcessRemoveLoot(111)"#);
         match first_loot_pickup(&events).expect("LootPickedUp present") {
-            PlayerEvent::LootPickedUp { corpse_entity_id, corpse_name, item_name, .. } => {
+            PlayerEvent::LootPickedUp {
+                corpse_entity_id,
+                corpse_name,
+                item_name,
+                ..
+            } => {
                 assert_eq!(*corpse_entity_id, Some(435269));
                 assert_eq!(corpse_name.as_deref(), Some("Ratkin Miner"));
                 assert_eq!(item_name.as_deref(), Some("SpruceWood"));
@@ -5505,10 +5571,13 @@ mod tests {
         parser.process_line(
             r#"[19:20:05] LocalPlayer: ProcessAddItem(CouncilCoinpurse5(222), -1, True)"#,
         );
-        let events =
-            parser.process_line(r#"[19:20:05] LocalPlayer: ProcessRemoveLoot(222)"#);
+        let events = parser.process_line(r#"[19:20:05] LocalPlayer: ProcessRemoveLoot(222)"#);
         match first_loot_pickup(&events).expect("LootPickedUp present") {
-            PlayerEvent::LootPickedUp { corpse_entity_id, corpse_name, .. } => {
+            PlayerEvent::LootPickedUp {
+                corpse_entity_id,
+                corpse_name,
+                ..
+            } => {
                 assert_eq!(*corpse_entity_id, Some(428100));
                 assert_eq!(corpse_name.as_deref(), Some("Throgg the Gemlord"));
             }
@@ -5527,14 +5596,20 @@ mod tests {
             r#"[12:00:00] LocalPlayer: ProcessTalkScreen(500, "Search Corpse of Aktaari Royal Guard", "", "", System.Int32[], System.String[], 1, Corpse)"#,
         );
         // ... 8 seconds later, gather Xogrite from a ground node.
-        parser.process_line(
-            r#"[12:00:08] LocalPlayer: ProcessAddItem(XogriteChunk(999), -1, True)"#,
-        );
-        let events =
-            parser.process_line(r#"[12:00:08] LocalPlayer: ProcessRemoveLoot(999)"#);
+        parser
+            .process_line(r#"[12:00:08] LocalPlayer: ProcessAddItem(XogriteChunk(999), -1, True)"#);
+        let events = parser.process_line(r#"[12:00:08] LocalPlayer: ProcessRemoveLoot(999)"#);
         match first_loot_pickup(&events).expect("LootPickedUp present") {
-            PlayerEvent::LootPickedUp { corpse_entity_id, corpse_name, item_name, .. } => {
-                assert_eq!(*corpse_entity_id, None, "ground loot must not borrow a stale corpse");
+            PlayerEvent::LootPickedUp {
+                corpse_entity_id,
+                corpse_name,
+                item_name,
+                ..
+            } => {
+                assert_eq!(
+                    *corpse_entity_id, None,
+                    "ground loot must not borrow a stale corpse"
+                );
                 assert_eq!(*corpse_name, None);
                 assert_eq!(item_name.as_deref(), Some("XogriteChunk"));
             }
@@ -5551,14 +5626,17 @@ mod tests {
             r#"[12:00:00] LocalPlayer: ProcessTalkScreen(500, "Search Corpse of Aktaari Royal Guard", "", "", System.Int32[], System.String[], 1, Corpse)"#,
         );
         parser.process_line(r#"[12:00:00] LocalPlayer: ProcessEndInteraction(500)"#);
-        parser.process_line(
-            r#"[12:00:01] LocalPlayer: ProcessAddItem(XogriteChunk(999), -1, True)"#,
-        );
-        let events =
-            parser.process_line(r#"[12:00:01] LocalPlayer: ProcessRemoveLoot(999)"#);
+        parser
+            .process_line(r#"[12:00:01] LocalPlayer: ProcessAddItem(XogriteChunk(999), -1, True)"#);
+        let events = parser.process_line(r#"[12:00:01] LocalPlayer: ProcessRemoveLoot(999)"#);
         match first_loot_pickup(&events).expect("LootPickedUp present") {
-            PlayerEvent::LootPickedUp { corpse_entity_id, .. } => {
-                assert_eq!(*corpse_entity_id, None, "closed corpse window must not attribute");
+            PlayerEvent::LootPickedUp {
+                corpse_entity_id, ..
+            } => {
+                assert_eq!(
+                    *corpse_entity_id, None,
+                    "closed corpse window must not attribute"
+                );
             }
             other => panic!("Expected LootPickedUp, got {:?}", other),
         }
@@ -5646,8 +5724,9 @@ mod tests {
         parser.process_line(
             r#"[12:29:24] LocalPlayer: ProcessPlayerVendorScreen(13676, "Remember: press SHIFT to buy multiples quickly.", System.Collections.Generic.List`1[PlayerVendorItemForSale], 41, False, False, [], System.String[], 1)"#,
         );
-        parser
-            .process_line(r#"[12:29:45] LocalPlayer: ProcessAddItem(CantaloupeWine(256596391), -1, True)"#);
+        parser.process_line(
+            r#"[12:29:45] LocalPlayer: ProcessAddItem(CantaloupeWine(256596391), -1, True)"#,
+        );
         let events = parser.process_line(
             r#"[12:29:45] LocalPlayer: ProcessPlayerVendorScreenRemove(13676, 256596391)"#,
         );
@@ -5679,8 +5758,7 @@ mod tests {
         parser.process_line(
             r#"[12:29:24] LocalPlayer: ProcessPlayerVendorScreen(13676, "Remember: press SHIFT to buy multiples quickly.", System.Collections.Generic.List`1[PlayerVendorItemForSale], 41, False, False, [], System.String[], 1)"#,
         );
-        parser
-            .process_line(r#"[12:29:40] LocalPlayer: ProcessEndInteraction(13676)"#);
+        parser.process_line(r#"[12:29:40] LocalPlayer: ProcessEndInteraction(13676)"#);
         // A later Remove from a DIFFERENT npc (no screen open) must stay silent.
         let events = parser
             .process_line(r#"[12:30:10] LocalPlayer: ProcessPlayerVendorScreenRemove(8888, 77)"#);
@@ -5699,8 +5777,9 @@ mod tests {
             r#"[12:29:24] LocalPlayer: ProcessPlayerVendorScreen(13676, "Remember: press SHIFT to buy multiples quickly.", System.Collections.Generic.List`1[PlayerVendorItemForSale], 41, False, False, [], System.String[], 1)"#,
         );
         // Remove for a different npc id than the open screen: not our stall.
-        let events = parser
-            .process_line(r#"[12:29:45] LocalPlayer: ProcessPlayerVendorScreenRemove(8888, 256596391)"#);
+        let events = parser.process_line(
+            r#"[12:29:45] LocalPlayer: ProcessPlayerVendorScreenRemove(8888, 256596391)"#,
+        );
         assert!(
             !events
                 .iter()
@@ -5750,10 +5829,17 @@ mod tests {
         );
 
         let ctxs = parser.active_activities();
-        assert_eq!(ctxs.len(), 2, "both mining and corpse-search should be active");
+        assert_eq!(
+            ctxs.len(),
+            2,
+            "both mining and corpse-search should be active"
+        );
         // Mining was pushed first, corpse search second — stack preserves order
         assert!(matches!(ctxs[0].source, ActivitySource::Mining { .. }));
-        assert!(matches!(ctxs[1].source, ActivitySource::CorpseSearch { .. }));
+        assert!(matches!(
+            ctxs[1].source,
+            ActivitySource::CorpseSearch { .. }
+        ));
     }
 
     #[test]
@@ -5817,9 +5903,8 @@ mod tests {
         // Genuine new item drop with nothing else going on: should be
         // UnknownSource. This bucket is expected to be sizeable.
         let mut parser = PlayerEventParser::new();
-        let events = parser.process_line(
-            r#"[12:00:00] LocalPlayer: ProcessAddItem(RandomLoot(12345), -1, True)"#,
-        );
+        let events = parser
+            .process_line(r#"[12:00:00] LocalPlayer: ProcessAddItem(RandomLoot(12345), -1, True)"#);
         assert_eq!(first_provenance(&events), ItemProvenance::UnknownSource);
     }
 
@@ -5901,19 +5986,22 @@ mod tests {
         parser.process_line(
             r#"[18:04:25] LocalPlayer: ProcessTalkScreen(435214, "Search Corpse of Ratkin Miner", "", "", System.Int32[], System.String[], 0, Corpse)"#,
         );
-        let events = parser.process_line(
-            r#"[18:04:26] LocalPlayer: ProcessAddItem(Orichalcum(99999), -1, True)"#,
-        );
+        let events = parser
+            .process_line(r#"[18:04:26] LocalPlayer: ProcessAddItem(Orichalcum(99999), -1, True)"#);
         match first_provenance(&events) {
             ItemProvenance::Attributed {
-                source,
-                confidence,
-                ..
+                source, confidence, ..
             } => {
-                assert!(matches!(source, ActivitySource::Mining { .. }),
-                    "expected Mining attribution, got {:?}", source);
-                assert_eq!(confidence, AttributionConfidence::Probable,
-                    "tie-breaker outcome should be Probable, not Confident");
+                assert!(
+                    matches!(source, ActivitySource::Mining { .. }),
+                    "expected Mining attribution, got {:?}",
+                    source
+                );
+                assert_eq!(
+                    confidence,
+                    AttributionConfidence::Probable,
+                    "tie-breaker outcome should be Probable, not Confident"
+                );
             }
             other => panic!("Expected Attributed Mining, got {:?}", other),
         }
@@ -5943,8 +6031,11 @@ mod tests {
         );
         match first_provenance(&events) {
             ItemProvenance::Uncertain { candidates } => {
-                assert_eq!(candidates.len(), 2,
-                    "expected two candidates for non-mining overlap");
+                assert_eq!(
+                    candidates.len(),
+                    2,
+                    "expected two candidates for non-mining overlap"
+                );
             }
             other => panic!("Expected Uncertain, got {:?}", other),
         }
@@ -5956,9 +6047,8 @@ mod tests {
         // Mining provenance. Simulates survey-loot-into-existing-stack.
         let mut parser = PlayerEventParser::new();
         // Establish baseline for an item
-        parser.process_line(
-            r#"[17:00:00] LocalPlayer: ProcessAddItem(Rubyquartz(555), -1, False)"#,
-        );
+        parser
+            .process_line(r#"[17:00:00] LocalPlayer: ProcessAddItem(Rubyquartz(555), -1, False)"#);
         parser.process_line(
             r#"[17:00:01] LocalPlayer: ProcessUpdateItemCode(555, 131072, True)"#, // stack=3
         );
@@ -5968,8 +6058,8 @@ mod tests {
             r#"[17:05:00] LocalPlayer: ProcessDoDelayLoop(6, ChopLumber, "Mining...", 0, AbortIfAttacked, IsInteractorDelayLoop)"#,
         );
         // Stack grows from 3 to 5 (+2) — should be attributed to Mining
-        let events =
-            parser.process_line(r#"[17:05:05] LocalPlayer: ProcessUpdateItemCode(555, 262144, True)"#);
+        let events = parser
+            .process_line(r#"[17:05:05] LocalPlayer: ProcessUpdateItemCode(555, 262144, True)"#);
 
         match first_provenance(&events) {
             ItemProvenance::Attributed { source, .. } => {
@@ -5993,8 +6083,8 @@ mod tests {
             r#"[10:01:00] LocalPlayer: ProcessDoDelayLoop(5, UseTeleportationCircle, "Surveying", 5305, AbortIfAttacked)"#,
         );
         // Stack drops 5 → 4 (consumption)
-        let events =
-            parser.process_line(r#"[10:01:05] LocalPlayer: ProcessUpdateItemCode(42, 196608, True)"#);
+        let events = parser
+            .process_line(r#"[10:01:05] LocalPlayer: ProcessUpdateItemCode(42, 196608, True)"#);
 
         // Stack delta is -1 → should be NotApplicable
         assert_eq!(first_provenance(&events), ItemProvenance::NotApplicable);
@@ -6054,9 +6144,8 @@ mod tests {
             r#"[12:00:00] LocalPlayer: ProcessDoDelayLoop(6, ChopLumber, "Mining...", 0, AbortIfAttacked, IsInteractorDelayLoop)"#,
         );
         // Item drops way past the 6s + 2s slack deadline
-        let events = parser.process_line(
-            r#"[12:01:00] LocalPlayer: ProcessAddItem(LateGain(777), -1, True)"#,
-        );
+        let events = parser
+            .process_line(r#"[12:01:00] LocalPlayer: ProcessAddItem(LateGain(777), -1, True)"#);
         assert_eq!(first_provenance(&events), ItemProvenance::UnknownSource);
     }
 
@@ -6073,9 +6162,8 @@ mod tests {
         let mut parser = PlayerEventParser::new();
         parser.feed_chat_gain("Brain".to_string(), 5, "15:56:03");
 
-        parser.process_line(
-            r#"[15:56:03] LocalPlayer: ProcessAddItem(Brain(187042326), -1, True)"#,
-        );
+        parser
+            .process_line(r#"[15:56:03] LocalPlayer: ProcessAddItem(Brain(187042326), -1, True)"#);
 
         // Stack should now be seeded at 5. A subsequent UpdateItemCode going
         // from 5 to 6 should report delta=+1, not +5 (as it would with the
@@ -6084,14 +6172,23 @@ mod tests {
             // encoded 328790 → (328790 >> 16) + 1 = 6, typeId = 1110
             r#"[15:56:36] LocalPlayer: ProcessUpdateItemCode(187042326, 328790, True)"#,
         );
-        let change = events.iter().find_map(|ev| match ev {
-            PlayerEvent::ItemStackChanged { old_stack_size, new_stack_size, delta, .. } => {
-                Some((*old_stack_size, *new_stack_size, *delta))
-            }
-            _ => None,
-        }).expect("ItemStackChanged expected");
+        let change = events
+            .iter()
+            .find_map(|ev| match ev {
+                PlayerEvent::ItemStackChanged {
+                    old_stack_size,
+                    new_stack_size,
+                    delta,
+                    ..
+                } => Some((*old_stack_size, *new_stack_size, *delta)),
+                _ => None,
+            })
+            .expect("ItemStackChanged expected");
 
-        assert_eq!(change.0, 5, "prior stack should have been seeded to 5 from chat");
+        assert_eq!(
+            change.0, 5,
+            "prior stack should have been seeded to 5 from chat"
+        );
         assert_eq!(change.1, 6);
         assert_eq!(change.2, 1);
     }
@@ -6101,9 +6198,8 @@ mod tests {
         // AddItem with no matching chat gain in the buffer should still
         // seed to 1 (the prior behavior) — correct for single-item pickups.
         let mut parser = PlayerEventParser::new();
-        parser.process_line(
-            r#"[12:00:00] LocalPlayer: ProcessAddItem(Mushroom8(12345), -1, True)"#,
-        );
+        parser
+            .process_line(r#"[12:00:00] LocalPlayer: ProcessAddItem(Mushroom8(12345), -1, True)"#);
         assert_eq!(*parser.stack_sizes.get(&12345).unwrap(), 1);
     }
 
@@ -6114,9 +6210,7 @@ mod tests {
         parser.feed_chat_gain("Fluorite".to_string(), 3, "12:00:00");
 
         // AddItem 10 minutes later — outside the match window
-        parser.process_line(
-            r#"[12:10:00] LocalPlayer: ProcessAddItem(Fluorite(999), -1, True)"#,
-        );
+        parser.process_line(r#"[12:10:00] LocalPlayer: ProcessAddItem(Fluorite(999), -1, True)"#);
         assert_eq!(
             *parser.stack_sizes.get(&999).unwrap(),
             1,
@@ -6134,12 +6228,10 @@ mod tests {
         let mut parser = PlayerEventParser::new();
         parser.feed_chat_gain("Phlogiston7".to_string(), 750, "15:51:42");
 
-        parser.process_line(
-            r#"[15:51:42] LocalPlayer: ProcessAddItem(Phlogiston7(111), -1, True)"#,
-        );
-        parser.process_line(
-            r#"[15:51:42] LocalPlayer: ProcessAddItem(Phlogiston7(222), -1, True)"#,
-        );
+        parser
+            .process_line(r#"[15:51:42] LocalPlayer: ProcessAddItem(Phlogiston7(111), -1, True)"#);
+        parser
+            .process_line(r#"[15:51:42] LocalPlayer: ProcessAddItem(Phlogiston7(222), -1, True)"#);
 
         // First got the 750, second fell back
         assert_eq!(*parser.stack_sizes.get(&111).unwrap(), 750);
@@ -6155,12 +6247,10 @@ mod tests {
         parser.feed_chat_gain("Phlogiston7".to_string(), 750, "15:51:42");
         parser.feed_chat_gain("Phlogiston7".to_string(), 250, "15:51:42");
 
-        parser.process_line(
-            r#"[15:51:42] LocalPlayer: ProcessAddItem(Phlogiston7(111), -1, True)"#,
-        );
-        parser.process_line(
-            r#"[15:51:42] LocalPlayer: ProcessAddItem(Phlogiston7(222), -1, True)"#,
-        );
+        parser
+            .process_line(r#"[15:51:42] LocalPlayer: ProcessAddItem(Phlogiston7(111), -1, True)"#);
+        parser
+            .process_line(r#"[15:51:42] LocalPlayer: ProcessAddItem(Phlogiston7(222), -1, True)"#);
 
         // Both instances seeded from chat. Order is not guaranteed
         // (swap_remove reorders the buffer), so just check total seeded mass.
@@ -6176,10 +6266,12 @@ mod tests {
         let mut parser = PlayerEventParser::new();
         parser.feed_chat_gain("Fluorite".to_string(), 3, "15:43:36");
 
-        parser.process_line(
-            r#"[15:43:36] LocalPlayer: ProcessAddItem(BlueSpinel(999), -1, True)"#,
+        parser.process_line(r#"[15:43:36] LocalPlayer: ProcessAddItem(BlueSpinel(999), -1, True)"#);
+        assert_eq!(
+            *parser.stack_sizes.get(&999).unwrap(),
+            1,
+            "different item must not be seeded"
         );
-        assert_eq!(*parser.stack_sizes.get(&999).unwrap(), 1, "different item must not be seeded");
     }
 
     // ============================================================
@@ -6199,7 +6291,9 @@ mod tests {
         let cols = prov.to_columns();
         assert_eq!(cols.source_kind.as_deref(), Some("mining"));
         assert_eq!(cols.confidence.as_deref(), Some("confident"));
-        let details = cols.source_details.expect("mining should have details JSON");
+        let details = cols
+            .source_details
+            .expect("mining should have details JSON");
         assert!(details.contains("435138"));
         assert!(details.contains("MiningNodeFromSurvey9"));
     }
@@ -6241,7 +6335,9 @@ mod tests {
         let cols = prov.to_columns();
         assert_eq!(cols.source_kind.as_deref(), Some("uncertain"));
         assert_eq!(cols.confidence, None);
-        let details = cols.source_details.expect("uncertain must preserve candidates");
+        let details = cols
+            .source_details
+            .expect("uncertain must preserve candidates");
         // Must contain both candidate kinds so future re-classification can
         // inspect what was active at the time.
         assert!(details.contains("Mining"));
@@ -6272,7 +6368,10 @@ mod tests {
 
         // Round-trip parse to confirm the JSON is valid
         let parsed: serde_json::Value = serde_json::from_str(&details).unwrap();
-        assert_eq!(parsed.get("survey_use_id").and_then(|v| v.as_i64()), Some(42));
+        assert_eq!(
+            parsed.get("survey_use_id").and_then(|v| v.as_i64()),
+            Some(42)
+        );
     }
 
     #[test]
@@ -6288,7 +6387,10 @@ mod tests {
         let cols = prov.to_columns();
         let details = cols.source_details.expect("synthesized details expected");
         let parsed: serde_json::Value = serde_json::from_str(&details).unwrap();
-        assert_eq!(parsed.get("survey_use_id").and_then(|v| v.as_i64()), Some(7));
+        assert_eq!(
+            parsed.get("survey_use_id").and_then(|v| v.as_i64()),
+            Some(7)
+        );
     }
 
     #[test]
@@ -6377,18 +6479,20 @@ mod tests {
         parser.feed_chat_gain("Phlogiston7".to_string(), 750, "15:47:00");
 
         // Storage withdrawal — slot >= 0 branch, should not consume chat gain
-        parser.process_line(
-            r#"[15:46:07] LocalPlayer: ProcessAddItem(Phlogiston7(111), 60, True)"#,
-        );
+        parser
+            .process_line(r#"[15:46:07] LocalPlayer: ProcessAddItem(Phlogiston7(111), 60, True)"#);
         parser.process_line(
             r#"[15:46:07] LocalPlayer: ProcessRemoveFromStorageVault(302055, -1, 111, 1000)"#,
         );
-        assert_eq!(*parser.stack_sizes.get(&111).unwrap(), 1000, "seeded from vault qty");
+        assert_eq!(
+            *parser.stack_sizes.get(&111).unwrap(),
+            1000,
+            "seeded from vault qty"
+        );
 
         // Later, a real pickup: should claim the chat gain
-        parser.process_line(
-            r#"[15:47:00] LocalPlayer: ProcessAddItem(Phlogiston7(222), -1, True)"#,
-        );
+        parser
+            .process_line(r#"[15:47:00] LocalPlayer: ProcessAddItem(Phlogiston7(222), -1, True)"#);
         assert_eq!(*parser.stack_sizes.get(&222).unwrap(), 750);
     }
 
@@ -6411,8 +6515,8 @@ mod tests {
     #[test]
     fn test_parse_celestial_info_full_moon() {
         let mut parser = PlayerEventParser::new();
-        let events = parser
-            .process_line(r#"[12:00:00] LocalPlayer: ProcessSetCelestialInfo(FullMoon)"#);
+        let events =
+            parser.process_line(r#"[12:00:00] LocalPlayer: ProcessSetCelestialInfo(FullMoon)"#);
         assert_eq!(events.len(), 1);
         match &events[0] {
             PlayerEvent::MoonPhaseChanged { phase, .. } => {
@@ -6484,9 +6588,8 @@ mod tests {
     #[test]
     fn test_parse_complete_directed_goals_empty() {
         let mut parser = PlayerEventParser::new();
-        let events = parser.process_line(
-            r#"[15:16:24] LocalPlayer: ProcessCompleteDirectedGoals([])"#,
-        );
+        let events =
+            parser.process_line(r#"[15:16:24] LocalPlayer: ProcessCompleteDirectedGoals([])"#);
         assert_eq!(events.len(), 1);
         match &events[0] {
             PlayerEvent::DirectedGoalsLoaded { goal_ids, .. } => {
@@ -6499,9 +6602,8 @@ mod tests {
     #[test]
     fn test_parse_set_string_notepad() {
         let mut parser = PlayerEventParser::new();
-        let events = parser.process_line(
-            r#"[15:16:24] LocalPlayer: ProcessSetString(NOTEPAD, "My notes here")"#,
-        );
+        let events = parser
+            .process_line(r#"[15:16:24] LocalPlayer: ProcessSetString(NOTEPAD, "My notes here")"#);
         assert_eq!(events.len(), 1);
         match &events[0] {
             PlayerEvent::PlayerStringUpdated { key, value, .. } => {
@@ -6572,9 +6674,12 @@ mod tests {
         let poem = events
             .iter()
             .find_map(|e| match e {
-                PlayerEvent::PoemRecorded { author, title, content, .. } => {
-                    Some((author.clone(), title.clone(), content.clone()))
-                }
+                PlayerEvent::PoemRecorded {
+                    author,
+                    title,
+                    content,
+                    ..
+                } => Some((author.clone(), title.clone(), content.clone())),
                 _ => None,
             })
             .expect("should emit a PoemRecorded event");
@@ -6603,7 +6708,10 @@ mod tests {
                 _ => None,
             })
             .expect("should emit a PoemRecorded event");
-        assert!(content.contains(r#""Give us the flowers.""#), "got: {content}");
+        assert!(
+            content.contains(r#""Give us the flowers.""#),
+            "got: {content}"
+        );
         assert!(content.contains(r#""lol no.""#), "got: {content}");
     }
 
@@ -6616,9 +6724,12 @@ mod tests {
         let poem = events
             .iter()
             .find_map(|e| match e {
-                PlayerEvent::PoemRecorded { author, title, content, .. } => {
-                    Some((author.clone(), title.clone(), content.clone()))
-                }
+                PlayerEvent::PoemRecorded {
+                    author,
+                    title,
+                    content,
+                    ..
+                } => Some((author.clone(), title.clone(), content.clone())),
                 _ => None,
             })
             .expect("should emit a PoemRecorded event");

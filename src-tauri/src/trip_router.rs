@@ -6,8 +6,8 @@
 //! Multiple features feed stops into the solver: work order fulfillment,
 //! crafting project pickup lists, delivery quests, inventory consolidation.
 
-use serde::{Deserialize, Serialize};
 use crate::zone_graph::ZoneGraph;
+use serde::{Deserialize, Serialize};
 
 // ── Input types ─────────────────────────────────────────────────────────────
 
@@ -137,7 +137,11 @@ fn best_travel_method(
 
     // Check bind recalls — if a bind is in the destination zone, cost is 1.
     let to_resolved = graph.resolve_overworld(to).unwrap_or(to);
-    for bind in [&config.primary_bind, &config.secondary_bind].iter().copied().flatten() {
+    for bind in [&config.primary_bind, &config.secondary_bind]
+        .iter()
+        .copied()
+        .flatten()
+    {
         if let Some(bind_zone) = graph.resolve_overworld(bind) {
             if bind_zone == to_resolved && best.cost() > 1 {
                 best = TravelMethod::BindRecall {
@@ -148,7 +152,11 @@ fn best_travel_method(
     }
 
     // Check mushroom circles.
-    for circle in [&config.mushroom_circle_1, &config.mushroom_circle_2].iter().copied().flatten() {
+    for circle in [&config.mushroom_circle_1, &config.mushroom_circle_2]
+        .iter()
+        .copied()
+        .flatten()
+    {
         if let Some(circle_zone) = graph.resolve_overworld(circle) {
             if circle_zone == to_resolved && best.cost() > 1 {
                 best = TravelMethod::MushroomRecall {
@@ -187,8 +195,10 @@ fn best_travel_method(
 /// 1. Resolve all stop zones to overworld parents.
 /// 2. Group stops by resolved zone.
 /// 3. Greedy nearest-neighbor ordering using effective distance (considers recalls/TP).
+///    Unreachable groups fail the plan with an error (never silently dropped).
 /// 4. Within each zone, order stops by purpose (pickup → vendor → craft → turn-in → deposit).
 /// 5. Insert travel steps between zone transitions, picking the best method.
+///    Unreachable legs fail the plan before any hop is counted.
 pub fn plan_route(
     graph: &ZoneGraph,
     start_zone: &str,
@@ -242,17 +252,43 @@ pub fn plan_route(
             }
             let method = best_travel_method(graph, &current_zone, zone, travel_config);
             let cost = method.cost();
-            if cost < best_cost {
+            // Walk legs to unreachable zones report u32::MAX; those must not
+            // win the greedy pick (and must not silently satisfy the loop).
+            // Reachable legs always cost < MAX (walk hops, 1-hop recalls,
+            // 2-hop TP), so `<` plus the reachability gate below keeps prior
+            // behavior for all reachable graphs.
+            if cost < best_cost && cost != u32::MAX {
                 best_cost = cost;
                 best_idx = Some(i);
             }
         }
 
-        if let Some(idx) = best_idx {
-            remaining[idx] = false;
-            current_zone = zone_groups[idx].0.clone();
-            ordered_zones.push(zone_groups[idx].clone());
+        match best_idx {
+            Some(idx) => {
+                remaining[idx] = false;
+                current_zone = zone_groups[idx].0.clone();
+                ordered_zones.push(zone_groups[idx].clone());
+            }
+            // No remaining group is reachable from the current zone: stop so
+            // the length check below reports which zone stranded the route
+            // instead of silently returning a partial plan.
+            None => break,
         }
+    }
+
+    if ordered_zones.len() != zone_groups.len() {
+        let missing: Vec<&str> = zone_groups
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| remaining[*i])
+            .map(|(_, (zone, _))| zone.as_str())
+            .collect();
+        return Err(format!(
+            "No route to zone group(s): {} ({} of {} groups ordered)",
+            missing.join(", "),
+            ordered_zones.len(),
+            zone_groups.len()
+        ));
     }
 
     // Build the step list.
@@ -264,21 +300,40 @@ pub fn plan_route(
         // Insert travel steps if we need to move zones.
         if zone != current {
             let method = best_travel_method(graph, &current, &zone, travel_config);
-            total_hops += method.cost();
+            // Reachability gate first: an unreachable leg must fail the
+            // plan rather than add u32::MAX to the hop total and emit a
+            // truncated step list. Recall/TP methods are reachable by
+            // construction (they only win when their bind resolves); Walk
+            // legs prove reachability via shortest_path below.
+            let cost = method.cost();
+            if cost == u32::MAX {
+                return Err(format!(
+                    "No route from {} to {}",
+                    friendly_zone_name(&current),
+                    friendly_zone_name(&zone)
+                ));
+            }
 
             match method {
-                TravelMethod::Walk { .. } => {
-                    if let Some(path) = graph.shortest_path(&current, &zone) {
-                        for &hop_zone in &path[1..] {
-                            steps.push(RouteStep {
-                                zone: hop_zone.to_string(),
-                                action: RouteAction::Travel,
-                                details: format!("Walk to {}", friendly_zone_name(hop_zone)),
-                            });
-                        }
+                TravelMethod::Walk { hops } => {
+                    let Some(path) = graph.shortest_path(&current, &zone) else {
+                        return Err(format!(
+                            "No route from {} to {}",
+                            friendly_zone_name(&current),
+                            friendly_zone_name(&zone)
+                        ));
+                    };
+                    total_hops += hops;
+                    for &hop_zone in &path[1..] {
+                        steps.push(RouteStep {
+                            zone: hop_zone.to_string(),
+                            action: RouteAction::Travel,
+                            details: format!("Walk to {}", friendly_zone_name(hop_zone)),
+                        });
                     }
                 }
                 TravelMethod::BindRecall { ref bind_name } => {
+                    total_hops += cost;
                     steps.push(RouteStep {
                         zone: zone.clone(),
                         action: RouteAction::Travel,
@@ -290,6 +345,7 @@ pub fn plan_route(
                     });
                 }
                 TravelMethod::MushroomRecall { ref circle_name } => {
+                    total_hops += cost;
                     steps.push(RouteStep {
                         zone: zone.clone(),
                         action: RouteAction::Travel,
@@ -301,6 +357,7 @@ pub fn plan_route(
                     });
                 }
                 TravelMethod::TpMachine => {
+                    total_hops += cost;
                     steps.push(RouteStep {
                         zone: "AreaGazlukCaves".to_string(),
                         action: RouteAction::Travel,
@@ -309,10 +366,7 @@ pub fn plan_route(
                     steps.push(RouteStep {
                         zone: zone.clone(),
                         action: RouteAction::Travel,
-                        details: format!(
-                            "Teleport machine to {}",
-                            friendly_zone_name(&zone)
-                        ),
+                        details: format!("Teleport machine to {}", friendly_zone_name(&zone)),
                     });
                 }
             }
@@ -448,9 +502,12 @@ mod tests {
     #[test]
     fn test_single_stop_same_zone() {
         let g = make_graph();
-        let stops = vec![stop("AreaSerbule", StopPurpose::Pickup, "Get iron from vault")];
-        let route =
-            plan_route(&g, "AreaSerbule", &stops, &TravelConfig::default()).unwrap();
+        let stops = vec![stop(
+            "AreaSerbule",
+            StopPurpose::Pickup,
+            "Get iron from vault",
+        )];
+        let route = plan_route(&g, "AreaSerbule", &stops, &TravelConfig::default()).unwrap();
         assert_eq!(route.total_hops, 0);
         assert_eq!(route.steps.len(), 1);
         assert_eq!(route.steps[0].action, RouteAction::Pickup);
@@ -460,8 +517,7 @@ mod tests {
     fn test_single_stop_different_zone() {
         let g = make_graph();
         let stops = vec![stop("AreaEltibule", StopPurpose::Craft, "Craft sword")];
-        let route =
-            plan_route(&g, "AreaSerbule", &stops, &TravelConfig::default()).unwrap();
+        let route = plan_route(&g, "AreaSerbule", &stops, &TravelConfig::default()).unwrap();
         // Should have: Travel to Eltibule, then Craft
         assert_eq!(route.total_hops, 1);
         assert_eq!(route.steps.len(), 2);
@@ -478,8 +534,7 @@ mod tests {
             stop("AreaSerbule", StopPurpose::Craft, "Craft item"),
             stop("AreaSerbule", StopPurpose::Pickup, "Get materials"),
         ];
-        let route =
-            plan_route(&g, "AreaSerbule", &stops, &TravelConfig::default()).unwrap();
+        let route = plan_route(&g, "AreaSerbule", &stops, &TravelConfig::default()).unwrap();
         assert_eq!(route.total_hops, 0);
         assert_eq!(route.steps.len(), 3);
         // Should be ordered: Pickup, Craft, Deposit
@@ -496,8 +551,7 @@ mod tests {
             stop("AreaSerbule", StopPurpose::Pickup, "Get materials"),
             stop("AreaEltibule", StopPurpose::Craft, "Craft item"),
         ];
-        let route =
-            plan_route(&g, "AreaSerbule", &stops, &TravelConfig::default()).unwrap();
+        let route = plan_route(&g, "AreaSerbule", &stops, &TravelConfig::default()).unwrap();
 
         // Greedy from Serbule: closest is Serbule (0 hops), then Eltibule (1 hop),
         // then Rahu (Eltibule → Casino → Rahu = 2 hops).
@@ -523,8 +577,7 @@ mod tests {
             StopPurpose::Pickup,
             "Get stuff from Gazluk caves",
         )];
-        let route =
-            plan_route(&g, "AreaGazluk", &stops, &TravelConfig::default()).unwrap();
+        let route = plan_route(&g, "AreaGazluk", &stops, &TravelConfig::default()).unwrap();
         // Same overworld zone, no travel needed
         assert_eq!(route.total_hops, 0);
         assert_eq!(route.steps.len(), 1);
@@ -555,11 +608,14 @@ mod tests {
             stop("AreaRahu", StopPurpose::TurnIn, "Rahu stop"),
             stop("AreaEltibule", StopPurpose::Pickup, "Eltibule stop"),
         ];
-        let route =
-            plan_route(&g, "AreaSerbule", &stops, &TravelConfig::default()).unwrap();
+        let route = plan_route(&g, "AreaSerbule", &stops, &TravelConfig::default()).unwrap();
 
         // Find the first non-travel action — should be in Eltibule
-        let first_action = route.steps.iter().find(|s| s.action != RouteAction::Travel).unwrap();
+        let first_action = route
+            .steps
+            .iter()
+            .find(|s| s.action != RouteAction::Travel)
+            .unwrap();
         assert_eq!(first_action.zone, "AreaEltibule");
     }
 

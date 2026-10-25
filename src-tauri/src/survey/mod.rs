@@ -29,9 +29,7 @@ pub mod types;
 mod replay_tests;
 
 #[allow(unused_imports)] // re-exports surface the public types for callers
-pub use types::{
-    SessionStartTrigger, SurveySession, SurveyUse, SurveyUseKind, SurveyUseStatus,
-};
+pub use types::{SessionStartTrigger, SurveySession, SurveyUse, SurveyUseKind, SurveyUseStatus};
 
 /// Parse the zone name out of a survey map's internal name.
 ///
@@ -97,7 +95,10 @@ mod tests {
 
     #[test]
     fn returns_none_for_unrecognized_prefixes() {
-        assert_eq!(parse_zone_from_internal_name("CookingSurveyEltibule1"), None);
+        assert_eq!(
+            parse_zone_from_internal_name("CookingSurveyEltibule1"),
+            None
+        );
         assert_eq!(parse_zone_from_internal_name("GeologySurvey"), None);
         assert_eq!(parse_zone_from_internal_name(""), None);
     }

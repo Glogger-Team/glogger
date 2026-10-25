@@ -29,9 +29,7 @@
 
 /// The fighters known to exist in the arena at time of writing. The tracker
 /// seeds its roster from this list; additional names are learned at runtime.
-pub const SEED_ROSTER: &[&str] = &[
-    "Corrrak", "Dura", "Gloz", "Leo", "Otis", "Ushug", "Vizlark",
-];
+pub const SEED_ROSTER: &[&str] = &["Corrrak", "Dura", "Gloz", "Leo", "Otis", "Ushug", "Vizlark"];
 
 /// Phrases that mark a *win* for the fighter named in the same line.
 const WIN_MARKERS: &[&str] = &[" wins!", "is Undefeated!", "victory for"];
@@ -121,12 +119,20 @@ impl ArenaTracker {
             return None;
         };
         // Never resolve a degenerate pair (defensive; intros are distinct).
+        // Clear it here so a stale same-name pair can't linger and match a
+        // later line's verb.
         if a.eq_ignore_ascii_case(&b) {
+            self.pending_a = None;
+            self.pending_b = None;
             return None;
         }
 
-        let has_win = WIN_MARKERS.iter().any(|m| text.contains(m));
-        let has_loss = LOSS_MARKERS.iter().any(|m| text.contains(m));
+        // Lowercase once: the win/loss verb markers are matched
+        // case-insensitively (narration capitalizes mid-sentence, e.g.
+        // "Leo Wins!" vs "wins!").
+        let line_lower = text.to_lowercase();
+        let has_win = WIN_MARKERS.iter().any(|m| line_lower.contains(&m.to_lowercase()));
+        let has_loss = LOSS_MARKERS.iter().any(|m| line_lower.contains(&m.to_lowercase()));
         let names_a = contains_word(text, &a);
         let names_b = contains_word(text, &b);
 
@@ -142,13 +148,12 @@ impl ArenaTracker {
         } else if has_loss && !has_win {
             match (names_a, names_b) {
                 (true, false) => b.clone(), // a lost → b won
-                (false, true) => a.clone(), // b lost → a won
+                (false, true) => a.clone(),  // b lost → a won
                 _ => return None,
             }
         } else {
             return None;
         };
-
         self.pending_a = None;
         self.pending_b = None;
         Some(ArenaMatch {
@@ -176,8 +181,7 @@ impl ArenaTracker {
             if let Some(idx) = text.find(marker) {
                 let before = &text[..idx];
                 if let Some(tok) = before.split_whitespace().last() {
-                    let cleaned: String =
-                        tok.chars().filter(|c| c.is_ascii_alphabetic()).collect();
+                    let cleaned: String = tok.chars().filter(|c| c.is_ascii_alphabetic()).collect();
                     if cleaned.len() >= 3 {
                         let canon = titlecase(&cleaned);
                         if !self.roster.iter().any(|n| n.eq_ignore_ascii_case(&canon)) {
@@ -395,7 +399,8 @@ fn parse_confirm_bet(line: &str, base_date: Option<chrono::NaiveDate>) -> Option
         return None;
     }
 
-    let placed_at = to_utc_datetime_with_base(parse_timestamp(line).as_deref().unwrap_or(""), base_date);
+    let placed_at =
+        to_utc_datetime_with_base(parse_timestamp(line).as_deref().unwrap_or(""), base_date);
 
     Some(PendingBet {
         placed_at,
@@ -408,7 +413,9 @@ fn parse_confirm_bet(line: &str, base_date: Option<chrono::NaiveDate>) -> Option
 
 /// Parse the picked fighter from a "Success! You have placed your bet for X." line.
 fn parse_placed_pick(line: &str) -> Option<String> {
-    let after = line.split("Success! You have placed your bet for ").nth(1)?;
+    let after = line
+        .split("Success! You have placed your bet for ")
+        .nth(1)?;
     let pick = after.split('.').next()?.trim().to_string();
     if pick.is_empty() {
         None
@@ -501,8 +508,18 @@ mod tests {
     #[test]
     fn midfight_taunt_does_not_resolve() {
         let mut t = ArenaTracker::new();
-        t.observe(CH, KZ, "Introducing our two competitors! On the far side is Corrrak!", TS);
-        t.observe(CH, KZ, "And on the side nearest me is Vizlark the Violent!", TS);
+        t.observe(
+            CH,
+            KZ,
+            "Introducing our two competitors! On the far side is Corrrak!",
+            TS,
+        );
+        t.observe(
+            CH,
+            KZ,
+            "And on the side nearest me is Vizlark the Violent!",
+            TS,
+        );
         // Neither a win nor a loss marker → no resolution.
         assert!(t
             .observe(CH, KZ, "Neither fighter is defeated yet!", TS)
@@ -521,9 +538,7 @@ mod tests {
         assert!(t
             .observe(Some("Global"), Some("SomePlayer"), "Otis wins!", TS)
             .is_none());
-        assert!(t
-            .observe(CH, Some("OtherNpc"), "Otis wins!", TS)
-            .is_none());
+        assert!(t.observe(CH, Some("OtherNpc"), "Otis wins!", TS).is_none());
     }
 
     #[test]
@@ -563,7 +578,8 @@ mod tests {
     // ── Personal betting tracker ──────────────────────────────────────────
     const CONFIRM: &str = "[16:22:03] LocalPlayer: ProcessTalkScreen(5712, \"Confirm Bet\", \"You are betting <em>7500</em> Councils that Otis defeats Leo in the next arena match. If your fighter is victorious, you will receive <em>14250</em> Councils. If your fighter loses, you will receive <em>0</em> Councils.\", \"\", [201,0,], System.String[], 1, Generic)";
     const SUCCESS: &str = "[16:22:04] LocalPlayer: ProcessTalkScreen(5712, \"\", \"Success! You have placed your bet for Otis. Now please find a spot to watch!\\n\\nThe fight begins in <em>4 minutes 45 seconds</em>.\", \"\", [-1,], System.String[], 1, Generic)";
-    const PAYOUT: &str = "[16:30:01] LocalPlayer: ProcessScreenText(CombatInfo, \"You received 14,250 Councils.\")";
+    const PAYOUT: &str =
+        "[16:30:01] LocalPlayer: ProcessScreenText(CombatInfo, \"You received 14,250 Councils.\")";
 
     #[test]
     fn bet_parsing_extracts_all_fields() {
@@ -613,7 +629,7 @@ mod tests {
     fn cancelled_bet_without_success_is_discarded() {
         let mut t = ArenaBetTracker::new();
         t.observe_line(CONFIRM, None); // confirm shown but never placed
-        // Payout for that amount must NOT count — no active bet.
+                                       // Payout for that amount must NOT count — no active bet.
         assert!(t.observe_line(PAYOUT, None).is_none());
     }
 

@@ -118,7 +118,11 @@ impl LoadoutFilter {
     }
 }
 
-fn drop_binds(enemy_name: &str, zf: &ZoneFilter, lf: &LoadoutFilter) -> Vec<rusqlite::types::Value> {
+fn drop_binds(
+    enemy_name: &str,
+    zf: &ZoneFilter,
+    lf: &LoadoutFilter,
+) -> Vec<rusqlite::types::Value> {
     let mut binds = vec![rusqlite::types::Value::Text(enemy_name.to_string())];
     if let Some(b) = zf.bind() {
         binds.push(b);
@@ -129,29 +133,48 @@ fn drop_binds(enemy_name: &str, zf: &ZoneFilter, lf: &LoadoutFilter) -> Vec<rusq
     binds
 }
 
-fn mine_total_kills<C: DbRead + ?Sized>(conn: &C, enemy_name: &str, zf: &ZoneFilter, lf: &LoadoutFilter) -> i64 {
+fn mine_total_kills<C: DbRead + ?Sized>(
+    conn: &C,
+    enemy_name: &str,
+    zf: &ZoneFilter,
+    lf: &LoadoutFilter,
+) -> Result<i64, String> {
     let sql = format!(
         "SELECT COUNT(*) FROM enemy_kills WHERE enemy_name = ?{}{}",
         zf.sql("zone"),
         lf.sql("combat_skills")
     );
     let binds = drop_binds(enemy_name, zf, lf);
-    conn.query_row(&sql, rusqlite::params_from_iter(binds.iter()), |row| row.get(0))
-        .unwrap_or(0)
+    conn.query_row(&sql, rusqlite::params_from_iter(binds.iter()), |row| {
+        row.get(0)
+    })
+    .map_err(|e| format!("Kill count query failed: {e}"))
 }
 
-fn imported_total_kills<C: DbRead + ?Sized>(conn: &C, enemy_name: &str, zf: &ZoneFilter, lf: &LoadoutFilter) -> i64 {
+fn imported_total_kills<C: DbRead + ?Sized>(
+    conn: &C,
+    enemy_name: &str,
+    zf: &ZoneFilter,
+    lf: &LoadoutFilter,
+) -> Result<i64, String> {
     let sql = format!(
         "SELECT COALESCE(SUM(total_kills), 0) FROM imported_enemy_kills_agg WHERE enemy_name = ?{}{}",
         zf.sql("zone"),
         lf.sql("combat_skills")
     );
     let binds = drop_binds(enemy_name, zf, lf);
-    conn.query_row(&sql, rusqlite::params_from_iter(binds.iter()), |row| row.get(0))
-        .unwrap_or(0)
+    conn.query_row(&sql, rusqlite::params_from_iter(binds.iter()), |row| {
+        row.get(0)
+    })
+    .map_err(|e| format!("Imported kill count query failed: {e}"))
 }
 
-fn mine_loot_rows<C: DbRead + ?Sized>(conn: &C, enemy_name: &str, zf: &ZoneFilter, lf: &LoadoutFilter) -> Vec<(String, i64, i64)> {
+fn mine_loot_rows<C: DbRead + ?Sized>(
+    conn: &C,
+    enemy_name: &str,
+    zf: &ZoneFilter,
+    lf: &LoadoutFilter,
+) -> Result<Vec<(String, i64, i64)>, String> {
     let sql = format!(
         "SELECT l.item_name, SUM(l.quantity), COUNT(DISTINCT l.kill_id)
          FROM enemy_kill_loot l
@@ -162,18 +185,31 @@ fn mine_loot_rows<C: DbRead + ?Sized>(conn: &C, enemy_name: &str, zf: &ZoneFilte
         lf.sql("k.combat_skills")
     );
     let binds = drop_binds(enemy_name, zf, lf);
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    stmt.query_map(rusqlite::params_from_iter(binds.iter()), |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))
-    })
-    .map(|rows| rows.filter_map(|r| r.ok()).collect())
-    .unwrap_or_default()
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("Loot query failed: {e}"))?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(binds.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|e| format!("Loot query failed: {e}"))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| format!("Loot row error: {e}"))?);
+    }
+    Ok(out)
 }
 
-fn imported_loot_rows<C: DbRead + ?Sized>(conn: &C, enemy_name: &str, zf: &ZoneFilter, lf: &LoadoutFilter) -> Vec<(String, i64, i64)> {
+fn imported_loot_rows<C: DbRead + ?Sized>(
+    conn: &C,
+    enemy_name: &str,
+    zf: &ZoneFilter,
+    lf: &LoadoutFilter,
+) -> Result<Vec<(String, i64, i64)>, String> {
     let sql = format!(
         "SELECT item_name, SUM(total_quantity), SUM(times_dropped)
          FROM imported_enemy_kill_loot_agg
@@ -183,25 +219,39 @@ fn imported_loot_rows<C: DbRead + ?Sized>(conn: &C, enemy_name: &str, zf: &ZoneF
         lf.sql("combat_skills")
     );
     let binds = drop_binds(enemy_name, zf, lf);
-    let mut stmt = match conn.prepare(&sql) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
-    stmt.query_map(rusqlite::params_from_iter(binds.iter()), |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))
-    })
-    .map(|rows| rows.filter_map(|r| r.ok()).collect())
-    .unwrap_or_default()
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("Imported loot query failed: {e}"))?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(binds.iter()), |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|e| format!("Imported loot query failed: {e}"))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| format!("Imported loot row error: {e}"))?);
+    }
+    Ok(out)
 }
 
-fn combine_loot_rows(mine: Vec<(String, i64, i64)>, imported: Vec<(String, i64, i64)>) -> Vec<(String, i64, i64)> {
+fn combine_loot_rows(
+    mine: Vec<(String, i64, i64)>,
+    imported: Vec<(String, i64, i64)>,
+) -> Vec<(String, i64, i64)> {
     let mut combined: HashMap<String, (i64, i64)> = HashMap::new();
     for (item, qty, dropped) in mine.into_iter().chain(imported.into_iter()) {
         let entry = combined.entry(item).or_insert((0, 0));
         entry.0 += qty;
         entry.1 += dropped;
     }
-    combined.into_iter().map(|(item, (qty, dropped))| (item, qty, dropped)).collect()
+    combined
+        .into_iter()
+        .map(|(item, (qty, dropped))| (item, qty, dropped))
+        .collect()
 }
 
 /// All-time kill/loot stats for a monster. `zone` scopes the stats by area:
@@ -222,9 +272,12 @@ pub fn get_enemy_kill_stats(
     let lf = LoadoutFilter::from_opt(combat_skills.as_deref());
 
     let total_kills = match scope.as_str() {
-        "mine" => mine_total_kills(&conn, &enemy_name, &zf, &lf),
-        "imported" => imported_total_kills(&conn, &enemy_name, &zf, &lf),
-        _ => mine_total_kills(&conn, &enemy_name, &zf, &lf) + imported_total_kills(&conn, &enemy_name, &zf, &lf),
+        "mine" => mine_total_kills(&conn, &enemy_name, &zf, &lf)?,
+        "imported" => imported_total_kills(&conn, &enemy_name, &zf, &lf)?,
+        _ => {
+            mine_total_kills(&conn, &enemy_name, &zf, &lf)?
+                + imported_total_kills(&conn, &enemy_name, &zf, &lf)?
+        }
     };
 
     if total_kills == 0 {
@@ -236,11 +289,11 @@ pub fn get_enemy_kill_stats(
     }
 
     let loot_rows = match scope.as_str() {
-        "mine" => mine_loot_rows(&conn, &enemy_name, &zf, &lf),
-        "imported" => imported_loot_rows(&conn, &enemy_name, &zf, &lf),
+        "mine" => mine_loot_rows(&conn, &enemy_name, &zf, &lf)?,
+        "imported" => imported_loot_rows(&conn, &enemy_name, &zf, &lf)?,
         _ => combine_loot_rows(
-            mine_loot_rows(&conn, &enemy_name, &zf, &lf),
-            imported_loot_rows(&conn, &enemy_name, &zf, &lf),
+            mine_loot_rows(&conn, &enemy_name, &zf, &lf)?,
+            imported_loot_rows(&conn, &enemy_name, &zf, &lf)?,
         ),
     };
 
@@ -253,7 +306,11 @@ pub fn get_enemy_kill_stats(
             drop_rate: times_dropped as f64 / total_kills as f64,
         })
         .collect();
-    loot.sort_by(|a, b| b.times_dropped.cmp(&a.times_dropped).then(b.total_quantity.cmp(&a.total_quantity)));
+    loot.sort_by(|a, b| {
+        b.times_dropped
+            .cmp(&a.times_dropped)
+            .then(b.total_quantity.cmp(&a.total_quantity))
+    });
 
     Ok(EnemyKillStats {
         enemy_name,
@@ -331,7 +388,8 @@ pub fn get_item_drop_sources(
             })
             .map_err(|e| format!("Drop source query failed: {e}"))?;
         for row in rows {
-            let (enemy_name, zone, times_dropped, qty) = row.map_err(|e| format!("Drop source row error: {e}"))?;
+            let (enemy_name, zone, times_dropped, qty) =
+                row.map_err(|e| format!("Drop source row error: {e}"))?;
             let entry = per_source.entry((enemy_name, zone)).or_insert((0, 0));
             entry.0 += times_dropped;
             entry.1 += qty;
@@ -361,7 +419,8 @@ pub fn get_item_drop_sources(
             })
             .map_err(|e| format!("Imported drop source query failed: {e}"))?;
         for row in rows {
-            let (enemy_name, zone, times_dropped, qty) = row.map_err(|e| format!("Imported drop source row error: {e}"))?;
+            let (enemy_name, zone, times_dropped, qty) =
+                row.map_err(|e| format!("Imported drop source row error: {e}"))?;
             let entry = per_source.entry((enemy_name, zone)).or_insert((0, 0));
             entry.0 += times_dropped;
             entry.1 += qty;
@@ -372,9 +431,12 @@ pub fn get_item_drop_sources(
     for ((enemy_name, zone), (times_dropped, total_quantity)) in per_source {
         let zf = ZoneFilter::from_stored(zone.clone());
         let total_kills = match scope.as_str() {
-            "mine" => mine_total_kills(&conn, &enemy_name, &zf, &lf),
-            "imported" => imported_total_kills(&conn, &enemy_name, &zf, &lf),
-            _ => mine_total_kills(&conn, &enemy_name, &zf, &lf) + imported_total_kills(&conn, &enemy_name, &zf, &lf),
+            "mine" => mine_total_kills(&conn, &enemy_name, &zf, &lf)?,
+            "imported" => imported_total_kills(&conn, &enemy_name, &zf, &lf)?,
+            _ => {
+                mine_total_kills(&conn, &enemy_name, &zf, &lf)?
+                    + imported_total_kills(&conn, &enemy_name, &zf, &lf)?
+            }
         };
         sources.push(ItemDropSource {
             enemy_name,
@@ -389,7 +451,11 @@ pub fn get_item_drop_sources(
             },
         });
     }
-    sources.sort_by(|a, b| b.times_dropped.cmp(&a.times_dropped).then(b.total_quantity.cmp(&a.total_quantity)));
+    sources.sort_by(|a, b| {
+        b.times_dropped
+            .cmp(&a.times_dropped)
+            .then(b.total_quantity.cmp(&a.total_quantity))
+    });
 
     Ok(sources)
 }
@@ -451,10 +517,16 @@ pub fn search_database_enemies(
             "SELECT enemy_name, zone, COUNT(*) FROM enemy_kills{} GROUP BY enemy_name, zone",
             lf.where_clause("combat_skills")
         );
-        let mut kill_stmt = conn.prepare(&sql).map_err(|e| format!("Failed to prepare query: {e}"))?;
+        let mut kill_stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare query: {e}"))?;
         let rows = kill_stmt
             .query_map(rusqlite::params_from_iter(lf_binds().iter()), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, i64>(2)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
             })
             .map_err(|e| format!("Query failed: {e}"))?;
         for row in rows {
@@ -467,15 +539,24 @@ pub fn search_database_enemies(
              FROM enemy_kill_loot l JOIN enemy_kills k ON l.kill_id = k.id{}",
             lf.where_clause("k.combat_skills")
         );
-        let mut loot_stmt = conn.prepare(&sql).map_err(|e| format!("Failed to prepare loot query: {e}"))?;
+        let mut loot_stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare loot query: {e}"))?;
         let rows = loot_stmt
             .query_map(rusqlite::params_from_iter(lf_binds().iter()), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })
             .map_err(|e| format!("Loot query failed: {e}"))?;
         for row in rows {
             let (enemy_name, zone, item_name) = row.map_err(|e| format!("Row error: {e}"))?;
-            agg.entry((enemy_name, zone)).or_default().1.insert(item_name);
+            agg.entry((enemy_name, zone))
+                .or_default()
+                .1
+                .insert(item_name);
         }
     }
 
@@ -484,10 +565,16 @@ pub fn search_database_enemies(
             "SELECT enemy_name, zone, COALESCE(SUM(total_kills), 0) FROM imported_enemy_kills_agg{} GROUP BY enemy_name, zone",
             lf.where_clause("combat_skills")
         );
-        let mut kill_stmt = conn.prepare(&sql).map_err(|e| format!("Failed to prepare imported query: {e}"))?;
+        let mut kill_stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare imported query: {e}"))?;
         let rows = kill_stmt
             .query_map(rusqlite::params_from_iter(lf_binds().iter()), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, i64>(2)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
             })
             .map_err(|e| format!("Imported query failed: {e}"))?;
         for row in rows {
@@ -499,33 +586,50 @@ pub fn search_database_enemies(
             "SELECT DISTINCT enemy_name, zone, item_name FROM imported_enemy_kill_loot_agg{}",
             lf.where_clause("combat_skills")
         );
-        let mut loot_stmt = conn.prepare(&sql).map_err(|e| format!("Failed to prepare imported loot query: {e}"))?;
+        let mut loot_stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare imported loot query: {e}"))?;
         let rows = loot_stmt
             .query_map(rusqlite::params_from_iter(lf_binds().iter()), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })
             .map_err(|e| format!("Imported loot query failed: {e}"))?;
         for row in rows {
             let (enemy_name, zone, item_name) = row.map_err(|e| format!("Row error: {e}"))?;
-            agg.entry((enemy_name, zone)).or_default().1.insert(item_name);
+            agg.entry((enemy_name, zone))
+                .or_default()
+                .1
+                .insert(item_name);
         }
     }
 
     let needle = query.trim().to_lowercase();
     let mut results: Vec<EnemySearchResult> = agg
         .into_iter()
-        .filter(|((enemy_name, _), _)| needle.is_empty() || enemy_name.to_lowercase().contains(&needle))
-        .map(|((enemy_name, zone), (total_kills, loot_items))| EnemySearchResult {
-            enemy_name,
-            zone,
-            total_kills,
-            distinct_loot_items: loot_items.len() as i64,
+        .filter(|((enemy_name, _), _)| {
+            needle.is_empty() || enemy_name.to_lowercase().contains(&needle)
         })
+        .map(
+            |((enemy_name, zone), (total_kills, loot_items))| EnemySearchResult {
+                enemy_name,
+                zone,
+                total_kills,
+                distinct_loot_items: loot_items.len() as i64,
+            },
+        )
         .collect();
     results.sort_by(|a, b| {
         b.total_kills
             .cmp(&a.total_kills)
-            .then_with(|| a.enemy_name.to_lowercase().cmp(&b.enemy_name.to_lowercase()))
+            .then_with(|| {
+                a.enemy_name
+                    .to_lowercase()
+                    .cmp(&b.enemy_name.to_lowercase())
+            })
             .then_with(|| a.zone.cmp(&b.zone))
     });
     if let Some(lim) = limit {
@@ -564,7 +668,9 @@ pub fn search_database_items(
              GROUP BY l.item_name, k.enemy_name, k.zone",
             lf.where_clause("k.combat_skills")
         );
-        let mut stmt = conn.prepare(&sql).map_err(|e| format!("Failed to prepare query: {e}"))?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare query: {e}"))?;
         let rows = stmt
             .query_map(rusqlite::params_from_iter(lf_binds().iter()), |row| {
                 Ok((
@@ -590,7 +696,9 @@ pub fn search_database_items(
              GROUP BY item_name, enemy_name, zone",
             lf.where_clause("combat_skills")
         );
-        let mut stmt = conn.prepare(&sql).map_err(|e| format!("Failed to prepare imported query: {e}"))?;
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| format!("Failed to prepare imported query: {e}"))?;
         let rows = stmt
             .query_map(rusqlite::params_from_iter(lf_binds().iter()), |row| {
                 Ok((
@@ -741,7 +849,9 @@ fn collect_export_enemies<C: DbRead + ?Sized>(conn: &C) -> Result<Vec<ExportedEn
         .prepare("SELECT DISTINCT enemy_name, zone FROM enemy_kills ORDER BY enemy_name, zone")
         .map_err(|e| format!("Failed to prepare query: {e}"))?;
     let pairs: Vec<(String, Option<String>)> = pair_stmt
-        .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
         .map_err(|e| format!("Query failed: {e}"))?
         .filter_map(|r| r.ok())
         .collect();
@@ -750,8 +860,8 @@ fn collect_export_enemies<C: DbRead + ?Sized>(conn: &C) -> Result<Vec<ExportedEn
     let mut enemies = Vec::with_capacity(pairs.len());
     for (enemy_name, zone) in pairs {
         let zf = ZoneFilter::from_stored(zone.clone());
-        let total_kills = mine_total_kills(conn, &enemy_name, &zf, &lf);
-        let mut loot = mine_loot_rows(conn, &enemy_name, &zf, &lf);
+        let total_kills = mine_total_kills(conn, &enemy_name, &zf, &lf)?;
+        let mut loot = mine_loot_rows(conn, &enemy_name, &zf, &lf)?;
         // Most-dropped first for readability.
         loot.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
         enemies.push(ExportedEnemy {
@@ -877,7 +987,11 @@ fn write_sqlite_export(path: &str, enemies: &[ExportedEnemy]) -> Result<(), Stri
             .map_err(|e| format!("Failed to prepare loot insert: {e}"))?;
         for enemy in enemies {
             enemy_stmt
-                .execute(rusqlite::params![enemy.enemy_name, enemy.zone, enemy.total_kills])
+                .execute(rusqlite::params![
+                    enemy.enemy_name,
+                    enemy.zone,
+                    enemy.total_kills
+                ])
                 .map_err(|e| format!("Failed to write enemy '{}': {e}", enemy.enemy_name))?;
             for loot in &enemy.loot {
                 loot_stmt
@@ -971,7 +1085,12 @@ fn parse_csv_drop_data(content: &str) -> Result<Vec<ExportedEnemy>, String> {
         "times_dropped",
         "drops",
     ]);
-    let has_corpse_id = has(&["enemy_id", "enemy_entity_id", "corpse_id", "corpse_entity_id"]);
+    let has_corpse_id = has(&[
+        "enemy_id",
+        "enemy_entity_id",
+        "corpse_id",
+        "corpse_entity_id",
+    ]);
 
     if has_corpse_id && !has_aggregate_cols {
         parse_csv_raw_events(content)
@@ -1003,20 +1122,39 @@ fn parse_csv_raw_events(content: &str) -> Result<Vec<ExportedEnemy>, String> {
         .clone();
     let norm = |s: &str| s.trim().to_lowercase().replace(' ', "_");
     let find = |aliases: &[&str]| -> Option<usize> {
-        headers.iter().position(|h| aliases.contains(&norm(h).as_str()))
+        headers
+            .iter()
+            .position(|h| aliases.contains(&norm(h).as_str()))
     };
 
     let enemy_idx = find(&["enemy_name", "enemy", "monster", "monster_name"]).ok_or_else(|| {
         "CSV is missing an enemy column (expected a header like 'enemy_name').".to_string()
     })?;
-    let corpse_idx = find(&["enemy_id", "enemy_entity_id", "corpse_id", "corpse_entity_id"])
-        .ok_or_else(|| "CSV is missing a per-corpse id column (expected 'enemy_id').".to_string())?;
+    let corpse_idx = find(&[
+        "enemy_id",
+        "enemy_entity_id",
+        "corpse_id",
+        "corpse_entity_id",
+    ])
+    .ok_or_else(|| "CSV is missing a per-corpse id column (expected 'enemy_id').".to_string())?;
     // Prefer a display-name item column (first header match wins; e.g. "Item_Name"
     // comes before an internal "item_name" column).
     let item_idx = find(&["item_name", "item", "item_display_name"]);
     let qty_idx = find(&["item_amount", "amount", "total_quantity", "quantity", "qty"]);
-    let event_idx = find(&["log_event_description", "event", "event_description", "event_type"]);
-    let zone_idx = find(&["zone", "area", "area_key", "zone_id", "zone_name", "zone_key"]);
+    let event_idx = find(&[
+        "log_event_description",
+        "event",
+        "event_description",
+        "event_type",
+    ]);
+    let zone_idx = find(&[
+        "zone",
+        "area",
+        "area_key",
+        "zone_id",
+        "zone_name",
+        "zone_key",
+    ]);
 
     let parse_qty = |s: &str| -> i64 {
         let t = s.trim().replace(',', "");
@@ -1085,7 +1223,9 @@ fn parse_csv_raw_events(content: &str) -> Result<Vec<ExportedEnemy>, String> {
         if let Some(ix) = item_idx {
             let item = rec.get(ix).unwrap_or("").trim().to_string();
             if !item.is_empty() {
-                let qty = qty_idx.map(|q| parse_qty(rec.get(q).unwrap_or(""))).unwrap_or(1);
+                let qty = qty_idx
+                    .map(|q| parse_qty(rec.get(q).unwrap_or("")))
+                    .unwrap_or(1);
                 if !acc.items.contains_key(&item) {
                     acc.item_order.push(item.clone());
                 }
@@ -1148,7 +1288,9 @@ fn parse_csv_aggregated(content: &str) -> Result<Vec<ExportedEnemy>, String> {
         .clone();
     let norm = |s: &str| s.trim().to_lowercase().replace(' ', "_");
     let find = |aliases: &[&str]| -> Option<usize> {
-        headers.iter().position(|h| aliases.contains(&norm(h).as_str()))
+        headers
+            .iter()
+            .position(|h| aliases.contains(&norm(h).as_str()))
     };
 
     let enemy_idx = find(&["enemy_name", "enemy", "monster", "monster_name"]).ok_or_else(|| {
@@ -1158,14 +1300,23 @@ fn parse_csv_aggregated(content: &str) -> Result<Vec<ExportedEnemy>, String> {
     let item_idx = find(&["item_name", "item"]);
     let qty_idx = find(&["total_quantity", "quantity", "qty"]);
     let drops_idx = find(&["times_dropped", "drops", "times"]);
-    let zone_idx = find(&["zone", "area", "area_key", "zone_id", "zone_name", "zone_key"]);
+    let zone_idx = find(&[
+        "zone",
+        "area",
+        "area_key",
+        "zone_id",
+        "zone_name",
+        "zone_key",
+    ]);
 
     let parse_int = |s: &str| -> Option<i64> {
         let t = s.trim().replace(',', "");
         if t.is_empty() {
             return None;
         }
-        t.parse::<i64>().ok().or_else(|| t.parse::<f64>().ok().map(|f| f as i64))
+        t.parse::<i64>()
+            .ok()
+            .or_else(|| t.parse::<f64>().ok().map(|f| f as i64))
     };
 
     use std::collections::HashMap;
@@ -1200,8 +1351,14 @@ fn parse_csv_aggregated(content: &str) -> Result<Vec<ExportedEnemy>, String> {
         if let Some(ix) = item_idx {
             let item = rec.get(ix).unwrap_or("").trim().to_string();
             if !item.is_empty() {
-                let qty = qty_idx.and_then(|q| rec.get(q)).and_then(parse_int).unwrap_or(0);
-                let drops = drops_idx.and_then(|d| rec.get(d)).and_then(parse_int).unwrap_or(0);
+                let qty = qty_idx
+                    .and_then(|q| rec.get(q))
+                    .and_then(parse_int)
+                    .unwrap_or(0);
+                let drops = drops_idx
+                    .and_then(|d| rec.get(d))
+                    .and_then(parse_int)
+                    .unwrap_or(0);
                 if !entry.1.contains_key(&item) {
                     entry.2.push(item.clone());
                 }
@@ -1323,8 +1480,15 @@ fn parse_sqlite_drop_data(path: &str) -> Result<Vec<ExportedEnemy>, String> {
     let mut enemies = Vec::new();
     for r in rows {
         let (enemy_name, zone, total_kills) = r.map_err(|e| format!("Enemy row error: {e}"))?;
-        let loot = loot_map.remove(&(enemy_name.clone(), zone.clone())).unwrap_or_default();
-        enemies.push(ExportedEnemy { enemy_name, zone, total_kills, loot });
+        let loot = loot_map
+            .remove(&(enemy_name.clone(), zone.clone()))
+            .unwrap_or_default();
+        enemies.push(ExportedEnemy {
+            enemy_name,
+            zone,
+            total_kills,
+            loot,
+        });
     }
     Ok(enemies)
 }
@@ -1338,7 +1502,10 @@ fn parse_sqlite_drop_data(path: &str) -> Result<Vec<ExportedEnemy>, String> {
 /// instead of double-counting. Never touches the player's own
 /// `enemy_kills`/`enemy_kill_loot` ground truth.
 #[tauri::command]
-pub fn import_kill_loot_database(db: State<'_, DbPool>, path: String) -> Result<ImportSummary, String> {
+pub fn import_kill_loot_database(
+    db: State<'_, DbPool>,
+    path: String,
+) -> Result<ImportSummary, String> {
     let enemies = if file_is_sqlite(&path) {
         parse_sqlite_drop_data(&path)?
     } else {
@@ -1355,7 +1522,9 @@ pub fn import_kill_loot_database(db: State<'_, DbPool>, path: String) -> Result<
         .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
-    let tx = conn.transaction().map_err(|e| format!("Failed to start transaction: {e}"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Failed to start transaction: {e}"))?;
 
     // Idempotent re-import: clear any prior rows for this exact source label.
     tx.execute(
@@ -1403,7 +1572,8 @@ pub fn import_kill_loot_database(db: State<'_, DbPool>, path: String) -> Result<
         }
     }
 
-    tx.commit().map_err(|e| format!("Failed to commit import: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("Failed to commit import: {e}"))?;
 
     Ok(ImportSummary {
         source_label,
@@ -1627,8 +1797,11 @@ mod tests {
         .unwrap();
 
         // Remove the source from the list (what delete_imported_source does).
-        conn.execute("DELETE FROM imported_kill_sources WHERE source_label = 'friend.json'", [])
-            .unwrap();
+        conn.execute(
+            "DELETE FROM imported_kill_sources WHERE source_label = 'friend.json'",
+            [],
+        )
+        .unwrap();
 
         let kills: i64 = conn
             .query_row(
@@ -1637,7 +1810,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(kills, 42, "imported kill aggregate should survive source removal");
+        assert_eq!(
+            kills, 42,
+            "imported kill aggregate should survive source removal"
+        );
 
         let loot: i64 = conn
             .query_row(
@@ -1646,7 +1822,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(loot, 100, "imported loot aggregate should survive source removal");
+        assert_eq!(
+            loot, 100,
+            "imported loot aggregate should survive source removal"
+        );
     }
 
     /// Re-importing the same file after its source entry was removed replaces the
@@ -1662,8 +1841,11 @@ mod tests {
         .unwrap();
 
         // A re-import clears prior rows for the same label first, then re-inserts.
-        conn.execute("DELETE FROM imported_enemy_kills_agg WHERE source_label = 'friend.json'", [])
-            .unwrap();
+        conn.execute(
+            "DELETE FROM imported_enemy_kills_agg WHERE source_label = 'friend.json'",
+            [],
+        )
+        .unwrap();
         conn.execute(
             "INSERT INTO imported_enemy_kills_agg (source_label, enemy_name, total_kills) VALUES ('friend.json', 'Goblin', 42)",
             [],
@@ -1701,8 +1883,16 @@ mod tests {
                 zone: Some("AreaDesert".to_string()),
                 total_kills: 26,
                 loot: vec![
-                    ExportedLoot { item_name: "Gold Nugget".into(), total_quantity: 5, times_dropped: 5 },
-                    ExportedLoot { item_name: "Watercress".into(), total_quantity: 2, times_dropped: 2 },
+                    ExportedLoot {
+                        item_name: "Gold Nugget".into(),
+                        total_quantity: 5,
+                        times_dropped: 5,
+                    },
+                    ExportedLoot {
+                        item_name: "Watercress".into(),
+                        total_quantity: 2,
+                        times_dropped: 2,
+                    },
                 ],
             },
             // Comma in the name (no CSV quoting here) + lootless + unknown zone.
@@ -1715,7 +1905,10 @@ mod tests {
         ];
 
         super::write_sqlite_export(&path_str, &original).expect("write sqlite export");
-        assert!(super::file_is_sqlite(&path_str), "written file should be detected as SQLite");
+        assert!(
+            super::file_is_sqlite(&path_str),
+            "written file should be detected as SQLite"
+        );
 
         let parsed = super::parse_sqlite_drop_data(&path_str).expect("parse sqlite export");
         let _ = std::fs::remove_file(&path);
@@ -1730,10 +1923,16 @@ mod tests {
         assert_eq!(dog.loot[0].item_name, "Gold Nugget");
         assert_eq!(dog.loot[0].times_dropped, 5);
 
-        let beast = parsed.iter().find(|e| e.enemy_name == "Late, Great Beast").unwrap();
+        let beast = parsed
+            .iter()
+            .find(|e| e.enemy_name == "Late, Great Beast")
+            .unwrap();
         assert_eq!(beast.zone, None, "unknown zone round-trips as NULL/None");
         assert_eq!(beast.total_kills, 10);
-        assert!(beast.loot.is_empty(), "lootless enemy survives with no loot rows");
+        assert!(
+            beast.loot.is_empty(),
+            "lootless enemy survives with no loot rows"
+        );
     }
 
     /// CSV parsing: groups rows by enemy, sums duplicate (enemy, item) rows,
@@ -1752,14 +1951,24 @@ mod tests {
         let sd = &enemies[0];
         assert_eq!(sd.enemy_name, "Sand Dog");
         assert_eq!(sd.total_kills, 26);
-        let gold = sd.loot.iter().find(|l| l.item_name == "Gold Nugget").unwrap();
+        let gold = sd
+            .loot
+            .iter()
+            .find(|l| l.item_name == "Gold Nugget")
+            .unwrap();
         assert_eq!(gold.total_quantity, 5, "duplicate item rows summed");
         assert_eq!(gold.times_dropped, 5);
 
         let beast = &enemies[1];
-        assert_eq!(beast.enemy_name, "Late, Great Beast", "quoted comma name preserved");
+        assert_eq!(
+            beast.enemy_name, "Late, Great Beast",
+            "quoted comma name preserved"
+        );
         assert_eq!(beast.total_kills, 10);
-        assert!(beast.loot.is_empty(), "lootless enemy retained for its kill count");
+        assert!(
+            beast.loot.is_empty(),
+            "lootless enemy retained for its kill count"
+        );
     }
 
     /// CSV parsing tolerates external spreadsheets: header aliases, any column
@@ -1836,7 +2045,11 @@ mod tests {
             .expect("Transport Security Card");
         assert_eq!(tsc.times_dropped, 2);
         assert_eq!(tsc.total_quantity, 2);
-        let greaves = elite.loot.iter().find(|l| l.item_name == "Winter Court Greaves").unwrap();
+        let greaves = elite
+            .loot
+            .iter()
+            .find(|l| l.item_name == "Winter Court Greaves")
+            .unwrap();
         assert_eq!(greaves.times_dropped, 1);
 
         // Troll Trooper: 1 corpse; the Harvest (non-loot) row is skipped, so it
@@ -1884,7 +2097,11 @@ mod tests {
             Goblin,AreaCave,10,Gold Coin,5,3\n\
             Goblin,,4,Rusty Sword,1,1\n";
         let enemies = super::parse_drop_data(csv).expect("parse zoned aggregated csv");
-        assert_eq!(enemies.len(), 2, "same monster, two zones (one unknown) = two entries");
+        assert_eq!(
+            enemies.len(),
+            2,
+            "same monster, two zones (one unknown) = two entries"
+        );
 
         let cave = enemies
             .iter()
@@ -1893,7 +2110,10 @@ mod tests {
         assert_eq!(cave.total_kills, 10);
         assert_eq!(cave.loot[0].item_name, "Gold Coin");
 
-        let unknown = enemies.iter().find(|e| e.zone.is_none()).expect("unknown-zone entry");
+        let unknown = enemies
+            .iter()
+            .find(|e| e.zone.is_none())
+            .expect("unknown-zone entry");
         assert_eq!(unknown.total_kills, 4);
         assert_eq!(unknown.loot[0].item_name, "Rusty Sword");
     }

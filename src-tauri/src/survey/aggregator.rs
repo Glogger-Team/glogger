@@ -18,12 +18,12 @@
 //! `docs/architecture/survey-mechanics.md` for the kind-specific game
 //! mechanics this implements.
 
-use crate::game_data::SurveyKind;
-use crate::player_event_parser::{ActivitySource, ItemProvenance, PlayerEvent};
-use crate::parsers::LogDateResolver;
-use crate::survey::{multihit_state, persistence};
-use crate::survey::types::{SessionStartTrigger, SurveyUseKind, SurveyUseStatus};
 use crate::cdn_commands::GameDataState;
+use crate::game_data::SurveyKind;
+use crate::parsers::LogDateResolver;
+use crate::player_event_parser::{ActivitySource, ItemProvenance, PlayerEvent};
+use crate::survey::types::{SessionStartTrigger, SurveyUseKind, SurveyUseStatus};
+use crate::survey::{multihit_state, persistence};
 use rusqlite::Connection;
 use std::collections::VecDeque;
 
@@ -74,9 +74,13 @@ const CHAT_STATE_CAP: usize = 16;
 struct PendingUse {
     survey_use_id: i64,
     kind: SurveyUseKind,
-    /// Seconds-of-day for `used_at`. Compared against incoming line
-    /// timestamps to apply the 60s grace window.
+    /// Seconds-of-day for `used_at`. Kept for ordering/display; window math
+    /// uses `used_at` (full datetime) so grace windows survive midnight.
     used_at_secs: u32,
+    /// Full UTC `used_at` of the survey use, mirroring the chat path's
+    /// `recent_basic_uses` datetimes. `None` when the timestamp didn't
+    /// parse (defensive — window checks then fall back to secs-of-day).
+    used_at: Option<chrono::NaiveDateTime>,
 }
 
 /// A basic-survey loot gain that arrived *before* the survey map's
@@ -139,20 +143,10 @@ pub enum SurveyAggregatorEvent {
         map_internal_name: String,
         kind: SurveyUseKind,
     },
+    UseCompleted { use_id: i64 },
     #[allow(dead_code)] // Matched in coordinator; not yet emitted by aggregator
-    UseCompleted {
-        use_id: i64,
-    },
-    #[allow(dead_code)] // Matched in coordinator; not yet emitted by aggregator
-    MultihitNodeOpened {
-        use_id: i64,
-        node_entity_id: u32,
-    },
-    #[allow(dead_code)] // Matched in coordinator; not yet emitted by aggregator
-    MultihitNodeClosed {
-        use_id: i64,
-        node_entity_id: u32,
-    },
+    MultihitNodeOpened { use_id: i64, node_entity_id: u32 },
+    MultihitNodeClosed { use_id: i64, node_entity_id: u32 },
 }
 
 /// Per-character aggregator. The coordinator owns one instance and feeds it
@@ -173,11 +167,12 @@ pub struct SurveySessionAggregator {
 
     /// Active Motherlode attribution. When a pending Motherlode use adopts
     /// a mining node, we record `(node_entity_id, survey_use_id,
-    /// first_gain_secs)` so gains arriving within 1 second of the first
-    /// also attribute. After 1 second the use auto-completes. This covers
-    /// motherlodes that yield 2+ items in the same swing without leaving
-    /// the use open indefinitely.
-    active_motherlode: Option<(u32, i64, u32)>,
+    /// first_gain)` — the first gain's full UTC datetime plus its
+    /// seconds-of-day fallback — so gains arriving within 1 second of the
+    /// first also attribute. After 1 second the use auto-completes. This
+    /// covers motherlodes that yield 2+ items in the same swing without
+    /// leaving the use open indefinitely.
+    active_motherlode: Option<(u32, i64, Option<chrono::NaiveDateTime>, u32)>,
 
     /// The most-recent Basic survey use that just had its loot attributed,
     /// held only long enough to catch a `ProcessScreenText` "(speed bonus!)"
@@ -202,10 +197,12 @@ pub struct SurveySessionAggregator {
     chat_mining: Option<ChatMiningState>,
 
     /// Most recent `StartInteraction`: `(entity_id, name-if-any,
-    /// secs-of-day)`. Binds the node identity to the next mining delay loop
-    /// (the loop line itself doesn't carry the node's entity id), mirroring
-    /// the parser's `pending_interaction` approach.
-    last_interaction: Option<(u32, Option<String>, u32)>,
+    /// secs-of-day, full UTC datetime)`. Binds the node identity to the next
+    /// mining delay loop (the loop line itself doesn't carry the node's
+    /// entity id), mirroring the parser's `pending_interaction` approach.
+    /// The datetime makes the bind window midnight-safe (mirror the chat
+    /// basic path); secs-of-day is the fallback when unparseable.
+    last_interaction: Option<(u32, Option<String>, u32, Option<chrono::NaiveDateTime>)>,
 
     /// Node entities we've bound to a survey use `(entity_id, use_id)`, so
     /// a multihit node resumes attributing after the player mines something
@@ -277,8 +274,8 @@ impl SurveySessionAggregator {
         server: &str,
         now_iso: &str,
     ) -> Result<i64, String> {
-        if let Some(s) = persistence::active_session(conn, character, server)
-            .map_err(|e| e.to_string())?
+        if let Some(s) =
+            persistence::active_session(conn, character, server).map_err(|e| e.to_string())?
         {
             return Err(format!("session {} already active", s.id));
         }
@@ -311,8 +308,8 @@ impl SurveySessionAggregator {
         server: &str,
         now_iso: &str,
     ) -> Result<Option<i64>, String> {
-        let active = persistence::active_session(conn, character, server)
-            .map_err(|e| e.to_string())?;
+        let active =
+            persistence::active_session(conn, character, server).map_err(|e| e.to_string())?;
         let Some(s) = active else {
             return Ok(None);
         };
@@ -390,9 +387,7 @@ impl SurveySessionAggregator {
             .recent_basic_uses
             .iter()
             .rev()
-            .find(|(_, used_at)| {
-                (chat_ts - *used_at).num_seconds().abs() <= CHAT_BASIC_WINDOW_SECS
-            })
+            .find(|(_, used_at)| (chat_ts - *used_at).num_seconds().abs() <= CHAT_BASIC_WINDOW_SECS)
             .map(|(use_id, _)| *use_id);
         if let Some(use_id) = basic_hit {
             return self.record_chat_attribution(conn, use_id, quantity, timestamp, true);
@@ -412,9 +407,7 @@ impl SurveySessionAggregator {
         // active, attributed to its most recent use.
         if internal_name.is_some_and(|internal| self.is_survey_loot_item(internal)) {
             if let Some(session_id) = self.fetch_active_session(conn, character, server) {
-                if let Ok(Some(use_id)) =
-                    persistence::latest_use_id_for_session(conn, session_id)
-                {
+                if let Ok(Some(use_id)) = persistence::latest_use_id_for_session(conn, session_id) {
                     return self.record_chat_attribution(conn, use_id, quantity, timestamp, false);
                 }
             }
@@ -512,14 +505,17 @@ impl SurveySessionAggregator {
             return emitted;
         }
 
-        // Age out pending-use entries whose 60s grace window has expired.
-        if let Some(now_secs) = event_secs_of_day(event) {
-            self.expire_pending_uses(now_secs);
-        }
-
         // UTC timestamp of this event (log-derived, not wall clock). Computed
-        // once here and reused by the crafting auto-end sweep below.
+        // once here and reused by the expiry + crafting auto-end sweep below.
         let event_iso = event_hms_timestamp(event).map(|hms| self.to_utc(hms));
+
+        // Age out pending-use entries whose 60s grace window has expired.
+        // Full-datetime comparison so the window survives midnight (mirror
+        // the chat basic path); falls back to secs-of-day when unparseable.
+        if let Some(now_secs) = event_secs_of_day(event) {
+            let now_dt = event_iso.as_deref().and_then(parse_utc_datetime);
+            self.expire_pending_uses(now_secs, now_dt);
+        }
 
         // Session length cap: if the active session has run past the max
         // duration, roll it over now — *before* the event is handled, so a
@@ -608,8 +604,10 @@ impl SurveySessionAggregator {
                     Some(npc_name.clone())
                 };
                 let (entity_id, timestamp) = (*entity_id, timestamp.clone());
+                let iso = self.to_utc(&timestamp);
+                let at = parse_utc_datetime(&iso);
                 self.last_interaction =
-                    parse_secs_of_day(&timestamp).map(|secs| (entity_id, name, secs));
+                    parse_secs_of_day(&timestamp).map(|secs| (entity_id, name, secs, at));
                 self.clip_chat_window_on_foreign_interaction(entity_id, &timestamp);
             }
 
@@ -636,10 +634,19 @@ impl SurveySessionAggregator {
         self.maybe_inject_survey_use_id(event, conn, character, server);
 
         // Run sweeps periodically — once per event is fine; the queries are
-        // small and indexed.
-        if let Some(now_secs) = event_secs_of_day(event) {
-            self.run_multihit_sweep(conn, character, server, now_secs, &mut emitted);
-            self.maybe_auto_end_crafting_session(conn, character, server, event_iso.as_deref(), &mut emitted);
+        // small and indexed. The multihit sweep needs the event's full UTC
+        // timestamp (not just seconds-of-day) so the 30-min cutoff is
+        // date-aware across midnight; without an event timestamp there is
+        // nothing date-aware to compare, so skip the sweep.
+        if let (Some(now_secs), Some(now_iso)) = (event_secs_of_day(event), &event_iso) {
+            self.run_multihit_sweep(conn, character, server, now_secs, now_iso, &mut emitted);
+            self.maybe_auto_end_crafting_session(
+                conn,
+                character,
+                server,
+                event_iso.as_deref(),
+                &mut emitted,
+            );
         }
 
         emitted
@@ -784,17 +791,15 @@ impl SurveySessionAggregator {
         // Resolve area: prefer the live-tracked area from the coordinator,
         // fall back to the survey_types.zone column (populated from CDN
         // description + areas lookup at import time).
-        let resolved_area: Option<String> = current_area
-            .map(|s| s.to_string())
-            .or_else(|| {
-                conn.query_row(
-                    "SELECT zone FROM survey_types WHERE internal_name = ?1",
-                    rusqlite::params![map_internal_name],
-                    |r| r.get(0),
-                )
-                .ok()
-                .flatten()
-            });
+        let resolved_area: Option<String> = current_area.map(|s| s.to_string()).or_else(|| {
+            conn.query_row(
+                "SELECT zone FROM survey_types WHERE internal_name = ?1",
+                rusqlite::params![map_internal_name],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten()
+        });
 
         let use_id = match persistence::insert_use(
             conn,
@@ -841,6 +846,7 @@ impl SurveySessionAggregator {
                 survey_use_id: use_id,
                 kind,
                 used_at_secs: now_secs,
+                used_at: parse_utc_datetime(&now_iso),
             });
 
             // Drain any deferred basic gains that arrived before this
@@ -870,9 +876,7 @@ impl SurveySessionAggregator {
                 // 'survey_map_use' but no survey_use_id. These are the
                 // deferred gains whose provenance couldn't carry the
                 // use_id at write time.
-                retroactively_tag_unlinked_survey_transactions(
-                    conn, use_id, character, server,
-                );
+                retroactively_tag_unlinked_survey_transactions(conn, use_id, character, server);
                 // Don't mark completed yet — more gains (speed bonus) may
                 // arrive in the same tick. The next call to
                 // attribute_basic_gain (for the bonus item) or the
@@ -952,13 +956,15 @@ impl SurveySessionAggregator {
         };
         let window_secs = duration.ceil().max(0.0) as i64 + CHAT_SWING_SLACK_SECS;
 
+        // Full-datetime comparison so the bind window survives midnight
+        // (mirror the chat basic path); secs-of-day is the fallback.
         let node = self
             .last_interaction
             .as_ref()
-            .filter(|(_, _, secs)| {
-                now_secs.saturating_sub(*secs) <= INTERACTION_TO_LOOP_MAX_SECS
+            .filter(|(_, _, secs, at)| {
+                within_grace_window(Some(now_dt), *at, now_secs, *secs, INTERACTION_TO_LOOP_MAX_SECS)
             })
-            .map(|(entity, name, _)| (*entity, name.clone()));
+            .map(|(entity, name, _, _)| (*entity, name.clone()));
         let node_entity = node.as_ref().map(|(entity, _)| *entity);
 
         // Active engagement: refresh or close.
@@ -969,8 +975,7 @@ impl SurveySessionAggregator {
                 // attributing rather than dropping real survey loot.
                 _ => true,
             };
-            let fresh =
-                (now_dt - cm.swing_start).num_seconds() <= MULTIHIT_TIMEOUT_SECS as i64;
+            let fresh = (now_dt - cm.swing_start).num_seconds() <= MULTIHIT_TIMEOUT_SECS as i64;
             if same_node && fresh {
                 cm.swing_start = now_dt;
                 cm.swing_window_secs = window_secs;
@@ -1011,13 +1016,20 @@ impl SurveySessionAggregator {
         // 2. A Motherlode/Multihit map consumed within the grace window
         //    whose loot hasn't already been claimed by an earlier
         //    engagement (a later swing on a *regular* node must not
-        //    re-adopt an already-worked use).
+        //    re-adopt an already-worked use). Full-datetime comparison so
+        //    the window survives midnight (mirror the chat basic path).
         let pending_use = self
             .pending_uses
             .iter()
             .find(|p| {
                 p.kind != SurveyUseKind::Basic
-                    && now_secs.saturating_sub(p.used_at_secs) <= SURVEY_TO_MINING_GRACE_SECS
+                    && within_grace_window(
+                        Some(now_dt),
+                        p.used_at,
+                        now_secs,
+                        p.used_at_secs,
+                        SURVEY_TO_MINING_GRACE_SECS,
+                    )
                     && !self.chat_adopted_uses.contains(&p.survey_use_id)
             })
             .map(|p| p.survey_use_id);
@@ -1064,7 +1076,9 @@ impl SurveySessionAggregator {
             return;
         }
         let iso = self.to_utc(timestamp);
-        let Some(at) = parse_utc_datetime(&iso) else { return };
+        let Some(at) = parse_utc_datetime(&iso) else {
+            return;
+        };
         if let Some(cm) = &mut self.chat_mining {
             // Gains sharing the interaction's second are ambiguous; treat
             // them as the interaction's (strictly-before survives).
@@ -1119,7 +1133,11 @@ impl SurveySessionAggregator {
         // checker happy without requiring extra clones of the provenance
         // value (which is meaningfully sized — has source, candidates, etc.).
         let (qty, mining_node_id_opt, is_basic_survey_gain) = match event {
-            PlayerEvent::ItemAdded { provenance, initial_quantity, .. } => {
+            PlayerEvent::ItemAdded {
+                provenance,
+                initial_quantity,
+                ..
+            } => {
                 let kind_info = read_provenance_kind(provenance);
                 (*initial_quantity, kind_info.0, kind_info.1)
             }
@@ -1153,11 +1171,16 @@ impl SurveySessionAggregator {
         // Case 0: active Motherlode — the node was already adopted from a
         // pending use on the first gain. Attribute additional gains from
         // the same node within 1 second of the first gain (covers
-        // motherlodes that yield 2+ items in one swing).
-        if let Some((ml_node, ml_use_id, ml_first_secs)) = self.active_motherlode {
-            let within_window = now_secs
-                .map(|s| s.saturating_sub(ml_first_secs) <= 1)
-                .unwrap_or(false);
+        // motherlodes that yield 2+ items in one swing). Full-datetime
+        // comparison so the window survives midnight.
+        if let Some((ml_node, ml_use_id, ml_first_dt, ml_first_secs)) = self.active_motherlode {
+            let now_dt = now_iso.as_deref().and_then(parse_utc_datetime);
+            let within_window = match (now_dt, ml_first_dt) {
+                (Some(now), Some(first)) => (now - first).num_seconds() <= 1,
+                _ => now_secs
+                    .map(|s| s.saturating_sub(ml_first_secs) <= 1)
+                    .unwrap_or(false),
+            };
             if ml_node == node_id && within_window {
                 let _ = persistence::add_loot_qty(conn, ml_use_id, qty);
                 if let Some(ref ts) = now_iso {
@@ -1185,12 +1208,13 @@ impl SurveySessionAggregator {
         }
 
         // Case 2: this is a new mining-node + we have a pending use within
-        // grace window. Pop it and attach.
+        // grace window. Pop it and attach. Full-datetime comparison so the
+        // window survives midnight (mirror the chat basic path).
         let Some(now_secs) = now_secs else { return };
-        let pending_idx = self
-            .pending_uses
-            .iter()
-            .position(|p| now_secs.saturating_sub(p.used_at_secs) <= SURVEY_TO_MINING_GRACE_SECS);
+        let now_dt = now_iso.as_deref().and_then(parse_utc_datetime);
+        let pending_idx = self.pending_uses.iter().position(|p| {
+            within_grace_window(now_dt, p.used_at, now_secs, p.used_at_secs, SURVEY_TO_MINING_GRACE_SECS)
+        });
         let Some(idx) = pending_idx else { return };
         let pending = self.pending_uses.remove(idx).unwrap();
 
@@ -1210,7 +1234,8 @@ impl SurveySessionAggregator {
             }
             SurveyUseKind::Motherlode => {
                 self.current_mining_node = Some(node_id);
-                self.active_motherlode = Some((node_id, pending.survey_use_id, now_secs));
+                self.active_motherlode =
+                    Some((node_id, pending.survey_use_id, now_dt, now_secs));
             }
             SurveyUseKind::Basic => {
                 // Basic shouldn't reach this path (no Mining context follows),
@@ -1262,12 +1287,7 @@ impl SurveySessionAggregator {
     /// When no pending Basic use exists yet, the gain is buffered in
     /// `deferred_basic_gains` and replayed when `handle_survey_consumed`
     /// creates the pending use.
-    fn attribute_basic_gain(
-        &mut self,
-        event: &mut PlayerEvent,
-        conn: &Connection,
-        qty: u32,
-    ) {
+    fn attribute_basic_gain(&mut self, event: &mut PlayerEvent, conn: &Connection, qty: u32) {
         // Resolve this gain's own stamp while it *is* the newest line seen; the
         // deferred drain then never has to re-resolve an earlier time of day.
         let resolved_at = event_hms_timestamp(event).map(|hms| self.to_utc(hms));
@@ -1280,7 +1300,8 @@ impl SurveySessionAggregator {
         else {
             // No pending Basic use yet — the DeleteItem hasn't fired.
             // Buffer this gain so handle_survey_consumed can attribute it.
-            self.deferred_basic_gains.push(DeferredBasicGain { qty, resolved_at });
+            self.deferred_basic_gains
+                .push(DeferredBasicGain { qty, resolved_at });
             return;
         };
         let use_id = self.pending_uses[idx].survey_use_id;
@@ -1307,39 +1328,79 @@ impl SurveySessionAggregator {
         self.pending_uses.remove(idx);
     }
 
-    /// Periodic sweep of expired multihit nodes and pending-use grace
-    /// windows. Cheap — both queries are indexed.
+    /// Periodic sweep of expired multihit nodes. Cheap — the expired-set
+    /// query is indexed and almost always empty.
+    ///
+    /// `now_iso` is the current event's full UTC timestamp
+    /// (`YYYY-MM-DD HH:MM:SS`, log-derived, not wall clock). Both the 30-min
+    /// cutoff and the in-memory grace-queue prune are computed on the full
+    /// datetime so the sweep is date-aware across midnight.
     fn run_multihit_sweep(
         &mut self,
         conn: &Connection,
         character: &str,
         server: &str,
         now_secs: u32,
+        now_iso: &str,
         emitted: &mut Vec<SurveyAggregatorEvent>,
     ) {
-        // Multihit timeout: nodes whose last_hit_at is more than 30 minutes ago.
-        // We compare on full ISO datetime strings so we need a same-format cutoff.
-        // Build cutoff = "now minus 30 minutes" using event-derived seconds: we
-        // don't have a date here, only seconds-of-day, so the comparison may
-        // be off when the day rolls over. The DB stores full datetimes
-        // (`to_utc_datetime` output), so we compare the time portion only via
-        // a string comparison — adequate for the worst-case false-negative of
-        // delaying a sweep across midnight (it'll fire on the next event
-        // after midnight when seconds-of-day surpasses the cutoff).
-        //
-        // For now, sweep using the persisted last_hit_at via a date-aware
-        // comparison built off the event's full timestamp. We only need to
-        // sweep occasionally; doing it every event is harmless because the
-        // expired-set is empty almost always.
-        let _ = (now_secs, emitted);
+        // In-memory grace queue first: drop pending uses whose 60s window
+        // has passed. (DB rows stay pending_loot — attribution may still
+        // arrive via the FromSurvey fallback; only the in-memory shortcut
+        // expires here.)
+        let now_dt_opt = parse_utc_datetime(now_iso);
+        self.expire_pending_uses(now_secs, now_dt_opt);
 
-        // Use the most-recent event's full ISO timestamp as "now" if we can
-        // recover it. The current API doesn't pass it through — which means
-        // the sweep is best-effort only. A future cleanup can pass an
-        // `&str now_iso` through. For Phase 5 this is acceptable: in
-        // practice the multihit window is closed by the user starting a
-        // different mining interaction long before the 30min timeout.
-        let _ = (conn, character, server);
+        let Some(now_dt) = now_dt_opt else {
+            return;
+        };
+        let cutoff = now_dt - chrono::Duration::seconds(MULTIHIT_TIMEOUT_SECS as i64);
+        let cutoff_s = cutoff.format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let expired = match multihit_state::sweep_expired(conn, character, server, &cutoff_s) {
+            Ok(rows) => rows,
+            Err(e) => {
+                eprintln!("[survey-aggregator] multihit sweep failed: {e}");
+                return;
+            }
+        };
+        for node in expired {
+            // Convention (matches handle_mining_started's close path):
+            // a node that produced loot completes its use; an empty node
+            // aborts it. Only transition rows still pending_loot — a use
+            // already closed by another path keeps its status.
+            let closed = match persistence::get_use(conn, node.survey_use_id) {
+                Ok(Some(u)) if u.status == SurveyUseStatus::PendingLoot => {
+                    let next = if u.loot_qty > 0 {
+                        SurveyUseStatus::Completed
+                    } else {
+                        SurveyUseStatus::Aborted
+                    };
+                    persistence::set_use_status(conn, node.survey_use_id, next).is_ok()
+                }
+                _ => false,
+            };
+            if closed {
+                emitted.push(SurveyAggregatorEvent::UseCompleted {
+                    use_id: node.survey_use_id,
+                });
+            }
+            if let Ok(node_id) = u32::try_from(node.node_entity_id) {
+                emitted.push(SurveyAggregatorEvent::MultihitNodeClosed {
+                    use_id: node.survey_use_id,
+                    node_entity_id: node_id,
+                });
+            }
+            // Drop any in-memory chat-mining engagement bound to this use so
+            // a later swing can't keep attributing to a closed node.
+            if self
+                .chat_mining
+                .as_ref()
+                .is_some_and(|cm| cm.survey_use_id == node.survey_use_id)
+            {
+                self.chat_mining = None;
+            }
+        }
     }
 
     /// Auto-end check for crafting-trigger sessions: when consumed_count
@@ -1491,12 +1552,18 @@ impl SurveySessionAggregator {
             .flatten()
     }
 
-    fn expire_pending_uses(&mut self, now_secs: u32) {
+    fn expire_pending_uses(&mut self, now_secs: u32, now_dt: Option<chrono::NaiveDateTime>) {
         // Pop expired entries from the front. The 60s grace covers the
         // walk from "used here" to "node spawned over there"; anything
-        // older is gone.
+        // older is gone. Full-datetime comparison so the window survives
+        // midnight (mirror the chat basic path); seconds-of-day is only
+        // the fallback when a timestamp didn't parse.
         while let Some(front) = self.pending_uses.front() {
-            if now_secs.saturating_sub(front.used_at_secs) > SURVEY_TO_MINING_GRACE_SECS {
+            let expired = match (now_dt, front.used_at) {
+                (Some(now), Some(used)) => (now - used).num_seconds() > SURVEY_TO_MINING_GRACE_SECS as i64,
+                _ => now_secs.saturating_sub(front.used_at_secs) > SURVEY_TO_MINING_GRACE_SECS,
+            };
+            if expired {
                 let expired = self.pending_uses.pop_front().unwrap();
                 // Mark as aborted (no loot ever arrived) — only if still
                 // pending in the DB. Best-effort; a quick test would race
@@ -1577,6 +1644,29 @@ fn parse_secs_of_day(hms: &str) -> Option<u32> {
 /// `to_utc_datetime_with_base` and by the chat pipeline) for window math.
 fn parse_utc_datetime(ts: &str) -> Option<chrono::NaiveDateTime> {
     chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S").ok()
+}
+
+/// Midnight-safe grace check: true when `now` is within `window_secs` after
+/// `used_at`. Both sides are full datetimes (the chat basic path's
+/// convention — mirror it here), so a use at 23:59:50 still matches a gain
+/// at 00:00:10 where `saturating_sub` on seconds-of-day would see a ~24h
+/// gap and miss.
+fn within_grace_window(
+    now_dt: Option<chrono::NaiveDateTime>,
+    used_at: Option<chrono::NaiveDateTime>,
+    now_secs: u32,
+    used_at_secs: u32,
+    window_secs: u32,
+) -> bool {
+    match (now_dt, used_at) {
+        (Some(now), Some(used)) => {
+            let dt = (now - used).num_seconds();
+            (0..=(window_secs as i64)).contains(&dt)
+        }
+        // Unparseable timestamp (defensive): fall back to the old
+        // seconds-of-day comparison.
+        _ => now_secs.saturating_sub(used_at_secs) <= window_secs,
+    }
 }
 
 /// Push into a small bounded FIFO memory, skipping duplicates.
@@ -1758,7 +1848,12 @@ mod tests {
                 500,
                 "MetalSlab9",
                 "Marvelous Metal Slab",
-                &["MetalSlab", "MetalSlab9", "SkillIngredient", "ValuableMetalSlab"][..],
+                &[
+                    "MetalSlab",
+                    "MetalSlab9",
+                    "SkillIngredient",
+                    "ValuableMetalSlab",
+                ][..],
             ),
             (
                 600,
@@ -1801,7 +1896,8 @@ mod tests {
             ),
         ];
         for (id, internal, display, keywords) in entries {
-            gd.items.insert(id, survey_item(id, internal, display, keywords));
+            gd.items
+                .insert(id, survey_item(id, internal, display, keywords));
             gd.item_internal_name_index.insert(internal.to_string(), id);
             gd.item_name_index.insert(display.to_string(), id);
         }
@@ -1958,8 +2054,7 @@ mod tests {
             item_name: Some("GeologySurveySerbule1".to_string()),
             context: crate::player_event_parser::DeleteContext::Consumed,
         };
-        let emitted =
-            agg.process_event(&mut use_late, &conn, "Zenith", "Dreva", Some("Serbule"));
+        let emitted = agg.process_event(&mut use_late, &conn, "Zenith", "Dreva", Some("Serbule"));
 
         // Session 1 is now ended…
         let s1 = persistence::get_session(&conn, id1).unwrap().unwrap();
@@ -2059,12 +2154,19 @@ mod tests {
             context: crate::player_event_parser::DeleteContext::Consumed,
         };
 
-        let emitted = agg.process_event(&mut delete_event, &conn, "Zenith", "Dreva", Some("Serbule"));
+        let emitted =
+            agg.process_event(&mut delete_event, &conn, "Zenith", "Dreva", Some("Serbule"));
 
         // Should have emitted SessionStarted + UseRecorded (in that order)
         assert_eq!(emitted.len(), 2, "expected 2 events: {:?}", emitted);
-        assert!(matches!(emitted[0], SurveyAggregatorEvent::SessionStarted { .. }));
-        assert!(matches!(emitted[1], SurveyAggregatorEvent::UseRecorded { .. }));
+        assert!(matches!(
+            emitted[0],
+            SurveyAggregatorEvent::SessionStarted { .. }
+        ));
+        assert!(matches!(
+            emitted[1],
+            SurveyAggregatorEvent::UseRecorded { .. }
+        ));
 
         // DB state: one session, one use, both correctly populated
         let session = persistence::active_session(&conn, "Zenith", "Dreva")
@@ -2107,7 +2209,8 @@ mod tests {
             .unwrap();
         let use_id = persistence::uses_for_session(&conn, session.id).unwrap()[0].id;
 
-        let attributed = agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 9, "2026-04-15 12:00:01");
+        let attributed =
+            agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 9, "2026-04-15 12:00:01");
         assert_eq!(attributed, Some(use_id));
 
         let su = persistence::get_use(&conn, use_id).unwrap().unwrap();
@@ -2124,8 +2227,12 @@ mod tests {
         assert_eq!(su.loot_qty, 12);
 
         // 30s later the window is closed — incidental loot is NOT survey loot.
-        let attributed = agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 5, "2026-04-15 12:00:30");
-        assert_eq!(attributed, None, "gain outside the basic window must not attribute");
+        let attributed =
+            agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 5, "2026-04-15 12:00:30");
+        assert_eq!(
+            attributed, None,
+            "gain outside the basic window must not attribute"
+        );
         let su = persistence::get_use(&conn, use_id).unwrap().unwrap();
         assert_eq!(su.loot_qty, 12, "loot_qty unchanged by rejected gain");
     }
@@ -2135,7 +2242,8 @@ mod tests {
         // No survey activity at all → nothing to attribute to.
         let conn = fresh_db();
         let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
-        let attributed = agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 5, "2026-04-15 12:00:00");
+        let attributed =
+            agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 5, "2026-04-15 12:00:00");
         assert_eq!(attributed, None);
     }
 
@@ -2147,7 +2255,8 @@ mod tests {
         let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
         agg.start_manual_session(&conn, "Zenith", "Dreva", "2026-04-15 12:00:00")
             .unwrap();
-        let attributed = agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 5, "2026-04-15 12:00:01");
+        let attributed =
+            agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 5, "2026-04-15 12:00:01");
         assert_eq!(attributed, None);
     }
 
@@ -2223,11 +2332,13 @@ mod tests {
         agg.process_event(&mut ev, &conn, "Zenith", "Dreva", Some("Povus"));
 
         // Loot at swing completion (start + 6s) attributes.
-        let attributed = agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 2, "2026-04-15 12:00:26");
+        let attributed =
+            agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 2, "2026-04-15 12:00:26");
         assert_eq!(attributed, Some(use_id), "swing-completion loot attributes");
 
         // Between swings: not survey loot (e.g. corpse loot mid-fight).
-        let attributed = agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 1, "2026-04-15 12:00:40");
+        let attributed =
+            agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 1, "2026-04-15 12:00:40");
         assert_eq!(attributed, None, "gain between swings must not attribute");
 
         // Swing 2 on the same node refreshes the window.
@@ -2235,7 +2346,8 @@ mod tests {
         agg.process_event(&mut ev, &conn, "Zenith", "Dreva", Some("Povus"));
         let mut ev = mining_loop("12:00:45");
         agg.process_event(&mut ev, &conn, "Zenith", "Dreva", Some("Povus"));
-        let attributed = agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 3, "2026-04-15 12:00:51");
+        let attributed =
+            agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 3, "2026-04-15 12:00:51");
         assert_eq!(attributed, Some(use_id));
 
         // A swing on a DIFFERENT node closes the engagement; its loot is
@@ -2245,7 +2357,8 @@ mod tests {
         agg.process_event(&mut ev, &conn, "Zenith", "Dreva", Some("Povus"));
         let mut ev = mining_loop("12:01:10");
         agg.process_event(&mut ev, &conn, "Zenith", "Dreva", Some("Povus"));
-        let attributed = agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 4, "2026-04-15 12:01:16");
+        let attributed =
+            agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 4, "2026-04-15 12:01:16");
         assert_eq!(attributed, None, "regular-node loot must not attribute");
 
         let su = persistence::get_use(&conn, use_id).unwrap().unwrap();
@@ -2261,8 +2374,13 @@ mod tests {
         agg.process_event(&mut ev, &conn, "Zenith", "Dreva", Some("Povus"));
         let mut ev = mining_loop("12:01:30");
         agg.process_event(&mut ev, &conn, "Zenith", "Dreva", Some("Povus"));
-        let attributed = agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 2, "2026-04-15 12:01:36");
-        assert_eq!(attributed, Some(use_id), "returning to the survey node resumes");
+        let attributed =
+            agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 2, "2026-04-15 12:01:36");
+        assert_eq!(
+            attributed,
+            Some(use_id),
+            "returning to the survey node resumes"
+        );
 
         // Corpse loot right after a swing completes (observed leak in the
         // 50x-povus capture): a foreign interaction inside the window's
@@ -2271,12 +2389,21 @@ mod tests {
         agg.process_event(&mut ev, &conn, "Zenith", "Dreva", Some("Povus"));
         let mut ev = mining_loop("12:02:00");
         agg.process_event(&mut ev, &conn, "Zenith", "Dreva", Some("Povus"));
-        let attributed = agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 1, "2026-04-15 12:02:06");
-        assert_eq!(attributed, Some(use_id), "swing loot at completion attributes");
+        let attributed =
+            agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 1, "2026-04-15 12:02:06");
+        assert_eq!(
+            attributed,
+            Some(use_id),
+            "swing loot at completion attributes"
+        );
         let mut ev = interaction("12:02:08", 7777, ""); // corpse search
         agg.process_event(&mut ev, &conn, "Zenith", "Dreva", Some("Povus"));
-        let attributed = agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 1, "2026-04-15 12:02:09");
-        assert_eq!(attributed, None, "corpse loot inside the clipped slack must not attribute");
+        let attributed =
+            agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 1, "2026-04-15 12:02:09");
+        assert_eq!(
+            attributed, None,
+            "corpse loot inside the clipped slack must not attribute"
+        );
     }
 
     #[test]
@@ -2318,11 +2445,16 @@ mod tests {
         };
         agg.process_event(&mut ev, &conn, "Zenith", "Dreva", Some("KurMountains"));
 
-        let attributed = agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 2, "2026-04-15 12:00:36");
+        let attributed =
+            agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 2, "2026-04-15 12:00:36");
         assert_eq!(attributed, Some(use_id), "swing loot attributes");
 
-        let attributed = agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 1, "2026-04-15 12:00:50");
-        assert_eq!(attributed, None, "loot after the swing window must not attribute");
+        let attributed =
+            agg.attribute_chat_gain(&conn, "Zenith", "Dreva", None, 1, "2026-04-15 12:00:50");
+        assert_eq!(
+            attributed, None,
+            "loot after the swing window must not attribute"
+        );
 
         let su = persistence::get_use(&conn, use_id).unwrap().unwrap();
         assert_eq!(su.loot_qty, 2);
@@ -2362,10 +2494,13 @@ mod tests {
             ("Saltpeter", 1, "2026-04-15 12:08:20"),
             ("Fluorite", 3, "2026-04-15 12:08:30"), // color-crystal family
         ] {
-            let attributed = agg.attribute_chat_gain(
-                &conn, "Zenith", "Dreva", Some(internal), qty, ts,
+            let attributed =
+                agg.attribute_chat_gain(&conn, "Zenith", "Dreva", Some(internal), qty, ts);
+            assert_eq!(
+                attributed,
+                Some(use_id),
+                "{internal} should attribute by identity"
             );
-            assert_eq!(attributed, Some(use_id), "{internal} should attribute by identity");
         }
         let su = persistence::get_use(&conn, use_id).unwrap().unwrap();
         assert_eq!(su.loot_qty, 16, "3+2+4+1+2+1+3 identity gains");
@@ -2375,7 +2510,12 @@ mod tests {
         // families either.
         for internal in ["Skull", "FearPearl1"] {
             let attributed = agg.attribute_chat_gain(
-                &conn, "Zenith", "Dreva", Some(internal), 1, "2026-04-15 12:09:00",
+                &conn,
+                "Zenith",
+                "Dreva",
+                Some(internal),
+                1,
+                "2026-04-15 12:09:00",
             );
             assert_eq!(attributed, None, "{internal} needs a collection window");
         }
@@ -2384,7 +2524,12 @@ mod tests {
         agg.end_active_session(&conn, "Zenith", "Dreva", "2026-04-15 12:10:00")
             .unwrap();
         let attributed = agg.attribute_chat_gain(
-            &conn, "Zenith", "Dreva", Some("Tungsten"), 1, "2026-04-15 12:11:00",
+            &conn,
+            "Zenith",
+            "Dreva",
+            Some("Tungsten"),
+            1,
+            "2026-04-15 12:11:00",
         );
         assert_eq!(attributed, None, "no attribution without an active session");
     }
@@ -2439,7 +2584,11 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(tagged[0].1.as_deref(), Some("survey_chat"), "in-window row claimed");
+        assert_eq!(
+            tagged[0].1.as_deref(),
+            Some("survey_chat"),
+            "in-window row claimed"
+        );
         assert_eq!(tagged[0].2, Some(use_id));
         assert_eq!(tagged[1].1, None, "out-of-window row untouched");
         assert_eq!(tagged[2].1, None, "survey-map craft row untouched");
@@ -2750,7 +2899,11 @@ mod tests {
 
         if let PlayerEvent::ItemStackChanged { provenance, .. } = &gain2 {
             if let ItemProvenance::Attributed { survey_use_id, .. } = provenance {
-                assert_eq!(*survey_use_id, Some(use_id), "second gain should use same use_id");
+                assert_eq!(
+                    *survey_use_id,
+                    Some(use_id),
+                    "second gain should use same use_id"
+                );
             } else {
                 panic!("expected Attributed on second gain");
             }
@@ -2771,10 +2924,20 @@ mod tests {
             initial_quantity: 1,
             provenance: mining_prov(435138), // same node
         };
-        agg.process_event(&mut gain_late, &conn, "Zenith", "Dreva", Some("KurMountains"));
+        agg.process_event(
+            &mut gain_late,
+            &conn,
+            "Zenith",
+            "Dreva",
+            Some("KurMountains"),
+        );
 
         let u3 = persistence::get_use(&conn, use_id).unwrap().unwrap();
-        assert_eq!(u3.status, SurveyUseStatus::Completed, "window expiry closes the motherlode");
+        assert_eq!(
+            u3.status,
+            SurveyUseStatus::Completed,
+            "window expiry closes the motherlode"
+        );
         assert_eq!(u3.loot_qty, 4, "late gain not counted");
     }
 

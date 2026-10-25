@@ -129,10 +129,7 @@ pub fn get_roulette_stats(db: State<'_, DbPool>) -> Result<RouletteStats, String
 
 /// Read every `Chat-*.log` in the ChatLogs directory and persist any roulette
 /// spin outcomes found. Idempotent (unique index). Returns rows inserted.
-pub fn backfill_from_chat_logs(
-    settings: &SettingsManager,
-    db: &DbPool,
-) -> Result<usize, String> {
+pub fn backfill_from_chat_logs(settings: &SettingsManager, db: &DbPool) -> Result<usize, String> {
     let Some(dir) = settings.get_chat_logs_dir() else {
         return Ok(0);
     };
@@ -155,7 +152,9 @@ pub fn backfill_from_chat_logs(
             continue;
         }
 
-        let Ok(file) = File::open(&path) else { continue };
+        let Ok(file) = File::open(&path) else {
+            continue;
+        };
         // One IMMEDIATE transaction per file: startup backfills run
         // concurrently and a whole-scan transaction holds the write lock
         // long enough for the others' busy_timeout (5s) to expire.

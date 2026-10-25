@@ -144,9 +144,7 @@ mod tests {
         let msg = action_emote_msg("Bee so for real right now comes back to life!");
         let event = parse_resuscitate_message(&msg).unwrap();
         match event {
-            ChatResuscitateEvent::Resuscitated {
-                target_name, ..
-            } => {
+            ChatResuscitateEvent::Resuscitated { target_name, .. } => {
                 assert_eq!(target_name, "Bee so for real right now");
             }
             other => panic!("Expected Resuscitated, got {:?}", other),
@@ -159,9 +157,7 @@ mod tests {
         let msg = action_emote_msg("Orrion resuscitates Your Toxicology Report");
         let event = parse_resuscitate_message(&msg).unwrap();
         match event {
-            ChatResuscitateEvent::Resuscitated {
-                caster_name, ..
-            } => {
+            ChatResuscitateEvent::Resuscitated { caster_name, .. } => {
                 assert_eq!(caster_name, "Orrion");
             }
             other => panic!("Expected Resuscitated, got {:?}", other),
@@ -256,9 +252,7 @@ mod tests {
 
     #[test]
     fn test_failed_target_with_spaces() {
-        let msg = action_emote_msg(
-            "Vandoodle futilely attempts to resuscitate Vanbee Melee",
-        );
+        let msg = action_emote_msg("Vandoodle futilely attempts to resuscitate Vanbee Melee");
         let event = parse_resuscitate_message(&msg).unwrap();
         match event {
             ChatResuscitateEvent::ResuscitateFailed {
@@ -272,5 +266,4 @@ mod tests {
             _ => panic!("Expected ResuscitateFailed"),
         }
     }
-
 }

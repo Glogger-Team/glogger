@@ -275,10 +275,7 @@ fn apply_added(state: &mut ItemState, qty: i64) {
     if state.total_qty() < 0 {
         state.tiers.clear();
     }
-    state.tiers.push(PriceTier {
-        qty,
-        price: None,
-    });
+    state.tiers.push(PriceTier { qty, price: None });
 }
 
 /// Apply a `visible` or `configured` event: walk tiers front-to-back, apply
@@ -773,10 +770,7 @@ fn resolve_window(
         TimeseriesPeriod::Day7 => day_window(anchor, 6),
         TimeseriesPeriod::Month1 => day_window(anchor, 29),
         TimeseriesPeriod::AllTime => {
-            let start = min_dt
-                .date()
-                .and_hms_opt(0, 0, 0)
-                .unwrap_or(min_dt);
+            let start = min_dt.date().and_hms_opt(0, 0, 0).unwrap_or(min_dt);
             let span_days = (anchor.date() - min_dt.date()).num_days();
             let bucket = if span_days <= TS_ALL_DAILY_MAX_DAYS {
                 Bucket::Day
@@ -957,7 +951,13 @@ mod tests {
         }
     }
 
-    fn inv(action: &str, item: &str, event_at: &str, qty: i64, price: Option<f64>) -> InventoryEvent {
+    fn inv(
+        action: &str,
+        item: &str,
+        event_at: &str,
+        qty: i64,
+        price: Option<f64>,
+    ) -> InventoryEvent {
         // Mirrors the real DB: only `bought` (and `collected`, irrelevant for
         // inventory) carry a `price_total`. Other actions leave it NULL.
         let price_total = if action == "bought" {
@@ -1086,8 +1086,20 @@ mod tests {
     fn inventory_add_then_visible_then_sell() {
         let events = vec![
             inv("added", "Quality Reins", "2026-04-13 09:00:00", 5, None),
-            inv("visible", "Quality Reins", "2026-04-13 09:01:00", 5, Some(4500.0)),
-            inv("bought", "Quality Reins", "2026-04-14 10:00:00", 2, Some(4500.0)),
+            inv(
+                "visible",
+                "Quality Reins",
+                "2026-04-13 09:01:00",
+                5,
+                Some(4500.0),
+            ),
+            inv(
+                "bought",
+                "Quality Reins",
+                "2026-04-14 10:00:00",
+                2,
+                Some(4500.0),
+            ),
         ];
         let r = aggregate_inventory(events, 7);
         assert_eq!(r.items.len(), 1);
@@ -1106,7 +1118,13 @@ mod tests {
         // so added arrives first. The tier gets priced correctly.
         let events = vec![
             inv("added", "Nice Saddle", "2026-04-13 09:00:00", 3, None),
-            inv("visible", "Nice Saddle", "2026-04-13 09:00:00", 3, Some(4000.0)),
+            inv(
+                "visible",
+                "Nice Saddle",
+                "2026-04-13 09:00:00",
+                3,
+                Some(4000.0),
+            ),
         ];
         let r = aggregate_inventory(events, 7);
         let item = &r.items[0];
@@ -1118,9 +1136,21 @@ mod tests {
     fn inventory_negative_then_added_resets() {
         // Truncated log: we see the sale before we see the add.
         let events = vec![
-            inv("bought", "Mystic Saddlebag", "2026-04-13 09:00:00", 2, Some(40000.0)),
+            inv(
+                "bought",
+                "Mystic Saddlebag",
+                "2026-04-13 09:00:00",
+                2,
+                Some(40000.0),
+            ),
             inv("added", "Mystic Saddlebag", "2026-04-14 10:00:00", 5, None),
-            inv("visible", "Mystic Saddlebag", "2026-04-14 10:01:00", 5, Some(40000.0)),
+            inv(
+                "visible",
+                "Mystic Saddlebag",
+                "2026-04-14 10:01:00",
+                5,
+                Some(40000.0),
+            ),
         ];
         let r = aggregate_inventory(events, 7);
         let item = &r.items[0];
@@ -1135,9 +1165,21 @@ mod tests {
         // User adds 5 at price A, then later adds 3 at price B.
         let events = vec![
             inv("added", "Quality Reins", "2026-04-10 09:00:00", 5, None),
-            inv("visible", "Quality Reins", "2026-04-10 09:01:00", 5, Some(4500.0)),
+            inv(
+                "visible",
+                "Quality Reins",
+                "2026-04-10 09:01:00",
+                5,
+                Some(4500.0),
+            ),
             inv("added", "Quality Reins", "2026-04-12 09:00:00", 3, None),
-            inv("visible", "Quality Reins", "2026-04-12 09:01:00", 3, Some(5000.0)),
+            inv(
+                "visible",
+                "Quality Reins",
+                "2026-04-12 09:01:00",
+                3,
+                Some(5000.0),
+            ),
         ];
         let r = aggregate_inventory(events, 7);
         let item = &r.items[0];
@@ -1155,10 +1197,34 @@ mod tests {
         // Sparse dataset: 3 days total (Apr 10, 12, 13).
         let events = vec![
             inv("added", "Quality Reins", "2026-04-10 09:00:00", 10, None),
-            inv("visible", "Quality Reins", "2026-04-10 09:01:00", 10, Some(100.0)),
-            inv("bought", "Quality Reins", "2026-04-10 10:00:00", 1, Some(100.0)),
-            inv("bought", "Quality Reins", "2026-04-12 10:00:00", 2, Some(100.0)),
-            inv("bought", "Quality Reins", "2026-04-13 10:00:00", 3, Some(100.0)),
+            inv(
+                "visible",
+                "Quality Reins",
+                "2026-04-10 09:01:00",
+                10,
+                Some(100.0),
+            ),
+            inv(
+                "bought",
+                "Quality Reins",
+                "2026-04-10 10:00:00",
+                1,
+                Some(100.0),
+            ),
+            inv(
+                "bought",
+                "Quality Reins",
+                "2026-04-12 10:00:00",
+                2,
+                Some(100.0),
+            ),
+            inv(
+                "bought",
+                "Quality Reins",
+                "2026-04-13 10:00:00",
+                3,
+                Some(100.0),
+            ),
         ];
         // window = 1 → only Apr 13 counts toward period_sold
         let r = aggregate_inventory(events.clone(), 1);
@@ -1176,10 +1242,34 @@ mod tests {
         // 3 sales across 3 distinct dates, period = 7.
         let events = vec![
             inv("added", "Quality Reins", "2026-04-10 09:00:00", 10, None),
-            inv("visible", "Quality Reins", "2026-04-10 09:01:00", 10, Some(100.0)),
-            inv("bought", "Quality Reins", "2026-04-10 10:00:00", 1, Some(100.0)),
-            inv("bought", "Quality Reins", "2026-04-12 10:00:00", 1, Some(100.0)),
-            inv("bought", "Quality Reins", "2026-04-13 10:00:00", 1, Some(100.0)),
+            inv(
+                "visible",
+                "Quality Reins",
+                "2026-04-10 09:01:00",
+                10,
+                Some(100.0),
+            ),
+            inv(
+                "bought",
+                "Quality Reins",
+                "2026-04-10 10:00:00",
+                1,
+                Some(100.0),
+            ),
+            inv(
+                "bought",
+                "Quality Reins",
+                "2026-04-12 10:00:00",
+                1,
+                Some(100.0),
+            ),
+            inv(
+                "bought",
+                "Quality Reins",
+                "2026-04-13 10:00:00",
+                1,
+                Some(100.0),
+            ),
         ];
         let r = aggregate_inventory(events, 7);
         // period_sold (within window) = 3, divisor = 7 (full window, not active days)
@@ -1189,9 +1279,27 @@ mod tests {
     #[test]
     fn inventory_active_dates_newest_first() {
         let events = vec![
-            inv("bought", "Quality Reins", "2026-04-10 09:00:00", 1, Some(100.0)),
-            inv("bought", "Quality Reins", "2026-04-13 09:00:00", 1, Some(100.0)),
-            inv("bought", "Quality Reins", "2026-04-12 09:00:00", 1, Some(100.0)),
+            inv(
+                "bought",
+                "Quality Reins",
+                "2026-04-10 09:00:00",
+                1,
+                Some(100.0),
+            ),
+            inv(
+                "bought",
+                "Quality Reins",
+                "2026-04-13 09:00:00",
+                1,
+                Some(100.0),
+            ),
+            inv(
+                "bought",
+                "Quality Reins",
+                "2026-04-12 09:00:00",
+                1,
+                Some(100.0),
+            ),
         ];
         let r = aggregate_inventory(events, 30);
         assert_eq!(
@@ -1204,9 +1312,21 @@ mod tests {
     fn inventory_removed_lifo() {
         let events = vec![
             inv("added", "Quality Reins", "2026-04-10 09:00:00", 5, None),
-            inv("visible", "Quality Reins", "2026-04-10 09:01:00", 5, Some(4500.0)),
+            inv(
+                "visible",
+                "Quality Reins",
+                "2026-04-10 09:01:00",
+                5,
+                Some(4500.0),
+            ),
             inv("added", "Quality Reins", "2026-04-11 09:00:00", 3, None),
-            inv("visible", "Quality Reins", "2026-04-11 09:01:00", 3, Some(5000.0)),
+            inv(
+                "visible",
+                "Quality Reins",
+                "2026-04-11 09:01:00",
+                3,
+                Some(5000.0),
+            ),
             inv("removed", "Quality Reins", "2026-04-12 09:00:00", 2, None),
         ];
         let r = aggregate_inventory(events, 7);
@@ -1223,7 +1343,13 @@ mod tests {
         // must split into a priced front (qty 3) and an unpriced remainder (qty 2).
         let events = vec![
             inv("added", "Quality Reins", "2026-04-10 09:00:00", 5, None),
-            inv("visible", "Quality Reins", "2026-04-10 09:01:00", 3, Some(4500.0)),
+            inv(
+                "visible",
+                "Quality Reins",
+                "2026-04-10 09:01:00",
+                3,
+                Some(4500.0),
+            ),
         ];
         let r = aggregate_inventory(events, 7);
         let item = &r.items[0];
@@ -1244,8 +1370,20 @@ mod tests {
         // a smaller quantity. Lossy but predictable.
         let events = vec![
             inv("added", "Quality Reins", "2026-04-10 09:00:00", 3, None),
-            inv("visible", "Quality Reins", "2026-04-10 09:01:00", 3, Some(4500.0)),
-            inv("configured", "Quality Reins", "2026-04-11 09:00:00", 1, Some(5000.0)),
+            inv(
+                "visible",
+                "Quality Reins",
+                "2026-04-10 09:01:00",
+                3,
+                Some(4500.0),
+            ),
+            inv(
+                "configured",
+                "Quality Reins",
+                "2026-04-11 09:00:00",
+                1,
+                Some(5000.0),
+            ),
         ];
         let r = aggregate_inventory(events, 7);
         let item = &r.items[0];
@@ -1261,10 +1399,28 @@ mod tests {
         // the 5000 tier, not the 4500 tier.
         let events = vec![
             inv("added", "Quality Reins", "2026-04-10 09:00:00", 5, None),
-            inv("visible", "Quality Reins", "2026-04-10 09:01:00", 5, Some(4500.0)),
+            inv(
+                "visible",
+                "Quality Reins",
+                "2026-04-10 09:01:00",
+                5,
+                Some(4500.0),
+            ),
             inv("added", "Quality Reins", "2026-04-11 09:00:00", 3, None),
-            inv("visible", "Quality Reins", "2026-04-11 09:01:00", 3, Some(5000.0)),
-            inv("bought", "Quality Reins", "2026-04-12 09:00:00", 1, Some(5000.0)),
+            inv(
+                "visible",
+                "Quality Reins",
+                "2026-04-11 09:01:00",
+                3,
+                Some(5000.0),
+            ),
+            inv(
+                "bought",
+                "Quality Reins",
+                "2026-04-12 09:00:00",
+                1,
+                Some(5000.0),
+            ),
         ];
         let r = aggregate_inventory(events, 7);
         let item = &r.items[0];
@@ -1283,14 +1439,35 @@ mod tests {
         // last_activity_at advances on every event.
         let events = vec![
             inv("added", "Quality Reins", "2026-04-10 09:00:00", 5, None),
-            inv("visible", "Quality Reins", "2026-04-10 09:01:00", 5, Some(4500.0)),
-            inv("bought", "Quality Reins", "2026-04-11 10:00:00", 1, Some(4500.0)),
-            inv("configured", "Quality Reins", "2026-04-12 11:00:00", 4, Some(4600.0)),
+            inv(
+                "visible",
+                "Quality Reins",
+                "2026-04-10 09:01:00",
+                5,
+                Some(4500.0),
+            ),
+            inv(
+                "bought",
+                "Quality Reins",
+                "2026-04-11 10:00:00",
+                1,
+                Some(4500.0),
+            ),
+            inv(
+                "configured",
+                "Quality Reins",
+                "2026-04-12 11:00:00",
+                4,
+                Some(4600.0),
+            ),
         ];
         let r = aggregate_inventory(events, 30);
         let item = &r.items[0];
         assert_eq!(item.last_sold_at.as_deref(), Some("2026-04-11 10:00:00"));
-        assert_eq!(item.last_activity_at.as_deref(), Some("2026-04-12 11:00:00"));
+        assert_eq!(
+            item.last_activity_at.as_deref(),
+            Some("2026-04-12 11:00:00")
+        );
     }
 
     #[test]
@@ -1300,8 +1477,20 @@ mod tests {
         // priced event (the bought event's price_unit, in this case).
         let events = vec![
             inv("added", "Quality Reins", "2026-04-10 09:00:00", 3, None),
-            inv("visible", "Quality Reins", "2026-04-10 09:01:00", 3, Some(4500.0)),
-            inv("bought", "Quality Reins", "2026-04-12 10:00:00", 3, Some(4500.0)),
+            inv(
+                "visible",
+                "Quality Reins",
+                "2026-04-10 09:01:00",
+                3,
+                Some(4500.0),
+            ),
+            inv(
+                "bought",
+                "Quality Reins",
+                "2026-04-12 10:00:00",
+                3,
+                Some(4500.0),
+            ),
         ];
         let r = aggregate_inventory(events, 7);
         let item = &r.items[0];
@@ -1315,8 +1504,20 @@ mod tests {
         // visible at 4500, then configured at 5000 — last_known_price = 5000.
         let events = vec![
             inv("added", "Quality Reins", "2026-04-10 09:00:00", 5, None),
-            inv("visible", "Quality Reins", "2026-04-10 09:01:00", 5, Some(4500.0)),
-            inv("configured", "Quality Reins", "2026-04-11 09:00:00", 5, Some(5000.0)),
+            inv(
+                "visible",
+                "Quality Reins",
+                "2026-04-10 09:01:00",
+                5,
+                Some(4500.0),
+            ),
+            inv(
+                "configured",
+                "Quality Reins",
+                "2026-04-11 09:00:00",
+                5,
+                Some(5000.0),
+            ),
         ];
         let r = aggregate_inventory(events, 7);
         assert_eq!(r.items[0].last_known_price, Some(5000.0));
@@ -1454,7 +1655,8 @@ mod tests {
             ts("Quality Reins", "2026-01-01 09:00:00", 1, 100),
             ts("Quality Reins", "2026-04-15 09:00:00", 1, 200),
         ];
-        let r = aggregate_sales_timeseries(events, TimeseriesPeriod::AllTime, TimeseriesMode::Total);
+        let r =
+            aggregate_sales_timeseries(events, TimeseriesPeriod::AllTime, TimeseriesMode::Total);
         assert_eq!(r.bucket, "week");
         assert!(r.periods.len() > 12);
     }
@@ -1465,7 +1667,8 @@ mod tests {
             ts("Quality Reins", "2022-01-01 09:00:00", 1, 100),
             ts("Quality Reins", "2026-04-15 09:00:00", 1, 200),
         ];
-        let r = aggregate_sales_timeseries(events, TimeseriesPeriod::AllTime, TimeseriesMode::Total);
+        let r =
+            aggregate_sales_timeseries(events, TimeseriesPeriod::AllTime, TimeseriesMode::Total);
         assert_eq!(r.bucket, "month");
         assert_eq!(r.periods.first().unwrap().key, "2022-01");
         assert_eq!(r.periods.last().unwrap().key, "2026-04");

@@ -11,7 +11,7 @@ use tauri::State;
 
 use crate::cdn_commands::GameDataState;
 use crate::db::DbPool;
-use crate::settings::{get_default_player_log_path, SettingsManager};
+use crate::settings::SettingsManager;
 
 /// Timestamped log line for startup diagnostics.
 macro_rules! startup_log {
@@ -63,7 +63,10 @@ struct ReportHeader {
 }
 
 /// Placeholder reports from the game's extra-report bug: missing character
-/// name, "???" name, or race "error". Filtered out of every scan/import path.
+/// name, "???" name, or race "error". Filtered on the CharacterSheet scan
+/// and import paths (scan_reports_for_characters,
+/// import_reports_for_server); storage/inventory imports key on the
+/// Storage header/struct instead and never see these rows.
 fn is_placeholder_report(character: &str, race: Option<&str>) -> bool {
     let name = character.trim();
     if name.is_empty() || name == "???" {
@@ -83,10 +86,10 @@ fn is_placeholder_report(character: &str, race: Option<&str>) -> bool {
 pub fn validate_game_data_path(path: String) -> GameDataPathValidation {
     let base = Path::new(&path);
 
-    // Player.log may live alongside game data (Windows) or at the default
-    // macOS path (~/Library/Logs/Elder Game/Project Gorgon/Player.log).
-    let player_log_found = base.join("Player.log").exists()
-        || Path::new(&get_default_player_log_path()).exists();
+    // Player.log is only detected next to the chosen game-data folder.
+    // (A global/default-path hit is unrelated to THIS folder and must not
+    // make a bad path look valid — previously ORed.)
+    let player_log_found = base.join("Player.log").exists();
 
     GameDataPathValidation {
         path_exists: base.exists() && base.is_dir(),
@@ -246,22 +249,48 @@ pub fn set_active_character(
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| format!("Failed to begin transaction: {e}"))?;
 
+    // Existence gate first: the clear-all below is destructive, so a typo'd
+    // name must fail with the flags untouched rather than deactivating
+    // every character and committing a no-op SET.
+    let exists: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM user_characters WHERE character_name = ?1 AND server_name = ?2)",
+            rusqlite::params![character_name, server_name],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Failed to look up character: {e}"))?;
+    if !exists {
+        drop(tx); // rollback: no rows touched yet, but be explicit
+        return Err(format!(
+            "Unknown character: {character_name} on {server_name}"
+        ));
+    }
+
     // Clear all active flags
     tx.execute("UPDATE user_characters SET is_active = 0", [])
         .map_err(|e| format!("Failed to clear active flags: {e}"))?;
 
-    // Set the selected character as active
-    tx.execute(
-        "UPDATE user_characters SET is_active = 1, updated_at = CURRENT_TIMESTAMP
+    // Set the selected character as active. `exists` was just verified, so
+    // rows == 1 is expected; treat anything else as a race and roll back
+    // rather than committing a flag-less state or writing settings.
+    let rows = tx
+        .execute(
+            "UPDATE user_characters SET is_active = 1, updated_at = CURRENT_TIMESTAMP
          WHERE character_name = ?1 AND server_name = ?2",
-        rusqlite::params![character_name, server_name],
-    )
-    .map_err(|e| format!("Failed to set active character: {e}"))?;
+            rusqlite::params![character_name, server_name],
+        )
+        .map_err(|e| format!("Failed to set active character: {e}"))?;
+    if rows != 1 {
+        drop(tx); // rollback
+        return Err(format!(
+            "Failed to set active character: {character_name} on {server_name} (updated {rows} rows)"
+        ));
+    }
 
     tx.commit()
         .map_err(|e| format!("Failed to commit transaction: {e}"))?;
 
-    // Update settings
+    // Update settings only after a committed, verified activation.
     let mut settings = settings_manager.get();
     settings.active_character_name = Some(character_name);
     settings.active_server_name = Some(server_name);
@@ -278,7 +307,22 @@ pub fn complete_setup(settings_manager: State<'_, Arc<SettingsManager>>) -> Resu
 }
 
 /// Delete a character and all their character-scoped data.
-/// Cascades across all game_state_*, character_snapshots, inventory_snapshots, and related tables.
+///
+/// Deletes every row keyed by `(character_name, server_name)` — all
+/// `game_state_*` tables, every log/almanac/tracker table scoped to a
+/// character, the snapshot families (via their parent rows), and the
+/// `user_characters` record itself. See the inline table lists for the exact
+/// coverage, verified against `db/migrations.rs`.
+///
+/// Deliberately NOT deleted (not character-scoped):
+/// - `game_state_weather`, `game_state_moon` — world-state singletons.
+/// - `arena_bets`, `arena_matches` — no character columns.
+/// - `stall_events` — keyed by `owner` (a stall label, not a character).
+/// - `sales_history`, `event_log`, `chat_messages`, `hoplology_studies_new`
+///   (legacy duplicate), `milking_timers_new`/`player_milking_log_new`
+///   (migration temporaries), snapshot-child tables (deleted via parents).
+/// - `character` (not `character_name`) in `brewing_discoveries` — that
+///   column's shape is unverified, so it is left alone rather than guessed.
 #[tauri::command]
 pub fn delete_character(
     db: State<'_, DbPool>,
@@ -290,26 +334,66 @@ pub fn delete_character(
         .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
+    delete_character_on_write_conn(&mut *conn, &character_name, &server_name)?;
+
+    // If the deleted character was the active one, clear it from settings
+    let settings = settings_manager.get();
+    if settings.active_character_name.as_deref() == Some(&character_name)
+        && settings.active_server_name.as_deref() == Some(&server_name)
+    {
+        let mut updated = settings;
+        updated.active_character_name = None;
+        updated.active_server_name = None;
+        settings_manager.update(updated).ok();
+    }
+
+    eprintln!("[setup] Deleted character {character_name} on {server_name}");
+    Ok(())
+}
+
+/// Transaction body of [`delete_character`], split out so tests can run it
+/// against a plain `rusqlite::Connection` without a Tauri `State` wrapper.
+fn delete_character_on_write_conn(
+    conn: &mut rusqlite::Connection,
+    character_name: &str,
+    server_name: &str,
+) -> Result<(), String> {
     let conn = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| format!("Failed to begin transaction: {e}"))?;
-    // All character-scoped tables to cascade delete
-    let tables = [
-        "game_state_skills",
+
+    // FK-safe order matters only for parent/child pairs deleted by id below;
+    // every (character_name, server_name) table is independent, so plain
+    // deletes are listed alphabetically within each group.
+    //
+    // Group 1: game_state_* tables with a (character_name, server_name) scope.
+    // Verified against db/migrations.rs; game_state_weather/moon are world
+    // singletons and are intentionally absent.
+    let game_state_tables = [
         "game_state_active_skills",
+        "game_state_area",
         "game_state_attributes",
+        "game_state_books",
         "game_state_combat",
-        "game_state_mount",
-        "game_state_inventory",
-        "game_state_recipes",
+        "game_state_currencies",
+        "game_state_directed_goals",
+        "game_state_effects",
         "game_state_equipment",
         "game_state_favor",
-        "game_state_currencies",
-        "game_state_effects",
+        "game_state_gift_log",
+        "game_state_guild",
+        "game_state_inventory",
+        "game_state_mount",
+        "game_state_npc_vendor",
+        "game_state_recipes",
         "game_state_session",
+        "game_state_skills",
+        "game_state_storage",
+        "game_state_strings",
+        "game_state_teleportation",
     ];
 
-    for table in &tables {
+    for table in &game_state_tables {
         conn.execute(
             &format!("DELETE FROM {table} WHERE character_name = ?1 AND server_name = ?2"),
             rusqlite::params![character_name, server_name],
@@ -317,6 +401,54 @@ pub fn delete_character(
         .map_err(|e| format!("Delete failed: {e}"))?;
     }
 
+    // Group 2: other (character_name, server_name)-scoped tables, verified
+    // against db/migrations.rs. enemy_kills/corpse_extracts use nullable
+    // character columns but still carry the character scope, so the same
+    // predicate applies.
+    //
+    // FK-safe order: open_multihit_nodes references survey_uses (CASCADE),
+    // so it goes first; survey_uses (SET NULL to survey_sessions) goes
+    // before survey_sessions.
+    let scoped_tables = [
+        "open_multihit_nodes",
+        "character_deaths",
+        "character_item_snapshots",
+        "character_report_stats",
+        "character_resuscitations",
+        "corpse_extracts",
+        "currency_estimate",
+        "enemy_kills",
+        "garden_almanac",
+        "garden_almanac_history",
+        "harvest_almanac",
+        "hoplology_studies",
+        "item_transactions",
+        "milking_timers",
+        "player_messages",
+        "player_milking_log",
+        "player_pooping_log",
+        "stall_price_observations",
+        "survey_uses",
+        "survey_sessions",
+        "tracked_skills",
+        "user_timers",
+        "words_of_power",
+    ];
+
+    for table in &scoped_tables {
+        conn.execute(
+            &format!("DELETE FROM {table} WHERE character_name = ?1 AND server_name = ?2"),
+            rusqlite::params![character_name, server_name],
+        )
+        .map_err(|e| format!("Delete failed: {e}"))?;
+    }
+
+    // Group 3: child rows deleted via their parent ids (FK order: children
+    // before parents). character_snapshots children all CASCADE, but explicit
+    // deletes keep the cascade working even where FKs are off, matching the
+    // previous behavior. survey_uses → survey_sessions is SET NULL, and
+    // open_multihit_nodes was already cleared by scope above, so deleting
+    // survey_sessions after survey_uses is safe either way.
     // Delete character snapshots and their child data
     let snapshot_ids: Vec<i64> =
         {
@@ -359,6 +491,16 @@ pub fn delete_character(
             rusqlite::params![sid],
         )
         .map_err(|e| format!("Delete failed: {e}"))?;
+        conn.execute(
+            "DELETE FROM character_active_quests WHERE snapshot_id = ?1",
+            rusqlite::params![sid],
+        )
+        .map_err(|e| format!("Delete failed: {e}"))?;
+        conn.execute(
+            "DELETE FROM snapshot_skill_abilities WHERE snapshot_id = ?1",
+            rusqlite::params![sid],
+        )
+        .map_err(|e| format!("Delete failed: {e}"))?;
     }
     conn.execute(
         "DELETE FROM character_snapshots WHERE character_name = ?1 AND server_name = ?2",
@@ -366,32 +508,48 @@ pub fn delete_character(
     )
     .map_err(|e| format!("Delete failed: {e}"))?;
 
-    // Delete inventory snapshots and their child data
-    let inv_snapshot_ids: Vec<i64> =
-        {
-            let mut stmt = conn.prepare(
-            "SELECT id FROM inventory_snapshots WHERE character_name = ?1 AND server_name = ?2"
-        ).map_err(|e| format!("Query error: {e}"))?;
-            let ids: Vec<i64> = stmt
-                .query_map(rusqlite::params![character_name, server_name], |row| {
-                    row.get(0)
-                })
-                .map_err(|e| format!("Query error: {e}"))?
-                .flatten()
-                .collect();
-            ids
-        };
-
-    for sid in &inv_snapshot_ids {
+    // character_item_snapshots children (character_snapshot_items).
+    let item_snapshot_ids: Vec<i64> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id FROM character_item_snapshots WHERE character_name = ?1 AND server_name = ?2",
+            )
+            .map_err(|e| format!("Query error: {e}"))?;
+        let rows = stmt.query_map(rusqlite::params![character_name, server_name], |row| {
+            row.get(0)
+        })
+        .map_err(|e| format!("Query error: {e}"))?;
+        rows.flatten().collect()
+    };
+    for sid in &item_snapshot_ids {
         conn.execute(
-            "DELETE FROM inventory_snapshot_items WHERE snapshot_id = ?1",
+            "DELETE FROM character_snapshot_items WHERE item_snapshot_id = ?1",
             rusqlite::params![sid],
         )
         .map_err(|e| format!("Delete failed: {e}"))?;
     }
+    // Already deleted by scope in Group 2; kept as a no-op-safe second pass
+    // so the parent rows are gone even if the scoped delete above is edited.
     conn.execute(
-        "DELETE FROM inventory_snapshots WHERE character_name = ?1 AND server_name = ?2",
+        "DELETE FROM character_item_snapshots WHERE character_name = ?1 AND server_name = ?2",
         rusqlite::params![character_name, server_name],
+    )
+    .map_err(|e| format!("Delete failed: {e}"))?;
+
+    // character_deaths children (death_damage_sources) and enemy_kills
+    // children (enemy_kill_loot): deleted by parent id before the parents
+    // were removed in Group 2... except Group 2 already removed the parents.
+    // Re-resolve: both child tables CASCADE on FK, and FKs are enforced on
+    // the pool, so orphans cannot survive. Belt-and-braces: delete any child
+    // rows whose parent id no longer exists.
+    conn.execute(
+        "DELETE FROM death_damage_sources WHERE death_id NOT IN (SELECT id FROM character_deaths)",
+        [],
+    )
+    .map_err(|e| format!("Delete failed: {e}"))?;
+    conn.execute(
+        "DELETE FROM enemy_kill_loot WHERE kill_id NOT IN (SELECT id FROM enemy_kills)",
+        [],
     )
     .map_err(|e| format!("Delete failed: {e}"))?;
 
@@ -404,19 +562,6 @@ pub fn delete_character(
 
     conn.commit()
         .map_err(|e| format!("Failed to commit transaction: {e}"))?;
-
-    // If the deleted character was the active one, clear it from settings
-    let settings = settings_manager.get();
-    if settings.active_character_name.as_deref() == Some(&character_name)
-        && settings.active_server_name.as_deref() == Some(&server_name)
-    {
-        let mut updated = settings;
-        updated.active_character_name = None;
-        updated.active_server_name = None;
-        settings_manager.update(updated).ok();
-    }
-
-    eprintln!("[setup] Deleted character {character_name} on {server_name}");
     Ok(())
 }
 
@@ -807,4 +952,323 @@ pub fn import_all_inventory_for_server(
     }
 
     Ok(imported)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::migrations::run_migrations;
+
+    const CHAR: &str = "DeleteMe";
+    const SERVER: &str = "TestServer";
+    const OTHER: &str = "KeepMe";
+
+    fn fresh_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        run_migrations(&conn, None).unwrap();
+        conn
+    }
+
+    fn count(conn: &rusqlite::Connection, table: &str, who: &str) -> i64 {
+        conn.query_row(
+            &format!("SELECT COUNT(*) FROM {table} WHERE character_name = ?1 AND server_name = ?2"),
+            rusqlite::params![who, SERVER],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Seed one row per character-scoped table for `who` (plus a snapshot
+    /// family, a death/kill family, and a survey session/use/node chain).
+    /// Mirrors the NOT NULL shapes in `db/migrations.rs`.
+    fn seed_character(conn: &rusqlite::Connection, who: &str) {
+        let ts = "2026-01-01 00:00:00";
+        // user_characters parent row.
+        conn.execute(
+            "INSERT INTO user_characters (character_name, server_name, source) VALUES (?1, ?2, 'manual')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        // Group 1: game_state_*.
+        let gs: &[&str] = &[
+            "INSERT INTO game_state_skills (character_name,server_name,skill_id,skill_name,level,last_confirmed_at) VALUES (?1,?2,1,'Sword',1,'2026-01-01')",
+            "INSERT INTO game_state_active_skills (character_name,server_name,skill1_id,skill1_name,skill2_id,skill2_name,last_confirmed_at) VALUES (?1,?2,1,'A',2,'B','2026-01-01')",
+            "INSERT INTO game_state_attributes (character_name,server_name,attribute_name,value,last_confirmed_at,min_value,max_value) VALUES (?1,?2,'Health',100,'2026-01-01',100,100)",
+            "INSERT INTO game_state_combat (character_name,server_name,in_combat,last_confirmed_at) VALUES (?1,?2,0,'2026-01-01')",
+            "INSERT INTO game_state_mount (character_name,server_name,is_mounted,last_confirmed_at) VALUES (?1,?2,0,'2026-01-01')",
+            "INSERT INTO game_state_inventory (character_name,server_name,instance_id,item_name,item_type_id,stack_size,slot_index,last_confirmed_at,source) VALUES (?1,?2,7,'Sword',1,1,0,'2026-01-01','log')",
+            "INSERT INTO game_state_recipes (character_name,server_name,recipe_id,completion_count,last_confirmed_at,source) VALUES (?1,?2,9,1,'2026-01-01','log')",
+            "INSERT INTO game_state_equipment (character_name,server_name,slot,appearance_key,last_confirmed_at) VALUES (?1,?2,'MainHand','sword_key','2026-01-01')",
+            "INSERT INTO game_state_favor (character_name,server_name,npc_key,npc_name,cumulative_delta,favor_tier,last_confirmed_at,source) VALUES (?1,?2,'npc','Npc',1.0,NULL,'2026-01-01','log')",
+            "INSERT INTO game_state_currencies (character_name,server_name,currency_name,amount,last_confirmed_at,source) VALUES (?1,?2,'Councils',5,'2026-01-01','snapshot')",
+            "INSERT INTO game_state_effects (character_name,server_name,effect_instance_id,effect_name,source_entity_id,last_confirmed_at) VALUES (?1,?2,3,'Buff',0,'2026-01-01')",
+            "INSERT INTO game_state_storage (character_name,server_name,vault_key,instance_id,item_name,item_type_id,stack_size,slot_index,last_confirmed_at,source) VALUES (?1,?2,'vault',7,'Sword',1,1,0,'2026-01-01','log')",
+            "INSERT INTO game_state_gift_log (character_name,server_name,npc_key,npc_name,gifted_at,favor_delta) VALUES (?1,?2,'npc','Npc','2026-01-01',1.0)",
+            "INSERT INTO game_state_npc_vendor VALUES (?1,?2,'npc',NULL,NULL,NULL,NULL,NULL,'2026-01-01',0,0)",
+            "INSERT INTO game_state_area (character_name,server_name,area_name,last_confirmed_at) VALUES (?1,?2,'Serbule','2026-01-01')",
+            "INSERT INTO game_state_guild VALUES (?1,?2,1,'Guild','', '2026-01-01')",
+            "INSERT INTO game_state_directed_goals VALUES (?1,?2,1,'2026-01-01')",
+            "INSERT INTO game_state_strings VALUES (?1,?2,'k','v','2026-01-01')",
+            "INSERT INTO game_state_books (character_name,server_name,book_type,title,content,captured_at) VALUES (?1,?2,'SkillReport','T','c','2026-01-01')",
+            "INSERT INTO game_state_teleportation VALUES (?1,?2,NULL,NULL,NULL,NULL,'2026-01-01')",
+        ];
+        // game_state_session singleton row (id = 1, so only the first seed
+        // can insert; the second seed updates it — then the delete test only
+        // asserts the deleted character's scope, not the singleton).
+        for stmt in gs {
+            conn.execute(stmt, rusqlite::params![who, SERVER]).unwrap();
+        }
+        // Group 2: other scoped tables.
+        conn.execute(
+            "INSERT INTO character_deaths (character_name,server_name,died_at,killer_name,killing_ability,health_damage) VALUES (?1,?2,'2026-01-01','Rat','Bite',5)",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        let death_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO death_damage_sources (death_id,event_order,timestamp,attacker_name,ability_name) VALUES (?1,0,'2026-01-01','Rat','Bite')",
+            rusqlite::params![death_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO character_item_snapshots (character_name,server_name,snapshot_timestamp,raw_json) VALUES (?1,?2,'2026-01-01','{}')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        let item_snap = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO character_snapshot_items (item_snapshot_id,type_id,stack_size,item_name) VALUES (?1,1,1,'Sword')",
+            rusqlite::params![item_snap],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO character_report_stats VALUES (?1,?2,'cat','stat','1','2026-01-01')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO character_resuscitations (character_name,server_name,occurred_at,caster_name,target_name) VALUES (?1,?2,'2026-01-01','A','B')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO corpse_extracts (character_name,server_name,item_name,skill) VALUES (?1,?2,'Bone','Anatomy')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO currency_estimate (character_name,server_name) VALUES (?1,?2)",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO enemy_kills (enemy_name,enemy_entity_id,killing_ability,killed_at,character_name,server_name) VALUES ('Rat','e1','Sword','2026-01-01',?1,?2)",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        let kill_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO enemy_kill_loot (kill_id,item_name) VALUES (?1,'Bone')",
+            rusqlite::params![kill_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO garden_almanac VALUES (?1,?2,'Wheat','Serbule',NULL,NULL,0,'2026-01-01')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO garden_almanac_history (character_name,server_name,crop_name,zone_name,captured_at) VALUES (?1,?2,'Wheat','Serbule','2026-01-01')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO harvest_almanac (character_name,server_name,monster_name,captured_at) VALUES (?1,?2,'Rat','2026-01-01')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO hoplology_studies (character_name,server_name,item_name,studied_at) VALUES (?1,?2,'Bottle','2026-01-01')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO item_transactions (timestamp,character_name,server_name,item_name,quantity,context,source) VALUES ('2026-01-01',?1,?2,'Sword',1,'loot','log')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO milking_timers (character_name,server_name,cow_name,zone,last_milked_at) VALUES (?1,?2,'Bessy','Serbule','2026-01-01')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO player_messages (character_name,server_name,timestamp,message_type,direction,other_player) VALUES (?1,?2,'2026-01-01','tell','in','Bob')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO player_milking_log (character_name,server_name,other_player,direction,milked_at) VALUES (?1,?2,'Bob','milked','2026-01-01')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO player_pooping_log (character_name,server_name,target_name,pooped_at) VALUES (?1,?2,'Bob','2026-01-01')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        // UNIQUE(observed_at, item_name, stall_npc_entity_id, price_unit) has
+        // no character column, so vary observed_at per character.
+        let observed_at = format!("2026-01-01 00:00:{:02}", if who == CHAR { 1 } else { 2 });
+        conn.execute(
+            "INSERT INTO stall_price_observations (character_name,server_name,item_name,price_unit,stall_npc_entity_id,stall_label,source,observed_at) VALUES (?1,?2,'Sword',5,1,'Stall','auto',?3)",
+            rusqlite::params![who, SERVER, observed_at],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO survey_sessions (character_name,server_name,started_at,start_trigger) VALUES (?1,?2,'2026-01-01','manual')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        let session_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO survey_uses (session_id,character_name,server_name,used_at,map_internal_name,map_display_name,kind) VALUES (?1,?2,?3,'2026-01-01','Map','Map','multihit')",
+            rusqlite::params![session_id, who, SERVER],
+        )
+        .unwrap();
+        let use_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO open_multihit_nodes (node_entity_id,character_name,server_name,survey_use_id,opened_at,last_hit_at) VALUES (99,?1,?2,?3,'2026-01-01','2026-01-01')",
+            rusqlite::params![who, SERVER, use_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tracked_skills (character_name,server_name,skill_name,sort_order) VALUES (?1,?2,'Sword',0)",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO user_timers (character_name,server_name,label,duration_seconds,started_at) VALUES (?1,?2,'T',60,'2026-01-01')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO words_of_power (character_name,server_name,word,power_name,discovered_at) VALUES (?1,?2,'W','P','2026-01-01')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        // Snapshot family + children.
+        conn.execute(
+            "INSERT INTO character_snapshots (character_name,server_name,snapshot_timestamp,raw_json) VALUES (?1,?2,'2026-01-01','{}')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        let snap = conn.last_insert_rowid();
+        for stmt in [
+            "INSERT INTO character_skill_levels (snapshot_id,skill_name,level) VALUES (?1,'Sword',1)",
+            "INSERT INTO character_npc_favor (snapshot_id,npc_key,favor_level) VALUES (?1,'npc','Friends')",
+            "INSERT INTO character_recipe_completions (snapshot_id,recipe_key,completions) VALUES (?1,'r',1)",
+            "INSERT INTO character_stats (snapshot_id,stat_key,value) VALUES (?1,'s',1.0)",
+            "INSERT INTO character_currencies (snapshot_id,currency_key,amount) VALUES (?1,'c',1)",
+            "INSERT INTO character_active_quests (snapshot_id,quest_key) VALUES (?1,'q')",
+            "INSERT INTO snapshot_skill_abilities (snapshot_id,skill_name,ability_key) VALUES (?1,'Sword','a')",
+        ] {
+            conn.execute(stmt, rusqlite::params![snap]).unwrap();
+        }
+        let _ = ts;
+    }
+
+    const SCOPED_TABLES: &[&str] = &[
+        "game_state_skills",
+        "game_state_active_skills",
+        "game_state_attributes",
+        "game_state_combat",
+        "game_state_mount",
+        "game_state_inventory",
+        "game_state_recipes",
+        "game_state_equipment",
+        "game_state_favor",
+        "game_state_currencies",
+        "game_state_effects",
+        "game_state_storage",
+        "game_state_gift_log",
+        "game_state_npc_vendor",
+        "game_state_area",
+        "game_state_guild",
+        "game_state_directed_goals",
+        "game_state_strings",
+        "game_state_books",
+        "game_state_teleportation",
+        "character_deaths",
+        "character_item_snapshots",
+        "character_report_stats",
+        "character_resuscitations",
+        "corpse_extracts",
+        "currency_estimate",
+        "enemy_kills",
+        "garden_almanac",
+        "garden_almanac_history",
+        "harvest_almanac",
+        "hoplology_studies",
+        "item_transactions",
+        "milking_timers",
+        "open_multihit_nodes",
+        "player_messages",
+        "player_milking_log",
+        "player_pooping_log",
+        "stall_price_observations",
+        "survey_sessions",
+        "survey_uses",
+        "tracked_skills",
+        "user_timers",
+        "words_of_power",
+        "character_snapshots",
+        "user_characters",
+    ];
+
+    #[test]
+    fn delete_character_removes_every_scoped_row_but_keeps_other_character() {
+        let mut conn = fresh_db();
+        seed_character(&conn, CHAR);
+        seed_character(&conn, OTHER);
+        // game_state_session is a singleton (id = 1): point it at CHAR so the
+        // delete visibly clears it, then re-point at OTHER afterwards.
+        conn.execute(
+            "INSERT OR REPLACE INTO game_state_session (id,character_name,server_name) VALUES (1,?1,?2)",
+            rusqlite::params![CHAR, SERVER],
+        )
+        .unwrap();
+
+        delete_character_on_write_conn(&mut conn, CHAR, SERVER).unwrap();
+
+        for table in SCOPED_TABLES {
+            assert_eq!(count(&conn, table, CHAR), 0, "table {table} still has {CHAR} rows");
+            assert_eq!(count(&conn, table, OTHER), 1, "table {table} lost {OTHER} rows");
+        }
+        // Singleton cleared with the deleted character.
+        let session_left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM game_state_session", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(session_left, 0);
+        // Child tables cascade / are explicitly cleared: only OTHER's single
+        // row per table survives.
+        for table in [
+            "character_skill_levels",
+            "character_npc_favor",
+            "character_recipe_completions",
+            "character_stats",
+            "character_currencies",
+            "character_active_quests",
+            "snapshot_skill_abilities",
+            "character_snapshot_items",
+            "death_damage_sources",
+            "enemy_kill_loot",
+        ] {
+            let total: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(total, 1, "child table {table} should keep only {OTHER}'s row");
+        }
+    }
 }

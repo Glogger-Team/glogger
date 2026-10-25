@@ -414,7 +414,15 @@ fn run_replay(
                 ..
             } => {
                 // Flush pending batches before identity change
-                flush_batches!(app, game_state, player_event_batch, domains_batch, batch_start, emits_since_yield, last_yield);
+                flush_batches!(
+                    app,
+                    game_state,
+                    player_event_batch,
+                    domains_batch,
+                    batch_start,
+                    emits_since_yield,
+                    last_yield
+                );
 
                 game_state.set_active_character_name(character_name);
                 game_state.set_active_server_name(server_name);
@@ -469,7 +477,15 @@ fn run_replay(
         if player_event_batch.len() >= BATCH_MAX_SIZE
             || (!player_event_batch.is_empty() && batch_start.elapsed() >= BATCH_MAX_AGE)
         {
-            flush_batches!(app, game_state, player_event_batch, domains_batch, batch_start, emits_since_yield, last_yield);
+            flush_batches!(
+                app,
+                game_state,
+                player_event_batch,
+                domains_batch,
+                batch_start,
+                emits_since_yield,
+                last_yield
+            );
         }
 
         // Extra yield if we've been emitting a lot of non-batched events
@@ -485,7 +501,15 @@ fn run_replay(
     }
 
     // Flush any remaining batched events
-    flush_batches!(app, game_state, player_event_batch, domains_batch, batch_start, emits_since_yield, last_yield);
+    flush_batches!(
+        app,
+        game_state,
+        player_event_batch,
+        domains_batch,
+        batch_start,
+        emits_since_yield,
+        last_yield
+    );
     // Suppress unused-assignment warnings from the final macro expansion
     let _ = (batch_start, emits_since_yield, last_yield);
 
@@ -522,7 +546,6 @@ fn run_replay(
 
     Ok(result)
 }
-
 
 // ============================================================
 // Tauri Command
@@ -826,8 +849,10 @@ pub fn ingest_kill_loot_from_logs(
     // --- Pass A: collect searched corpses (with permission) + their loot ---
     let mut parser = PlayerEventParser::new();
     // corpse_entity_id -> (corpse_name, first-search killed_at, zone, combat_skills)
-    let mut corpses: std::collections::HashMap<u32, (String, String, Option<String>, Option<String>)> =
-        std::collections::HashMap::new();
+    let mut corpses: std::collections::HashMap<
+        u32,
+        (String, String, Option<String>, Option<String>),
+    > = std::collections::HashMap::new();
     // ordered loot: (corpse_entity_id, item_name, quantity, instance_id)
     let mut loot: Vec<(u32, String, u32, i64)> = Vec::new();
     // Current zone (internal area key) tracked from `LOADING LEVEL <area>` lines,
@@ -890,7 +915,9 @@ pub fn ingest_kill_loot_from_logs(
 
     // --- Pass B: persist kills, then attribute loot ---
     // The parse is done; only NOW take the dedicated write connection.
-    let mut conn = db.get_write().map_err(|e| format!("DB connection error: {e}"))?;
+    let mut conn = db
+        .get_write()
+        .map_err(|e| format!("DB connection error: {e}"))?;
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| format!("Failed to begin transaction: {e}"))?;
@@ -1076,11 +1103,9 @@ pub async fn ingest_player_log(
     }
 
     let db = app.state::<DbPool>().inner().clone();
-    let result = tokio::task::spawn_blocking(move || {
-        ingest_kill_loot_from_logs(player_path, &db)
-    })
-    .await
-    .map_err(|e| format!("Ingest task failed: {e}"))??;
+    let result = tokio::task::spawn_blocking(move || ingest_kill_loot_from_logs(player_path, &db))
+        .await
+        .map_err(|e| format!("Ingest task failed: {e}"))??;
 
     Ok(result)
 }
@@ -1170,10 +1195,10 @@ mod ingest_tests {
 
         // No in-progress copy is left behind (write-then-rename).
         assert!(
-            !std::fs::read_dir(&dir)
-                .unwrap()
-                .flatten()
-                .any(|e| e.file_name().to_str().is_some_and(|n| n.ends_with(".partial"))),
+            !std::fs::read_dir(&dir).unwrap().flatten().any(|e| e
+                .file_name()
+                .to_str()
+                .is_some_and(|n| n.ends_with(".partial"))),
             "no partial file remains"
         );
 
@@ -1266,7 +1291,10 @@ mod ingest_tests {
         let dir2 = temp_dir();
         for i in 0..2u64 {
             let p = dir2.join(format!("Player-{i:016x}.log"));
-            std::fs::File::create(&p).unwrap().set_len(600 * 1024).unwrap();
+            std::fs::File::create(&p)
+                .unwrap()
+                .set_len(600 * 1024)
+                .unwrap();
             set_mtime(&p, 100 + i);
         }
         prune_player_log_archive(
@@ -1561,9 +1589,15 @@ mod ingest_tests {
         let r = ingest_kill_loot_from_logs(log_path.clone(), &pool).expect("ingest");
         assert!(!r.already_ingested);
         // The corpse already existed (recorded live) — no new kill row.
-        assert_eq!(r.kills_added, 0, "no duplicate kill for an already-recorded corpse");
+        assert_eq!(
+            r.kills_added, 0,
+            "no duplicate kill for an already-recorded corpse"
+        );
         // Instance 111 already recorded live (dedup); only 222 is genuinely new.
-        assert_eq!(r.loot_added, 1, "only the new instance is added, 111 deduped");
+        assert_eq!(
+            r.loot_added, 1,
+            "only the new instance is added, 111 deduped"
+        );
 
         let conn = pool.get().unwrap();
         let kills: i64 = conn
@@ -1573,7 +1607,10 @@ mod ingest_tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(kills, 1, "corpse recorded once, not duplicated under 'Unknown'");
+        assert_eq!(
+            kills, 1,
+            "corpse recorded once, not duplicated under 'Unknown'"
+        );
         let loot: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM enemy_kill_loot l

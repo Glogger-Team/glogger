@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-const GITHUB_RELEASES_URL: &str =
-    "https://api.github.com/repos/Glogger-Team/glogger/releases";
+const GITHUB_RELEASES_URL: &str = "https://api.github.com/repos/Glogger-Team/glogger/releases";
 
 const PG_NEWS_URL: &str = "https://client.projectgorgon.com/news.txt";
 
@@ -29,6 +28,7 @@ pub struct ReleaseInfo {
 pub async fn fetch_github_releases() -> Result<Vec<ReleaseInfo>, String> {
     let client = reqwest::Client::builder()
         .user_agent("glogger-update-check")
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
@@ -37,6 +37,8 @@ pub async fn fetch_github_releases() -> Result<Vec<ReleaseInfo>, String> {
         .send()
         .await
         .map_err(|e| format!("Failed to reach GitHub: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("GitHub request failed: {e}"))?
         .json()
         .await
         .map_err(|e| format!("Failed to parse releases: {e}"))?;
@@ -59,6 +61,7 @@ pub async fn fetch_github_releases() -> Result<Vec<ReleaseInfo>, String> {
 pub async fn fetch_pg_news() -> Result<String, String> {
     let client = reqwest::Client::builder()
         .user_agent("glogger")
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
@@ -67,6 +70,8 @@ pub async fn fetch_pg_news() -> Result<String, String> {
         .send()
         .await
         .map_err(|e| format!("Failed to reach PG news: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("PG news request failed: {e}"))?
         .text()
         .await
         .map_err(|e| format!("Failed to read PG news: {e}"))?;

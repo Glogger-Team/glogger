@@ -139,11 +139,17 @@ pub fn aggregate_monsters<C: DbRead + ?Sized>(
 
     for row in rows {
         let (name, verb, earned_at, amount) = row.map_err(|e| format!("Row error: {e}"))?;
-        let ms = local_ts_to_epoch_ms(&earned_at).unwrap_or(0);
+        // Skip malformed timestamps: counting them as epoch 0 would corrupt
+        // last_earned_ms ordering and min-gap computation.
+        let Some(ms) = local_ts_to_epoch_ms(&earned_at) else {
+            continue;
+        };
 
         if cur_name.as_deref() != Some(name.as_str()) {
             // Boundary: emit the previous monster, then reset.
-            flush(&mut out, &cur_name, &cur_verb, count, total, last_ms, min_gap);
+            flush(
+                &mut out, &cur_name, &cur_verb, count, total, last_ms, min_gap,
+            );
             cur_name = Some(name);
             cur_verb = verb;
             count = 0;
@@ -166,7 +172,9 @@ pub fn aggregate_monsters<C: DbRead + ?Sized>(
         }
         prev_ms = Some(ms);
     }
-    flush(&mut out, &cur_name, &cur_verb, count, total, last_ms, min_gap);
+    flush(
+        &mut out, &cur_name, &cur_verb, count, total, last_ms, min_gap,
+    );
 
     // Most-recently-earned first.
     out.sort_by(|a, b| b.last_earned_ms.cmp(&a.last_earned_ms));
@@ -175,10 +183,7 @@ pub fn aggregate_monsters<C: DbRead + ?Sized>(
 
 /// Read every `Chat-*.log` in the ChatLogs directory and persist any Combat
 /// Wisdom monster awards found. Idempotent (unique index). Returns rows inserted.
-pub fn backfill_from_chat_logs(
-    settings: &SettingsManager,
-    db: &DbPool,
-) -> Result<usize, String> {
+pub fn backfill_from_chat_logs(settings: &SettingsManager, db: &DbPool) -> Result<usize, String> {
     let Some(dir) = settings.get_chat_logs_dir() else {
         return Ok(0);
     };
@@ -201,7 +206,9 @@ pub fn backfill_from_chat_logs(
             continue;
         }
 
-        let Ok(file) = File::open(&path) else { continue };
+        let Ok(file) = File::open(&path) else {
+            continue;
+        };
         // One IMMEDIATE transaction per file: four startup backfills run
         // concurrently, and a single transaction spanning every file holds
         // the write lock long enough for the others' busy_timeout (5s) to
@@ -213,7 +220,7 @@ pub fn backfill_from_chat_logs(
         let earns: Vec<(String, u32, Option<String>, String, Option<String>)> = {
             let reader = BufReader::new(file);
             let mut out = Vec::new();
-            for line in reader.lines().map_while(Result::ok) {
+            for line in reader.lines().filter_map(Result::ok) {
                 let Some(msg) = parse_chat_line(&line) else {
                     continue;
                 };
@@ -260,8 +267,6 @@ pub fn backfill_from_chat_logs(
 
     Ok(inserted)
 }
-
-
 
 /// Tauri command wrapper around [`backfill_from_chat_logs`].
 #[tauri::command]
@@ -336,8 +341,15 @@ mod tests {
             ("2026-04-08 10:59:51", 95),
             ("2026-04-08 16:59:42", 95),
         ] {
-            record_combat_wisdom_earn(&conn, ts, amt, Some("Aktaari Royal Guard"), "Defeated", None)
-                .unwrap();
+            record_combat_wisdom_earn(
+                &conn,
+                ts,
+                amt,
+                Some("Aktaari Royal Guard"),
+                "Defeated",
+                None,
+            )
+            .unwrap();
         }
         let monsters = aggregate_monsters(&conn).unwrap();
         let guard = monsters

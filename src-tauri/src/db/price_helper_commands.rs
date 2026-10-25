@@ -79,7 +79,8 @@ pub fn create_price_helper_quote(
         .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
-    let default_fee = r#"{"per_craft_fee":0,"material_pct":0,"material_pct_basis":"total","flat_fee":0}"#;
+    let default_fee =
+        r#"{"per_craft_fee":0,"material_pct":0,"material_pct_basis":"total","flat_fee":0}"#;
     let fee_config = input.fee_config.as_deref().unwrap_or(default_fee);
 
     conn.execute(
@@ -244,7 +245,13 @@ pub fn add_price_helper_entry(
     conn.execute(
         "INSERT INTO price_helper_entries (quote_id, recipe_id, recipe_name, quantity, sort_order)
          VALUES (?1, ?2, ?3, ?4, ?5)",
-        rusqlite::params![input.quote_id, input.recipe_id, input.recipe_name, input.quantity, next_order],
+        rusqlite::params![
+            input.quote_id,
+            input.recipe_id,
+            input.recipe_name,
+            input.quantity,
+            next_order
+        ],
     )
     .map_err(|e| format!("Failed to add entry: {e}"))?;
 
@@ -306,11 +313,8 @@ pub fn remove_price_helper_entry(db: State<'_, DbPool>, entry_id: i64) -> Result
     )
     .map_err(|e| format!("Failed to touch quote: {e}"))?;
 
-    conn.execute(
-        "DELETE FROM price_helper_entries WHERE id = ?1",
-        [entry_id],
-    )
-    .map_err(|e| format!("Failed to remove entry: {e}"))?;
+    conn.execute("DELETE FROM price_helper_entries WHERE id = ?1", [entry_id])
+        .map_err(|e| format!("Failed to remove entry: {e}"))?;
 
     conn.commit()
         .map_err(|e| format!("Failed to commit transaction: {e}"))?;

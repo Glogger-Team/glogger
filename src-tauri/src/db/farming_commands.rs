@@ -484,7 +484,11 @@ mod tests {
         // Second auto-save (same id) with grown tallies updates the SAME row.
         let id2 = save_farming_session_impl(
             &conn,
-            &input_with(Some(id), vec![("Goblin", 8)], vec![("Gold Coin", 10), ("Bone", 3)]),
+            &input_with(
+                Some(id),
+                vec![("Goblin", 8)],
+                vec![("Gold Coin", 10), ("Bone", 3)],
+            ),
         )
         .unwrap();
 
@@ -495,7 +499,11 @@ mod tests {
             8,
             "kills replaced with the fresh snapshot, not summed (no double-count)"
         );
-        assert_eq!(item_row_count(&conn, id), 2, "items replaced with the fresh snapshot");
+        assert_eq!(
+            item_row_count(&conn, id),
+            2,
+            "items replaced with the fresh snapshot"
+        );
     }
 
     /// Auto-saving against an id that no longer exists (e.g. the row was deleted)
@@ -505,6 +513,9 @@ mod tests {
         let conn = setup();
         let result =
             save_farming_session_impl(&conn, &input_with(Some(99999), vec![("Goblin", 1)], vec![]));
-        assert!(result.is_err(), "updating a non-existent session should error");
+        assert!(
+            result.is_err(),
+            "updating a non-existent session should error"
+        );
     }
 }

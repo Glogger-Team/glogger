@@ -88,19 +88,44 @@ fn extract_effect_label(item_name: &str, base_name: &str) -> Option<String> {
     let base_lower = base_name.to_lowercase();
 
     // Check for suffix: "Base Name of Something"
+    // NOTE: `pos` is a byte offset into the *lowercased* string. Lowercasing
+    // can change byte length (e.g. U+0130 İ → i̇), so `pos` may not be a
+    // char boundary in the original — and `base_name.len()` may not equal
+    // the matched slice's length in the original. Guard every slice with
+    // `get` (fall through to the generic handling on None) and measure the
+    // match in the ORIGINAL string by consuming chars until their
+    // lowercase equals the lowered base name.
     if let Some(pos) = item_lower.find(&base_lower) {
-        let prefix = item_name[..pos].trim();
-        let suffix_start = pos + base_name.len();
-        let suffix = item_name[suffix_start..].trim();
-
-        if !prefix.is_empty() && !suffix.is_empty() {
-            return Some(format!("{} ... {}", prefix, suffix));
-        }
-        if !prefix.is_empty() {
-            return Some(prefix.to_string());
-        }
-        if !suffix.is_empty() {
-            return Some(suffix.to_string());
+        if let (Some(prefix_raw), Some(rest)) = (item_name.get(..pos), item_name.get(pos..)) {
+            let mut suffix_start = None;
+            if !base_lower.is_empty() {
+                let mut lowered = String::new();
+                for (rel, c) in rest.char_indices() {
+                    for lc in c.to_lowercase() {
+                        lowered.push(lc);
+                    }
+                    if lowered == base_lower {
+                        suffix_start = Some(pos + rel + c.len_utf8());
+                        break;
+                    }
+                    if !base_lower.starts_with(lowered.as_str()) {
+                        break;
+                    }
+                }
+            }
+            if let Some(suffix_start) = suffix_start {
+                let prefix = prefix_raw.trim();
+                let suffix = item_name.get(suffix_start..).map(str::trim).unwrap_or("");
+                if !prefix.is_empty() && !suffix.is_empty() {
+                    return Some(format!("{} ... {}", prefix, suffix));
+                }
+                if !prefix.is_empty() {
+                    return Some(prefix.to_string());
+                }
+                if !suffix.is_empty() {
+                    return Some(suffix.to_string());
+                }
+            }
         }
     }
 
@@ -116,13 +141,13 @@ fn extract_effect_label(item_name: &str, base_name: &str) -> Option<String> {
 // ── Delete a discovery ──────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn delete_brewing_discovery(
-    discovery_id: i64,
-    db: State<'_, DbPool>,
-) -> Result<(), String> {
+pub fn delete_brewing_discovery(discovery_id: i64, db: State<'_, DbPool>) -> Result<(), String> {
     let conn = db.get_write().map_err(|e| format!("DB error: {e}"))?;
-    conn.execute("DELETE FROM brewing_discoveries WHERE id = ?1", params![discovery_id])
-        .map_err(|e| format!("Delete error: {e}"))?;
+    conn.execute(
+        "DELETE FROM brewing_discoveries WHERE id = ?1",
+        params![discovery_id],
+    )
+    .map_err(|e| format!("Delete error: {e}"))?;
     Ok(())
 }
 
@@ -264,8 +289,7 @@ pub fn get_brewing_discoveries(
 
 fn map_discovery_row(row: &rusqlite::Row) -> rusqlite::Result<BrewingDiscovery> {
     let ingredient_ids_json: String = row.get(3)?;
-    let ingredient_ids: Vec<u32> =
-        serde_json::from_str(&ingredient_ids_json).unwrap_or_default();
+    let ingredient_ids: Vec<u32> = serde_json::from_str(&ingredient_ids_json).unwrap_or_default();
 
     Ok(BrewingDiscovery {
         id: row.get(0)?,
@@ -302,7 +326,11 @@ pub async fn scan_all_snapshots_for_brewing(
             .map_err(|e| format!("Query error: {e}"))?;
         let rows = stmt
             .query_map(params![character], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })
             .map_err(|e| format!("Query error: {e}"))?
             .filter_map(|r| r.ok())
@@ -392,8 +420,10 @@ fn snapshot_brewing_items(
     };
 
     // Build result_item_id → recipe mapping
-    let mut result_to_recipe: std::collections::HashMap<u32, &crate::game_data::brewing::BrewingRecipe> =
-        std::collections::HashMap::new();
+    let mut result_to_recipe: std::collections::HashMap<
+        u32,
+        &crate::game_data::brewing::BrewingRecipe,
+    > = std::collections::HashMap::new();
     for recipe in &data.brewing_recipes {
         if let Some(result_id) = recipe.result_item_id {
             result_to_recipe.insert(result_id, recipe);
@@ -433,7 +463,10 @@ fn snapshot_brewing_items(
         ing_ids.sort();
         let ing_ids_json = serde_json::to_string(&ing_ids).unwrap_or_default();
 
-        let power = tsys_powers[0].get("Power").and_then(|v| v.as_str()).map(String::from);
+        let power = tsys_powers[0]
+            .get("Power")
+            .and_then(|v| v.as_str())
+            .map(String::from);
         let power_tier = tsys_powers[0]
             .get("Tier")
             .and_then(|v| v.as_i64())
@@ -555,7 +588,10 @@ pub async fn import_brewing_discoveries_csv(
 
     // Parse header to find column indices
     let header_line = lines.next().ok_or("CSV file is empty")?;
-    let headers: Vec<String> = header_line.split(',').map(|s| s.trim().to_lowercase()).collect();
+    let headers: Vec<String> = header_line
+        .split(',')
+        .map(|s| s.trim().to_lowercase())
+        .collect();
 
     let col = |name: &str| -> Option<usize> { headers.iter().position(|h| h == name) };
 
@@ -566,7 +602,9 @@ pub async fn import_brewing_discoveries_csv(
     let col_ing3 = col("ingredient3").or_else(|| col("ingredient_3"));
     let col_ing4 = col("ingredient4").or_else(|| col("ingredient_4"));
     let col_effect_name = col("effect_name").or_else(|| col("effect"));
-    let col_effect_desc = col("effect_desc").or_else(|| col("effects")).or_else(|| col("description"));
+    let col_effect_desc = col("effect_desc")
+        .or_else(|| col("effects"))
+        .or_else(|| col("description"));
     let col_power = col("power");
     let col_power_tier = col("power_tier");
     let col_item_name = col("item_name");
@@ -578,7 +616,9 @@ pub async fn import_brewing_discoveries_csv(
         return Err("CSV must have a 'recipe_name' or 'type_id' column".to_string());
     }
     if ingredient_cols.iter().all(|c| c.is_none()) {
-        return Err("CSV must have at least one ingredient column (ingredient1..ingredient4)".to_string());
+        return Err(
+            "CSV must have at least one ingredient column (ingredient1..ingredient4)".to_string(),
+        );
     }
 
     // Build lookups
@@ -591,10 +631,14 @@ pub async fn import_brewing_discoveries_csv(
     }
 
     // recipe name → recipe (case-insensitive, match base name without "(One Glass)" etc.)
-    let mut recipe_name_to_recipe: std::collections::HashMap<String, &crate::game_data::brewing::BrewingRecipe> =
-        std::collections::HashMap::new();
-    let mut result_to_recipe: std::collections::HashMap<u32, &crate::game_data::brewing::BrewingRecipe> =
-        std::collections::HashMap::new();
+    let mut recipe_name_to_recipe: std::collections::HashMap<
+        String,
+        &crate::game_data::brewing::BrewingRecipe,
+    > = std::collections::HashMap::new();
+    let mut result_to_recipe: std::collections::HashMap<
+        u32,
+        &crate::game_data::brewing::BrewingRecipe,
+    > = std::collections::HashMap::new();
     for recipe in &data.brewing_recipes {
         let name_lower = recipe.name.to_lowercase();
         recipe_name_to_recipe.insert(name_lower.clone(), recipe);
@@ -613,11 +657,15 @@ pub async fn import_brewing_discoveries_csv(
 
     // TSys prefix/suffix → power name (for resolving effect names like "Partier's")
     // Also build effect description text → power name lookup
-    let mut label_to_power: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    let mut desc_to_power: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut label_to_power: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut desc_to_power: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for info in data.tsys.client_info.values() {
         if let Some(ref iname) = info.internal_name {
-            if !iname.starts_with("Brewing") { continue; }
+            if !iname.starts_with("Brewing") {
+                continue;
+            }
             if let Some(ref prefix) = info.prefix {
                 label_to_power.insert(prefix.to_lowercase(), iname.clone());
             }
@@ -627,7 +675,9 @@ pub async fn import_brewing_discoveries_csv(
             // Build description templates from all tiers
             for tier_info in info.tiers.values() {
                 for desc in &tier_info.effect_descs {
-                    if let Some(resolved) = crate::cdn_commands::resolve_single_effect_public(desc, &data) {
+                    if let Some(resolved) =
+                        crate::cdn_commands::resolve_single_effect_public(desc, &data)
+                    {
                         // Strip numbers to create a matchable template
                         let template = strip_numbers(&resolved.formatted).to_lowercase();
                         if !template.is_empty() {
@@ -664,12 +714,17 @@ pub async fn import_brewing_discoveries_csv(
     for (line_num, line) in lines.enumerate() {
         let line_display = line_num + 2; // +2 because header is line 1 and enumerate starts at 0
         let line = line.trim();
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
 
         let fields: Vec<&str> = line.split(',').collect();
 
         let get_field = |col_idx: Option<usize>| -> &str {
-            col_idx.and_then(|i| fields.get(i)).map(|s| s.trim()).unwrap_or("")
+            col_idx
+                .and_then(|i| fields.get(i))
+                .map(|s| s.trim())
+                .unwrap_or("")
         };
 
         // Resolve ingredients
@@ -677,29 +732,43 @@ pub async fn import_brewing_discoveries_csv(
         let mut resolve_failed = false;
         for col_opt in &ingredient_cols {
             let name = get_field(*col_opt);
-            if name.is_empty() { continue; }
+            if name.is_empty() {
+                continue;
+            }
             match name_to_id.get(&name.to_lowercase()) {
                 Some(id) => ingredient_ids.push(*id),
                 None => {
-                    skipped_lines.push(format!("Line {}: unknown ingredient \"{}\"", line_display, name));
+                    skipped_lines.push(format!(
+                        "Line {}: unknown ingredient \"{}\"",
+                        line_display, name
+                    ));
                     resolve_failed = true;
                     break;
                 }
             }
         }
-        if resolve_failed || ingredient_ids.is_empty() { continue; }
+        if resolve_failed || ingredient_ids.is_empty() {
+            continue;
+        }
 
         // Resolve recipe: try type_id first, then recipe_name
         let type_id_str = get_field(col_type_id);
-        let type_id: Option<u32> = if type_id_str.is_empty() { None } else { type_id_str.parse().ok() };
+        let type_id: Option<u32> = if type_id_str.is_empty() {
+            None
+        } else {
+            type_id_str.parse().ok()
+        };
 
         let recipe = if let Some(tid) = type_id {
             result_to_recipe.get(&tid).copied()
         } else {
             None
-        }.or_else(|| {
+        }
+        .or_else(|| {
             let name = get_field(col_recipe_name);
-            if name.is_empty() { return None; }
+            if name.is_empty() {
+                return None;
+            }
             recipe_name_to_recipe.get(&name.to_lowercase()).copied()
         });
 
@@ -784,10 +853,15 @@ pub async fn import_brewing_discoveries_csv(
                 power_tier,
                 effect_label,
                 race_restriction,
-                if !item_name.is_empty() { item_name }
-                else if !effect_name.is_empty() { &effect_name }
-                else if !effect_desc.is_empty() { &effect_desc }
-                else { "" },
+                if !item_name.is_empty() {
+                    item_name
+                } else if !effect_name.is_empty() {
+                    &effect_name
+                } else if !effect_desc.is_empty() {
+                    &effect_desc
+                } else {
+                    ""
+                },
                 timestamp,
             ])
             .map_err(|e| format!("Failed to insert discovery: {e}"))?;

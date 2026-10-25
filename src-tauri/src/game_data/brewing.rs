@@ -142,7 +142,11 @@ fn classify_recipe(recipe: &RecipeInfo) -> Option<BrewingCategory> {
     }
 
     // Finished liquor: has BrewItem effect with tier >= 1001 and < 2001
-    if let Some(effect) = recipe.result_effects.first().and_then(|e| parse_brew_item(e)) {
+    if let Some(effect) = recipe
+        .result_effects
+        .first()
+        .and_then(|e| parse_brew_item(e))
+    {
         if effect.tier >= 2001 {
             return Some(BrewingCategory::Wine);
         }
@@ -157,7 +161,11 @@ fn classify_recipe(recipe: &RecipeInfo) -> Option<BrewingCategory> {
     }
 
     // If it has a BrewItem effect and we get here, it's a beer
-    if recipe.result_effects.iter().any(|e| e.starts_with("BrewItem(")) {
+    if recipe
+        .result_effects
+        .iter()
+        .any(|e| e.starts_with("BrewItem("))
+    {
         return Some(BrewingCategory::Beer);
     }
 
@@ -169,7 +177,11 @@ fn classify_recipe(recipe: &RecipeInfo) -> Option<BrewingCategory> {
 pub fn build_brewing_data(
     recipes: &HashMap<u32, RecipeInfo>,
     items: &HashMap<u32, ItemInfo>,
-) -> (Vec<BrewingRecipe>, Vec<BrewingIngredient>, HashMap<String, Vec<u32>>) {
+) -> (
+    Vec<BrewingRecipe>,
+    Vec<BrewingIngredient>,
+    HashMap<String, Vec<u32>>,
+) {
     // Build keyword → item IDs index for all brewing ingredients
     let mut keyword_to_items: HashMap<String, Vec<u32>> = HashMap::new();
     let mut brewing_ingredients: Vec<BrewingIngredient> = Vec::new();
@@ -232,10 +244,7 @@ pub fn build_brewing_data(
             if !ingredient.item_keys.is_empty() {
                 // Variable slot — keyword-based
                 let keyword = ingredient.item_keys[0].clone();
-                let valid_ids = keyword_to_items
-                    .get(&keyword)
-                    .cloned()
-                    .unwrap_or_default();
+                let valid_ids = keyword_to_items.get(&keyword).cloned().unwrap_or_default();
 
                 variable_slots.push(BrewingVariableSlot {
                     keyword,
@@ -337,7 +346,9 @@ mod tests {
         let r = result.unwrap();
         assert_eq!(r.tier, 1001);
         assert_eq!(r.ingredient_slots.len(), 4);
-        assert!(r.ingredient_slots.contains(&"BrewingAnimalPartA5".to_string()));
+        assert!(r
+            .ingredient_slots
+            .contains(&"BrewingAnimalPartA5".to_string()));
     }
 
     #[test]

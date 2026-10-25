@@ -59,7 +59,10 @@ pub struct FileDiff {
 /// Compute diff summaries for all DATA_FILES and TRANSLATION_FILES by comparing
 /// old_dir vs new_dir. Data files live directly in the dir; translation files
 /// live under a `translation/` subdirectory.
-pub async fn compute_summary(old_dir: &Path, new_dir: &Path) -> Result<Vec<FileDiffSummary>, String> {
+pub async fn compute_summary(
+    old_dir: &Path,
+    new_dir: &Path,
+) -> Result<Vec<FileDiffSummary>, String> {
     let mut summaries = Vec::new();
 
     // Data files: {dir}/{name}.json
@@ -229,7 +232,10 @@ async fn load_json_keys(path: &Path) -> Result<BTreeMap<String, Value>, String> 
             .enumerate()
             .map(|(i, v)| (i.to_string(), v))
             .collect()),
-        _ => Err(format!("{} is neither a JSON object nor array", path.display())),
+        _ => Err(format!(
+            "{} is neither a JSON object nor array",
+            path.display()
+        )),
     }
 }
 

@@ -708,16 +708,19 @@ pub fn get_equipped_gear_candidates(
             }
         }
 
-        by_slot.entry(planner_slot).or_default().push(EquippedCandidate {
-            item_id: row.type_id,
-            item_name: row.item_name,
-            slot_level,
-            slot_rarity,
-            is_crafted: row.is_crafted,
-            is_worn: row.durability.is_some(),
-            is_attuned,
-            mods,
-        });
+        by_slot
+            .entry(planner_slot)
+            .or_default()
+            .push(EquippedCandidate {
+                item_id: row.type_id,
+                item_name: row.item_name,
+                slot_level,
+                slot_rarity,
+                is_crafted: row.is_crafted,
+                is_worn: row.durability.is_some(),
+                is_attuned,
+                mods,
+            });
     }
 
     // Order candidates best-guess first so the picker can default to candidates[0]:
@@ -1082,10 +1085,7 @@ struct ExportedCpRecipe {
 }
 
 #[tauri::command]
-pub fn export_build_preset(
-    db: State<'_, DbPool>,
-    preset_id: i64,
-) -> Result<String, String> {
+pub fn export_build_preset(db: State<'_, DbPool>, preset_id: i64) -> Result<String, String> {
     let conn = db
         .get()
         .map_err(|e| format!("Database connection error: {e}"))?;
@@ -1248,8 +1248,15 @@ pub fn import_build_preset(
             .prepare("INSERT INTO build_preset_mods (preset_id, equip_slot, power_name, tier, is_augment, sort_order) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")
             .map_err(|e| format!("Failed to prepare mod insert: {e}"))?;
         for m in &build.mods {
-            stmt.execute(rusqlite::params![new_id, m.equip_slot, m.power_name, m.tier, m.is_augment as i32, m.sort_order])
-                .map_err(|e| format!("Failed to insert mod: {e}"))?;
+            stmt.execute(rusqlite::params![
+                new_id,
+                m.equip_slot,
+                m.power_name,
+                m.tier,
+                m.is_augment as i32,
+                m.sort_order
+            ])
+            .map_err(|e| format!("Failed to insert mod: {e}"))?;
         }
     }
 
@@ -1258,8 +1265,19 @@ pub fn import_build_preset(
             .prepare("INSERT INTO build_preset_slot_items (preset_id, equip_slot, item_id, item_name, slot_level, slot_rarity, is_crafted, is_masterwork, slot_skill_primary, slot_skill_secondary) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)")
             .map_err(|e| format!("Failed to prepare slot item insert: {e}"))?;
         for si in &build.slot_items {
-            stmt.execute(rusqlite::params![new_id, si.equip_slot, si.item_id, si.item_name, si.slot_level, si.slot_rarity, si.is_crafted as i32, si.is_masterwork as i32, si.slot_skill_primary, si.slot_skill_secondary])
-                .map_err(|e| format!("Failed to insert slot item: {e}"))?;
+            stmt.execute(rusqlite::params![
+                new_id,
+                si.equip_slot,
+                si.item_id,
+                si.item_name,
+                si.slot_level,
+                si.slot_rarity,
+                si.is_crafted as i32,
+                si.is_masterwork as i32,
+                si.slot_skill_primary,
+                si.slot_skill_secondary
+            ])
+            .map_err(|e| format!("Failed to insert slot item: {e}"))?;
         }
     }
 
@@ -1268,8 +1286,14 @@ pub fn import_build_preset(
             .prepare("INSERT INTO build_preset_abilities (preset_id, bar, slot_position, ability_id, ability_name) VALUES (?1, ?2, ?3, ?4, ?5)")
             .map_err(|e| format!("Failed to prepare ability insert: {e}"))?;
         for a in &build.abilities {
-            stmt.execute(rusqlite::params![new_id, a.bar, a.slot_position, a.ability_id, a.ability_name])
-                .map_err(|e| format!("Failed to insert ability: {e}"))?;
+            stmt.execute(rusqlite::params![
+                new_id,
+                a.bar,
+                a.slot_position,
+                a.ability_id,
+                a.ability_name
+            ])
+            .map_err(|e| format!("Failed to insert ability: {e}"))?;
         }
     }
 
@@ -1278,8 +1302,17 @@ pub fn import_build_preset(
             .prepare("INSERT INTO build_preset_cp_recipes (preset_id, equip_slot, recipe_id, recipe_name, cp_cost, effect_type, effect_key, sort_order) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)")
             .map_err(|e| format!("Failed to prepare CP recipe insert: {e}"))?;
         for r in &build.cp_recipes {
-            stmt.execute(rusqlite::params![new_id, r.equip_slot, r.recipe_id, r.recipe_name, r.cp_cost, r.effect_type, r.effect_key, r.sort_order])
-                .map_err(|e| format!("Failed to insert CP recipe: {e}"))?;
+            stmt.execute(rusqlite::params![
+                new_id,
+                r.equip_slot,
+                r.recipe_id,
+                r.recipe_name,
+                r.cp_cost,
+                r.effect_type,
+                r.effect_key,
+                r.sort_order
+            ])
+            .map_err(|e| format!("Failed to insert CP recipe: {e}"))?;
         }
     }
 
@@ -1320,8 +1353,14 @@ mod equipped_gear_tests {
     #[test]
     fn parses_stored_tsys_powers_json() {
         let stored = serde_json::to_string(&vec![
-            TsysPower { tier: 4, power: "AgonizeShortenReset".to_string() },
-            TsysPower { tier: 9, power: "GenericBoostAcid".to_string() },
+            TsysPower {
+                tier: 4,
+                power: "AgonizeShortenReset".to_string(),
+            },
+            TsysPower {
+                tier: 9,
+                power: "GenericBoostAcid".to_string(),
+            },
         ])
         .unwrap();
         assert!(stored.contains("\"Tier\":4"));

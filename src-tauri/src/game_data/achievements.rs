@@ -87,7 +87,10 @@ mod tests {
             Some("Reach level 25 in any combat skill.")
         );
         assert_eq!(first.icon_type.as_deref(), Some("Combat"));
-        assert_eq!(parsed["CauseOfDeath_AdminSmite"].icon_type.as_deref(), Some("Book"));
+        assert_eq!(
+            parsed["CauseOfDeath_AdminSmite"].icon_type.as_deref(),
+            Some("Book")
+        );
     }
 
     #[test]
@@ -97,7 +100,10 @@ mod tests {
              "id": "Combat_Any_25", "name": "Neophyte Warrior"}}"#;
         let parsed = parse(map_shape).expect("map shape must parse");
         assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed["Combat_Any_25"].name.as_deref(), Some("Neophyte Warrior"));
+        assert_eq!(
+            parsed["Combat_Any_25"].name.as_deref(),
+            Some("Neophyte Warrior")
+        );
     }
 
     #[test]

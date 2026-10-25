@@ -194,8 +194,7 @@ pub async fn download_translation_zip(version: u32, cache_dir: &Path) -> Result<
                 std::fs::create_dir_all(parent)
                     .map_err(|e| format!("Failed to create parent dir for {name}: {e}"))?;
             }
-            std::fs::write(&dest, &contents)
-                .map_err(|e| format!("Failed to write {name}: {e}"))?;
+            std::fs::write(&dest, &contents).map_err(|e| format!("Failed to write {name}: {e}"))?;
         }
 
         Ok::<(), String>(())

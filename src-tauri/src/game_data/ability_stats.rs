@@ -168,10 +168,20 @@ fn direct_damage_value(
     damage_mod_tokens.extend(direct_tokens("MOD", damage_type));
 
     let added = collect_bucket(mods, &delta_tokens, "added", &mut contributions);
-    let base_pct = collect_bucket(mods, &stats.attributes_that_mod_base_damage, "base_mod", &mut contributions);
+    let base_pct = collect_bucket(
+        mods,
+        &stats.attributes_that_mod_base_damage,
+        "base_mod",
+        &mut contributions,
+    );
     let all_pct = collect_bucket(mods, &damage_mod_tokens, "damage_mod", &mut contributions);
     // Crit mods are informational only (don't change the listed hit).
-    collect_bucket(mods, &stats.attributes_that_mod_crit_damage, "crit_mod", &mut contributions);
+    collect_bucket(
+        mods,
+        &stats.attributes_that_mod_crit_damage,
+        "crit_mod",
+        &mut contributions,
+    );
 
     let effective = apply_formula(base, added, base_pct, all_pct);
     ValueBreakdown {
@@ -284,9 +294,24 @@ fn indirect_tokens(prefix: &str, damage_type: Option<&str>) -> Vec<String> {
 /// Damage-type names whose uppercase form matches the `*_<TYPE>_INDIRECT` attribute tokens.
 /// Also used by `cdn_commands` to sniff the damage type of prose-named DoTs ("Poison Slice").
 pub(crate) const DAMAGE_TYPES: &[&str] = &[
-    "Acid", "Cold", "Crushing", "Darkness", "Demonic", "Divine", "Electricity", "Fire",
-    "Fungus", "Nature", "Piercing", "Poison", "Psychic", "Seafood", "Slashing", "Smiting",
-    "Sonic", "Trauma",
+    "Acid",
+    "Cold",
+    "Crushing",
+    "Darkness",
+    "Demonic",
+    "Divine",
+    "Electricity",
+    "Fire",
+    "Fungus",
+    "Nature",
+    "Piercing",
+    "Poison",
+    "Psychic",
+    "Seafood",
+    "Slashing",
+    "Smiting",
+    "Sonic",
+    "Trauma",
 ];
 
 /// True when a special value represents indirect (damage-over-time) damage — detected by a
@@ -334,7 +359,12 @@ fn special_value_breakdown(sv: &SpecialValue, mods: &[ModEffect]) -> SpecialValu
     // DeltaBase adds to the base before the multiplier; Delta adds afterward. Both end up
     // multiplied by (1 + mod%), so they fold into `added` for the arithmetic but keep
     // distinct bucket labels for the breakdown display.
-    let delta_base = collect_bucket(mods, &sv.attributes_that_delta_base, "delta_base", &mut contributions);
+    let delta_base = collect_bucket(
+        mods,
+        &sv.attributes_that_delta_base,
+        "delta_base",
+        &mut contributions,
+    );
     let delta = collect_bucket(mods, &delta_tokens, "delta", &mut contributions);
     let mod_pct = collect_bucket(mods, &mod_tokens, "mod", &mut contributions);
     let effective = apply_formula(base + delta_base, delta, 0.0, mod_pct);
@@ -520,7 +550,11 @@ mod tests {
         let out = compute(&stats, None, &mods);
         let sv = &out.special_values[0];
         // (50 + 30) × (1 + 0.25) = 100
-        assert!((sv.value.effective - 100.0).abs() < 1e-6, "got {}", sv.value.effective);
+        assert!(
+            (sv.value.effective - 100.0).abs() < 1e-6,
+            "got {}",
+            sv.value.effective
+        );
     }
 
     /// A dormant SpecialValue (base 0, SkipIfZero) lights up when a mod feeds its token.
@@ -536,7 +570,11 @@ mod tests {
             }],
             ..Default::default()
         };
-        let out = compute(&stats, None, &[m("BOOST_HEALINGMIST_TSYS_HEALTH_SENDER", 12.0)]);
+        let out = compute(
+            &stats,
+            None,
+            &[m("BOOST_HEALINGMIST_TSYS_HEALTH_SENDER", 12.0)],
+        );
         let sv = &out.special_values[0];
         assert!((sv.value.effective - 12.0).abs() < 1e-6);
         assert!(sv.value.dormant_activated);
@@ -603,9 +641,17 @@ mod tests {
             .map(|d| &d.value)
             .expect("Mindworm has a health-specific direct hit (from HSD)");
         assert!((dd.base - 369.0).abs() < 1e-6);
-        assert!((dd.effective - 1700.75).abs() < 1e-6, "got {}", dd.effective);
+        assert!(
+            (dd.effective - 1700.75).abs() < 1e-6,
+            "got {}",
+            dd.effective
+        );
         let dot = &out.dots[0];
-        assert!((dot.per_tick.effective - 84.0).abs() < 1e-6, "direct/base mods must not move the DoT, got {}", dot.per_tick.effective);
+        assert!(
+            (dot.per_tick.effective - 84.0).abs() < 1e-6,
+            "direct/base mods must not move the DoT, got {}",
+            dot.per_tick.effective
+        );
         assert!(out.any_modified);
 
         // Indirect mods move the DoT but leave the up-front hit at its base.
@@ -622,10 +668,22 @@ mod tests {
             .find(|d| d.kind == "health")
             .map(|d| &d.value)
             .unwrap();
-        assert!((dd2.effective - 369.0).abs() < 1e-6, "indirect mods must not move the direct hit, got {}", dd2.effective);
+        assert!(
+            (dd2.effective - 369.0).abs() < 1e-6,
+            "indirect mods must not move the direct hit, got {}",
+            dd2.effective
+        );
         let dot2 = &out2.dots[0];
-        assert!((dot2.per_tick.effective - 218.4).abs() < 1e-6, "got {}", dot2.per_tick.effective);
-        assert!((dot2.total_effective - 873.6).abs() < 1e-6, "got {}", dot2.total_effective);
+        assert!(
+            (dot2.per_tick.effective - 218.4).abs() < 1e-6,
+            "got {}",
+            dot2.per_tick.effective
+        );
+        assert!(
+            (dot2.total_effective - 873.6).abs() < 1e-6,
+            "got {}",
+            dot2.total_effective
+        );
         assert!(out2.any_modified);
     }
 
@@ -642,13 +700,29 @@ mod tests {
         let out = compute(&stats, Some("Acid".into()), &[m("MOD_SKILL_FIRE", 0.50)]);
         assert_eq!(out.direct_damages.len(), 2);
 
-        let normal = out.direct_damages.iter().find(|d| d.kind == "normal").unwrap();
+        let normal = out
+            .direct_damages
+            .iter()
+            .find(|d| d.kind == "normal")
+            .unwrap();
         assert!((normal.value.base - 10.0).abs() < 1e-6);
-        assert!((normal.value.effective - 15.0).abs() < 1e-6, "got {}", normal.value.effective);
+        assert!(
+            (normal.value.effective - 15.0).abs() < 1e-6,
+            "got {}",
+            normal.value.effective
+        );
 
-        let armor = out.direct_damages.iter().find(|d| d.kind == "armor").unwrap();
+        let armor = out
+            .direct_damages
+            .iter()
+            .find(|d| d.kind == "armor")
+            .unwrap();
         assert!((armor.value.base - 20.0).abs() < 1e-6);
-        assert!((armor.value.effective - 30.0).abs() < 1e-6, "got {}", armor.value.effective);
+        assert!(
+            (armor.value.effective - 30.0).abs() < 1e-6,
+            "got {}",
+            armor.value.effective
+        );
         assert!(out.any_modified);
     }
 
@@ -663,9 +737,9 @@ mod tests {
             ..Default::default()
         };
         let mods = vec![
-            m("BOOST_PSYCHIC_DIRECT", 104.0),   // flat, typed
-            m("BOOST_UNIVERSAL_DIRECT", 6.0),   // flat, all-type
-            m("MOD_PSYCHIC_DIRECT", 0.10),      // percent, typed
+            m("BOOST_PSYCHIC_DIRECT", 104.0), // flat, typed
+            m("BOOST_UNIVERSAL_DIRECT", 6.0), // flat, all-type
+            m("MOD_PSYCHIC_DIRECT", 0.10),    // percent, typed
         ];
         let out = compute(&stats, Some("Psychic".into()), &mods);
         let dd = &out.direct_damages[0].value;
@@ -678,8 +752,15 @@ mod tests {
     /// Generic direct tokens of a *different* damage type must not touch the ability.
     #[test]
     fn generic_direct_tokens_respect_damage_type() {
-        let stats = CombatStats { damage: Some(100.0), ..Default::default() };
-        let out = compute(&stats, Some("Fire".into()), &[m("BOOST_PSYCHIC_DIRECT", 50.0)]);
+        let stats = CombatStats {
+            damage: Some(100.0),
+            ..Default::default()
+        };
+        let out = compute(
+            &stats,
+            Some("Fire".into()),
+            &[m("BOOST_PSYCHIC_DIRECT", 50.0)],
+        );
         let dd = &out.direct_damages[0].value;
         assert!((dd.effective - 100.0).abs() < 1e-6, "got {}", dd.effective);
         assert!(!dd.is_modified());
@@ -699,9 +780,17 @@ mod tests {
             }],
             ..Default::default()
         };
-        let out = compute(&stats, Some("Psychic".into()), &[m("BOOST_PSYCHIC_INDIRECT", 21.0)]);
+        let out = compute(
+            &stats,
+            Some("Psychic".into()),
+            &[m("BOOST_PSYCHIC_INDIRECT", 21.0)],
+        );
         let dot = &out.dots[0];
-        assert!((dot.per_tick.effective - 101.0).abs() < 1e-6, "got {}", dot.per_tick.effective);
+        assert!(
+            (dot.per_tick.effective - 101.0).abs() < 1e-6,
+            "got {}",
+            dot.per_tick.effective
+        );
     }
 
     /// Dual-scope "X Damage (Direct & Per-Tick)" tokens ({MOD_ELECTRICITY}, {BOOST_FIRE}, …)
@@ -725,7 +814,11 @@ mod tests {
         assert!((dd.effective - 112.2).abs() < 1e-6, "got {}", dd.effective);
         // per tick: (20 + 2) × 1.10 = 24.2
         let dot = &out.dots[0];
-        assert!((dot.per_tick.effective - 24.2).abs() < 1e-6, "got {}", dot.per_tick.effective);
+        assert!(
+            (dot.per_tick.effective - 24.2).abs() < 1e-6,
+            "got {}",
+            dot.per_tick.effective
+        );
         assert!(out.any_modified);
     }
 

@@ -145,8 +145,10 @@ jobs:
           echo "::warning title=Release notes::$PROBLEM (a tag push would fail here)"
 
   # ── Test once on Linux; the platform matrix below builds untested code
-  # nowhere. `cargo test` is platform-independent here (no target-specific
-  # code under test), so running it 3× wasted ~7 min per release.
+  # nowhere. The test *logic* is platform-independent (pure parsers, no
+  # target-specific code under test), so running it 3× wasted ~7 min per
+  # release; platform modules (`#[cfg(target_os)]` in stall_ocr.rs, lib.rs)
+  # are compile-checked per-platform by the check step in build below.
   test:
     name: Rust tests
     needs: validate
@@ -221,9 +223,9 @@ jobs:
           # fetched index (`apt-get update` runs uncached below), so a
           # poisoned entry fails closed at install; and only tag pushes save
           # (see the save step), so smoke-test dispatches on an arbitrary ref
-          # can read but never write what releases read.
-          # Save keys carry run_id because cache/save refuses an exact-key
-          # collision; restore falls through to the newest prefix match.
+          # can read but never write what releases read. Restore falls
+          # through to the newest `apt-Linux-` prefix match, so a cold cache
+          # or a skipped save just degrades to an uncached install.
           path: /var/cache/apt/archives
           key: apt-${{ runner.os }}-${{ github.run_id }}-${{ hashFiles('.github/workflows/release.yml') }}
           restore-keys: |
@@ -238,11 +240,16 @@ jobs:
       - name: Save apt packages
         # Smoke-test dispatches restore but never save: only tag pushes write
         # the cache releases read. Mirrors the rust-cache save-if narrowing.
+        # The key folds in run_attempt because cache/save refuses an exact-key
+        # collision and run_id is stable across re-runs — without it a retry
+        # after a save would fail on the already-reserved key. Restore still
+        # hits via the `apt-<os>-` prefix fallthrough.
         if: matrix.platform == 'ubuntu-latest' && github.event_name == 'push'
+        continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /var/cache/apt/archives
-          key: apt-${{ runner.os }}-${{ github.run_id }}-${{ hashFiles('.github/workflows/release.yml') }}
+          key: apt-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ hashFiles('.github/workflows/release.yml') }}
 
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -268,6 +275,14 @@ jobs:
           # the cache releases read. No pull_request trigger exists, so no
           # untrusted run can poison it; this narrows the writers to releases.
           save-if: ${{ github.event_name == 'push' }}
+
+      - name: Compile-check tests per platform
+        # The single Linux `test` job above runs the suite; this cheap check
+        # type-checks `#[cfg(target_os)]` modules (stall_ocr.rs capture,
+        # lib.rs) on Windows/mac so a platform-only break fails early, not in
+        # the late tauri build. `--tests` covers test code without running it.
+        working-directory: src-tauri
+        run: cargo check --tests --locked
 
       - name: Install frontend dependencies
         run: npm ci

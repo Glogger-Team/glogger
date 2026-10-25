@@ -7,11 +7,11 @@
 //! All inserts/updates take a `&Connection` rather than a pool so callers
 //! can group writes into a single transaction when they need to.
 
+use crate::db::DbRead;
 use crate::survey::types::{
     SessionStartTrigger, SurveySession, SurveyUse, SurveyUseKind, SurveyUseStatus,
 };
 use rusqlite::{params, Connection, OptionalExtension, Result};
-use crate::db::DbRead;
 
 // ============================================================
 // Sessions
@@ -52,8 +52,7 @@ pub fn end_session(conn: &Connection, session_id: i64, ended_at: &str) -> Result
 /// construction — callers should treat that as a bug if it happens.
 /// Column list for all SurveySession SELECT queries. Keep in sync with
 /// `row_to_session` below and `SurveySession` in types.rs.
-pub const SESSION_COLS: &str =
-    "id, character_name, server_name, started_at, ended_at, \
+pub const SESSION_COLS: &str = "id, character_name, server_name, started_at, ended_at, \
      start_trigger, crafted_count, consumed_count, notes, \
      name, user_started_at, user_ended_at, \
      first_craft_at, last_craft_at, first_loot_at, last_loot_at";
@@ -331,7 +330,10 @@ pub fn latest_recent_nonbasic_use(
         |row| {
             let id: i64 = row.get(0)?;
             let kind: String = row.get(1)?;
-            Ok((id, SurveyUseKind::from_str(&kind).unwrap_or(SurveyUseKind::Multihit)))
+            Ok((
+                id,
+                SurveyUseKind::from_str(&kind).unwrap_or(SurveyUseKind::Multihit),
+            ))
         },
     )
     .optional()
@@ -371,9 +373,7 @@ pub fn claim_unlinked_chat_loot_near(
                              AND datetime(?4, '+' || ?5 || ' seconds')";
 
     let total: u32 = conn.query_row(
-        &format!(
-            "SELECT COALESCE(SUM(quantity), 0) FROM item_transactions WHERE {PREDICATE}"
-        ),
+        &format!("SELECT COALESCE(SUM(quantity), 0) FROM item_transactions WHERE {PREDICATE}"),
         params![survey_use_id, character, server, used_at_iso, window_secs],
         |row| row.get(0),
     )?;
@@ -517,10 +517,7 @@ fn row_to_session(row: &rusqlite::Row<'_>) -> rusqlite::Result<SurveySession> {
 /// Parse a `SurveySession` from a row where session columns start at the
 /// given column offset. Shared by both the persistence layer (offset 0)
 /// and the commands layer (offset varies in joined queries).
-pub fn row_to_session_offset(
-    row: &rusqlite::Row<'_>,
-    o: usize,
-) -> rusqlite::Result<SurveySession> {
+pub fn row_to_session_offset(row: &rusqlite::Row<'_>, o: usize) -> rusqlite::Result<SurveySession> {
     let trigger_str: String = row.get(o + 5)?;
     let start_trigger = SessionStartTrigger::from_str(&trigger_str).ok_or_else(|| {
         rusqlite::Error::FromSqlConversionFailure(
@@ -635,9 +632,7 @@ mod tests {
         end_session(&conn, s1, "2026-04-15 12:30:00").unwrap();
 
         // No active session now
-        assert!(active_session(&conn, "Zenith", "Dreva")
-            .unwrap()
-            .is_none());
+        assert!(active_session(&conn, "Zenith", "Dreva").unwrap().is_none());
 
         // Start a new one
         let s2 = insert_session(
@@ -885,7 +880,10 @@ mod tests {
         ).unwrap();
 
         let n = mark_transactions_as_speed_bonus(&conn, use_id, "Rubywall Crystal").unwrap();
-        assert_eq!(n, 1, "only the matching (use_id, item_name) row should update");
+        assert_eq!(
+            n, 1,
+            "only the matching (use_id, item_name) row should update"
+        );
 
         // The matching Rubywall row has the flag; the Blue Spinel row and the
         // other-use Rubywall row do not.
@@ -899,7 +897,11 @@ mod tests {
         assert_eq!(flags[0].0, "Blue Spinel");
         assert_eq!(flags[0].1, None, "primary untouched");
         assert_eq!(flags[1].0, "Rubywall Crystal");
-        assert_eq!(flags[1].1, Some(1), "matching bonus flagged true (JSON true -> 1)");
+        assert_eq!(
+            flags[1].1,
+            Some(1),
+            "matching bonus flagged true (JSON true -> 1)"
+        );
         assert_eq!(flags[2].0, "Rubywall Crystal");
         assert_eq!(flags[2].1, None, "different use_id not touched");
     }

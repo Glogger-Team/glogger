@@ -51,12 +51,16 @@ pub enum SearchFilter {
 
 impl ParsedQuery {
     pub fn has_type_filter(&self, entity_type: &str) -> bool {
-        self.filters.iter().any(|f| matches!(f, SearchFilter::EntityType(t) if t == entity_type))
+        self.filters
+            .iter()
+            .any(|f| matches!(f, SearchFilter::EntityType(t) if t == entity_type))
     }
 
     /// Whether a specific entity type is excluded via negation
     pub fn excludes_type(&self, entity_type: &str) -> bool {
-        self.negations.iter().any(|f| matches!(f, SearchFilter::EntityType(t) if t == entity_type))
+        self.negations
+            .iter()
+            .any(|f| matches!(f, SearchFilter::EntityType(t) if t == entity_type))
     }
 
     /// Whether we should search a given entity type based on type: filters.
@@ -66,7 +70,10 @@ impl ParsedQuery {
         if self.excludes_type(entity_type) {
             return false;
         }
-        let has_type_filters = self.filters.iter().any(|f| matches!(f, SearchFilter::EntityType(_)));
+        let has_type_filters = self
+            .filters
+            .iter()
+            .any(|f| matches!(f, SearchFilter::EntityType(_)));
         if !has_type_filters {
             return true;
         }
@@ -99,18 +106,78 @@ impl ParsedQuery {
 
     /// Get keyword filter values (lowercased)
     pub fn keyword_filters(&self) -> Vec<&str> {
-        self.filters.iter().filter_map(|f| match f {
-            SearchFilter::Keyword(k) => Some(k.as_str()),
+        self.filters
+            .iter()
+            .filter_map(|f| match f {
+                SearchFilter::Keyword(k) => Some(k.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Get negated skill filter value (lowercased)
+    pub fn negated_skill_filter(&self) -> Option<&str> {
+        self.negations.iter().find_map(|f| match f {
+            SearchFilter::Skill(s) => Some(s.as_str()),
             _ => None,
-        }).collect()
+        })
+    }
+
+    /// Get negated area filter value (lowercased)
+    pub fn negated_area_filter(&self) -> Option<&str> {
+        self.negations.iter().find_map(|f| match f {
+            SearchFilter::Area(s) => Some(s.as_str()),
+            _ => None,
+        })
+    }
+
+    /// Get negated level ranges
+    pub fn negated_level_ranges(&self) -> Vec<(Option<u32>, Option<u32>)> {
+        self.negations
+            .iter()
+            .filter_map(|f| match f {
+                SearchFilter::Level { min, max } => Some((*min, *max)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Get negated has: filter values
+    pub fn negated_has_filters(&self) -> Vec<&str> {
+        self.negations
+            .iter()
+            .filter_map(|f| match f {
+                SearchFilter::Has(h) => Some(h.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Get negated slot filter (lowercased)
+    pub fn negated_slot_filter(&self) -> Option<&str> {
+        self.negations.iter().find_map(|f| match f {
+            SearchFilter::Slot(s) => Some(s.as_str()),
+            _ => None,
+        })
+    }
+
+    /// Get negated name filter (lowercased)
+    pub fn negated_name_filter(&self) -> Option<&str> {
+        self.negations.iter().find_map(|f| match f {
+            SearchFilter::Name(n) => Some(n.as_str()),
+            _ => None,
+        })
     }
 
     /// Get negated keyword filter values (lowercased)
     pub fn negated_keyword_filters(&self) -> Vec<&str> {
-        self.negations.iter().filter_map(|f| match f {
-            SearchFilter::Keyword(k) => Some(k.as_str()),
-            _ => None,
-        }).collect()
+        self.negations
+            .iter()
+            .filter_map(|f| match f {
+                SearchFilter::Keyword(k) => Some(k.as_str()),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Get has: filter values
@@ -119,6 +186,17 @@ impl ParsedQuery {
             SearchFilter::Has(h) => Some(h.as_str()),
             _ => None,
         }).collect()
+    }
+
+    /// True when a *positive* filter is present that `entity_type` doesn't
+    /// understand. Callers return an empty set in that case instead of
+    /// silently ignoring the filter. Negated filters for unsupported
+    /// properties are vacuously true (the entity can't have that property)
+    /// and are ignored. See `filter_applies_to` for the per-type matrix.
+    pub fn has_unsupported_filter(&self, entity_type: &str) -> bool {
+        self.filters
+            .iter()
+            .any(|f| !filter_applies_to(f, entity_type))
     }
 
     /// Get slot filter
@@ -206,7 +284,10 @@ pub fn parse_query(input: &str) -> ParsedQuery {
                             SearchFilter::Level { min, max }
                         } else {
                             let exact = value.parse::<u32>().ok();
-                            SearchFilter::Level { min: exact, max: exact }
+                            SearchFilter::Level {
+                                min: exact,
+                                max: exact,
+                            }
                         }
                     }
                     "keyword" => SearchFilter::Keyword(value.to_lowercase()),
@@ -240,6 +321,32 @@ pub fn parse_query(input: &str) -> ParsedQuery {
         negations,
     }
 }
+
+/// Per-type filter scope: which structured filters a search_* fn understands.
+/// `skill:` ⇒ items (no — items have no skill field), recipes, npcs
+/// (trainers), abilities. `level:` ⇒ items (crafting_target_level) and
+/// recipes (skill_level_req — see search_recipes). `name:` ⇒ items only
+/// (only search_items restricts matching to the name field). `area:` ⇒
+/// npcs and quests. Unknown `has:` values never filter (accepted no-op on
+/// items, vacuous on other types). Positive filters outside a type's scope
+/// force an empty result for that type (see
+/// `ParsedQuery::has_unsupported_filter`) instead of being silently
+/// ignored.
+fn filter_applies_to(filter: &SearchFilter, entity_type: &str) -> bool {
+    match filter {
+        SearchFilter::EntityType(_) => true,
+        // Text-like filters apply everywhere (matched against the type's
+        // searchable fields).
+        SearchFilter::Name(_) => entity_type == "item",
+        SearchFilter::Skill(_) => matches!(entity_type, "recipe" | "npc" | "ability"),
+        SearchFilter::Area(_) => matches!(entity_type, "npc" | "quest"),
+        SearchFilter::Level { .. } => matches!(entity_type, "item" | "recipe"),
+        SearchFilter::Keyword(_) => entity_type == "item",
+        SearchFilter::Has(h) => entity_type == "item" && (h == "recipe" || h == "description"),
+        SearchFilter::Slot(_) => entity_type == "item",
+    }
+}
+
 
 // ── Search result types ──────────────────────────────────────────────────────
 
@@ -313,74 +420,151 @@ fn combine_fields(fields: &[&str]) -> String {
 // ── Per-type search functions ────────────────────────────────────────────────
 
 fn search_items(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<UnifiedSearchResult> {
+    // Reject-or-empty: skill:/area: (and other non-item filters) don't apply
+    // to items — return no rows rather than silently ignoring them.
+    if query.has_unsupported_filter("item") {
+        return Vec::new();
+    }
     let mut results = Vec::new();
     let neg_keywords = query.negated_keyword_filters();
     let req_keywords = query.keyword_filters();
     let has = query.has_filters();
+    let neg_has = query.negated_has_filters();
     let level_range = query.level_range();
+    let neg_levels = query.negated_level_ranges();
     let slot = query.slot_filter();
+    let neg_slot = query.negated_slot_filter();
     let name_filter = query.name_filter();
+    let neg_name = query.negated_name_filter();
 
     for item in data.items.values() {
         // Keyword exclusion
-        if neg_keywords.iter().any(|nk| {
-            item.keywords.iter().any(|k| k.to_lowercase() == *nk)
-        }) {
+        if neg_keywords
+            .iter()
+            .any(|nk| item.keywords.iter().any(|k| k.to_lowercase() == *nk))
+        {
             continue;
         }
 
         // Required keywords
-        if !req_keywords.iter().all(|rk| {
-            item.keywords.iter().any(|k| k.to_lowercase() == *rk)
-        }) {
+        if !req_keywords
+            .iter()
+            .all(|rk| item.keywords.iter().any(|k| k.to_lowercase() == *rk))
+        {
             continue;
         }
 
-        // has: filters
+        // has: filters (positive requires, negated excludes)
+        let mut skip = false;
         for h in &has {
             match *h {
                 "recipe" => {
                     if !data.recipes_producing_item.contains_key(&item.id) {
-                        continue;
+                        skip = true;
+                        break;
                     }
                 }
                 "description" => {
                     if item.description.is_none() {
-                        continue;
+                        skip = true;
+                        break;
                     }
                 }
                 _ => {}
             }
         }
+        if skip {
+            continue;
+        }
+        for h in &neg_has {
+            match *h {
+                "recipe" => {
+                    if data.recipes_producing_item.contains_key(&item.id) {
+                        skip = true;
+                        break;
+                    }
+                }
+                "description" => {
+                    if item.description.is_some() {
+                        skip = true;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if skip {
+            continue;
+        }
 
         // Level range
+        // Level range (all ranges — positive and negated — must hold)
+        let in_range = |lvl: u32, min: Option<u32>, max: Option<u32>| {
+            if let Some(m) = min {
+                if lvl < m {
+                    return false;
+                }
+            }
+            if let Some(m) = max {
+                if lvl > m {
+                    return false;
+                }
+            }
+            true
+        };
         if let Some((min, max)) = level_range {
             match item.crafting_target_level {
                 Some(lvl) => {
-                    if let Some(m) = min {
-                        if lvl < m { continue; }
-                    }
-                    if let Some(m) = max {
-                        if lvl > m { continue; }
+                    if !in_range(lvl, min, max) {
+                        continue;
                     }
                 }
                 None => continue,
+            }
+        }
+        match item.crafting_target_level {
+            Some(lvl) => {
+                if neg_levels.iter().any(|(min, max)| in_range(lvl, *min, *max)) {
+                    continue;
+                }
+            }
+            None => {
+                if !neg_levels.is_empty() {
+                    // Vacuous: an item with no level can't be inside an
+                    // excluded range, so it passes.
+                }
             }
         }
 
         // Slot filter
+        // Slot filter (positive + negated)
         if let Some(s) = slot {
             match &item.equip_slot {
                 Some(es) => {
-                    if !es.to_lowercase().contains(s) { continue; }
+                    if !es.to_lowercase().contains(s) {
+                        continue;
+                    }
                 }
                 None => continue,
             }
         }
+        if let Some(ns) = neg_slot {
+            if let Some(es) = &item.equip_slot {
+                if es.to_lowercase().contains(ns) {
+                    continue;
+                }
+            }
+        }
 
         // Name filter (restricts to name-only matching)
+        // Name filter (positive restricts to name-only; negated excludes names)
         if let Some(nf) = name_filter {
             if !item.name.to_lowercase().contains(nf) {
+                continue;
+            }
+        }
+        if let Some(nn) = neg_name {
+            if item.name.to_lowercase().contains(nn) {
                 continue;
             }
         }
@@ -394,25 +578,29 @@ fn search_items(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Unifi
             item.food_desc.as_deref().unwrap_or(""),
         ]);
 
-        let score = if !query.text_terms.is_empty() {
+        let score = if !query.text_terms.is_empty() || !query.exact_phrases.is_empty() {
             if !matches_all_terms(&searchable, &query.text_terms) {
                 continue;
             }
+            if !matches_all_phrases(&searchable, &query.exact_phrases) {
+                continue;
+            }
             // Score based on the first term against the name
+            let anchor = query
+                .text_terms
+                .first()
+                .map(String::as_str)
+                .or(query.exact_phrases.first().map(String::as_str))
+                .unwrap_or("");
             score_entity(
                 &item.name,
                 &[
                     item.description.as_deref().unwrap_or(""),
                     &item.keywords.join(", "),
                 ],
-                &query.text_terms[0],
+                anchor,
             )
             .max(1)
-        } else if !query.exact_phrases.is_empty() {
-            if !matches_all_phrases(&searchable, &query.exact_phrases) {
-                continue;
-            }
-            score_entity(&item.name, &[], &query.exact_phrases[0]).max(1)
         } else if query.filters.is_empty() && query.negations.is_empty() {
             // No query at all — skip (require at least some input)
             continue;
@@ -420,7 +608,6 @@ fn search_items(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Unifi
             // Only filters, no text — everything that passed filters gets base score
             50
         };
-
         let detail = if !item.keywords.is_empty() {
             item.keywords.join(", ")
         } else {
@@ -443,28 +630,94 @@ fn search_items(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Unifi
 }
 
 fn search_recipes(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<UnifiedSearchResult> {
+    // Reject-or-empty: name:/area:/keyword:/has:/slot: don't apply to
+    // recipes — return no rows rather than silently ignoring them.
+    if query.has_unsupported_filter("recipe") {
+        return Vec::new();
+    }
     let mut results = Vec::new();
     let skill_filter = query.skill_filter();
+    let neg_skill = query.negated_skill_filter();
+    let level_range = query.level_range();
+    let neg_levels = query.negated_level_ranges();
 
     for recipe in data.recipes.values() {
-        // Skill filter
+        // Skill filter (positive + negated)
         if let Some(sf) = skill_filter {
             match &recipe.skill {
                 Some(s) => {
-                    if !s.to_lowercase().contains(sf) { continue; }
+                    if !s.to_lowercase().contains(sf) {
+                        continue;
+                    }
                 }
                 None => continue,
             }
         }
+        if let Some(ns) = neg_skill {
+            if let Some(s) = &recipe.skill {
+                if s.to_lowercase().contains(ns) {
+                    continue;
+                }
+            }
+        }
 
-        let ingredient_names: Vec<String> = recipe.ingredients.iter()
+        // Level filter on skill_level_req (recipes have no other level).
+        // Missing requirement fails a positive range (can't prove a match);
+        // a missing requirement passes a negated range (can't be inside it).
+        if let Some((min, max)) = level_range {
+            match recipe.skill_level_req {
+                Some(req) => {
+                    let lvl = req as u32;
+                    if let Some(m) = min {
+                        if lvl < m {
+                            continue;
+                        }
+                    }
+                    if let Some(m) = max {
+                        if lvl > m {
+                            continue;
+                        }
+                    }
+                }
+                None => continue,
+            }
+        }
+        if !neg_levels.is_empty() {
+            if let Some(req) = recipe.skill_level_req {
+                let lvl = req as u32;
+                let inside = neg_levels.iter().any(|(min, max)| {
+                    if let Some(m) = min {
+                        if lvl < *m {
+                            return false;
+                        }
+                    }
+                    if let Some(m) = max {
+                        if lvl > *m {
+                            return false;
+                        }
+                    }
+                    true
+                });
+                if inside {
+                    continue;
+                }
+            }
+        }
+
+        let ingredient_names: Vec<String> = recipe
+            .ingredients
+            .iter()
             .filter_map(|i| {
                 // Resolve ingredient item name from ID
-                i.item_id.and_then(|id| data.items.get(&id)).map(|item| item.name.clone())
+                i.item_id
+                    .and_then(|id| data.items.get(&id))
+                    .map(|item| item.name.clone())
                     .or_else(|| i.description.clone())
             })
             .collect();
-        let result_names: Vec<String> = recipe.result_items.iter()
+        let result_names: Vec<String> = recipe
+            .result_items
+            .iter()
             .filter_map(|r| data.items.get(&r.item_id).map(|item| item.name.clone()))
             .collect();
 
@@ -476,30 +729,36 @@ fn search_recipes(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Uni
             &result_names.join(" "),
         ]);
 
-        let score = if !query.text_terms.is_empty() {
+        let score = if !query.text_terms.is_empty() || !query.exact_phrases.is_empty() {
             if !matches_all_terms(&searchable, &query.text_terms) {
                 continue;
             }
-            score_entity(
-                &recipe.name,
-                &[recipe.skill.as_deref().unwrap_or("")],
-                &query.text_terms[0],
-            )
-            .max(1)
-        } else if !query.exact_phrases.is_empty() {
             if !matches_all_phrases(&searchable, &query.exact_phrases) {
                 continue;
             }
-            score_entity(&recipe.name, &[], &query.exact_phrases[0]).max(1)
-        } else if query.filters.is_empty() {
+            let anchor = query
+                .text_terms
+                .first()
+                .map(String::as_str)
+                .or(query.exact_phrases.first().map(String::as_str))
+                .unwrap_or("");
+            score_entity(
+                &recipe.name,
+                &[recipe.skill.as_deref().unwrap_or("")],
+                anchor,
+            )
+            .max(1)
+        } else if query.filters.is_empty() && query.negations.is_empty() {
             continue;
         } else {
             50
         };
-
         let detail = [
             recipe.skill.as_deref(),
-            recipe.skill_level_req.map(|l| format!("Lv {}", l as u32)).as_deref(),
+            recipe
+                .skill_level_req
+                .map(|l| format!("Lv {}", l as u32))
+                .as_deref(),
         ]
         .iter()
         .flatten()
@@ -523,24 +782,55 @@ fn search_recipes(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Uni
 }
 
 fn search_npcs(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<UnifiedSearchResult> {
+    // Reject-or-empty: keyword:/level:/has:/slot:/name: don't apply to npcs.
+    if query.has_unsupported_filter("npc") {
+        return Vec::new();
+    }
     let mut results = Vec::new();
     let area_filter = query.area_filter();
+    let neg_area = query.negated_area_filter();
     let skill_filter = query.skill_filter();
+    let neg_skill = query.negated_skill_filter();
 
     for npc in data.npcs.values() {
-        // Area filter
+        // Area filter (positive + negated)
         if let Some(af) = area_filter {
-            let area = npc.area_friendly_name.as_deref()
+            let area = npc
+                .area_friendly_name
+                .as_deref()
                 .or(npc.area_name.as_deref())
                 .unwrap_or("");
             if !area.to_lowercase().contains(af) {
                 continue;
             }
         }
+        if let Some(na) = neg_area {
+            let area = npc
+                .area_friendly_name
+                .as_deref()
+                .or(npc.area_name.as_deref())
+                .unwrap_or("");
+            if area.to_lowercase().contains(na) {
+                continue;
+            }
+        }
 
-        // Skill filter (NPCs that train a skill)
+        // Skill filter (NPCs that train a skill; positive + negated)
         if let Some(sf) = skill_filter {
-            if !npc.trains_skills.iter().any(|s| s.to_lowercase().contains(sf)) {
+            if !npc
+                .trains_skills
+                .iter()
+                .any(|s| s.to_lowercase().contains(sf))
+            {
+                continue;
+            }
+        }
+        if let Some(ns) = neg_skill {
+            if npc
+                .trains_skills
+                .iter()
+                .any(|s| s.to_lowercase().contains(ns))
+            {
                 continue;
             }
         }
@@ -551,34 +841,41 @@ fn search_npcs(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Unifie
             npc.area_friendly_name.as_deref().unwrap_or(""),
         ]);
 
-        let score = if !query.text_terms.is_empty() {
+        let score = if !query.text_terms.is_empty() || !query.exact_phrases.is_empty() {
             if !matches_all_terms(&searchable, &query.text_terms) {
                 continue;
             }
+            if !matches_all_phrases(&searchable, &query.exact_phrases) {
+                continue;
+            }
+            let anchor = query
+                .text_terms
+                .first()
+                .map(String::as_str)
+                .or(query.exact_phrases.first().map(String::as_str))
+                .unwrap_or("");
             score_entity(
                 &npc.name,
                 &[
                     npc.desc.as_deref().unwrap_or(""),
                     npc.area_friendly_name.as_deref().unwrap_or(""),
                 ],
-                &query.text_terms[0],
+                anchor,
             )
             .max(1)
-        } else if !query.exact_phrases.is_empty() {
-            if !matches_all_phrases(&searchable, &query.exact_phrases) {
-                continue;
-            }
-            score_entity(&npc.name, &[], &query.exact_phrases[0]).max(1)
-        } else if query.filters.is_empty() {
+        } else if query.filters.is_empty() && query.negations.is_empty() {
             continue;
         } else {
             50
         };
-
         results.push(UnifiedSearchResult {
             entity_type: "npc".to_string(),
             name: npc.name.clone(),
-            detail: npc.area_friendly_name.clone().or(npc.area_name.clone()).unwrap_or_default(),
+            detail: npc
+                .area_friendly_name
+                .clone()
+                .or(npc.area_name.clone())
+                .unwrap_or_default(),
             entity_id: npc.key.clone(),
             score,
             icon_id: None,
@@ -591,43 +888,71 @@ fn search_npcs(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Unifie
 }
 
 fn search_quests(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<UnifiedSearchResult> {
+    // Reject-or-empty: skill:/keyword:/level:/has:/slot:/name: don't apply
+    // to quests.
+    if query.has_unsupported_filter("quest") {
+        return Vec::new();
+    }
     let mut results = Vec::new();
     let area_filter = query.area_filter();
+    let neg_area = query.negated_area_filter();
 
     for quest in data.quests.values() {
-        let name = quest.raw.get("Name")
+        let name = quest
+            .raw
+            .get("Name")
             .or_else(|| quest.raw.get("DisplayName"))
             .and_then(|v| v.as_str())
             .unwrap_or(&quest.internal_name);
-        let description = quest.raw.get("Description").and_then(|v| v.as_str()).unwrap_or("");
-        let location = quest.raw.get("DisplayedLocation").and_then(|v| v.as_str()).unwrap_or("");
-        let favor_npc = quest.raw.get("FavorNpc").and_then(|v| v.as_str()).unwrap_or("");
+        let description = quest
+            .raw
+            .get("Description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let location = quest
+            .raw
+            .get("DisplayedLocation")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let favor_npc = quest
+            .raw
+            .get("FavorNpc")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
-        // Area filter
+        // Area filter (positive + negated) on the displayed location
         if let Some(af) = area_filter {
             if !location.to_lowercase().contains(af) {
+                continue;
+            }
+        }
+        if let Some(na) = neg_area {
+            if location.to_lowercase().contains(na) {
                 continue;
             }
         }
 
         let searchable = combine_fields(&[name, description, location, favor_npc]);
 
-        let score = if !query.text_terms.is_empty() {
+        let score = if !query.text_terms.is_empty() || !query.exact_phrases.is_empty() {
             if !matches_all_terms(&searchable, &query.text_terms) {
                 continue;
             }
-            score_entity(name, &[description, location], &query.text_terms[0]).max(1)
-        } else if !query.exact_phrases.is_empty() {
             if !matches_all_phrases(&searchable, &query.exact_phrases) {
                 continue;
             }
-            score_entity(name, &[], &query.exact_phrases[0]).max(1)
-        } else if query.filters.is_empty() {
+            let anchor = query
+                .text_terms
+                .first()
+                .map(String::as_str)
+                .or(query.exact_phrases.first().map(String::as_str))
+                .unwrap_or("");
+            score_entity(name, &[description, location], anchor).max(1)
+        } else if query.filters.is_empty() && query.negations.is_empty() {
             continue;
         } else {
             50
         };
-
         results.push(UnifiedSearchResult {
             entity_type: "quest".to_string(),
             name: name.to_string(),
@@ -644,30 +969,35 @@ fn search_quests(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Unif
 }
 
 fn search_skills(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<UnifiedSearchResult> {
+    // Reject-or-empty: only free text / exact phrases apply to skills.
+    if query.has_unsupported_filter("skill") {
+        return Vec::new();
+    }
     let mut results = Vec::new();
 
     for skill in data.skills.values() {
-        let searchable = combine_fields(&[
-            &skill.name,
-            skill.description.as_deref().unwrap_or(""),
-        ]);
+        let searchable = combine_fields(&[&skill.name, skill.description.as_deref().unwrap_or("")]);
 
-        let score = if !query.text_terms.is_empty() {
+        let score = if !query.text_terms.is_empty() || !query.exact_phrases.is_empty() {
             if !matches_all_terms(&searchable, &query.text_terms) {
                 continue;
             }
-            score_entity(
-                &skill.name,
-                &[skill.description.as_deref().unwrap_or("")],
-                &query.text_terms[0],
-            )
-            .max(1)
-        } else if !query.exact_phrases.is_empty() {
             if !matches_all_phrases(&searchable, &query.exact_phrases) {
                 continue;
             }
-            score_entity(&skill.name, &[], &query.exact_phrases[0]).max(1)
-        } else if query.filters.is_empty() {
+            let anchor = query
+                .text_terms
+                .first()
+                .map(String::as_str)
+                .or(query.exact_phrases.first().map(String::as_str))
+                .unwrap_or("");
+            score_entity(
+                &skill.name,
+                &[skill.description.as_deref().unwrap_or("")],
+                anchor,
+            )
+            .max(1)
+        } else if query.filters.is_empty() && query.negations.is_empty() {
             continue;
         } else {
             50
@@ -688,9 +1018,18 @@ fn search_skills(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Unif
     results
 }
 
-fn search_abilities(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<UnifiedSearchResult> {
+fn search_abilities(
+    data: &GameData,
+    query: &ParsedQuery,
+    limit: usize,
+) -> Vec<UnifiedSearchResult> {
+    // Reject-or-empty: name:/keyword:/level:/has:/slot:/area: don't apply.
+    if query.has_unsupported_filter("ability") {
+        return Vec::new();
+    }
     let mut results = Vec::new();
     let skill_filter = query.skill_filter();
+    let neg_skill = query.negated_skill_filter();
 
     for family in data.ability_families.values() {
         // Skip monster abilities by default
@@ -698,13 +1037,22 @@ fn search_abilities(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<U
             continue;
         }
 
-        // Skill filter
+        // Skill filter (positive + negated)
         if let Some(sf) = skill_filter {
             match &family.skill {
                 Some(s) => {
-                    if !s.to_lowercase().contains(sf) { continue; }
+                    if !s.to_lowercase().contains(sf) {
+                        continue;
+                    }
                 }
                 None => continue,
+            }
+        }
+        if let Some(ns) = neg_skill {
+            if let Some(s) = &family.skill {
+                if s.to_lowercase().contains(ns) {
+                    continue;
+                }
             }
         }
 
@@ -724,17 +1072,21 @@ fn search_abilities(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<U
 
         let searchable = search_parts.join(" ").to_lowercase();
 
-        let score = if !query.text_terms.is_empty() {
-            if !query.text_terms.iter().all(|t| searchable.contains(t.as_str())) {
+        let score = if !query.text_terms.is_empty() || !query.exact_phrases.is_empty() {
+            if !matches_all_terms(&searchable, &query.text_terms) {
                 continue;
             }
-            score_entity(&family.base_name, &[], &query.text_terms[0]).max(1)
-        } else if !query.exact_phrases.is_empty() {
-            if !query.exact_phrases.iter().all(|p| searchable.contains(p.as_str())) {
+            if !matches_all_phrases(&searchable, &query.exact_phrases) {
                 continue;
             }
-            score_entity(&family.base_name, &[], &query.exact_phrases[0]).max(1)
-        } else if query.filters.is_empty() {
+            let anchor = query
+                .text_terms
+                .first()
+                .map(String::as_str)
+                .or(query.exact_phrases.first().map(String::as_str))
+                .unwrap_or("");
+            score_entity(&family.base_name, &[], anchor).max(1)
+        } else if query.filters.is_empty() && query.negations.is_empty() {
             continue;
         } else {
             50
@@ -758,6 +1110,10 @@ fn search_abilities(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<U
 }
 
 fn search_effects(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<UnifiedSearchResult> {
+    // Reject-or-empty: no structured filter applies to bare effects text.
+    if query.has_unsupported_filter("effect") {
+        return Vec::new();
+    }
     let mut results = Vec::new();
 
     for effect in data.effects.values() {
@@ -769,17 +1125,21 @@ fn search_effects(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Uni
 
         let searchable = combine_fields(&[name, desc]);
 
-        let score = if !query.text_terms.is_empty() {
+        let score = if !query.text_terms.is_empty() || !query.exact_phrases.is_empty() {
             if !matches_all_terms(&searchable, &query.text_terms) {
                 continue;
             }
-            score_entity(name, &[desc], &query.text_terms[0]).max(1)
-        } else if !query.exact_phrases.is_empty() {
             if !matches_all_phrases(&searchable, &query.exact_phrases) {
                 continue;
             }
-            score_entity(name, &[], &query.exact_phrases[0]).max(1)
-        } else if query.filters.is_empty() {
+            let anchor = query
+                .text_terms
+                .first()
+                .map(String::as_str)
+                .or(query.exact_phrases.first().map(String::as_str))
+                .unwrap_or("");
+            score_entity(name, &[desc], anchor).max(1)
+        } else if query.filters.is_empty() && query.negations.is_empty() {
             continue;
         } else {
             50
@@ -801,25 +1161,35 @@ fn search_effects(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Uni
 }
 
 fn search_enemies(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<UnifiedSearchResult> {
+    // Reject-or-empty: no structured filter applies to enemy key/comment text.
+    if query.has_unsupported_filter("enemy") {
+        return Vec::new();
+    }
     let mut results = Vec::new();
-
     for (key, ai) in &data.ai {
         let comment = ai.raw.get("Comment").and_then(|v| v.as_str()).unwrap_or("");
-        let strategy = ai.raw.get("Strategy").and_then(|v| v.as_str()).unwrap_or("");
-
+        let strategy = ai
+            .raw
+            .get("Strategy")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let searchable = combine_fields(&[key, comment, strategy]);
 
-        let score = if !query.text_terms.is_empty() {
+        let score = if !query.text_terms.is_empty() || !query.exact_phrases.is_empty() {
             if !matches_all_terms(&searchable, &query.text_terms) {
                 continue;
             }
-            score_entity(key, &[comment, strategy], &query.text_terms[0]).max(1)
-        } else if !query.exact_phrases.is_empty() {
             if !matches_all_phrases(&searchable, &query.exact_phrases) {
                 continue;
             }
-            score_entity(key, &[], &query.exact_phrases[0]).max(1)
-        } else if query.filters.is_empty() {
+            let anchor = query
+                .text_terms
+                .first()
+                .map(String::as_str)
+                .or(query.exact_phrases.first().map(String::as_str))
+                .unwrap_or("");
+            score_entity(key, &[comment, strategy], anchor).max(1)
+        } else if query.filters.is_empty() && query.negations.is_empty() {
             continue;
         } else {
             50
@@ -841,24 +1211,31 @@ fn search_enemies(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Uni
 }
 
 fn search_areas(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<UnifiedSearchResult> {
+    // Reject-or-empty: no structured filter applies to area names.
+    if query.has_unsupported_filter("area") {
+        return Vec::new();
+    }
     let mut results = Vec::new();
 
     for (key, area) in &data.areas {
         let name = area.friendly_name.as_deref().unwrap_or(key);
 
         let searchable = name.to_lowercase();
-
-        let score = if !query.text_terms.is_empty() {
+        let score = if !query.text_terms.is_empty() || !query.exact_phrases.is_empty() {
             if !matches_all_terms(&searchable, &query.text_terms) {
                 continue;
             }
-            score_match(name, &query.text_terms[0]).max(1)
-        } else if !query.exact_phrases.is_empty() {
             if !matches_all_phrases(&searchable, &query.exact_phrases) {
                 continue;
             }
-            score_match(name, &query.exact_phrases[0]).max(1)
-        } else if query.filters.is_empty() {
+            let anchor = query
+                .text_terms
+                .first()
+                .map(String::as_str)
+                .or(query.exact_phrases.first().map(String::as_str))
+                .unwrap_or("");
+            score_match(name, anchor).max(1)
+        } else if query.filters.is_empty() && query.negations.is_empty() {
             continue;
         } else {
             50
@@ -880,6 +1257,10 @@ fn search_areas(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Unifi
 }
 
 fn search_titles(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<UnifiedSearchResult> {
+    // Reject-or-empty: no structured filter applies to titles.
+    if query.has_unsupported_filter("title") {
+        return Vec::new();
+    }
     let mut results = Vec::new();
 
     for title in data.player_titles.values() {
@@ -890,18 +1271,21 @@ fn search_titles(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Unif
         let tooltip = title.tooltip.as_deref().unwrap_or("");
 
         let searchable = combine_fields(&[name, tooltip]);
-
-        let score = if !query.text_terms.is_empty() {
+        let score = if !query.text_terms.is_empty() || !query.exact_phrases.is_empty() {
             if !matches_all_terms(&searchable, &query.text_terms) {
                 continue;
             }
-            score_entity(name, &[tooltip], &query.text_terms[0]).max(1)
-        } else if !query.exact_phrases.is_empty() {
             if !matches_all_phrases(&searchable, &query.exact_phrases) {
                 continue;
             }
-            score_entity(name, &[], &query.exact_phrases[0]).max(1)
-        } else if query.filters.is_empty() {
+            let anchor = query
+                .text_terms
+                .first()
+                .map(String::as_str)
+                .or(query.exact_phrases.first().map(String::as_str))
+                .unwrap_or("");
+            score_entity(name, &[tooltip], anchor).max(1)
+        } else if query.filters.is_empty() && query.negations.is_empty() {
             continue;
         } else {
             50
@@ -922,7 +1306,15 @@ fn search_titles(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Unif
     results
 }
 
-fn search_lorebooks(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<UnifiedSearchResult> {
+fn search_lorebooks(
+    data: &GameData,
+    query: &ParsedQuery,
+    limit: usize,
+) -> Vec<UnifiedSearchResult> {
+    // Reject-or-empty: no structured filter applies to lorebooks.
+    if query.has_unsupported_filter("lorebook") {
+        return Vec::new();
+    }
     let mut results = Vec::new();
 
     for entry in data.lorebooks.books.values() {
@@ -934,18 +1326,21 @@ fn search_lorebooks(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<U
         let category = entry.category.as_deref().unwrap_or("");
 
         let searchable = combine_fields(&[name, text, category]);
-
-        let score = if !query.text_terms.is_empty() {
+        let score = if !query.text_terms.is_empty() || !query.exact_phrases.is_empty() {
             if !matches_all_terms(&searchable, &query.text_terms) {
                 continue;
             }
-            score_entity(name, &[text], &query.text_terms[0]).max(1)
-        } else if !query.exact_phrases.is_empty() {
             if !matches_all_phrases(&searchable, &query.exact_phrases) {
                 continue;
             }
-            score_entity(name, &[], &query.exact_phrases[0]).max(1)
-        } else if query.filters.is_empty() {
+            let anchor = query
+                .text_terms
+                .first()
+                .map(String::as_str)
+                .or(query.exact_phrases.first().map(String::as_str))
+                .unwrap_or("");
+            score_entity(name, &[text], anchor).max(1)
+        } else if query.filters.is_empty() && query.negations.is_empty() {
             continue;
         } else {
             50

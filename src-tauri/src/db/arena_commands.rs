@@ -158,9 +158,7 @@ fn aggregate_betting<C: DbRead + ?Sized>(conn: &C) -> Result<ArenaBettingSummary
 pub fn aggregate_stats<C: DbRead + ?Sized>(conn: &C) -> Result<ArenaStats, String> {
     // Pull every match once; the dataset is tiny (hundreds of rows at most).
     let mut stmt = conn
-        .prepare(
-            "SELECT fighter_a, fighter_b, winner FROM arena_matches",
-        )
+        .prepare("SELECT fighter_a, fighter_b, winner FROM arena_matches")
         .map_err(|e| format!("Query prepare error: {e}"))?;
 
     let rows = stmt
@@ -284,10 +282,7 @@ pub fn get_arena_stats(db: State<'_, DbPool>) -> Result<ArenaStats, String> {
 /// A fresh [`ArenaTracker`] is driven line-by-line per file. Chat logs are read
 /// oldest-to-newest within each file; intros and results interleave with all
 /// other chatter, which the tracker filters to Kuzavek's `NPC Chatter` lines.
-pub fn backfill_from_chat_logs(
-    settings: &SettingsManager,
-    db: &DbPool,
-) -> Result<usize, String> {
+pub fn backfill_from_chat_logs(settings: &SettingsManager, db: &DbPool) -> Result<usize, String> {
     let Some(dir) = settings.get_chat_logs_dir() else {
         return Ok(0);
     };
@@ -313,7 +308,9 @@ pub fn backfill_from_chat_logs(
     let mut inserted = 0usize;
 
     for path in paths {
-        let Ok(file) = File::open(&path) else { continue };
+        let Ok(file) = File::open(&path) else {
+            continue;
+        };
         // Each daily log is its own arena session; a match never straddles two
         // files, so a per-file tracker avoids stale pairings across a midnight
         // gap.
@@ -579,9 +576,36 @@ mod tests {
     fn betting_summary_win_rate_and_pnl() {
         let conn = setup();
         // Two wins (7500→14250 each) and one loss (7500→0).
-        record_arena_bet(&conn, "2026-07-20 10:00:00", "Otis", "Leo", 7500, 14250, true).unwrap();
-        record_arena_bet(&conn, "2026-07-20 11:00:00", "Corrrak", "Gloz", 7500, 14250, true).unwrap();
-        record_arena_bet(&conn, "2026-07-20 12:00:00", "Leo", "Dura", 7500, 14250, false).unwrap();
+        record_arena_bet(
+            &conn,
+            "2026-07-20 10:00:00",
+            "Otis",
+            "Leo",
+            7500,
+            14250,
+            true,
+        )
+        .unwrap();
+        record_arena_bet(
+            &conn,
+            "2026-07-20 11:00:00",
+            "Corrrak",
+            "Gloz",
+            7500,
+            14250,
+            true,
+        )
+        .unwrap();
+        record_arena_bet(
+            &conn,
+            "2026-07-20 12:00:00",
+            "Leo",
+            "Dura",
+            7500,
+            14250,
+            false,
+        )
+        .unwrap();
 
         let b = aggregate_stats(&conn).unwrap().betting;
         assert_eq!(b.total, 3);
@@ -596,8 +620,16 @@ mod tests {
     fn bet_record_is_idempotent() {
         let conn = setup();
         for _ in 0..3 {
-            record_arena_bet(&conn, "2026-07-20 10:00:00", "Otis", "Leo", 7500, 14250, true)
-                .unwrap();
+            record_arena_bet(
+                &conn,
+                "2026-07-20 10:00:00",
+                "Otis",
+                "Leo",
+                7500,
+                14250,
+                true,
+            )
+            .unwrap();
         }
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM arena_bets", [], |r| r.get(0))

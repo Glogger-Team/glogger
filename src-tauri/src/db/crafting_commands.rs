@@ -110,7 +110,8 @@ pub fn create_crafting_project(
         .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
-    let default_fee = r#"{"per_craft_fee":0,"material_pct":0,"material_pct_basis":"total","flat_fee":0}"#;
+    let default_fee =
+        r#"{"per_craft_fee":0,"material_pct":0,"material_pct_basis":"total","flat_fee":0}"#;
     let fee_config = input.fee_config.as_deref().unwrap_or(default_fee);
 
     conn.execute(
@@ -570,10 +571,7 @@ pub fn import_crafting_project(db: State<'_, DbPool>, encoded: String) -> Result
     Ok(new_id)
 }
 
-fn import_crafting_project_impl(
-    conn: &rusqlite::Connection,
-    encoded: &str,
-) -> Result<i64, String> {
+fn import_crafting_project_impl(conn: &rusqlite::Connection, encoded: &str) -> Result<i64, String> {
     let json_bytes = BASE64
         .decode(encoded.trim())
         .map_err(|e| format!("Invalid project code: {e}"))?;
@@ -588,7 +586,8 @@ fn import_crafting_project_impl(
         ));
     }
 
-    let default_fee = r#"{"per_craft_fee":0,"material_pct":0,"material_pct_basis":"total","flat_fee":0}"#;
+    let default_fee =
+        r#"{"per_craft_fee":0,"material_pct":0,"material_pct_basis":"total","flat_fee":0}"#;
     conn.execute(
         "INSERT INTO crafting_projects (name, notes, group_name, fee_config, customer_provides) VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![
@@ -610,8 +609,8 @@ fn import_crafting_project_impl(
         for entry in &project.entries {
             let expanded = serde_json::to_string(&entry.expanded_ingredient_ids)
                 .unwrap_or_else(|_| "[]".to_string());
-            let slots = serde_json::to_string(&entry.slot_item_ids)
-                .unwrap_or_else(|_| "[]".to_string());
+            let slots =
+                serde_json::to_string(&entry.slot_item_ids).unwrap_or_else(|_| "[]".to_string());
             stmt.execute(rusqlite::params![
                 new_id,
                 entry.recipe_id,
@@ -685,8 +684,7 @@ pub fn check_material_availability(
     {
         use std::rc::Rc;
 
-        let sql =
-            "SELECT item_type_id, item_name, SUM(stack_size) as qty
+        let sql = "SELECT item_type_id, item_name, SUM(stack_size) as qty
              FROM game_state_inventory
              WHERE character_name = ?1 AND item_type_id IN (SELECT value FROM rarray(?2))
              GROUP BY item_type_id";
@@ -883,12 +881,14 @@ pub fn get_work_orders_from_snapshot(
              WHERE item_snapshot_id = ?1
                AND (item_name LIKE 'Work Order for %' OR item_name LIKE 'Scroll\\_%' ESCAPE '\\')",
                 )
-                .unwrap();
-            stmt.query_map(rusqlite::params![snapshot_id], |row| row.get::<_, u32>(0))
-                .unwrap()
-                .filter_map(|r| r.ok())
-                .collect()
+                .map_err(|e| format!("Query error: {e}"))?;
+            let rows = stmt
+                .query_map(rusqlite::params![snapshot_id], |row| row.get::<_, u32>(0))
+                .map_err(|e| format!("Query error: {e}"))?;
+            rows.collect::<rusqlite::Result<Vec<u32>>>()
+                .map_err(|e| format!("Row error: {e}"))
         })
+        .transpose()?
         .unwrap_or_default();
 
     Ok(WorkOrderData {
@@ -994,8 +994,30 @@ mod import_export_tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0], (7001, "Orcish Bock".to_string(), 3, 0, "[55,66]".to_string(), Some(12), "[901,902]".to_string()));
-        assert_eq!(entries[1], (7002, "Oat Bread".to_string(), 10, 1, "[]".to_string(), None, "[]".to_string()));
+        assert_eq!(
+            entries[0],
+            (
+                7001,
+                "Orcish Bock".to_string(),
+                3,
+                0,
+                "[55,66]".to_string(),
+                Some(12),
+                "[901,902]".to_string()
+            )
+        );
+        assert_eq!(
+            entries[1],
+            (
+                7002,
+                "Oat Bread".to_string(),
+                10,
+                1,
+                "[]".to_string(),
+                None,
+                "[]".to_string()
+            )
+        );
     }
 
     #[test]
