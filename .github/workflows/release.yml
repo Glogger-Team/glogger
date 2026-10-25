@@ -506,10 +506,10 @@ jobs:
   flatpak:
     needs: [validate, publish]
     if: ${{ github.event_name == 'push' || inputs.publish == true }}
-    # Self-repository syntax ($/...): same-repo callee, resolved by GitHub —
+    # Local-path syntax (./...): same-repo callee, resolved by GitHub —
     # not subject to checkout filesystem state, and counts as pinned under a
     # fully-pinned repo policy. Always tracks the current ref's flatpak.yml.
-    uses: $/.github/workflows/flatpak.yml
+    uses: ./.github/workflows/flatpak.yml
     with:
       tag: ${{ needs.validate.outputs.tag }}
       publish: true
