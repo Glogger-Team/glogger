@@ -1184,12 +1184,13 @@ impl DataIngestCoordinator {
                             timestamp,
                             ..
                         } if category == "ImportantInfo" => {
-                            // "PlayerName has milked you."
-                            if let Some(player_name) = message.strip_suffix(" has milked you.") {
-                                if !player_name.is_empty() {
-                                    let ts = self.game_state.peek_utc(timestamp);
-                                    self.record_player_milk(player_name, "milked_by", &ts);
-                                }
+                            // "PlayerName has milked you." — same normalizer as the
+                            // Chat `[Status]` path (fail-closed on empty/dotted names).
+                            if let Some(player_name) =
+                                crate::chat_status_parser::strip_milked_by_suffix(message)
+                            {
+                                let ts = self.game_state.peek_utc(timestamp);
+                                self.record_player_milk(&player_name, "milked_by", &ts);
                             }
                         }
                         // "ProcessDoDelayLoop(1.5, Eat, "Using <Food Name>", ...)" fires

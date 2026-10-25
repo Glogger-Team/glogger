@@ -47,8 +47,9 @@ The error only says the milk happened somewhere in `(attempt - 1h, attempt]`, so
 
 ### Player-to-Player Milking (Being Milked)
 1. Another player milks this character
-2. `ProcessScreenText(ImportantInfo, "PlayerName has milked you.")` is detected
-3. Recorded as direction `milked_by` in `player_milking_log`
+2. Chat `[Status] PlayerName has milked you.` is detected via `chat_status_parser::try_milked_by` — this is the live producer (28 events observed in Chat logs Jun–Oct 2026; e.g. `26-10-24 22:07:13 [Status] Azyima has milked you.`)
+3. The legacy `ProcessScreenText(ImportantInfo, "PlayerName has milked you.")` Player.log path records the same event if present (unobserved in current logs — `Player.log` carries no `ScreenText` lines in recent builds; kept as fallback). Both paths share `strip_milked_by_suffix` so names normalize identically (the `player_milking_log` dedup key includes `other_player`)
+4. Recorded as direction `milked_by` in `player_milking_log`
 
 ### Self-Milking (Cow Player Milks Themselves)
 1. A player in cow form uses Collect Milk on themselves

@@ -141,15 +141,24 @@ fn try_word_of_power_used(text: &str, ts: &str) -> Option<ChatStatusEvent> {
     })
 }
 
-/// "X has milked you."
-fn try_milked_by(text: &str, ts: &str) -> Option<ChatStatusEvent> {
-    let milker = text.strip_suffix(" has milked you.")?;
+/// "X has milked you." — shared by the Chat `[Status]` parser and the
+/// Player.log `ScreenText(ImportantInfo)` arm in the coordinator, so both
+/// producers normalize names identically (the milking dedup key includes
+/// `other_player`, so divergent normalization would double-count).
+/// Returns the milker name, or None when the text is not a milk line.
+pub fn strip_milked_by_suffix(text: &str) -> Option<String> {
+    let milker = text.strip_suffix(" has milked you.")?.trim();
     if milker.is_empty() || milker.contains('.') {
         return None;
     }
-    Some(ChatStatusEvent::MilkedBy {
+    Some(milker.to_string())
+}
+
+/// "X has milked you."
+fn try_milked_by(text: &str, ts: &str) -> Option<ChatStatusEvent> {
+    strip_milked_by_suffix(text).map(|milker| ChatStatusEvent::MilkedBy {
         timestamp: ts.to_string(),
-        milker: milker.trim().to_string(),
+        milker,
     })
 }
 
@@ -612,6 +621,28 @@ mod tests {
         // Missing trailing "!" must not match
         let msg = status_msg("You use the word of power ABCDEF");
         assert!(parse_status_message(&msg).is_none());
+    }
+
+    #[test]
+    fn test_milked_by() {
+        // Real line shape from Chat-26-10-24.log
+        let msg = status_msg("Azyima has milked you.");
+        let event = parse_status_message(&msg).unwrap();
+        if let ChatStatusEvent::MilkedBy { milker, .. } = event {
+            assert_eq!(milker, "Azyima");
+        } else {
+            panic!("Expected MilkedBy, got {:?}", event);
+        }
+    }
+
+    #[test]
+    fn test_milked_by_rejects_empty_and_dotted() {
+        // Bare suffix with no name must not match
+        assert!(strip_milked_by_suffix(" has milked you.").is_none());
+        // Dotted prefix looks like a sentence fragment, not a player name
+        assert!(strip_milked_by_suffix("Someone. has milked you.").is_none());
+        // Wrong suffix must not match
+        assert!(strip_milked_by_suffix("Azyima has milked Homer.").is_none());
     }
 
     #[test]
