@@ -67,6 +67,11 @@ export type ChatStatusEvent =
       zone: string | null
     }
   | { kind: 'RouletteResult'; timestamp: string; number: number }
+  // Backend-only kinds (WordOfPowerUsed, ItemStudied, ReportSaved) and
+  // MilkedBy carry no session-feed payload — the widgets they feed refresh
+  // from persisted DB rows via game-state-updated domains, so the handler
+  // switch intentionally has no case for them.
+  | { kind: 'MilkedBy'; timestamp: string; milker: string }
 
 // ── Currency Estimate ─────────────────────────────────────────────────────
 // Matches Rust CurrencyEstimate (db/game_state_commands.rs). Running estimate
