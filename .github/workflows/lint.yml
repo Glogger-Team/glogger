@@ -172,17 +172,18 @@ jobs:
               score = cvss_base(adv['cvss']) if adv.get('cvss') else None
               versions = lock_versions.get(pkg, [])
               if score is None and versions:
-                  scored, failed = [], False
+                  scored, failed_versions = [], []
                   for ver in versions:
                       res = osv_scores(pkg, ver)
                       if res is None:
-                          failed = True
+                          failed_versions.append(ver)
                       else:
                           scored.extend(res)
                   if scored:
                       score = max(scored)
-                  elif failed:
-                      unknowns.append((adv, versions))
+                  if failed_versions and (score is None or score < 7.0):
+                      # Partial data with no blocking score: fail closed.
+                      unknowns.append((adv, failed_versions))
                       continue
               patched = bool(adv.get('patched'))
               label = f"{adv['id']} {pkg}: {adv['title']} (CVSS {score if score is not None else 'unrated'})"

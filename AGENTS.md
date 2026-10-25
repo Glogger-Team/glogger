@@ -131,7 +131,7 @@ Before committing, lint every file type you changed and fix what the linter repo
 | --------- | ------ | --- |
 | TS/Vue/JS (`.ts`, `.vue`, `.mjs`, `.cjs`) | vue-tsc (gated today); eslint (pending `npm i -D`) | `npm run build` |
 | Rust (`.rs`) | rustfmt + clippy, both advisory (823 unformatted spots, 167 findings pre-existing — report, don't gate) | from `src-tauri/`: `cargo fmt -- --check`, `cargo clippy --all-targets` |
-| Rust deps (`Cargo.lock`) | cargo-audit, gated in CI (critical/high only, CVSS ≥ 7.0; unscored-or-lookup-failed advisories block) | from `src-tauri/`: `cargo audit --json` (gate logic lives in `lint.yml: cargo-audit` — inline CVSS vector first, OSV max-score fallback per locked version; `--ignore <RUSTSEC-id>` only with justification) |
+| Rust deps (`Cargo.lock`) | cargo-audit, gated in CI (critical/high only, CVSS ≥ 7.0; unscored advisories block unless OSV confirms unrated-for-all-locked-versions) | from `src-tauri/`: `cargo audit --json` (gate logic lives in `lint.yml: cargo-audit` — inline CVSS vector first, OSV max-score fallback per locked version; partial OSV failure with no blocking score fails closed; `--ignore <RUSTSEC-id>` only with justification) |
 | Python (`.py`) | ruff check + format --check (gated in CI) | `mise x ruff -- ruff check scripts/ && mise x ruff -- ruff format --check scripts/` |
 | Rust (clippy, local) | clippy stays advisory until the 167 pre-existing findings are burned down — run it, fix what you touched, never gate on it | from `src-tauri/`: `cargo clippy --all-targets` |
 | Shell (`.sh`, `.githooks/*`) | shellcheck (warning+; info notes don't fail) | `shellcheck -S warning scripts/*.sh .githooks/pre-push .githooks/commit-msg` |

@@ -645,6 +645,11 @@ struct PendingDelete {
     seen_at_secs: u32,
     /// Non-matching lines observed while buffered (for the 5-line retention).
     lines_seen: u32,
+    /// Wall-clock instant the DeleteItem fired. Backstop for live-tail
+    /// silence: when polls arrive with no new lines, log-clock and
+    /// line-count retention both freeze, so the idle drain evicts entries
+    /// older than `DELETE_BUFFER_IDLE_TIMEOUT_SECS` as `Unknown`.
+    seen_at_instant: std::time::Instant,
 }
 
 /// Delete-buffer retention: a `ProcessDeleteItem` waits up to 5 s / 5 lines
@@ -653,6 +658,12 @@ struct PendingDelete {
 /// an unrelated line in between; the game emits the pair within a tick.
 const DELETE_BUFFER_MAX_AGE_SECS: u32 = 5;
 const DELETE_BUFFER_MAX_LINES: u32 = 5;
+/// Wall-clock backstop for the delete buffer during live-tail silence. When
+/// polls arrive with no new log lines, the 5 s / 5-line retention never
+/// advances; a delete older than this is emitted as `Unknown` instead of
+/// lingering forever. Generous vs the 500 ms poll cadence and the
+/// game's within-a-tick Delete/confirmation pairing.
+const DELETE_BUFFER_IDLE_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
@@ -847,7 +858,8 @@ const CHAT_GAIN_BUFFER_LIFETIME_SECS: u32 = 10;
 /// full-state dump (mirrors effects' `is_login_batch`). Live play never
 /// produces 20 back-to-back `is_new=false` AddItems with no intervening
 /// UpdateItemCode; a login dump always does. One-shot per burst: the
-/// flag is consumed by `take_inventory_login_batch`, the run counter
+/// `login_batch_fired` latch is set when the flag fires and only cleared
+/// where the run resets, so the flag can't re-arm mid-burst.
 const LOGIN_BATCH_MIN_ITEMS: u32 = 20;
 
 // ============================================================
@@ -881,12 +893,18 @@ pub struct PlayerEventParser {
     /// `CharacterLogin` or intervening `ProcessUpdateItemCode` — the
     /// login-batch full-state dump signal, mirroring effects'
     /// `is_login_batch`. Fires the one-shot `inventory_login_batch` flag at
-    /// `LOGIN_BATCH_MIN_ITEMS`; reset on UpdateItemCode / login line.
+    /// `LOGIN_BATCH_MIN_ITEMS`; reset on UpdateItemCode / login line /
+    /// genuine (`is_new=true`) gain.
     login_batch_run: u32,
     /// One-shot: the current burst crossed the login-batch threshold and the
     /// inventory slice needs one clear before the batch persists. Consumed by
     /// `take_inventory_login_batch`.
     inventory_login_batch: bool,
+    /// Per-burst latch: set when the one-shot fires, cleared only where the
+    /// run resets. Stops the flag re-arming mid-burst — without it, the line
+    /// after a take would re-set the flag and the coordinator would clear
+    /// the slice a second time, wiping the already-persisted first half.
+    login_batch_fired: bool,
     /// Seconds-of-day of the most recent timestamped line seen. Feeds the
     /// poll-boundary drain (`flush_expired_deletes`): the watcher asks for
     /// the poll's last clock after feeding all lines, so cross-poll pairs
@@ -978,6 +996,7 @@ impl PlayerEventParser {
             chat_gain_fallback: 0,
             login_batch_run: 0,
             inventory_login_batch: false,
+            login_batch_fired: false,
             last_line_secs: 0,
             pending_pigeon_send: None,
             pending_stall_note_send: None,
@@ -998,10 +1017,11 @@ impl PlayerEventParser {
         (self.chat_gain_matched, self.chat_gain_fallback)
     }
 
-    /// One-shot login-batch signal: true once when the consecutive
-    /// `is_new=false` burst crossed `LOGIN_BATCH_MIN_ITEMS`; false after
-    /// taken. The game-state layer clears the inventory slice once, before
-    /// the batch persists.
+    /// One-shot login-batch signal: true once per `is_new=false` burst that
+    /// crossed `LOGIN_BATCH_MIN_ITEMS`; false after taken, and not re-armed
+    /// until the burst ends (the `login_batch_fired` latch only clears where
+    /// the run resets). The game-state layer clears the inventory slice once,
+    /// before the batch persists.
     pub fn take_inventory_login_batch(&mut self) -> bool {
         std::mem::replace(&mut self.inventory_login_batch, false)
     }
@@ -1217,9 +1237,11 @@ impl PlayerEventParser {
         // the fast path below; nothing else can consume it.
         if line.contains("Logged in as character ") && line.contains("Time UTC=") {
             // New session: the next `is_new=false` burst is a fresh dump.
-            // Reset (don't clear a stale one-shot — the clear belongs to
-            // the burst that set it, handled before this line's batch).
+            // Reset the run and the fired latch (the stale one-shot's clear
+            // belongs to the burst that set it, handled before this line's
+            // batch).
             self.login_batch_run = 0;
+            self.login_batch_fired = false;
             // A delete still buffered here must be emitted *before* the
             // anchor: it belongs to an earlier line, and the date resolver
             // is stateful — an earlier time of day after the anchor reads
@@ -1607,15 +1629,33 @@ impl PlayerEventParser {
     /// finalize cross-poll Delete/confirmation pairs prematurely.
     /// Full drains stay on the login line (anchor ordering) and end-of-stream
     /// callers (offline import, replay, manual flush).
+    ///
+    /// The wall-clock backstop (`DELETE_BUFFER_IDLE_TIMEOUT_SECS`) also
+    /// applies: when polls arrive with no new lines, log-clock and line-count
+    /// retention both freeze, so a delete older than the timeout is emitted
+    /// as `Unknown` instead of lingering forever.
     pub fn flush_expired_deletes(&mut self, now_secs: u32, events: &mut Vec<PlayerEvent>) {
+        self.flush_expired_deletes_at(now_secs, std::time::Instant::now(), events);
+    }
+
+    fn flush_expired_deletes_at(
+        &mut self,
+        now_secs: u32,
+        now_instant: std::time::Instant,
+        events: &mut Vec<PlayerEvent>,
+    ) {
         if self.pending_deletes.is_empty() {
             return;
         }
         let mut expired = Vec::new();
         self.pending_deletes.retain(|pd| {
             let age = now_secs.saturating_sub(pd.seen_at_secs);
+            let idle_secs = now_instant
+                .saturating_duration_since(pd.seen_at_instant)
+                .as_secs();
             if (now_secs != 0 && age > DELETE_BUFFER_MAX_AGE_SECS)
                 || pd.lines_seen >= DELETE_BUFFER_MAX_LINES
+                || idle_secs >= DELETE_BUFFER_IDLE_TIMEOUT_SECS
             {
                 expired.push(pd.clone());
                 false
@@ -1682,11 +1722,13 @@ impl PlayerEventParser {
         // `is_login_batch`). Any genuine gain breaks the run.
         if !is_new {
             self.login_batch_run = self.login_batch_run.saturating_add(1);
-            if self.login_batch_run >= LOGIN_BATCH_MIN_ITEMS && !self.inventory_login_batch {
+            if self.login_batch_run >= LOGIN_BATCH_MIN_ITEMS && !self.login_batch_fired {
                 self.inventory_login_batch = true;
+                self.login_batch_fired = true;
             }
         } else {
             self.login_batch_run = 0;
+            self.login_batch_fired = false;
         }
 
         // Seed stack tracking for genuinely new items.
@@ -1762,6 +1804,7 @@ impl PlayerEventParser {
     fn parse_update_item_code(&mut self, line: &str) -> Option<PlayerEvent> {
         // A baseline arriving mid-burst means live play, not a login dump.
         self.login_batch_run = 0;
+        self.login_batch_fired = false;
         let ts = parse_timestamp(line)?;
         let args_start = line.find("ProcessUpdateItemCode(")? + "ProcessUpdateItemCode(".len();
         let args_end = line[args_start..].find(')')? + args_start;
@@ -1880,6 +1923,7 @@ impl PlayerEventParser {
 
         self.pending_deletes.push(PendingDelete {
             seen_at_secs: timestamp_to_secs(&ts),
+            seen_at_instant: std::time::Instant::now(),
             lines_seen: 0,
             timestamp: ts,
             instance_id,
@@ -4308,6 +4352,84 @@ mod tests {
             !parser.take_inventory_login_batch(),
             "one-shot consumes on take"
         );
+    }
+
+    #[test]
+    fn test_login_batch_does_not_rearm_mid_burst() {
+        // Finding A regression: after the coordinator takes the one-shot,
+        // the next `is_new=false` line in the SAME burst must not re-arm —
+        // a second take would clear the slice after the first half persisted.
+        let mut parser = PlayerEventParser::new();
+        for i in 0..25u64 {
+            parser.process_line(&format!(
+                "[16:00:{:02}] LocalPlayer: ProcessAddItem(DumpItem{}(1000{}), -1, False)",
+                i % 60,
+                i,
+                i
+            ));
+        }
+        assert!(
+            parser.take_inventory_login_batch(),
+            "25-burst must arm the one-shot"
+        );
+        // The burst continues (e.g. a dump split across polls): lines 25..30
+        // must not re-arm the flag.
+        for i in 25..30u64 {
+            parser.process_line(&format!(
+                "[16:01:{:02}] LocalPlayer: ProcessAddItem(DumpItem{}(1000{}), -1, False)",
+                i % 60,
+                i,
+                i
+            ));
+        }
+        assert!(
+            !parser.take_inventory_login_batch(),
+            "mid-burst continuation must not re-arm after take"
+        );
+        // A genuine gain ends the burst; a fresh 20-run after it arms again.
+        parser.process_line(
+            r#"[16:02:00] LocalPlayer: ProcessAddItem(FreshItem(9), -1, True)"#,
+        );
+        for i in 0..20u64 {
+            parser.process_line(&format!(
+                "[16:02:{:02}] LocalPlayer: ProcessAddItem(DumpItemB{}(3000{}), -1, False)",
+                i % 60,
+                i,
+                i
+            ));
+        }
+        assert!(
+            parser.take_inventory_login_batch(),
+            "new burst after a genuine gain must arm again"
+        );
+    }
+
+    #[test]
+    fn test_idle_delete_flushes_after_wall_clock_timeout() {
+        // Finding B regression: a delete buffered at the end of a poll must
+        // not linger forever when no new lines arrive (log-clock and
+        // line-count retention both frozen). The wall-clock backstop evicts
+        // it as `Unknown`.
+        let mut parser = PlayerEventParser::new();
+        parser.process_line(
+            r#"[13:27:07] LocalPlayer: ProcessAddItem(MapleWood(136093889), -1, True)"#,
+        );
+        assert!(parser
+            .process_line(r#"[13:27:07] LocalPlayer: ProcessDeleteItem(136093889)"#)
+            .is_empty());
+        let mut drained = Vec::new();
+        parser.flush_expired_deletes_at(
+            parser.last_line_secs(),
+            std::time::Instant::now() + std::time::Duration::from_secs(31),
+            &mut drained,
+        );
+        assert_eq!(drained.len(), 1, "idle delete must flush as Unknown");
+        match &drained[0] {
+            PlayerEvent::ItemDeleted { context, .. } => {
+                assert_eq!(*context, DeleteContext::Unknown);
+            }
+            other => panic!("Expected ItemDeleted, got {other:?}"),
+        }
     }
 
     #[test]
