@@ -91,6 +91,9 @@ pub enum ChatStatusEvent {
     /// "You use the word of power WORD!" — the player spoke a word of power.
     /// A spoken word is consumed game-wide, so every saved copy of it is dead.
     WordOfPowerUsed { timestamp: String, word: String },
+
+    /// "X has milked you."
+    MilkedBy { timestamp: String, milker: String },
 }
 
 /// Try to parse a Status channel ChatMessage into a structured event.
@@ -120,6 +123,7 @@ pub fn parse_status_message(msg: &ChatMessage) -> Option<ChatStatusEvent> {
         .or_else(|| try_report_saved(text, &ts))
         .or_else(|| try_roulette_result(text, &ts))
         .or_else(|| try_word_of_power_used(text, &ts))
+        .or_else(|| try_milked_by(text, &ts))
 }
 
 /// "You use the word of power WORD!" — the player spoke a word of power.
@@ -134,6 +138,18 @@ fn try_word_of_power_used(text: &str, ts: &str) -> Option<ChatStatusEvent> {
     Some(ChatStatusEvent::WordOfPowerUsed {
         timestamp: ts.to_string(),
         word: word.to_string(),
+    })
+}
+
+/// "X has milked you."
+fn try_milked_by(text: &str, ts: &str) -> Option<ChatStatusEvent> {
+    let milker = text.strip_suffix(" has milked you.")?;
+    if milker.is_empty() || milker.contains('.') {
+        return None;
+    }
+    Some(ChatStatusEvent::MilkedBy {
+        timestamp: ts.to_string(),
+        milker: milker.trim().to_string(),
     })
 }
 
