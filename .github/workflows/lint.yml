@@ -135,6 +135,7 @@ jobs:
       - name: pinact
         uses: suzuki-shunsuke/pinact-action@2a42f29b3397967439ed46e7650f3045f49699f9 # v3.0.1
         with:
+          fix: "false"
           verify: "true"
 
   markdown:

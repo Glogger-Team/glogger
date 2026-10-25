@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Fail-closed cargo-audit gate: blocks on critical/high (CVSS >= 7.0) advisories.
 
 Runs `cargo audit --json` against src-tauri/Cargo.lock, scores each advisory
