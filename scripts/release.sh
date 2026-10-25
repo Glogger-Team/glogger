@@ -40,8 +40,8 @@ fi
 # v1.3.9). Falls back to the nearest tag when the lookup is impossible (gh
 # missing, offline, unauthenticated).
 PREV_TAG=""
-# Slug from the origin remote (NOT `gh repo view`: with an upstream remote
-# present that resolves to the fork's parent, whose releases are unrelated).
+# Slug from the origin remote (NOT bare `gh repo view`: that follows the
+# per-clone default, which a fresh clone may resolve elsewhere).
 ORIGIN_URL="$(git config --get remote.origin.url || true)"
 REPO_SLUG="$(printf '%s' "$ORIGIN_URL" | sed -E 's#.*github\.com[:/]([^/]+/[^/]+?)(\.git)?/?$#\1#')"
 case "$REPO_SLUG" in
