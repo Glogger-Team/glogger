@@ -337,14 +337,44 @@ fn try_level_up(text: &str, ts: &str) -> Option<ChatStatusEvent> {
     })
 }
 
-/// "The treasure is N meters from here."
+/// "The treasure is N meters from here." (straight-line ping) or the
+/// directional shape "<anything> is <dx>m <east|west> and <dy>m <north|south>."
+/// (e.g. "The treasure is 384m east and 1006m south.",
+/// "The Fluorite is 814m east and 2328m north."). The directional form
+/// reports per-axis offsets, not a distance, so it is collapsed to the
+/// Euclidean norm `sqrt(dx*dx + dy*dy)` rounded to the nearest meter —
+/// display-grade approximation, no new event variant.
 fn try_treasure_distance(text: &str, ts: &str) -> Option<ChatStatusEvent> {
-    if !text.starts_with("The treasure is ") || !text.ends_with(" meters from here.") {
+    if text.starts_with("The treasure is ") && text.ends_with(" meters from here.") {
+        let inner = &text["The treasure is ".len()..text.len() - " meters from here.".len()];
+        let meters: u32 = inner.parse().ok()?;
+        return Some(ChatStatusEvent::TreasureDistance {
+            timestamp: ts.to_string(),
+            meters,
+        });
+    }
+    // Directional: "<subject> is <dx>m <east|west> and <dy>m <north|south>."
+    let is_pos = text.find(" is ")?;
+    let after_is = &text[is_pos + " is ".len()..];
+    let and_pos = after_is.find("m east and ").or_else(|| after_is.find("m west and "))?;
+    let dx: f64 = after_is[..and_pos].parse().ok()?;
+    let rest = &after_is[and_pos..];
+    // rest = "m <dir> and <dy>m <dir>."
+    let m_end = rest.find("m ")?;
+    let after_dir = &rest[m_end + "m ".len()..]; // "<dir> and <dy>m <dir>."
+    let and_word = after_dir.find(" and ")?;
+    let dy_part = &after_dir[and_word + " and ".len()..]; // "<dy>m <dir>."
+    let dy_end = dy_part.find('m')?;
+    let dy: f64 = dy_part[..dy_end].parse().ok()?;
+    let dir_tail = &dy_part[dy_end..]; // "m <dir>."
+    if !(dir_tail.ends_with(" north.")
+        || dir_tail.ends_with(" south.")
+        || dir_tail.ends_with(" east.")
+        || dir_tail.ends_with(" west."))
+    {
         return None;
     }
-    let inner = &text["The treasure is ".len()..text.len() - " meters from here.".len()];
-    let meters: u32 = inner.parse().ok()?;
-
+    let meters = (dx * dx + dy * dy).sqrt().round() as u32;
     Some(ChatStatusEvent::TreasureDistance {
         timestamp: ts.to_string(),
         meters,
@@ -801,6 +831,7 @@ mod tests {
 
     #[test]
     fn test_treasure_distance() {
+        // Straight-line ping.
         let msg = status_msg("The treasure is 3215 meters from here.");
         let event = parse_status_message(&msg).unwrap();
         if let ChatStatusEvent::TreasureDistance { meters, .. } = event {
@@ -808,6 +839,26 @@ mod tests {
         } else {
             panic!("Expected TreasureDistance, got {:?}", event);
         }
+        // Directional fixture (50x-povusmarvelous Chat.log:136):
+        // sqrt(384² + 1006²) = 1076.79… → 1077 (nearest meter).
+        let msg = status_msg("The treasure is 384m east and 1006m south.");
+        let event = parse_status_message(&msg).unwrap();
+        if let ChatStatusEvent::TreasureDistance { meters, .. } = event {
+            assert_eq!(meters, 1077);
+        } else {
+            panic!("Expected TreasureDistance, got {:?}", event);
+        }
+        // Directional mineral ping (100x-eltblue Chat.log:346):
+        // sqrt(814² + 2328²) = 2466.2… → 2466.
+        let msg = status_msg("The Fluorite is 814m east and 2328m north.");
+        let event = parse_status_message(&msg).unwrap();
+        if let ChatStatusEvent::TreasureDistance { meters, .. } = event {
+            assert_eq!(meters, 2466);
+        } else {
+            panic!("Expected TreasureDistance, got {:?}", event);
+        }
+        // Non-distance status is not a treasure ping.
+        assert!(parse_status_message(&status_msg("The treasure is far away.")).is_none());
     }
 
     #[test]

@@ -1,0 +1,43 @@
+[tools]
+# Gated in CI (lint.yml) — float latest, same as CI's floor-not-freeze policy.
+zizmor = "latest"
+ruff = "latest"
+shellcheck = "latest"
+yamllint = "latest"
+pinact = "latest"
+# Ad-hoc use, not gated: jactionlint replaces actionlint wherever actionlint
+# would be called (actionlint's cache-poisoning rule can't ignore accepted drift).
+jactionlint = "latest"
+# Opt-in / advisory only (see AGENTS.md Linting table).
+"npm:markdownlint-cli2" = "latest"
+# Runtime for npx-based linters; matches package.json engines.
+node = "24"
+# Runtime for scripts/cargo-audit-gate.py (CI uses runner python3).
+python = "latest"
+
+[tasks.lint]
+description = "Blocking lint gates (CI lint.yml set, runnable locally)"
+# Array form: each entry runs separately. A multi-line string runs as one
+# cmd.exe script, where invoking the npm .cmd shim without `call` swallows
+# every line after it.
+run = [
+  "npm run build",
+  "npm run check:grids",
+  "ruff check scripts/",
+  "ruff format --check scripts/",
+  "python -c \"import glob, subprocess, sys; sys.exit(subprocess.run(['shellcheck', '-S', 'warning'] + glob.glob('scripts/*.sh') + ['.githooks/pre-push', '.githooks/commit-msg']).returncode)\"",
+  "yamllint .github/",
+  "zizmor --no-online-audits --config \"{{config_root}}/.github/zizmor.yml\" --min-severity medium \"{{config_root}}/.github/workflows/\"",
+  "pinact run --check",
+  "python scripts/cargo-audit-gate.py",
+  "pwsh -NoProfile -File scripts/check-glogger-constraints.ps1",
+]
+
+[tasks."lint:all"]
+description = "lint plus advisory checks (rustfmt, clippy, markdown)"
+depends = ["lint"]
+run = [
+  "cd src-tauri && cargo fmt -- --check",
+  "cd src-tauri && cargo clippy --all-targets",
+  "markdownlint-cli2 --config .markdownlint-cli2.json \"AGENTS.md\" \"README.md\" \"SECURITY.md\" \"CONTRIBUTING.md\"",
+]

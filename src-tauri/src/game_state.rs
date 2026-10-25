@@ -97,6 +97,26 @@ impl GameStateManager {
             log_dates: LogDateResolver::default(),
         }
     }
+    /// Clear one character/server inventory slice before a login-batch
+    /// full-state dump persists. Called once per burst by the coordinator
+    /// when the parser's `take_inventory_login_batch` one-shot fires —
+    /// mirrors the effects `is_login_batch` DELETE, for dumps that arrive
+    /// without an `adopt_player_log_session` clear (alt order, resume).
+    pub fn clear_inventory_slice(&mut self, db: &DbPool) {
+        let (Some(character), Some(server)) = (
+            self.active_character.clone(),
+            self.active_server.clone(),
+        ) else {
+            return;
+        };
+        if let Ok(conn) = db.get_write() {
+            conn.execute(
+                "DELETE FROM game_state_inventory WHERE character_name = ?1 AND server_name = ?2",
+                rusqlite::params![character, server],
+            )
+            .ok();
+        }
+    }
 
     /// Stamp Player.log times with an explicit UTC date instead of today's.
     /// Live tailing leaves this unset; replay / old-log reparse sets it so
@@ -528,7 +548,6 @@ impl GameStateManager {
                 provenance,
             } => {
                 let dt = self.to_utc(timestamp);
-                // Resolve item_type_id and display name from CDN game data
                 let resolved = game_data_guard
                     .as_ref()
                     .and_then(|gd| gd.resolve_item(item_name));
@@ -1941,6 +1960,55 @@ mod tests {
         assert!(domains.contains(&"inventory"));
         assert_eq!(stack("TestPlayer"), 3, "active slice corrected");
         assert_eq!(stack("OtherAlt"), 5, "staged correction survived");
+
+        // Drop the pool first: Windows won't delete a file with an open handle.
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
+    }
+    #[test]
+    fn login_batch_clear_empties_only_the_active_slice() {
+        use std::sync::Arc;
+
+        let db_path = unique_temp_db("glogger_login_batch_clear_test");
+        let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
+
+        let mut manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
+            crate::game_data::GameData::empty(),
+        )));
+        manager.set_active_character_name("TestPlayer");
+        manager.set_active_server_name("Dreva");
+
+        let seed = |character: &str, instance_id: i64| {
+            pool.get_write()
+                .unwrap()
+                .execute(
+                    "INSERT INTO game_state_inventory
+                     (character_name, server_name, instance_id, item_name, stack_size, last_confirmed_at, source)
+                     VALUES (?1, 'Dreva', ?2, 'StaleItem', 1, '2026-10-19 12:00:00', 'log')",
+                    rusqlite::params![character, instance_id],
+                )
+                .unwrap()
+        };
+        seed("TestPlayer", 1);
+        seed("OtherAlt", 2);
+
+        let count = |character: &str| -> i64 {
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM game_state_inventory
+                     WHERE character_name = ?1 AND server_name = 'Dreva'",
+                    rusqlite::params![character],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+
+        // The coordinator calls this once when the parser's one-shot fires,
+        // before the login-batch burst persists.
+        manager.clear_inventory_slice(&pool);
+        assert_eq!(count("TestPlayer"), 0, "stale slice cleared");
+        assert_eq!(count("OtherAlt"), 1, "other character untouched");
 
         // Drop the pool first: Windows won't delete a file with an open handle.
         drop(pool);

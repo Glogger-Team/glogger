@@ -357,7 +357,7 @@ pub fn get_aggregate_vendor(
                      WHERE cs.character_name = v.character_name
                        AND cs.server_name = v.server_name
                        AND cnf.npc_key = v.npc_key
-                     ORDER BY cs.id DESC LIMIT 1)
+                     ORDER BY cs.snapshot_timestamp DESC, cs.id DESC LIMIT 1)
                 ) AS favor_tier,
                 (SELECT cnf.councils_spent_at_vendor
                  FROM character_npc_favor cnf
@@ -365,21 +365,21 @@ pub fn get_aggregate_vendor(
                  WHERE cs.character_name = v.character_name
                    AND cs.server_name = v.server_name
                    AND cnf.npc_key = v.npc_key
-                 ORDER BY cs.id DESC LIMIT 1) AS snapshot_spent,
+                 ORDER BY cs.snapshot_timestamp DESC, cs.id DESC LIMIT 1) AS snapshot_spent,
                 (SELECT cnf.vendor_reset_time
                  FROM character_npc_favor cnf
                  JOIN character_snapshots cs ON cnf.snapshot_id = cs.id
                  WHERE cs.character_name = v.character_name
                    AND cs.server_name = v.server_name
                    AND cnf.npc_key = v.npc_key
-                 ORDER BY cs.id DESC LIMIT 1) AS snapshot_vendor_reset,
+                 ORDER BY cs.snapshot_timestamp DESC, cs.id DESC LIMIT 1) AS snapshot_vendor_reset,
                 (SELECT cs.snapshot_timestamp
                  FROM character_npc_favor cnf
                  JOIN character_snapshots cs ON cnf.snapshot_id = cs.id
                  WHERE cs.character_name = v.character_name
                    AND cs.server_name = v.server_name
                    AND cnf.npc_key = v.npc_key
-                 ORDER BY cs.id DESC LIMIT 1) AS snapshot_timestamp
+                 ORDER BY cs.snapshot_timestamp DESC, cs.id DESC LIMIT 1) AS snapshot_timestamp
              FROM game_state_npc_vendor v
              LEFT JOIN game_state_favor f
                 ON f.character_name = v.character_name

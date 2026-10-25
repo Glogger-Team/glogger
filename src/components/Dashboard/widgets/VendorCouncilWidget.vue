@@ -832,8 +832,8 @@ function resolveVendorGold(
   const liveMs = liveConfirmedAt ? Date.parse(liveConfirmedAt.replace(' ', 'T') + (/[zZ]$/.test(liveConfirmedAt.trim()) ? '' : 'Z')) : NaN
   const snapMs = snapshotTimestamp ? Date.parse(snapshotTimestamp.replace(' ', 'T') + (/[zZ]$/.test(snapshotTimestamp.trim()) ? '' : 'Z')) : NaN
   const snapshotNewer = Number.isFinite(snapMs) && (!Number.isFinite(liveMs) || snapMs > liveMs)
-  if (snapshotNewer && cap != null) {
-    const derived = spentToAvailable(snapshotSpent ?? 0, cap)
+  if (snapshotNewer && cap != null && snapshotSpent != null) {
+    const derived = spentToAvailable(snapshotSpent, cap)
     return { available: derived, timerStart: snapshotReset ?? null }
   }
   if (liveAvailable != null) return { available: liveAvailable, timerStart: liveTimer }
@@ -867,7 +867,7 @@ const characterEntries = computed<VendorEntry[]>(() => {
       snapFavor?.snapshot_timestamp,
       maxGold,
     )
-    const snapTimer = vendorState ? (resolved.timerStart ?? vendorState.vendor_gold_timer_start) : (snapFavor?.vendor_reset_time ?? null)
+    const snapTimer = vendorState ? resolved.timerStart : (snapFavor?.vendor_reset_time ?? null)
     // Determine effective gold: if timer has expired, assume reset to cap
     let goldAvailable = resolved.available
     let assumedReset = false
@@ -945,7 +945,7 @@ const aggregateEntries = computed<VendorEntry[]>(() => {
           goldMax,
         )
         let goldAvail = resolved.available
-        const timerStart = resolved.timerStart ?? c.vendor_gold_timer_start ?? null
+        const timerStart = resolved.timerStart ?? null
         if (goldAvail != null && hasTimerExpired(timerStart)) {
           goldAvail = goldMax
         }
