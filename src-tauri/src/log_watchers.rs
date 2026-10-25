@@ -415,9 +415,17 @@ impl LogFileWatcher for PlayerLogWatcher {
             }
         }
 
-        // Flush any remaining pending deletes at end of poll
-        let flush_events = self.player_event_parser.flush_all_pending();
-        for pe in flush_events {
+        // Poll-boundary drain: emit only deletes that already outlived the
+        // 5 s / 5-line window. Young entries survive into the next poll so
+        // cross-poll Delete/confirmation pairs still resolve. (Rotation
+        // above rebuilds the parser — nothing survives that by design.
+        // Login-line ordering uses the explicit full flush in process_line;
+        // end-of-stream callers use flush_all_pending directly.)
+        let now_secs = self.player_event_parser.last_line_secs();
+        let mut drain_events = Vec::new();
+        self.player_event_parser
+            .flush_expired_deletes(now_secs, &mut drain_events);
+        for pe in drain_events {
             events.push(LogEvent::PlayerEventParsed(pe));
         }
 

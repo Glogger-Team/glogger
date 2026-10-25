@@ -699,13 +699,21 @@ impl DataIngestCoordinator {
             // Parser one-shot: the drained lines contained a login-batch
             // full-state dump (≥20 consecutive `is_new=false` AddItems).
             // Clear the slice BEFORE the batch persists, mirroring the
-            // effects `is_login_batch` DELETE. One-shot per burst —
-            // `adopt_player_log_session(clear_inventory)` and live
-            // `set_active_character` clears are unchanged.
+            // effects `is_login_batch` DELETE — but ONLY when this poll
+            // carries no identity change. A `CharacterLogin` in the same
+            // batch means the dump belongs to the incoming character while
+            // the active identity still names the old one; clearing now
+            // would wipe the old slice and pollute it with the new dump.
+            // The adopt path (`adopt_player_log_session(clear_inventory)`)
+            // already clears the right slice in that case.
             if watcher.take_inventory_login_batch() {
-                self.game_state.clear_inventory_slice(&self.db_pool);
+                let identity_change = events
+                    .iter()
+                    .any(|e| matches!(e, LogEvent::CharacterLogin { .. }));
+                if !identity_change {
+                    self.game_state.clear_inventory_slice(&self.db_pool);
+                }
             }
-            self.process_player_events(events)?;
         }
 
         // After the first poll cycle, switch game state to live mode so future

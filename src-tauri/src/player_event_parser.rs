@@ -887,6 +887,11 @@ pub struct PlayerEventParser {
     /// inventory slice needs one clear before the batch persists. Consumed by
     /// `take_inventory_login_batch`.
     inventory_login_batch: bool,
+    /// Seconds-of-day of the most recent timestamped line seen. Feeds the
+    /// poll-boundary drain (`flush_expired_deletes`): the watcher asks for
+    /// the poll's last clock after feeding all lines, so cross-poll pairs
+    /// keep their 5 s window instead of flushing every 500 ms poll.
+    last_line_secs: u32,
     /// State for tracking an in-progress pigeon send (multi-step NPC flow).
     /// Set when we see the confirmation TalkScreen with item/message details,
     /// consumed when "The pigeon is sent!" confirmation appears.
@@ -973,6 +978,7 @@ impl PlayerEventParser {
             chat_gain_fallback: 0,
             login_batch_run: 0,
             inventory_login_batch: false,
+            last_line_secs: 0,
             pending_pigeon_send: None,
             pending_stall_note_send: None,
             vendor_screen: None,
@@ -1191,6 +1197,7 @@ impl PlayerEventParser {
         // the event occurred.
         if let Some(ts) = parse_timestamp(line) {
             let now_secs = timestamp_to_secs(&ts);
+            self.last_line_secs = now_secs;
             self.expire_stale_activities(now_secs);
         }
 
@@ -1591,6 +1598,46 @@ impl PlayerEventParser {
                 context: DeleteContext::Unknown,
             });
         }
+    }
+
+    /// Retention-aware drain for the live poll boundary: emit only entries
+    /// that already outlived the 5 s / 5-line window as `Unknown`, keep
+    /// young ones for the next poll's confirmation. The unconditional
+    /// `flush_all_pending` would cap the buffer at one 500 ms poll and
+    /// finalize cross-poll Delete/confirmation pairs prematurely.
+    /// Full drains stay on the login line (anchor ordering) and end-of-stream
+    /// callers (offline import, replay, manual flush).
+    pub fn flush_expired_deletes(&mut self, now_secs: u32, events: &mut Vec<PlayerEvent>) {
+        if self.pending_deletes.is_empty() {
+            return;
+        }
+        let mut expired = Vec::new();
+        self.pending_deletes.retain(|pd| {
+            let age = now_secs.saturating_sub(pd.seen_at_secs);
+            if (now_secs != 0 && age > DELETE_BUFFER_MAX_AGE_SECS)
+                || pd.lines_seen >= DELETE_BUFFER_MAX_LINES
+            {
+                expired.push(pd.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for pd in expired {
+            events.push(PlayerEvent::ItemDeleted {
+                timestamp: pd.timestamp,
+                instance_id: pd.instance_id,
+                item_name: pd.item_name,
+                context: DeleteContext::Unknown,
+            });
+        }
+    }
+
+    /// Last-seen line clock for the poll-boundary drain: seconds-of-day of
+    /// the most recent timestamped line, or 0 when no line carried one
+    /// (caller then keeps everything — age unknown, count still applies).
+    pub fn last_line_secs(&self) -> u32 {
+        self.last_line_secs
     }
 
     // ============================================================
@@ -4301,6 +4348,36 @@ mod tests {
         parser.process_line(r#"[16:00:05] LocalPlayer: ProcessAddItem(Pebbles(9012), -1, True)"#);
         let (matched, fallback) = parser.chat_gain_counts_for_test();
         assert_eq!((matched, fallback), (1, 1));
+    }
+
+    #[test]
+    fn test_poll_drain_keeps_young_deletes_for_next_poll() {
+        // P2: the live poll-end drain must be retention-aware. A delete
+        // buffered at the end of poll N must survive into poll N+1 for its
+        // confirmation; only expired entries flush as Unknown.
+        let mut parser = PlayerEventParser::new();
+        parser.process_line(
+            r#"[13:27:07] LocalPlayer: ProcessAddItem(MapleWood(136093889), -1, True)"#,
+        );
+        assert!(parser
+            .process_line(r#"[13:27:07] LocalPlayer: ProcessDeleteItem(136093889)"#)
+            .is_empty());
+        // Poll N ends: nothing expired (age 0, 0 lines seen beyond the
+        // delete itself) — the young delete survives.
+        let mut drained = Vec::new();
+        parser.flush_expired_deletes(parser.last_line_secs(), &mut drained);
+        assert!(drained.is_empty(), "young delete survives the poll boundary");
+        // Poll N+1 opens with the vault confirmation — still resolves.
+        let events = parser.process_line(
+            r#"[13:27:08] LocalPlayer: ProcessAddToStorageVault(14804, -1, 40, MapleWood(136093889))"#,
+        );
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            PlayerEvent::ItemDeleted { context, .. } => {
+                assert_eq!(*context, DeleteContext::StorageTransfer);
+            }
+            other => panic!("Expected ItemDeleted, got {other:?}"),
+        }
     }
 
     /// A `ProcessDeleteItem` still buffered when the login line arrives must be
