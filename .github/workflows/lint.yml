@@ -135,8 +135,8 @@ jobs:
               except (KeyError, IndexError, ValueError):
                   return None
 
-          def osv_score(pkg, version):
-              """CVSS base via OSV for (package, locked version); None if unknown."""
+          def osv_scores(pkg, version):
+              """All CVSS base scores OSV reports for (package, version); [] if unknown."""
               try:
                   req = urllib.request.Request(
                       'https://api.osv.dev/v1/query',
@@ -144,40 +144,59 @@ jobs:
                                        'version': version}).encode(),
                       headers={'Content-Type': 'application/json'})
                   with urllib.request.urlopen(req, timeout=20) as r:
+                      scores = []
                       for v in json.load(r).get('vulns', []):
                           for s in v.get('severity', []):
                               if s.get('type') == 'CVSS_V3' and s.get('score'):
-                                  return cvss_base(s['score'])
-              except Exception:
-                  pass
-              return None
+                                  parsed = cvss_base(s['score'])
+                                  if parsed is not None:
+                                      scores.append(parsed)
+                      return scores
+              except Exception as e:
+                  print(f'::warning::OSV lookup failed for {pkg}@{version}: {e}')
+                  return None
 
           lock_versions, current = {}, None
           for line in open('Cargo.lock'):
               if line.startswith('name = '):
                   current = line.split('"')[1]
               elif line.startswith('version = ') and current:
-                  lock_versions[current] = line.split('"')[1]
+                  lock_versions.setdefault(current, []).append(line.split('"')[1])
                   current = None
 
           report = json.load(open('/tmp/audit.json'))
-          blocking, notes = [], []
+          blocking, notes, unknowns = [], [], []
           for entry in report['vulnerabilities']['list']:
               adv = entry['advisory']
               pkg = adv['package']
               score = cvss_base(adv['cvss']) if adv.get('cvss') else None
-              if score is None:
-                  score = osv_score(pkg, lock_versions.get(pkg, ''))
+              versions = lock_versions.get(pkg, [])
+              if score is None and versions:
+                  scored, failed = [], False
+                  for ver in versions:
+                      res = osv_scores(pkg, ver)
+                      if res is None:
+                          failed = True
+                      else:
+                          scored.extend(res)
+                  if scored:
+                      score = max(scored)
+                  elif failed:
+                      unknowns.append((adv, versions))
+                      continue
               patched = bool(adv.get('patched'))
               label = f"{adv['id']} {pkg}: {adv['title']} (CVSS {score if score is not None else 'unrated'})"
               (blocking if score is not None and score >= 7.0 else notes).append((label, patched))
+          for adv, versions in unknowns:
+              label = f"{adv['id']} {adv['package']}: {adv['title']} (OSV lookup failed for {', '.join(versions)} — treating as blocking)"
+              blocking.append((label, bool(adv.get('patched'))))
           with open(sys.argv[1], 'a') as summary:
               summary.write('## cargo audit\n\n')
               for label, patched in blocking:
                   summary.write(f'- CRITICAL/HIGH {label} {"[patch available]" if patched else "[no patch — add --ignore with justification]"}\n')
               for label, patched in notes:
                   summary.write(f'- advisory (below threshold, non-blocking) {label}\n')
-              if not blocking and not notes:
+              if not blocking and not notes and not unknowns:
                   summary.write('No advisories.\n')
           if blocking:
               print('::error::cargo audit found critical/high advisories (see summary)')

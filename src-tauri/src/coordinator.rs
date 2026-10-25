@@ -714,6 +714,7 @@ impl DataIngestCoordinator {
                     self.game_state.clear_inventory_slice(&self.db_pool);
                 }
             }
+            self.process_player_events(events)?;
         }
 
         // After the first poll cycle, switch game state to live mode so future
