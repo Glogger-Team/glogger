@@ -35,10 +35,6 @@ on:
 
 permissions: {}
 
-concurrency:
-  group: flatpak-${{ inputs.tag }}
-  cancel-in-progress: false
-
 env:
   TARGET_TAG: ${{ inputs.tag }}
 
@@ -47,6 +43,9 @@ jobs:
     name: Build Flatpak bundle
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    concurrency:
+      group: flatpak-${{ inputs.tag }}
+      cancel-in-progress: false
     permissions:
       contents: read
     # flatpak-builder + the GNOME SDK only exist inside the official Flatpak
@@ -147,6 +146,9 @@ jobs:
     needs: flatpak
     runs-on: ubuntu-latest
     timeout-minutes: 35
+    concurrency:
+      group: flatpak-${{ inputs.tag }}
+      cancel-in-progress: false
     permissions:
       contents: write # uploads the bundle to the release
     if: ${{ inputs.publish == true && inputs.tag != '' }}
