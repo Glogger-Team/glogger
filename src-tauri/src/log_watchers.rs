@@ -223,6 +223,13 @@ impl PlayerLogWatcher {
         self.player_event_parser
             .feed_chat_gain(item_internal_name, quantity, timestamp_hms);
     }
+    /// One-shot login-batch signal from the parser: the current
+    /// `is_new=false` AddItem burst crossed `LOGIN_BATCH_MIN_ITEMS`, so the
+    /// inventory slice needs one clear before the batch persists. Consumed
+    /// here; the coordinator calls `GameStateManager::clear_inventory_slice`.
+    pub fn take_inventory_login_batch(&mut self) -> bool {
+        self.player_event_parser.take_inventory_login_batch()
+    }
 
     /// Enable or disable raw line capture for debug purposes.
     pub fn set_capture_raw_lines(&mut self, enabled: bool) {

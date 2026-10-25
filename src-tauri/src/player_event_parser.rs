@@ -641,7 +641,18 @@ struct PendingDelete {
     timestamp: String,
     instance_id: u64,
     item_name: Option<String>,
+    /// Seconds-of-day when the DeleteItem fired (for the 5 s retention).
+    seen_at_secs: u32,
+    /// Non-matching lines observed while buffered (for the 5-line retention).
+    lines_seen: u32,
 }
+
+/// Delete-buffer retention: a `ProcessDeleteItem` waits up to 5 s / 5 lines
+/// for its `ProcessAddToStorageVault` / vendor confirmation before it is
+/// emitted as `Unknown`. Next-line flush misclassified vault deposits with
+/// an unrelated line in between; the game emits the pair within a tick.
+const DELETE_BUFFER_MAX_AGE_SECS: u32 = 5;
+const DELETE_BUFFER_MAX_LINES: u32 = 5;
 
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
@@ -832,6 +843,13 @@ const CHAT_GAIN_MATCH_WINDOW_SECS: u32 = 2;
 /// still has its full window available to find a match.
 const CHAT_GAIN_BUFFER_LIFETIME_SECS: u32 = 10;
 
+/// Consecutive `is_new=false` AddItem burst length that marks a login
+/// full-state dump (mirrors effects' `is_login_batch`). Live play never
+/// produces 20 back-to-back `is_new=false` AddItems with no intervening
+/// UpdateItemCode; a login dump always does. One-shot per burst: the
+/// flag is consumed by `take_inventory_login_batch`, the run counter
+const LOGIN_BATCH_MIN_ITEMS: u32 = 20;
+
 // ============================================================
 // Parser
 // ============================================================
@@ -852,6 +870,23 @@ pub struct PlayerEventParser {
     /// and age out after `CHAT_GAIN_BUFFER_LIFETIME_SECS`.
     pending_chat_gains: Vec<PendingChatGain>,
 
+    /// Inventory-accuracy instrumentation: how many `ProcessAddItem`
+    /// `(is_new=true, slot<0)` seeds came from a matched chat gain vs the
+    /// `unwrap_or(1)` fallback. Read via `chat_gain_counts_for_test`;
+    /// surfaced through the existing debug/dump path only (no new command).
+    chat_gain_matched: u64,
+    chat_gain_fallback: u64,
+
+    /// Consecutive `ProcessAddItem(is_new=false)` count since the last
+    /// `CharacterLogin` or intervening `ProcessUpdateItemCode` — the
+    /// login-batch full-state dump signal, mirroring effects'
+    /// `is_login_batch`. Fires the one-shot `inventory_login_batch` flag at
+    /// `LOGIN_BATCH_MIN_ITEMS`; reset on UpdateItemCode / login line.
+    login_batch_run: u32,
+    /// One-shot: the current burst crossed the login-batch threshold and the
+    /// inventory slice needs one clear before the batch persists. Consumed by
+    /// `take_inventory_login_batch`.
+    inventory_login_batch: bool,
     /// State for tracking an in-progress pigeon send (multi-step NPC flow).
     /// Set when we see the confirmation TalkScreen with item/message details,
     /// consumed when "The pigeon is sent!" confirmation appears.
@@ -934,6 +969,10 @@ impl PlayerEventParser {
             activity_contexts: Vec::new(),
             pending_interaction: None,
             pending_chat_gains: Vec::new(),
+            chat_gain_matched: 0,
+            chat_gain_fallback: 0,
+            login_batch_run: 0,
+            inventory_login_batch: false,
             pending_pigeon_send: None,
             pending_stall_note_send: None,
             vendor_screen: None,
@@ -943,6 +982,22 @@ impl PlayerEventParser {
             pending_extract_equip_bonus: None,
             last_corpse_search: None,
         }
+    }
+
+    /// Inventory-accuracy instrumentation: `(matched, fallback)` chat-gain
+    /// seed counts. Invariant on fixture replay: `matched + fallback` ==
+    /// new-item `(is_new=true, slot<0)` AddItem count.
+    #[cfg(test)]
+    pub(crate) fn chat_gain_counts_for_test(&self) -> (u64, u64) {
+        (self.chat_gain_matched, self.chat_gain_fallback)
+    }
+
+    /// One-shot login-batch signal: true once when the consecutive
+    /// `is_new=false` burst crossed `LOGIN_BATCH_MIN_ITEMS`; false after
+    /// taken. The game-state layer clears the inventory slice once, before
+    /// the batch persists.
+    pub fn take_inventory_login_batch(&mut self) -> bool {
+        std::mem::replace(&mut self.inventory_login_batch, false)
     }
 
     /// Check whether an instance_id is known in the instance registry.
@@ -1139,7 +1194,10 @@ impl PlayerEventParser {
             self.expire_stale_activities(now_secs);
         }
 
-        // Try to resolve pending deletes against this line
+        // Try to resolve pending deletes against this line. Storage/vendor
+        // lines consume their matching deletes; every other line only ages
+        // the buffer (retained up to 5 s / 5 lines for a late confirmation,
+        // then flushed as `Unknown` inside `resolve_pending_deletes`).
         let resolved = self.resolve_pending_deletes(line, &mut events);
 
         // If we resolved pending deletes via storage/vendor, the line was consumed
@@ -1147,20 +1205,20 @@ impl PlayerEventParser {
             return events;
         }
 
-        // Buffered `ProcessDeleteItem`s belong to an *earlier* line than this
-        // one, so they are emitted before anything this line produces. Every
-        // line does it here, once: the arms below (`Logged in as character`,
-        // the gift-cap note, `ProcessUpdateSkill(`, the `!LocalPlayer: Process`
-        // fast path) previously each flushed on their own, and the ones that
-        // forgot left a delete buffered past a later `LogSessionAnchored` — the
-        // date resolver is stateful, so its earlier time of day then read as a
-        // UTC-midnight crossing and dated every following event a day ahead.
-        self.flush_pending_deletes(&mut events);
-
         // The Player.log login line declares the session's own UTC instant.
         // It is not a `LocalPlayer: Process` line, so it must be handled before
         // the fast path below; nothing else can consume it.
         if line.contains("Logged in as character ") && line.contains("Time UTC=") {
+            // New session: the next `is_new=false` burst is a fresh dump.
+            // Reset (don't clear a stale one-shot — the clear belongs to
+            // the burst that set it, handled before this line's batch).
+            self.login_batch_run = 0;
+            // A delete still buffered here must be emitted *before* the
+            // anchor: it belongs to an earlier line, and the date resolver
+            // is stateful — an earlier time of day after the anchor reads
+            // as a UTC-midnight crossing and dates every following event a
+            // day ahead.
+            self.flush_pending_deletes(&mut events);
             if let Some((_character, utc)) = crate::parsers::parse_player_log_login_line(line) {
                 events.push(PlayerEvent::LogSessionAnchored { utc });
             }
@@ -1409,10 +1467,20 @@ impl PlayerEventParser {
 
     /// Try to match pending deletes against a storage/vendor line.
     /// Returns true if the line was consumed (was a storage/vendor event).
+    /// Non-matching lines age the buffer: entries older than
+    /// `DELETE_BUFFER_MAX_AGE_SECS` or past `DELETE_BUFFER_MAX_LINES`
+    /// lines flush as `Unknown`; the rest stay buffered.
     fn resolve_pending_deletes(&mut self, line: &str, events: &mut Vec<PlayerEvent>) -> bool {
         if self.pending_deletes.is_empty() {
             return false;
         }
+        // Current line's clock for the age check. Midnights roll the day
+        // counter, not the seconds value — `saturating_sub` keeps a borrow
+        // failure mode of "treat cross-midnight as age 0, keep buffering"
+        // instead of flushing a delete that is a second old.
+        let now_secs = parse_timestamp(line)
+            .map(|ts| timestamp_to_secs(&ts))
+            .unwrap_or(0);
 
         // Check for ProcessAddToStorageVault with matching instance ID
         if line.contains("ProcessAddToStorageVault(") {
@@ -1486,6 +1554,29 @@ impl PlayerEventParser {
             }
         }
 
+        // No storage/vendor confirmation on this line: age the buffer and
+        // flush only the entries that outlived the retention window.
+        let mut expired = Vec::new();
+        self.pending_deletes.retain(|pd| {
+            let age = now_secs.saturating_sub(pd.seen_at_secs);
+            if age > DELETE_BUFFER_MAX_AGE_SECS || pd.lines_seen >= DELETE_BUFFER_MAX_LINES {
+                expired.push(pd.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for pd in &mut self.pending_deletes {
+            pd.lines_seen += 1;
+        }
+        for pd in expired {
+            events.push(PlayerEvent::ItemDeleted {
+                timestamp: pd.timestamp,
+                instance_id: pd.instance_id,
+                item_name: pd.item_name,
+                context: DeleteContext::Unknown,
+            });
+        }
         false
     }
 
@@ -1537,6 +1628,20 @@ impl PlayerEventParser {
             },
         );
 
+        // Track the login-batch full-state dump: consecutive `is_new=false`
+        // AddItems with no intervening UpdateItemCode since the last login.
+        // At `LOGIN_BATCH_MIN_ITEMS` the burst is a login dump, not live
+        // play — set the one-shot clear flag (mirrors effects'
+        // `is_login_batch`). Any genuine gain breaks the run.
+        if !is_new {
+            self.login_batch_run = self.login_batch_run.saturating_add(1);
+            if self.login_batch_run >= LOGIN_BATCH_MIN_ITEMS && !self.inventory_login_batch {
+                self.inventory_login_batch = true;
+            }
+        } else {
+            self.login_batch_run = 0;
+        }
+
         // Seed stack tracking for genuinely new items.
         // - slot_index >= 0 with is_new=true means a storage vault withdrawal;
         //   do NOT seed here — ProcessRemoveFromStorageVault will seed with the
@@ -1550,11 +1655,18 @@ impl PlayerEventParser {
         //   ProcessUpdateItemCode will establish the baseline.
         let initial_quantity = if is_new && slot_index < 0 {
             let add_item_secs = timestamp_to_secs(&ts);
-            let seed_qty = self
-                .consume_chat_gain_for_add_item(&item_name, add_item_secs)
-                .unwrap_or(1);
-            self.stack_sizes.insert(instance_id, seed_qty);
-            seed_qty
+            match self.consume_chat_gain_for_add_item(&item_name, add_item_secs) {
+                Some(seed_qty) => {
+                    self.chat_gain_matched += 1;
+                    self.stack_sizes.insert(instance_id, seed_qty);
+                    seed_qty
+                }
+                None => {
+                    self.chat_gain_fallback += 1;
+                    self.stack_sizes.insert(instance_id, 1);
+                    1
+                }
+            }
         } else {
             1
         };
@@ -1601,6 +1713,8 @@ impl PlayerEventParser {
 
     /// ProcessUpdateItemCode(instanceId, encodedValue, fromServer)
     fn parse_update_item_code(&mut self, line: &str) -> Option<PlayerEvent> {
+        // A baseline arriving mid-burst means live play, not a login dump.
+        self.login_batch_run = 0;
         let ts = parse_timestamp(line)?;
         let args_start = line.find("ProcessUpdateItemCode(")? + "ProcessUpdateItemCode(".len();
         let args_end = line[args_start..].find(')')? + args_start;
@@ -1718,6 +1832,8 @@ impl PlayerEventParser {
         self.stack_sizes.remove(&instance_id);
 
         self.pending_deletes.push(PendingDelete {
+            seen_at_secs: timestamp_to_secs(&ts),
+            lines_seen: 0,
             timestamp: ts,
             instance_id,
             item_name,
@@ -4058,11 +4174,23 @@ mod tests {
         let events = parser.process_line(r#"[16:33:03] LocalPlayer: ProcessDeleteItem(114961794)"#);
         assert!(events.is_empty());
 
-        // Unrelated line flushes pending
+        // One unrelated line does NOT flush: the buffer retains up to 5 s /
+        // 5 lines for a storage/vendor confirmation.
         let events = parser
             .process_line(r#"[16:33:04] entity_159956: OnAttackHitMe(Fiery Bite). Evaded = False"#);
-        assert_eq!(events.len(), 1);
-        match &events[0] {
+        assert!(events.is_empty(), "delete stays buffered within retention");
+
+        // Six unrelated lines past the delete exhaust the 5-line retention.
+        let mut flushed = Vec::new();
+        for i in 1..=6u32 {
+            let line = format!(
+                "[16:33:{:02}] entity_159956: OnAttackHitMe(Fiery Bite). Evaded = False",
+                4 + i
+            );
+            flushed.extend(parser.process_line(&line));
+        }
+        assert_eq!(flushed.len(), 1);
+        match &flushed[0] {
             PlayerEvent::ItemDeleted {
                 instance_id,
                 context,
@@ -4075,6 +4203,104 @@ mod tests {
             }
             _ => panic!("Expected ItemDeleted with Unknown"),
         }
+    }
+
+    #[test]
+    fn test_delete_survives_unrelated_line_for_storage_match() {
+        // The 1-line lookahead misclassified vault deposits with an unrelated
+        // line in between. The buffer retains up to 5 s / 5 lines, so
+        // Delete, unrelated, AddToStorageVault still resolves StorageTransfer.
+        let mut parser = PlayerEventParser::new();
+        parser.process_line(
+            r#"[13:27:07] LocalPlayer: ProcessAddItem(MapleWood(136093889), -1, True)"#,
+        );
+        assert!(parser
+            .process_line(r#"[13:27:07] LocalPlayer: ProcessDeleteItem(136093889)"#)
+            .is_empty());
+        // Unrelated line in between — buffered, not flushed.
+        assert!(parser
+            .process_line(r#"[13:27:08] entity_159956: OnAttackHitMe(Fiery Bite). Evaded = False"#)
+            .is_empty());
+        let events = parser.process_line(
+            r#"[13:27:08] LocalPlayer: ProcessAddToStorageVault(14804, -1, 40, MapleWood(136093889))"#,
+        );
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            PlayerEvent::ItemDeleted { context, .. } => {
+                assert_eq!(*context, DeleteContext::StorageTransfer);
+            }
+            other => panic!("Expected ItemDeleted, got {other:?}"),
+        }
+        assert!(matches!(events[1], PlayerEvent::StorageDeposit { .. }));
+    }
+
+    #[test]
+    fn test_login_batch_run_of_25_arms_one_shot() {
+        // 25 consecutive `is_new=false` AddItems with no UpdateItemCode is a
+        // login full-state dump: the one-shot fires exactly once.
+        let mut parser = PlayerEventParser::new();
+        for i in 0..25u64 {
+            let line = format!(
+                "[16:00:{:02}] LocalPlayer: ProcessAddItem(DumpItem{}(1000{}), -1, False)",
+                i % 60,
+                i,
+                i
+            );
+            for e in parser.process_line(&line) {
+                assert!(
+                    !matches!(e, PlayerEvent::ItemDeleted { .. }),
+                    "no deletes in this burst"
+                );
+            }
+        }
+        assert!(
+            parser.take_inventory_login_batch(),
+            "25-burst must arm the one-shot"
+        );
+        assert!(
+            !parser.take_inventory_login_batch(),
+            "one-shot consumes on take"
+        );
+    }
+
+    #[test]
+    fn test_short_burst_does_not_arm_login_batch() {
+        // 3 `is_new=false` AddItems is live play, not a dump.
+        let mut parser = PlayerEventParser::new();
+        for i in 0..3u64 {
+            parser.process_line(&format!(
+                "[16:00:0{}] LocalPlayer: ProcessAddItem(LiveItem{}(2000{}), -1, False)",
+                i, i, i
+            ));
+        }
+        assert!(
+            !parser.take_inventory_login_batch(),
+            "3-burst must not arm the one-shot"
+        );
+        // An UpdateItemCode resets the run first; 19 more after it still
+        // fall short of the 20 threshold.
+        parser.process_line(r#"[16:00:22] LocalPlayer: ProcessUpdateItemCode(20003, 0, True)"#);
+        for i in 0..19u64 {
+            parser.process_line(&format!(
+                "[16:01:{:02}] LocalPlayer: ProcessAddItem(LiveItem{}(2000{}), -1, False)",
+                i, i, i
+            ));
+        }
+        assert!(
+            !parser.take_inventory_login_batch(),
+            "UpdateItemCode must reset the run"
+        );
+    }
+
+    #[test]
+    fn test_chat_gain_seed_counts_balance() {
+        // Metric invariant: matched + fallback == new-item count.
+        let mut parser = PlayerEventParser::new();
+        parser.feed_chat_gain("Fluorite".to_string(), 3, "16:00:01");
+        parser.process_line(r#"[16:00:01] LocalPlayer: ProcessAddItem(Fluorite(9001), -1, True)"#);
+        parser.process_line(r#"[16:00:05] LocalPlayer: ProcessAddItem(Pebbles(9012), -1, True)"#);
+        let (matched, fallback) = parser.chat_gain_counts_for_test();
+        assert_eq!((matched, fallback), (1, 1));
     }
 
     /// A `ProcessDeleteItem` still buffered when the login line arrives must be
@@ -4455,11 +4681,20 @@ mod tests {
             parser.process_line(r#"[23:55:24] LocalPlayer: ProcessDeleteItem(-1796085135)"#);
         assert!(events.is_empty(), "delete is buffered until the next line");
 
-        // Any subsequent line flushes the pending delete.
+        // Within retention the delete stays buffered; lines past it flush.
         let events =
             parser.process_line(r#"[23:55:24] LocalPlayer: ProcessScreenText(ImportantInfo, "x")"#);
-
-        let deleted = events
+        assert!(
+            events.iter().all(|e| !matches!(e, PlayerEvent::ItemDeleted { .. })),
+            "delete stays buffered within retention"
+        );
+        let mut flushed = Vec::new();
+        for _ in 0..6 {
+            flushed.extend(
+                parser.process_line(r#"[23:55:25] LocalPlayer: ProcessScreenText(ImportantInfo, "x")"#),
+            );
+        }
+        let deleted = flushed
             .iter()
             .find_map(|e| match e {
                 PlayerEvent::ItemDeleted {
@@ -4505,24 +4740,46 @@ mod tests {
 
     #[test]
     fn test_parse_delay_loop_using_survey() {
-        let mut parser = PlayerEventParser::new();
-        let events = parser.process_line(
-            r#"[16:17:47] LocalPlayer: ProcessDoDelayLoop(0.5, Unset, "Using Eltibule Green Mineral Survey", 5305, AbortIfAttacked)"#
-        );
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            PlayerEvent::DelayLoopStarted {
-                duration,
-                action_type,
-                label,
-                ..
-            } => {
-                assert!((duration - 0.5).abs() < 0.01);
-                assert_eq!(action_type, "Unset");
-                assert_eq!(label, "Using Eltibule Green Mineral Survey");
+        // Fixture-backed: "Using Eltibule Blue Mineral Survey" x216 in
+        // 100x-eltblue Player.log; "Using Povus Marvelous Mining Survey"
+        // x157 in 50x-povusmarvelous Player.log.
+        for label in [
+            "Using Eltibule Green Mineral Survey",
+            "Using Eltibule Blue Mineral Survey",
+            "Using Povus Marvelous Mining Survey",
+        ] {
+            let mut parser = PlayerEventParser::new();
+            let line = format!(
+                "[16:17:47] LocalPlayer: ProcessDoDelayLoop(0.5, Unset, \"{}\", 5305, AbortIfAttacked)",
+                label
+            );
+            let events = parser.process_line(&line);
+            assert_eq!(events.len(), 1);
+            match &events[0] {
+                PlayerEvent::DelayLoopStarted {
+                    duration,
+                    action_type,
+                    label: got,
+                    ..
+                } => {
+                    assert!((duration - 0.5).abs() < 0.01);
+                    assert_eq!(action_type, "Unset");
+                    assert_eq!(got, label);
+                }
+                _ => panic!("Expected DelayLoopStarted"),
             }
-            _ => panic!("Expected DelayLoopStarted"),
+            assert!(matches!(
+                classify_delay_loop("Unset", label, &None),
+                Some(ActivitySource::SurveyMapUse { .. })
+            ));
         }
+        // "Using <X> Motherlode Map" is the same activity (120x in fixtures).
+        assert!(matches!(
+            classify_delay_loop("Unset", "Using Serbule Motherlode Map", &None),
+            Some(ActivitySource::SurveyMapUse {
+                survey_map_internal_name: Some(_)
+            })
+        ));
     }
 
     #[test]

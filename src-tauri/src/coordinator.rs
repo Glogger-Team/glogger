@@ -696,6 +696,15 @@ impl DataIngestCoordinator {
         // Poll player log watcher
         if let Some(watcher) = &mut self.player_watcher {
             let events = watcher.poll()?;
+            // Parser one-shot: the drained lines contained a login-batch
+            // full-state dump (≥20 consecutive `is_new=false` AddItems).
+            // Clear the slice BEFORE the batch persists, mirroring the
+            // effects `is_login_batch` DELETE. One-shot per burst —
+            // `adopt_player_log_session(clear_inventory)` and live
+            // `set_active_character` clears are unchanged.
+            if watcher.take_inventory_login_batch() {
+                self.game_state.clear_inventory_slice(&self.db_pool);
+            }
             self.process_player_events(events)?;
         }
 
@@ -4220,11 +4229,14 @@ mod loadout_tests {
     }
 }
 
-/// True when `later` falls within the rez-dedup window of `earlier`
+
+/// True when two rez phrasings fall within the symmetric rez-dedup window
 /// (`"YYYY-MM-DD HH:MM:SS"` UTC strings, zero-padded so lexicographic
 /// order equals chronological order). The game emits both rez phrasings
 /// for one event seconds apart — but never instantly, so the window
 /// covers the pair while staying far below any plausible re-rez cooldown.
+/// Backward pairs within the window also suppress (out-of-order replay /
+/// clock skew); re-rez beyond 30 s either direction persists.
 /// Malformed timestamps never match (fail-open: the event is persisted).
 pub(crate) fn rez_within_dedup_window(earlier: &str, later: &str) -> bool {
     const WINDOW: chrono::Duration = chrono::Duration::seconds(30);
@@ -4233,10 +4245,8 @@ pub(crate) fn rez_within_dedup_window(earlier: &str, later: &str) -> bool {
         chrono::NaiveDateTime::parse_from_str(later, "%Y-%m-%d %H:%M:%S"),
     ) {
         (Ok(prev), Ok(cur)) => {
-            // A cursor moving backward (clock skew, out-of-order replay)
-            // can't be a dup of itself — only forward progress within the
-            // window suppresses.
-            (cur - prev).ge(&chrono::Duration::zero()) && (cur - prev) <= WINDOW
+            // Symmetric: either direction within the window is the same pair.
+            (cur - prev).abs() <= WINDOW
         }
         _ => false,
     }
@@ -4264,17 +4274,20 @@ mod rez_dedup_tests {
 
     #[test]
     fn legitimate_re_rez_is_kept() {
-        // A real second rez of the same target is outside the window.
+        // A real second rez of the same target is outside the window,
+        // either direction.
         assert!(!within("2026-10-04 12:34:56", "2026-10-04 12:35:27"));
         assert!(!within("2026-10-04 12:34:56", "2026-10-04 12:35:31"));
+        assert!(!within("2026-10-04 12:35:27", "2026-10-04 12:34:56"));
     }
 
     #[test]
     fn distinct_events_and_malformed() {
         // Different day/hour entirely.
         assert!(!within("2026-10-04 12:34:56", "2026-10-05 12:34:56"));
-        // Backward timestamps can't dedup (out-of-order replay, clock skew).
-        assert!(!within("2026-10-04 12:35:00", "2026-10-04 12:34:59"));
+        // Backward timestamps within the window also dedup (out-of-order
+        // replay, clock skew): same pair, reversed order.
+        assert!(within("2026-10-04 12:35:00", "2026-10-04 12:34:59"));
         // Malformed/short timestamps never match (fail-open).
         assert!(!within("2026-10-04", "2026-10-04 12:34:56"));
         assert!(!within("", "2026-10-04 12:34:56"));

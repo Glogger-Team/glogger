@@ -1110,6 +1110,12 @@ impl SurveySessionAggregator {
             remember_bounded(&mut self.known_survey_nodes, (entity, use_id));
         }
     }
+    #[cfg(test)]
+    pub(crate) fn chat_mining_for_test(&self) -> Option<(u32, i64)> {
+        self.chat_mining
+            .as_ref()
+            .and_then(|cm| cm.node_entity.map(|entity| (entity, cm.survey_use_id)))
+    }
 
     /// A3 stitching. Called for every event after the per-event handlers.
     /// If this event is a *gain* attributed to Mining, decide whether the
@@ -3024,6 +3030,65 @@ mod tests {
             "last_hit_at ({}) should be later than opened_at ({})",
             updated_node.last_hit_at,
             updated_node.opened_at
+        );
+    }
+
+    #[test]
+    fn test_fromsurvey_name_binds_after_grace_expiry() {
+        // Long-walk case: map use falls outside the 60 s pending window,
+        // but the node's StartInteraction name marks it survey-spawned
+        // ("MiningNodeFromSurvey9", x443 in 50x-povusmarvelous fixture).
+        // Branch 3 of handle_mining_started must recover the use via
+        // latest_recent_nonbasic_use.
+        let conn = fresh_db();
+        let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
+
+        let mut consume = PlayerEvent::ItemDeleted {
+            timestamp: "12:00:00".to_string(),
+            instance_id: 1,
+            item_name: Some("MiningSurveyKurMountains1X".to_string()),
+            context: crate::player_event_parser::DeleteContext::Consumed,
+        };
+        agg.process_event(&mut consume, &conn, "Zenith", "Dreva", Some("KurMountains"));
+        let use_id = persistence::uses_for_session(
+            &conn,
+            persistence::active_session(&conn, "Zenith", "Dreva")
+                .unwrap()
+                .unwrap()
+                .id,
+        )
+        .unwrap()[0]
+            .id;
+
+        // 70 s later the pending queue has aged out, but the use row is
+        // still within MULTIHIT_TIMEOUT_SECS for the fallback lookup.
+        let interaction = |ts: &str, entity: u32, name: &str| PlayerEvent::InteractionStarted {
+            timestamp: ts.to_string(),
+            entity_id: entity,
+            interaction_type: 7,
+            npc_name: name.to_string(),
+        };
+        let mining_loop = |ts: &str| PlayerEvent::DelayLoopStarted {
+            timestamp: ts.to_string(),
+            duration: 6.0,
+            action_type: "ChopLumber".to_string(),
+            label: "Mining...".to_string(),
+            entity_id: 0,
+            abort_condition: "AbortIfAttacked".to_string(),
+        };
+        let mut interact = interaction("12:01:10", 435138, "MiningNodeFromSurvey9");
+        agg.process_event(&mut interact, &conn, "Zenith", "Dreva", Some("KurMountains"));
+        let mut mining = mining_loop("12:01:10");
+        agg.process_event(&mut mining, &conn, "Zenith", "Dreva", Some("KurMountains"));
+        assert!(
+            agg.pending_uses.is_empty(),
+            "grace window must have expired so only the FromSurvey fallback can bind"
+        );
+        let bound = agg.chat_mining_for_test();
+        assert_eq!(
+            bound,
+            Some((435138, use_id)),
+            "FromSurvey fallback should adopt the node for the expired use"
         );
     }
 
