@@ -219,9 +219,10 @@ export const useGameStateStore = defineStore('gameState', () => {
   const sessionSkills = ref<Record<string, SkillSessionData>>({})
 
   // ── Session XP-rate tracking (driven by [Status] chat events) ─────────
-  // Separate from sessionSkills (which tracks per-skill XP from skill-update
-  // events). This aggregates combat vs prodigy XP for the XP/hr widget, using
-  // wall-clock time so the rate stays live during play.
+  // Separate from sessionSkills (per-skill XP from skill-update events plus
+  // chat level-ups via handleChatLevelUp — tnl-less, levels exact). This
+  // aggregates combat vs prodigy XP for the XP/hr widget, using wall-clock
+  // time so the rate stays live during play.
   const xpRateSession = ref<{
     combatXp: number
     prodigyXp: number
@@ -602,6 +603,48 @@ export const useGameStateStore = defineStore('gameState', () => {
         s.xpGained += payload.xp - s.firstXp
         s.firstXp = payload.xp
       }
+    }
+  }
+
+  /**
+   * Fold a chat `[Status]` level-up into session tracking. Chat carries level
+   * + this-level XP but no tnl/bonus, so: levels gained are exact; XP gained
+   * counts the event's in-level XP verbatim (no remaining-in-old-level top-up
+   * — the old level's tnl is unknown when skill-update never fired); tnl comes
+   * from the persisted row (zeroed as unknown when the skill has no persisted
+   * row, so TTL/percent widgets render unknown rather than a full bar).
+   */
+  function handleChatLevelUp(payload: {
+    skill: string
+    level: number
+    xp: number
+    timestamp: string
+  }) {
+    if (!startupComplete.value) return
+
+    const key = payload.skill
+    const persistedTnl = skillsByName.value[key]?.tnl ?? 0
+
+    if (!sessionSkills.value[key]) {
+      sessionSkills.value[key] = {
+        skillType: key,
+        currentLevel: payload.level,
+        tnl: persistedTnl,
+        xpGained: payload.xp,
+        levelsGained: 1,
+        firstTimestamp: payload.timestamp,
+        lastTimestamp: payload.timestamp,
+        firstXp: payload.xp,
+      }
+    } else {
+      const s = sessionSkills.value[key]
+      if (payload.level <= s.currentLevel) return
+      s.levelsGained += payload.level - s.currentLevel
+      s.currentLevel = payload.level
+      s.tnl = persistedTnl
+      s.lastTimestamp = payload.timestamp
+      s.xpGained += payload.xp
+      s.firstXp = payload.xp
     }
   }
 
@@ -1010,6 +1053,20 @@ export const useGameStateStore = defineStore('gameState', () => {
         accrueXpRate('prodigy', event.amount)
         break
 
+      case 'LevelUp':
+        // Post-10/21/2026 ProcessUpdateSkill lines are gone from Player.log,
+        // so no skill-update ever feeds sessionSkills live. Chat level-ups
+        // carry level + this-level XP but no tnl/bonus: fold them into the
+        // session entry with the persisted row's tnl (unknown ⇒ 0 ⇒ the
+        // TTL/percent widgets render unknown, not a full bar).
+        handleChatLevelUp({
+          skill: event.skill,
+          level: event.level,
+          xp: event.xp,
+          timestamp: event.timestamp,
+        })
+        break
+
       case 'CombatWisdomEarned': {
         const atMs = Date.parse(event.timestamp.replace(' ', 'T') + 'Z')
         combatWisdomSession.value.total += event.amount
@@ -1252,6 +1309,7 @@ export const useGameStateStore = defineStore('gameState', () => {
     sessionSkills,
     sessionSkillList,
     handleSkillUpdate,
+    handleChatLevelUp,
     xpPerHour,
     timeToNextLevel,
     resetSessionSkills,

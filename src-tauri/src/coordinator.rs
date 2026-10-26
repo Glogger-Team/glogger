@@ -90,7 +90,10 @@ pub struct CoordinatorStatus {
 /// = 1` rows before the chat drain ran.
 /// Which VIP report a `ReportSaved` chat line points at, by the game's own
 /// filename convention (mirrors `setup_commands.rs` `Character_*.json` and
-/// `*_items_*.json` scans). Matched on the file name only.
+/// `*_items_*.json` scans). Matched on the file name only — plus a `Reports/`
+/// path segment, so a stray same-named file elsewhere never triggers an
+/// auto-import (the scans run over the Reports dir listing; this runs on an
+/// arbitrary path from a chat line).
 enum ReportKind {
     Character,
     Items,
@@ -99,6 +102,14 @@ enum ReportKind {
 fn report_kind_for_path(path: &str) -> Option<ReportKind> {
     let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
     if !file.ends_with(".json") {
+        return None;
+    }
+    // The game always writes VIP reports into <game root>/Reports/. A matching
+    // file name without that path segment is not a VIP report — refuse it
+    // rather than importing (and snapshotting) an arbitrary file.
+    let in_reports_dir =
+        path.split(['/', '\\']).any(|seg| seg.eq_ignore_ascii_case("Reports"));
+    if !in_reports_dir {
         return None;
     }
     if file.starts_with("Character_") {
@@ -1721,9 +1732,6 @@ impl DataIngestCoordinator {
                                     }
                                 }
                             }
-                            ChatStatusEvent::MilkedBy { milker, timestamp } => {
-                                self.record_player_milk(milker, "milked_by", timestamp);
-                            }
                             ChatStatusEvent::LevelUp {
                                 skill,
                                 level,
@@ -1733,8 +1741,10 @@ impl DataIngestCoordinator {
                                 // Post-10/21 this is the only live absolute skill
                                 // signal (ProcessUpdateSkill is gone). Same gating
                                 // as the SkillUpdated arm. Never emits
-                                // `skill-update`: session trackers key on log
-                                // skill names and need tnl/bonus, which chat lacks.
+                                // `skill-update` (the log-shaped payload needs
+                                // tnl/bonus chat lacks); instead the persisted
+                                // row refreshes `skills` and the LevelUp case in
+                                // handleChatStatusEvent folds it into sessionSkills.
                                 if let (Some(character), Some(server)) = (
                                     self.game_state.get_active_character().map(String::from),
                                     self.game_state.get_active_server().map(String::from),
@@ -1747,7 +1757,7 @@ impl DataIngestCoordinator {
                                     match resolved {
                                         Some((skill_id, display_name)) => {
                                             if let Ok(conn) = self.db_pool.get_write() {
-                                                if crate::db::game_state_commands::apply_chat_level_up(
+                                                match crate::db::game_state_commands::apply_chat_level_up(
                                                     &conn,
                                                     &character,
                                                     &server,
@@ -1756,12 +1766,16 @@ impl DataIngestCoordinator {
                                                     *level as i64,
                                                     *xp as i64,
                                                     timestamp,
-                                                )
-                                                .is_ok()
-                                                {
-                                                    self.app_handle
-                                                        .emit("game-state-updated", vec!["skills"])
-                                                        .ok();
+                                                ) {
+                                                    Ok(true) => {
+                                                        self.app_handle
+                                                            .emit("game-state-updated", vec!["skills"])
+                                                            .ok();
+                                                    }
+                                                    // Stale replay dropped by the recency
+                                                    // guard — no state changed, no refresh.
+                                                    Ok(false) => {}
+                                                    Err(_) => {}
                                                 }
                                             }
                                         }
@@ -4403,6 +4417,21 @@ mod report_kind_tests {
             "C:/Users/TestUser/AppData/LocalLow/Elder Game/Project Gorgon/Reports/Character_TestPlayer_Dreva.log"
         )
         .is_none());
+    }
+
+    #[test]
+    fn report_kind_rejects_matching_name_outside_reports() {
+        // Same file name the game would write, but not under Reports/:
+        // never auto-import it.
+        assert!(report_kind_for_path(
+            "C:/Users/TestUser/Downloads/Character_TestPlayer_Dreva.json"
+        )
+        .is_none());
+        assert!(report_kind_for_path(
+            "C:/Users/TestUser/Downloads/TestPlayer_Dreva_items_2026-10-25-19-29-53Z.json"
+        )
+        .is_none());
+        assert!(report_kind_for_path("Character_TestPlayer_Dreva.json").is_none());
     }
 }
 

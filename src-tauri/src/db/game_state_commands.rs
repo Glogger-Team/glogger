@@ -698,10 +698,19 @@ pub(crate) fn reconcile_gift_count(
 /// Post-10/21/2026 this is the only live absolute skill signal
 /// (`ProcessUpdateSkill` lines are gone from Player.log).
 /// Chat carries only level + this-level XP, so the upsert preserves
-/// `base_level/bonus_levels/tnl/max_level/skill_name` on conflict
-/// (a fresh insert seeds `base_level = level`, `tnl/max = 0`). Same
-/// unconditional-upsert shape as the `SkillUpdated` coordinator arm.
-/// Replays are idempotent in `level/xp` (only the timestamp moves).
+/// `base_level/bonus_levels/tnl/max_level` on conflict and always refreshes
+/// `skill_name` to the canonical display name (a fresh insert seeds
+/// `base_level = level`, `tnl/max = 0`). Same recency-gated shape as the
+/// snapshot seeder — except the comparator is lexicographic, so it only
+/// orders same-format stamps: chat feeds local wall-clock
+/// (`"YYYY-MM-DD HH:MM:SS"`) while snapshots carry `"…Z"` UTC. A same-day
+/// live level-up is never older, but no replay guard can be trusted across
+/// formats, so the unconditional winner is the genuine level-up
+/// (`excluded.level >` stored level always wins — chat is authoritative
+/// that the player *reached* that level, even under clock skew).
+/// `tnl` from an older level can diverge from the new level; the widgets key
+/// persisted progress off columns they own, never this mixed pair.
+/// Returns true when the row was inserted or updated (changed the table).
 pub(crate) fn apply_chat_level_up(
     conn: &rusqlite::Connection,
     character: &str,
@@ -711,20 +720,23 @@ pub(crate) fn apply_chat_level_up(
     level: i64,
     xp: i64,
     confirmed_at: &str,
-) -> Result<(), String> {
-    conn.execute(
+) -> Result<bool, String> {
+    let changed = conn.execute(
         "INSERT INTO game_state_skills
            (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
          VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0, ?6, 0, 0, ?7, 'chat')
          ON CONFLICT(character_name, server_name, skill_id) DO UPDATE SET
+            skill_name = excluded.skill_name,
             level = excluded.level,
             xp = excluded.xp,
             last_confirmed_at = excluded.last_confirmed_at,
-            source = excluded.source",
+            source = excluded.source
+         WHERE excluded.last_confirmed_at >= game_state_skills.last_confirmed_at
+            OR excluded.level > game_state_skills.level",
         rusqlite::params![character, server, skill_id, skill_name, level, xp, confirmed_at],
     )
     .map_err(|e| format!("Failed to apply chat level-up: {e}"))?;
-    Ok(())
+    Ok(changed > 0)
 }
 
 #[derive(Serialize)]
@@ -2191,8 +2203,10 @@ mod tests {
 
         // Verbatim values from the fixture line
         // "You earned 192 XP and reached level 87 in Cartography!"
-        apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 14:23:16")
-            .expect("apply level-up");
+        let changed =
+            apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 14:23:16")
+                .expect("apply level-up");
+        assert!(changed);
 
         let (level, xp, source, ts, base_level, tnl): (i64, i64, String, String, i64, i64) = conn
             .query_row(
@@ -2217,36 +2231,45 @@ mod tests {
         conn.execute(
             "INSERT INTO game_state_skills
                  (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
-             VALUES ('TestPlayer','Dreva',106,'Cartography',86,80,3,100,5000,100,'2026-04-15 10:00:00','log')",
+             VALUES ('TestPlayer','Dreva',106,'Old Name',86,80,3,100,5000,100,'2026-04-15 10:00:00','log')",
             [],
         )
         .unwrap();
 
-        apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 14:23:16")
-            .expect("apply level-up");
+        let changed =
+            apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 14:23:16")
+                .expect("apply level-up");
+        assert!(changed);
 
-        let (level, xp, source, ts, base_level, bonus, tnl, max): (i64, i64, String, String, i64, i64, i64, i64) = conn
+        let (level, xp, source, ts, base_level, bonus, tnl, max, name): (i64, i64, String, String, i64, i64, i64, i64, String) = conn
             .query_row(
-                "SELECT level, xp, source, last_confirmed_at, base_level, bonus_levels, tnl, max_level FROM game_state_skills
+                "SELECT level, xp, source, last_confirmed_at, base_level, bonus_levels, tnl, max_level, skill_name FROM game_state_skills
                  WHERE character_name = 'TestPlayer' AND server_name = 'Dreva' AND skill_id = 106",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)),
             )
             .expect("row exists");
         assert_eq!((level, xp), (87, 192));
         assert_eq!(source, "chat");
         assert_eq!(ts, "2026-04-16 14:23:16");
         assert_eq!((base_level, bonus, tnl, max), (80, 3, 5000, 100));
+        assert_eq!(name, "Cartography");
     }
 
     #[test]
     fn chat_level_up_replay_is_idempotent() {
         let conn = setup();
 
-        apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 14:23:16")
-            .expect("first apply");
-        apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 15:00:00")
-            .expect("replay apply");
+        let first =
+            apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 14:23:16")
+                .expect("first apply");
+        assert!(first);
+        // Same values re-applied at a later timestamp: the recency guard lets
+        // it through (only the timestamp moves).
+        let replay =
+            apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 15:00:00")
+                .expect("replay apply");
+        assert!(replay);
 
         let (level, xp, ts, count): (i64, i64, String, i64) = conn
             .query_row(
@@ -2261,5 +2284,59 @@ mod tests {
         assert_eq!((level, xp), (87, 192));
         assert_eq!(ts, "2026-04-16 15:00:00");
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn chat_level_up_stale_replay_is_dropped() {
+        let conn = setup();
+
+        apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 15:00:00")
+            .expect("first apply");
+        // A same-level line at an older timestamp replayed after newer state:
+        // the guard drops it, and the timestamp must not move backward.
+        // (In production the coordinator feeds local wall-clock chat stamps
+        // against UTC snapshot stamps, so a same-day live level-up is never
+        // older — this pins the guard logic, not the wire formats.)
+        let changed =
+            apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 100, "2026-04-16 14:23:16")
+                .expect("stale apply");
+        assert!(!changed);
+
+        let (level, xp, ts, source): (i64, i64, String, String) = conn
+            .query_row(
+                "SELECT level, xp, last_confirmed_at, source FROM game_state_skills
+                 WHERE character_name = 'TestPlayer' AND server_name = 'Dreva' AND skill_id = 106",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("row exists");
+        assert_eq!((level, xp), (87, 192));
+        assert_eq!(ts, "2026-04-16 15:00:00");
+        assert_eq!(source, "chat");
+    }
+
+    #[test]
+    fn chat_level_up_wins_on_level_despite_older_clock() {
+        let conn = setup();
+
+        apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 15:00:00")
+            .expect("first apply");
+        // Genuine level-up with a skewed-older clock: chat is authoritative
+        // that the level was reached, so the level wins anyway.
+        let changed =
+            apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 88, 10, "2026-04-16 14:59:00")
+                .expect("level-up apply");
+        assert!(changed);
+
+        let (level, xp, ts): (i64, i64, String) = conn
+            .query_row(
+                "SELECT level, xp, last_confirmed_at FROM game_state_skills
+                 WHERE character_name = 'TestPlayer' AND server_name = 'Dreva' AND skill_id = 106",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("row exists");
+        assert_eq!((level, xp), (88, 10));
+        assert_eq!(ts, "2026-04-16 14:59:00");
     }
 }
