@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+import { defineStore, acceptHMRUpdate } from 'pinia'
 import { computed } from 'vue'
 import { useCoordinatorStore } from './coordinatorStore'
 
@@ -46,3 +46,7 @@ export const useChatStore = defineStore('chat', () => {
     resetMessageCount,
   }
 })
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useChatStore, import.meta.hot))
+}

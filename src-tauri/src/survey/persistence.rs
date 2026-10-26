@@ -393,6 +393,151 @@ pub fn claim_unlinked_chat_loot_near(
     Ok(total)
 }
 
+/// True when the Player.log pipeline already counted this exact gain against
+/// `use_id` — i.e. a `player_log` row with the same use, quantity, item and
+/// a timestamp within `window_secs` exists. The chat pipeline calls this
+/// before bumping `loot_qty` so a gain seen by both logs bumps once.
+///
+/// Item matching is deliberately loose (`internal_name` OR `item_name`):
+/// the two pipelines spell names differently (log-internal vs chat-display)
+/// and either column may be NULL when CDN resolution failed. Quantity +
+/// same-second timestamp + same use already narrows to one game gain; the
+/// name check only breaks ties. Pass `item_name = None` to match on
+/// use/quantity/time alone.
+pub fn player_gain_already_counted(
+    conn: &Connection,
+    use_id: i64,
+    qty: u32,
+    timestamp_iso: &str,
+    item_name: Option<&str>,
+    window_secs: u32,
+) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM item_transactions
+          WHERE survey_use_id = ?1
+            AND source = 'player_log'
+            AND quantity = ?2
+            AND timestamp BETWEEN datetime(?3, '-' || ?4 || ' seconds')
+                            AND datetime(?3, '+' || ?4 || ' seconds')
+            AND (?5 IS NULL OR internal_name = ?5 OR item_name = ?5))",
+        params![use_id, qty, timestamp_iso, window_secs, item_name],
+        |r| r.get(0),
+    )
+    .unwrap_or(false)
+}
+
+/// True when an untagged Player.log loot row that looks like this gain's
+/// twin already exists. Deferred Basic gains are written to the ledger at
+/// flush time *without* a `survey_use_id` (their provenance never carried
+/// one), so the tagged check above misses them. Matching them here lets the
+/// chat pipeline skip its bump for a gain the deferred drain already counted
+/// (or is about to count — the drain skips gains with an unclaimed chat
+/// twin, and the claim below counts them instead).
+pub fn untagged_player_gain_exists(
+    conn: &Connection,
+    character: &str,
+    server: &str,
+    qty: u32,
+    timestamp_iso: &str,
+    item_name: Option<&str>,
+    window_secs: u32,
+) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM item_transactions
+          WHERE character_name = ?1
+            AND server_name = ?2
+            AND source = 'player_log'
+            AND context = 'loot'
+            AND survey_use_id IS NULL
+            AND quantity = ?3
+            AND timestamp BETWEEN datetime(?4, '-' || ?5 || ' seconds')
+                            AND datetime(?4, '+' || ?5 || ' seconds')
+            AND (?6 IS NULL OR internal_name = ?6 OR item_name = ?6))",
+        params![character, server, qty, timestamp_iso, window_secs, item_name],
+        |r| r.get(0),
+    )
+    .unwrap_or(false)
+}
+
+/// True when the chat pipeline already counted this exact gain against
+/// `use_id` — i.e. a tagged `survey_chat` row with the same use, quantity,
+/// item and a timestamp within `window_secs` exists. The Player.log pipeline
+/// calls this before bumping `loot_qty` so a gain seen by both logs bumps
+/// once. Only tagged rows count: untagged chat rows were never attributed
+/// and never bumped (the Basic-use claim path bumps exactly the rows it
+/// tags, in the same step).
+pub fn chat_gain_already_counted(
+    conn: &Connection,
+    use_id: i64,
+    qty: u32,
+    timestamp_iso: Option<&str>,
+    item_name: Option<&str>,
+    window_secs: u32,
+) -> bool {
+    let Some(ts) = timestamp_iso else {
+        return false;
+    };
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM item_transactions
+          WHERE survey_use_id = ?1
+            AND source = 'chat_status'
+            AND source_kind = 'survey_chat'
+            AND quantity = ?2
+            AND timestamp BETWEEN datetime(?3, '-' || ?4 || ' seconds')
+                            AND datetime(?3, '+' || ?4 || ' seconds')
+            AND (?5 IS NULL OR internal_name = ?5 OR item_name = ?5))",
+        params![use_id, qty, ts, window_secs, item_name],
+        |r| r.get(0),
+    )
+    .unwrap_or(false)
+}
+
+/// True when an unclaimed chat-status loot row that looks like this
+/// deferred gain's twin already exists. The deferred Basic drain calls this
+/// per gain: when the chat side already saw the gain, the drain skips its
+/// bump and the `claim_unlinked_chat_loot_near` step below counts it
+/// instead — one bump total. Mirrors the claim predicate (loot context,
+/// survey-map crafts excluded) so every row this matches is one the claim
+/// will actually pick up.
+///
+/// Item matching is deliberately loose (`internal_name` OR `item_name`):
+/// the two pipelines spell names differently (log-internal vs chat-display)
+/// and either column may be NULL when CDN resolution failed. Quantity +
+/// same-second timestamp already narrows to one game gain; the name check
+/// only breaks ties between different items sharing a tick (multi-item
+/// Motherlode loot, primary + same-qty bonus). Pass `item_name = None` to
+/// match on quantity/time alone.
+pub fn unclaimed_chat_gain_exists(
+    conn: &Connection,
+    character: &str,
+    server: &str,
+    qty: u32,
+    timestamp_iso: &str,
+    item_name: Option<&str>,
+    window_secs: u32,
+) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM item_transactions
+          WHERE character_name = ?1
+           AND server_name = ?2
+           AND source = 'chat_status'
+           AND context = 'loot'
+           AND source_kind IS NULL
+           AND quantity = ?3
+           AND (internal_name IS NULL
+                OR (internal_name NOT LIKE 'GeologySurvey%'
+                    AND internal_name NOT LIKE 'MiningSurvey%'))
+           AND (?6 IS NULL OR internal_name = ?6 OR item_name = ?6)
+           AND timestamp BETWEEN datetime(?4, '-' || ?5 || ' seconds')
+                             AND datetime(?4, '+' || ?5 || ' seconds'))",
+        params![
+            character, server, qty, timestamp_iso, window_secs, item_name
+        ],
+        |r| r.get(0),
+    )
+    .unwrap_or(false)
+}
+
 /// All uses belonging to a session, ordered by `used_at` ascending.
 pub fn uses_for_session<C: DbRead + ?Sized>(conn: &C, session_id: i64) -> Result<Vec<SurveyUse>> {
     let mut stmt = conn.prepare(

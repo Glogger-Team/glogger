@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+import { defineStore, acceptHMRUpdate } from 'pinia'
 import { ref, computed } from 'vue'
 
 export interface UserTimer {
@@ -190,3 +190,7 @@ export const useTimerStore = defineStore('user-timers', () => {
     stopTicking,
   }
 })
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useTimerStore, import.meta.hot))
+}

@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+import { defineStore, acceptHMRUpdate } from 'pinia'
 import { ref, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -8,7 +8,6 @@ export interface CoordinatorStatus {
   chat_log_active: boolean
   active_character: string | null
   current_chat_log: string | null
-  operation: string
 }
 
 export const useCoordinatorStore = defineStore('coordinator', () => {
@@ -18,14 +17,12 @@ export const useCoordinatorStore = defineStore('coordinator', () => {
     chat_log_active: false,
     active_character: null,
     current_chat_log: null,
-    operation: 'idle',
   })
 
   const newChatMessageCount = ref(0)
   const activeCharacter = computed(() => status.value.active_character)
   const isPlayerLogTailing = computed(() => status.value.player_log_active)
   const isChatLogTailing = computed(() => status.value.chat_log_active)
-  const currentOperation = computed(() => status.value.operation)
 
   // ── Event Listeners ────────────────────────────────────────────────────────
 
@@ -170,7 +167,6 @@ export const useCoordinatorStore = defineStore('coordinator', () => {
     activeCharacter,
     isPlayerLogTailing,
     isChatLogTailing,
-    currentOperation,
     // Actions
     startPlayerTailing,
     stopPlayerTailing,
@@ -183,3 +179,7 @@ export const useCoordinatorStore = defineStore('coordinator', () => {
     resetMessageCount,
   }
 })
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useCoordinatorStore, import.meta.hot))
+}

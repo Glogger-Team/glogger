@@ -4,7 +4,7 @@ use crate::chat_resuscitate_parser::parse_resuscitate_message;
 use crate::chat_status_parser::{parse_status_message, ChatStatusEvent};
 use crate::db::chat_commands::insert_chat_messages;
 use crate::db::queries::log_positions;
-use crate::db::stall_tracker_commands::{insert_stall_events, StallEventInput, StallOpsLock};
+use crate::db::stall_tracker_commands::{insert_stall_events, StallEventInput};
 use crate::db::DbPool;
 use crate::debug_capture::{self, DebugCaptureResult, DebugCaptureState, DebugCaptureStatus};
 use crate::game_state::GameStateManager;
@@ -28,7 +28,7 @@ use serde::Serialize;
 /// - Progress event emission to frontend
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, TryLockError};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -39,46 +39,15 @@ macro_rules! startup_log {
     };
 }
 
-/// Blocking operation type - prevents overlapping heavy operations
-/// Note: Player tailing and chat tailing run concurrently and are tracked
-/// separately via their watcher Option fields, NOT through this lock.
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq)]
-pub enum OperationType {
-    /// No blocking operation in progress
-    Idle,
-
-    /// Full scan of chat logs in progress
-    FullChatScan {
-        total_files: usize,
-        processed_files: usize,
-    },
-
-    /// Character export import in progress
-    CharacterImport { progress: usize, total: usize },
-
-    /// User-triggered action (takes priority)
-    UserAction,
-}
-
-/// Progress information for long-running operations
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize)]
-pub struct ScanProgress {
-    pub current: usize,
-    pub total: usize,
-    pub current_file: String,
-    pub messages_processed: usize,
-}
-
-/// Status of the coordinator
+/// Status of the coordinator. Watcher activity is tracked separately via the
+/// watcher `Option` fields; there is no cross-operation lock (see the
+/// pool-is-the-lock invariant in `db/mod.rs`).
 #[derive(Debug, Clone, Serialize)]
 pub struct CoordinatorStatus {
     pub player_log_active: bool,
     pub chat_log_active: bool,
     pub active_character: Option<String>,
     pub current_chat_log: Option<String>,
-    pub operation: String, // Serialized OperationType
 }
 
 /// A chat `[Status] ItemGained` gain seen during catch-up, keyed by the
@@ -100,21 +69,41 @@ enum ReportKind {
 }
 
 fn report_kind_for_path(path: &str) -> Option<ReportKind> {
-    let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    // Lexically normalize: split on both separators, drop empties and `.`,
+    // resolve `..` by popping. This defeats `Reports/../Downloads/...`
+    // traversal that a naive any-segment check would accept.
+    let mut segments: Vec<&str> = Vec::new();
+    for seg in path.split(['/', '\\']) {
+        if seg.is_empty() || seg == "." {
+            continue;
+        } else if seg == ".." {
+            segments.pop();
+        } else {
+            segments.push(seg);
+        }
+    }
+    let file = segments.last().copied().unwrap_or(path);
     if !file.ends_with(".json") {
         return None;
     }
     // The game always writes VIP reports into <game root>/Reports/. A matching
-    // file name without that path segment is not a VIP report — refuse it
+    // file name without that parent segment is not a VIP report — refuse it
     // rather than importing (and snapshotting) an arbitrary file.
-    let in_reports_dir =
-        path.split(['/', '\\']).any(|seg| seg.eq_ignore_ascii_case("Reports"));
-    if !in_reports_dir {
+    let parent_is_reports = segments
+        .len()
+        .checked_sub(2)
+        .and_then(|i| segments.get(i))
+        .is_some_and(|seg| seg.eq_ignore_ascii_case("Reports"));
+    if !parent_is_reports {
         return None;
     }
     if file.starts_with("Character_") {
         Some(ReportKind::Character)
-    } else if file.contains("_items_") {
+    } else if file
+        .strip_suffix(".json")
+        .and_then(|stem| stem.split_once("_items_"))
+        .is_some_and(|(left, right)| !left.is_empty() && !right.is_empty())
+    {
         Some(ReportKind::Items)
     } else {
         None
@@ -133,7 +122,6 @@ struct StagedChatGain {
 pub struct DataIngestCoordinator {
     player_watcher: Option<PlayerLogWatcher>,
     chat_watcher: Option<ChatLogWatcher>,
-    operation_lock: Arc<RwLock<OperationType>>,
     db_pool: DbPool,
     settings: Arc<SettingsManager>,
     app_handle: AppHandle,
@@ -190,6 +178,11 @@ pub struct DataIngestCoordinator {
     /// Chat stack gains staged during catch-up (see `StagedChatGain`); applied
     /// just before the live flip. Cleared once live.
     staged_chat_gains: Vec<StagedChatGain>,
+    /// Skill updates skipped because the skill name did not resolve against
+    /// current game data (new game skill or stale CDN). Monotonic within the
+    /// process; logged with each skip so a growing total signals staleness.
+    /// The row is deliberately not written (skill_id 0 would collide PKs).
+    skipped_unknown_skills: u64,
 }
 
 impl DataIngestCoordinator {
@@ -219,7 +212,6 @@ impl DataIngestCoordinator {
         Ok(Self {
             player_watcher: None,
             chat_watcher: None,
-            operation_lock: Arc::new(RwLock::new(OperationType::Idle)),
             db_pool,
             settings,
             app_handle,
@@ -237,19 +229,12 @@ impl DataIngestCoordinator {
             catch_up_chat_servers: std::collections::HashMap::new(),
             catch_up_servers_scanned: false,
             staged_chat_gains: Vec::new(),
+            skipped_unknown_skills: 0,
         })
     }
 
     /// Get current coordinator status
     pub fn get_status(&self) -> CoordinatorStatus {
-        let operation = self.operation_lock.read().unwrap();
-        let operation_str = match &*operation {
-            OperationType::Idle => "idle",
-            OperationType::FullChatScan { .. } => "full_scan",
-            OperationType::CharacterImport { .. } => "character_import",
-            OperationType::UserAction => "user_action",
-        };
-
         CoordinatorStatus {
             player_log_active: self
                 .player_watcher
@@ -264,7 +249,6 @@ impl DataIngestCoordinator {
                 w.get_chat_log_path()
                     .and_then(|p| p.to_str().map(String::from))
             }),
-            operation: operation_str.to_string(),
         }
     }
 
@@ -387,15 +371,6 @@ impl DataIngestCoordinator {
 
     /// Start player log tailing
     pub fn start_player_log_tailing(&mut self) -> Result<(), String> {
-        // Check for blocking operations (full scans, imports, etc.)
-        let operation = self.operation_lock.read().unwrap();
-        if *operation != OperationType::Idle {
-            return Err(format!(
-                "Cannot start player log tailing: {:?} in progress",
-                *operation
-            ));
-        }
-        drop(operation);
 
         // Already tailing? No-op.
         if self
@@ -571,12 +546,6 @@ impl DataIngestCoordinator {
 
     /// Start chat log tailing
     pub fn start_chat_log_tailing(&mut self, chat_log_path: PathBuf) -> Result<(), String> {
-        // Check for blocking operations (full scans block chat tailing)
-        let operation = self.operation_lock.read().unwrap();
-        if let OperationType::FullChatScan { .. } = &*operation {
-            return Err("Cannot start tailing during full scan".to_string());
-        }
-        drop(operation);
 
         // Already tailing the same file? No-op.
         let should_switch = match &self.chat_watcher {
@@ -1050,39 +1019,56 @@ impl DataIngestCoordinator {
                         self.game_state.get_active_character(),
                         self.game_state.get_active_server(),
                     ) {
-                        if let Ok(conn) = self.db_pool.get_write() {
-                            // Resolve skill name → canonical ID + display name
-                            let (skill_id, display_name) = {
-                                let guard = self.game_data.blocking_read();
-                                match guard.resolve_skill(&update.skill_type) {
-                                    Some(info) => (info.id as i64, info.name.clone()),
-                                    None => (0i64, update.skill_type.clone()),
+                        // Resolve before taking the write connection: never
+                        // insert skill_id = 0 rows (the PK is
+                        // (character, server, skill_id), so distinct unknown
+                        // skills would overwrite each other).
+                        let resolved = self
+                            .game_data
+                            .blocking_read()
+                            .resolve_skill(&update.skill_type)
+                            .map(|info| (info.id as i64, info.name.clone()));
+                        match resolved {
+                            Some((skill_id, display_name)) => {
+                                if let Ok(conn) = self.db_pool.get_write() {
+                                    let base_level = update.level as i32 - update.bonus as i32;
+                                    conn.execute(
+                                        "INSERT INTO game_state_skills (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
+                                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, datetime('now'), 'log')
+                                         ON CONFLICT(character_name, server_name, skill_id) DO UPDATE SET
+                                            level = excluded.level,
+                                            base_level = excluded.base_level,
+                                            bonus_levels = excluded.bonus_levels,
+                                            xp = excluded.xp,
+                                            tnl = excluded.tnl,
+                                            last_confirmed_at = excluded.last_confirmed_at",
+                                        rusqlite::params![
+                                            character,
+                                            server,
+                                            skill_id,
+                                            display_name,
+                                            update.level as i32,  // total = raw + bonus
+                                            base_level,
+                                            update.bonus as i32,
+                                            update.xp,
+                                            update.tnl,
+                                        ],
+                                    ).ok();
+                                    domains_batch.push("skills");
                                 }
-                            };
-                            let base_level = update.level as i32 - update.bonus as i32;
-                            conn.execute(
-                                "INSERT INTO game_state_skills (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
-                                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, datetime('now'), 'log')
-                                 ON CONFLICT(character_name, server_name, skill_id) DO UPDATE SET
-                                    level = excluded.level,
-                                    base_level = excluded.base_level,
-                                    bonus_levels = excluded.bonus_levels,
-                                    xp = excluded.xp,
-                                    tnl = excluded.tnl,
-                                    last_confirmed_at = excluded.last_confirmed_at",
-                                rusqlite::params![
-                                    character,
-                                    server,
-                                    skill_id,
-                                    display_name,
-                                    update.level as i32,  // total = raw + bonus
-                                    base_level,
-                                    update.bonus as i32,
-                                    update.xp,
-                                    update.tnl,
-                                ],
-                            ).ok();
-                            domains_batch.push("skills");
+                            }
+                            None => {
+                                // Unknown to current game data (new game skill or
+                                // stale CDN): counted, not silently dropped. The
+                                // row is skipped to protect the skill_id PK, but
+                                // the count surfaces in logs so a persistently
+                                // growing number signals CDN staleness.
+                                self.skipped_unknown_skills += 1;
+                                eprintln!(
+                                    "[coordinator] Skipping skill update for unresolvable skill: {} (total skipped: {})",
+                                    update.skill_type, self.skipped_unknown_skills
+                                );
+                            }
                         }
                     }
                     self.app_handle.emit("skill-update", &update).ok();
@@ -1810,11 +1796,10 @@ impl DataIngestCoordinator {
                                 // storage/snapshot-inventory state. Failures just log.
                                 match report_kind_for_path(file_path) {
                                     Some(ReportKind::Character) => {
-                                        let data = self.game_data.blocking_read();
                                         match crate::db::character_commands::import_character_report_internal(
                                             &self.db_pool,
                                             file_path,
-                                            &data,
+                                            &self.game_data,
                                         ) {
                                             Ok(r) if !r.was_duplicate => {
                                                 self.app_handle
@@ -3220,8 +3205,7 @@ impl DataIngestCoordinator {
             })
             .collect();
 
-        let ops_lock = self.app_handle.state::<StallOpsLock>();
-        match insert_stall_events(&self.db_pool, &ops_lock, &inputs) {
+        match insert_stall_events(&self.db_pool, &inputs) {
             Ok(0) => {}
             Ok(n) => {
                 self.app_handle.emit("stall-events-updated", n).ok();
@@ -3479,13 +3463,31 @@ pub fn spawn_polling_thread(
     let handle = std::thread::Builder::new()
         .name("poll-watchers".into())
         .spawn(move || {
+            let mut skipped: u64 = 0;
             while alive_clone.load(Ordering::Relaxed) {
                 if active.load(Ordering::Relaxed) {
-                    let mut coord = coordinator.lock().unwrap();
-                    if let Err(e) = coord.poll() {
-                        eprintln!("[poll-thread] poll error: {e}");
+                    match coordinator.try_lock() {
+                        Ok(mut coord) => {
+                            if let Err(e) = coord.poll() {
+                                eprintln!("[poll-thread] poll error: {e}");
+                            }
+                        }
+                        Err(TryLockError::WouldBlock) => {
+                            skipped += 1;
+                            if skipped == 1 || skipped % 50 == 0 {
+                                eprintln!(
+                                    "[poll-thread] coordinator busy; skipped {skipped} poll cycle(s)"
+                                );
+                            }
+                        }
+                        Err(TryLockError::Poisoned(p)) => {
+                            eprintln!("[poll-thread] coordinator lock poisoned; recovering");
+                            let mut coord = p.into_inner();
+                            if let Err(e) = coord.poll() {
+                                eprintln!("[poll-thread] poll error: {e}");
+                            }
+                        }
                     }
-                    drop(coord); // release lock before sleeping
                 }
                 std::thread::sleep(interval);
             }
@@ -4442,6 +4444,32 @@ mod report_kind_tests {
         )
         .is_none());
         assert!(report_kind_for_path("Character_TestPlayer_Dreva.json").is_none());
+    }
+
+    #[test]
+    fn report_kind_rejects_traversal_and_non_reports_parent() {
+        // `Reports` cancelled by `..` resolves outside Reports/ — refuse.
+        assert!(report_kind_for_path(
+            "C:/Users/TestUser/AppData/LocalLow/Elder Game/Project Gorgon/Reports/../Downloads/x_items_y.json"
+        )
+        .is_none());
+        // `_items_` in a non-Reports parent directory — refuse.
+        assert!(report_kind_for_path(
+            "C:/Users/TestUser/Downloads/my_items_stash/TestPlayer_Dreva_items_2026-10-25-19-29-53Z.json"
+        )
+        .is_none());
+        // Bare `_items_` stem edge (empty left side) — refuse.
+        assert!(report_kind_for_path(
+            "C:/Users/TestUser/AppData/LocalLow/Elder Game/Project Gorgon/Reports/_items_2026-10-25.json"
+        )
+        .is_none());
+        // Valid game shape still accepted.
+        assert!(matches!(
+            report_kind_for_path(
+                "C:/Users/TestUser/AppData/LocalLow/Elder Game/Project Gorgon/Reports/TestPlayer_Dreva_items_2026-10-25-19-29-53Z.json"
+            ),
+            Some(ReportKind::Items)
+        ));
     }
 }
 

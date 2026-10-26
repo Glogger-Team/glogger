@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+import { defineStore, acceptHMRUpdate } from 'pinia'
 import { ref, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
@@ -197,6 +197,12 @@ export const useGameStateStore = defineStore('gameState', () => {
   const skills = ref<GameStateSkill[]>([])
   const attributes = ref<GameStateAttribute[]>([])
   const activeSkills = ref<GameStateActiveSkills | null>(null)
+  // Per-domain refresh sequence (last-emit-wins): each refresh takes the next
+  // number for its domain; a stale response is dropped so a slow invoke can't
+  // overwrite fresher state. Domains dropped while identity was missing queue
+  // in pendingDomains, flushed on the next loadAll.
+  const domainSeq = new Map<string, number>()
+  const pendingDomains = new Set<string>()
   const world = ref<GameStateWorld>({ weather: null, combat: null, mount: null, area: null })
   const inventory = ref<GameStateInventoryItem[]>([])
   const recipes = ref<GameStateRecipe[]>([])
@@ -1152,6 +1158,14 @@ export const useGameStateStore = defineStore('gameState', () => {
       loadCombatSkillNames()
       // Load the council-wallet estimate (anchor + live deltas) (non-blocking)
       fetchCurrencyEstimate()
+      // Flush domains stashed while identity was missing — the full load just
+      // covered the store-owned set, so re-emit the rest (widget-owned
+      // domains heal via their own listeners on mount).
+      if (pendingDomains.size > 0) {
+        const queued = [...pendingDomains]
+        pendingDomains.clear()
+        for (const d of queued) void refreshDomain(d)
+      }
     } catch (e) {
       console.error('[gameStateStore] Failed to load game state:', e)
     } finally {
@@ -1163,49 +1177,84 @@ export const useGameStateStore = defineStore('gameState', () => {
   async function refreshDomain(domain: string) {
     const characterName = getCharacterName()
     const serverName = getServerName()
-    if (!characterName || !serverName) return
+    // Identity missing (character-switch window): stash instead of dropping
+    // (arena bypasses this guard at the listener — it is global).
+    if (!characterName || !serverName) {
+      pendingDomains.add(domain)
+      return
+    }
+
+    // Last-emit-wins: a slow invoke must not overwrite a newer refresh. Each
+    // arm fetches into a local, then assigns only if still the newest.
+    const seq = (domainSeq.get(domain) ?? 0) + 1
+    domainSeq.set(domain, seq)
+    const fresh = () => domainSeq.get(domain) === seq
 
     try {
       switch (domain) {
-        case 'skills':
-          skills.value = await invoke('get_game_state_skills', { characterName, serverName })
+        case 'skills': {
+          const v = await invoke<GameStateSkill[]>('get_game_state_skills', { characterName, serverName })
+          if (fresh()) skills.value = v
           break
-        case 'attributes':
-          attributes.value = await invoke('get_game_state_attributes', { characterName, serverName })
+        }
+        case 'attributes': {
+          const v = await invoke<GameStateAttribute[]>('get_game_state_attributes', { characterName, serverName })
+          if (fresh()) attributes.value = v
           break
-        case 'active_skills':
-          activeSkills.value = await invoke('get_game_state_active_skills', { characterName, serverName })
+        }
+        case 'active_skills': {
+          const v = await invoke<GameStateActiveSkills | null>('get_game_state_active_skills', { characterName, serverName })
+          if (fresh()) activeSkills.value = v
           break
+        }
         case 'weather':
         case 'combat':
         case 'mount':
-        case 'area':
-          world.value = await invoke('get_game_state_world', { characterName, serverName })
+        case 'area': {
+          const v = await invoke<GameStateWorld>('get_game_state_world', { characterName, serverName })
+          if (fresh()) world.value = v
           break
-        case 'inventory':
-          inventory.value = await invoke('get_game_state_inventory', { characterName, serverName })
+        }
+        case 'inventory': {
+          const v = await invoke<GameStateInventoryItem[]>('get_game_state_inventory', { characterName, serverName })
+          if (fresh()) inventory.value = v
           break
-        case 'recipes':
-          recipes.value = await invoke('get_game_state_recipes', { characterName, serverName })
+        }
+        case 'recipes': {
+          const v = await invoke<GameStateRecipe[]>('get_game_state_recipes', { characterName, serverName })
+          if (fresh()) recipes.value = v
           break
-        case 'equipment':
-          equipment.value = await invoke('get_game_state_equipment', { characterName, serverName })
+        }
+        case 'equipment': {
+          const v = await invoke<GameStateEquipmentSlot[]>('get_game_state_equipment', { characterName, serverName })
+          if (fresh()) equipment.value = v
           break
-        case 'favor':
-          favor.value = await invoke('get_game_state_favor', { characterName, serverName })
+        }
+        case 'favor': {
+          const v = await invoke<GameStateFavor[]>('get_game_state_favor', { characterName, serverName })
+          if (fresh()) favor.value = v
           break
-        case 'currencies':
-          currencies.value = await invoke('get_game_state_currencies', { characterName, serverName })
+        }
+        case 'currencies': {
+          const v = await invoke<GameStateCurrency[]>('get_game_state_currencies', { characterName, serverName })
+          if (fresh()) currencies.value = v
           break
-        case 'effects':
-          effects.value = await invoke('get_game_state_effects', { characterName, serverName })
+        }
+        case 'effects': {
+          const v = await invoke<GameStateEffect[]>('get_game_state_effects', { characterName, serverName })
+          if (fresh()) effects.value = v
           break
-        case 'storage':
-          storage.value = await invoke('get_game_state_storage', { characterName, serverName })
+        }
+        case 'storage': {
+          const v = await invoke<GameStateStorageItem[]>('get_game_state_storage', { characterName, serverName })
+          if (fresh()) storage.value = v
           break
-        case 'vendor':
-          vendor.value = await invoke('get_game_state_vendor', { characterName, serverName })
+        }
+        case 'vendor': {
+          const v = await invoke<GameStateVendor[]>('get_game_state_vendor', { characterName, serverName })
+          if (fresh()) vendor.value = v
           break
+        }
         case 'currency_estimate':
           await fetchCurrencyEstimate()
           break
@@ -1223,7 +1272,6 @@ export const useGameStateStore = defineStore('gameState', () => {
       console.error('[gameStateStore] Failed to load storage vault metadata:', e)
     }
   }
-
   // ── Event Listeners ───────────────────────────────────────────────────
 
   listen<string[]>('game-state-updated', (event) => {
@@ -1383,3 +1431,7 @@ export const useGameStateStore = defineStore('gameState', () => {
     startupComplete,
   }
 })
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useGameStateStore, import.meta.hot))
+}

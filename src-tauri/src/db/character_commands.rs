@@ -173,15 +173,17 @@ pub fn import_character_report(
     cdn: State<'_, GameDataState>,
     file_path: String,
 ) -> Result<ImportResult, String> {
-    let data = cdn.blocking_read();
-    import_character_report_internal(&db, &file_path, &data)
+    import_character_report_internal(&db, &file_path, &cdn)
 }
 
-/// Internal import logic, callable without Tauri State wrapper
+/// Internal import logic, callable without Tauri State wrapper.
+/// Takes the shared [`GameDataState`] handle and only takes a short read
+/// lock around the game-state seeding step, so callers never hold the CDN
+/// lock across file I/O or the DB transaction.
 pub fn import_character_report_internal(
     db: &DbPool,
     file_path: &str,
-    game_data: &GameData,
+    game_data: &GameDataState,
 ) -> Result<ImportResult, String> {
     // 1. Read file
     let raw_json =
@@ -401,8 +403,10 @@ pub fn import_character_report_internal(
             + report.completed_work_orders.len()
             + report.completed_quests.len();
 
-        // 13. Seed game state from snapshot (timestamp deconfliction: only overwrite if newer)
-        seed_game_state_from_snapshot(&conn, &report, game_data)?;
+        // 13. Seed game state from snapshot (timestamp deconfliction: only overwrite if newer).
+        // Short read: the CDN lock is held only for the seed queries, never
+        // across file I/O or the outer transaction setup.
+        seed_game_state_from_snapshot(&conn, &report, &game_data.blocking_read())?;
 
         Ok(ImportResult {
             character_name: report.character.clone(),
@@ -1118,12 +1122,16 @@ mod tests {
         DbPool::from_pools(reads, writes)
     }
 
+    fn empty_game_data() -> GameDataState {
+        std::sync::Arc::new(tokio::sync::RwLock::new(GameData::empty()))
+    }
+
     const FIXTURE: &str = "../test_data/inventory/completeState/Character_TestPlayer_Dreva.json";
 
     #[test]
     fn import_persists_skill_abilities_from_fixture() {
         let db = pool();
-        let game_data = GameData::empty();
+        let game_data = empty_game_data();
         let result =
             import_character_report_internal(&db, FIXTURE, &game_data).expect("import fixture");
         assert!(!result.was_duplicate);
@@ -1197,7 +1205,7 @@ mod tests {
     #[test]
     fn empty_abilities_skill_inserts_zero_rows() {
         let db = pool();
-        let game_data = GameData::empty();
+        let game_data = empty_game_data();
         import_character_report_internal(&db, FIXTURE, &game_data).expect("import fixture");
 
         let conn = db.get_write().expect("write conn");
@@ -1226,7 +1234,7 @@ mod tests {
         // `{"FavorLevel": ...}` with no Favor/CouncilsSpentAtVendor/
         // VendorResetTime/PlayerNotes — the import must succeed with NULLs.
         let db = pool();
-        let game_data = GameData::empty();
+        let game_data = empty_game_data();
         import_character_report_internal(&db, FIXTURE, &game_data).expect("import fixture");
 
         let snapshot_id: i64 = {
@@ -1313,7 +1321,7 @@ mod tests {
     #[test]
     fn placeholder_report_is_rejected() {
         let db = pool();
-        let game_data = GameData::empty();
+        let game_data = empty_game_data();
         let dir = unique_temp_dir("glogger_placeholder");
         // The game's extra-report bug: "???" name, race "error".
         for (file, name, race) in [
@@ -1381,7 +1389,7 @@ mod tests {
     #[cfg(test)]
     fn live_export_assert(path: &std::path::Path) {
         let db = pool();
-        let game_data = GameData::empty();
+        let game_data = empty_game_data();
         import_character_report_internal(&db, path.to_str().expect("utf8 path"), &game_data)
             .expect("import live export");
         let conn = db.get_write().expect("write conn");
