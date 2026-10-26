@@ -240,8 +240,20 @@ is the remainder plus ParseFixB's out-of-budget skips. No marker was written for
 - [ ] `survey/types.rs` dead-arm sweep (see Reviewer backlog above — same item, owned here if the sweep owner doesn't take it).
 - [ ] Arena tentative-bet `take()`-only-on-match + payout trigger on resolve.
 
----
+### Chat level-up ingest backlog (2026-10-25 PR #40 review, fix-now applied)
 
+Fix-now from that review is applied (monotonic `last_confirmed_at` + `>=` level floor in
+`apply_chat_level_up`, LevelUp DB/pool error logging in the coordinator). What follows is the
+backlog half of the same review, verified still present at `e21c1a2`:
+
+- [ ] `coordinator.rs:1806` game_data read guard held across character import — scope the `blocking_read()` to resolve/copy only, drop before file I/O, or pass an owned snapshot (Items arm already avoids the guard). Contention only; CDN writers are rare post-startup.
+- [ ] `coordinator.rs:110-117` Reports path check hardening — normalize out `..` segments and require the parent dir name to be `Reports` (today any path segment matches, so `Reports/../Downloads/...` passes); tighten `contains("_items_")` to the game filename convention. Overbroad match fails safely at import today; source is the game's own chat line, no realistic attacker.
+- [ ] `coordinator.rs:1761` zero-id guard — skip + log when `resolve_skill` returns id 0 (the never-insert-0 comment has no enforcement; needs the `resolve_skill` contract checked first — None vs 0-placeholder).
+- [ ] `gameStateStore.ts:649` `firstXp` overwrite in `handleChatLevelUp` — consistent with `handleSkillUpdate` (rolling delta-baseline, not session-start immutable; write-only in the chat-only flow), so keep unless consumers change; document as rolling baseline at most.
+- [ ] `gameStateStore.ts:628` tnl=0 unknown sentinel — docs now honest (e21c1a2: 100% bar + `< 1 min` TTL mean unknown, not maxed); nullable-tnl + widget unknown-state is widget-scope work.
+- [ ] `game_state_commands.rs` mixed space-vs-`T…Z` timestamp test (guard pins same-format only) + traversal/subdir/overbroad-`_items_` `report_kind_for_path` tests; timestamp-normalization audit for `firstTimestamp`/`lastTimestamp` vs `timestampToSeconds`; `fetchCurrencyEstimate` full-refresh-path audit.
+
+---
 
 - [x] ~~Catch-up guard drops a non-selected character's login snapshot~~ — **FIXED 2026-10-15**: the Player.log login line now *attributes* the session that follows it instead of gating on the selection.
   - **One owner for the ingest identity.** `DataIngestCoordinator::adopt_player_log_session` (`coordinator.rs`) writes only `GameStateManager` — the single owner — and every log-derived writer reads it, including `ingest_shop_log`, which used to read `settings.active_character_name` directly and was the reason per-session attribution was unsafe before. `settings` is the durable/display selection (picker; the Chat.log marker, which writes it in both modes; the live Player.log re-arm when `active_character` is `None`; and `poll()` right after the Player.log drain, syncing character *and* server to the ingest identity — the chat drain that follows may then re-set them from its own marker). `GameStateManager::clear_active_character` is deleted.

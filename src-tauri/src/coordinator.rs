@@ -1759,27 +1759,34 @@ impl DataIngestCoordinator {
                                         .map(|info| (info.id as i64, info.name.clone()));
                                     match resolved {
                                         Some((skill_id, display_name)) => {
-                                            if let Ok(conn) = self.db_pool.get_write() {
-                                                match crate::db::game_state_commands::apply_chat_level_up(
-                                                    &conn,
-                                                    &character,
-                                                    &server,
-                                                    skill_id,
-                                                    &display_name,
-                                                    *level as i64,
-                                                    *xp as i64,
-                                                    timestamp,
-                                                ) {
-                                                    Ok(true) => {
-                                                        self.app_handle
-                                                            .emit("game-state-updated", vec!["skills"])
-                                                            .ok();
+                                            match self.db_pool.get_write() {
+                                                Ok(conn) => {
+                                                    match crate::db::game_state_commands::apply_chat_level_up(
+                                                        &conn,
+                                                        &character,
+                                                        &server,
+                                                        skill_id,
+                                                        &display_name,
+                                                        *level as i64,
+                                                        *xp as i64,
+                                                        timestamp,
+                                                    ) {
+                                                        Ok(true) => {
+                                                            self.app_handle
+                                                                .emit("game-state-updated", vec!["skills"])
+                                                                .ok();
+                                                        }
+                                                        // Stale replay dropped by the recency
+                                                        // guard — no state changed, no refresh.
+                                                        Ok(false) => {}
+                                                        Err(e) => eprintln!(
+                                                            "[coordinator] Chat level-up apply failed for {skill} L{level} ({character}@{server}): {e}"
+                                                        ),
                                                     }
-                                                    // Stale replay dropped by the recency
-                                                    // guard — no state changed, no refresh.
-                                                    Ok(false) => {}
-                                                    Err(_) => {}
                                                 }
+                                                Err(e) => eprintln!(
+                                                    "[coordinator] Chat level-up dropped for {skill} L{level} ({character}@{server}): no write conn: {e}"
+                                                ),
                                             }
                                         }
                                         None => {

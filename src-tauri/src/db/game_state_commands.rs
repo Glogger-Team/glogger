@@ -712,6 +712,10 @@ pub(crate) fn reconcile_gift_count(
 /// skew); a same-level cross-format newer line is dropped.
 /// `tnl` from an older level can diverge from the new level; the widgets key
 /// persisted progress off columns they own, never this mixed pair.
+/// A level win never moves the clock backward or downward: `last_confirmed_at`
+/// is the max of stored and incoming (a skewed-older genuine level-up keeps
+/// the newer stamp), and a newer stamp never downgrades the level (same-level
+/// newer stamps refresh xp; lower levels are always dropped).
 /// Returns true when the row was inserted or updated (changed the table).
 pub(crate) fn apply_chat_level_up(
     conn: &rusqlite::Connection,
@@ -731,9 +735,9 @@ pub(crate) fn apply_chat_level_up(
             skill_name = excluded.skill_name,
             level = excluded.level,
             xp = excluded.xp,
-            last_confirmed_at = excluded.last_confirmed_at,
+            last_confirmed_at = CASE WHEN excluded.last_confirmed_at > game_state_skills.last_confirmed_at THEN excluded.last_confirmed_at ELSE game_state_skills.last_confirmed_at END,
             source = excluded.source
-         WHERE excluded.last_confirmed_at >= game_state_skills.last_confirmed_at
+         WHERE (excluded.last_confirmed_at > game_state_skills.last_confirmed_at AND excluded.level >= game_state_skills.level)
             OR excluded.level > game_state_skills.level",
         rusqlite::params![character, server, skill_id, skill_name, level, xp, confirmed_at],
     )
@@ -2325,7 +2329,8 @@ mod tests {
         apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 15:00:00")
             .expect("first apply");
         // Genuine level-up with a skewed-older clock: chat is authoritative
-        // that the level was reached, so the level wins anyway.
+        // that the level was reached, so the level wins anyway — but the
+        // timestamp stays monotonic so a later stale replay can't downgrade.
         let changed =
             apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 88, 10, "2026-04-16 14:59:00")
                 .expect("level-up apply");
@@ -2340,6 +2345,13 @@ mod tests {
             )
             .expect("row exists");
         assert_eq!((level, xp), (88, 10));
-        assert_eq!(ts, "2026-04-16 14:59:00");
+        assert_eq!(ts, "2026-04-16 15:00:00");
+
+        // A stale replay that would have won against the rewound clock is now
+        // dropped: 14:59:30 is not newer than the monotonic 15:00:00.
+        let stale =
+            apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 100, "2026-04-16 14:59:30")
+                .expect("stale apply");
+        assert!(!stale);
     }
 }
