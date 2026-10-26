@@ -1,6 +1,6 @@
 /// CDN access for Project: Gorgon data files and icons.
 ///
-/// Version check:  GET http://client.projectgorgon.com/fileversion.txt  → integer
+/// Version check:  GET https://client.projectgorgon.com/fileversion.txt  → integer
 /// Data files:     https://cdn.projectgorgon.com/v{ver}/data/{file}.json
 /// Translation:    https://cdn.projectgorgon.com/v{ver}/data/Translation.zip
 /// Icons:          https://cdn.projectgorgon.com/v{ver}/icons/icon_{id}.png
@@ -8,7 +8,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
-const VERSION_URL: &str = "http://client.projectgorgon.com/fileversion.txt";
+const VERSION_URL: &str = "https://client.projectgorgon.com/fileversion.txt";
 const CDN_BASE: &str = "https://cdn.projectgorgon.com";
 
 /// The JSON files we want to download and cache locally.
