@@ -181,7 +181,10 @@ export interface SkillSessionData {
 }
 
 function timestampToSeconds(ts: string): number {
-  const [h, m, s] = ts.split(':').map(Number)
+  // Chat stamps arrive as "YYYY-MM-DD HH:MM:SS"; skill-updates as "HH:MM:SS".
+  // Either way the trailing 8 chars are the time of day. Cross-midnight
+  // sessions read as 0 rate (end < start) — same as before.
+  const [h, m, s] = ts.slice(-8).split(':').map(Number)
   return h * 3600 + m * 60 + s
 }
 
@@ -1068,6 +1071,10 @@ export const useGameStateStore = defineStore('gameState', () => {
           xp: event.xp,
           timestamp: event.timestamp,
         })
+        // One tick per level — the only live XP signal for this skill.
+        if (combatSkillNames.value.has(event.skill)) {
+          accrueXpRate('combat', event.xp)
+        }
         break
 
       case 'CombatWisdomEarned': {
