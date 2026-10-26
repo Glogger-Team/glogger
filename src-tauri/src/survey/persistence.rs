@@ -499,12 +499,21 @@ pub fn chat_gain_already_counted(
 /// instead — one bump total. Mirrors the claim predicate (loot context,
 /// survey-map crafts excluded) so every row this matches is one the claim
 /// will actually pick up.
+///
+/// Item matching is deliberately loose (`internal_name` OR `item_name`):
+/// the two pipelines spell names differently (log-internal vs chat-display)
+/// and either column may be NULL when CDN resolution failed. Quantity +
+/// same-second timestamp already narrows to one game gain; the name check
+/// only breaks ties between different items sharing a tick (multi-item
+/// Motherlode loot, primary + same-qty bonus). Pass `item_name = None` to
+/// match on quantity/time alone.
 pub fn unclaimed_chat_gain_exists(
     conn: &Connection,
     character: &str,
     server: &str,
     qty: u32,
     timestamp_iso: &str,
+    item_name: Option<&str>,
     window_secs: u32,
 ) -> bool {
     conn.query_row(
@@ -518,9 +527,12 @@ pub fn unclaimed_chat_gain_exists(
            AND (internal_name IS NULL
                 OR (internal_name NOT LIKE 'GeologySurvey%'
                     AND internal_name NOT LIKE 'MiningSurvey%'))
+           AND (?6 IS NULL OR internal_name = ?6 OR item_name = ?6)
            AND timestamp BETWEEN datetime(?4, '-' || ?5 || ' seconds')
                              AND datetime(?4, '+' || ?5 || ' seconds'))",
-        params![character, server, qty, timestamp_iso, window_secs],
+        params![
+            character, server, qty, timestamp_iso, window_secs, item_name
+        ],
         |r| r.get(0),
     )
     .unwrap_or(false)

@@ -69,7 +69,7 @@ const CHAT_STATE_CAP: usize = 16;
 /// Cap for the deferred basic-gain buffer (gains arriving before the
 /// consuming DeleteItem creates the pending use). Bounds memory when the
 /// delete never comes (missed line, filtered log); oldest entries drop
-/// first with an `eprintln!` counter.
+/// first with an `eprintln!` log line per drop.
 const DEFERRED_BASIC_CAP: usize = 128;
 
 /// One survey-map use awaiting its first Mining context. Lives in memory
@@ -104,6 +104,11 @@ struct PendingUse {
 struct DeferredBasicGain {
     /// Quantity (1 for ItemAdded, delta for ItemStackChanged).
     qty: u32,
+    /// Log-internal item name for the single-authority tie-break in
+    /// [`crate::survey::persistence::unclaimed_chat_gain_exists`]. Same-tick
+    /// multi-item loot shares qty/time (two qty-1 gains); the name keeps a
+    /// chat twin of A from suppressing the bump for B.
+    item_name: Option<String>,
     /// The gain line's own UTC stamp, resolved **in order** when the line was
     /// seen (`event_iso`) — never re-resolved at drain time, which would resolve
     /// an earlier time of day after the consuming map's and roll the session date
@@ -936,6 +941,7 @@ impl SurveySessionAggregator {
                             server,
                             gain.qty,
                             at,
+                            gain.item_name.as_deref(),
                             CHAT_BASIC_WINDOW_SECS as u32,
                         )
                     }) {
@@ -1221,23 +1227,36 @@ impl SurveySessionAggregator {
         // call after all DB writes have completed. This keeps the borrow
         // checker happy without requiring extra clones of the provenance
         // value (which is meaningfully sized — has source, candidates, etc.).
-        let (qty, mining_node_id_opt, is_basic_survey_gain) = match event {
+        let (qty, item_name_owned, mining_node_id_opt, is_basic_survey_gain) = match event {
             PlayerEvent::ItemAdded {
                 provenance,
                 initial_quantity,
+                item_name,
                 ..
             } => {
                 let kind_info = read_provenance_kind(provenance);
-                (*initial_quantity, kind_info.0, kind_info.1)
+                (
+                    *initial_quantity,
+                    Some(item_name.clone()),
+                    kind_info.0,
+                    kind_info.1,
+                )
             }
             PlayerEvent::ItemStackChanged {
-                provenance, delta, ..
+                provenance,
+                delta,
+                item_name,
+                ..
             } if *delta > 0 => {
                 let kind_info = read_provenance_kind(provenance);
-                (*delta as u32, kind_info.0, kind_info.1)
+                (*delta as u32, item_name.clone(), kind_info.0, kind_info.1)
             }
             _ => return,
         };
+        // Borrowed tie-break for the single-authority guards below; the
+        // owned clone above ends the `event` borrow before the mutable
+        // provenance inject at the end of each arm.
+        let item_name_opt = item_name_owned.as_deref();
 
         // Basic survey direct-loot case (no Mining intermediary).
         if is_basic_survey_gain {
@@ -1272,13 +1291,14 @@ impl SurveySessionAggregator {
             };
             if ml_node == node_id && within_window {
                 // Single loot authority: skip the bump when the chat pipeline
-                // already counted this gain (tagged `survey_chat` twin).
+                // already counted this gain (tagged `survey_chat` twin). The
+                // name tie-breaks same-tick multi-item loot sharing qty/time.
                 if !persistence::chat_gain_already_counted(
                     conn,
                     ml_use_id,
                     qty,
                     now_iso.as_deref(),
-                    None,
+                    item_name_opt,
                     CHAT_SWING_SLACK_SECS as u32,
                 ) {
                     let _ = persistence::add_loot_qty(conn, ml_use_id, qty);
@@ -1300,13 +1320,14 @@ impl SurveySessionAggregator {
                 let _ = multihit_state::touch_node(conn, character, server, node_id_i64, iso);
             }
             // Single loot authority: skip the bump when the chat pipeline
-            // already counted this gain (tagged `survey_chat` twin).
+            // already counted this gain (tagged `survey_chat` twin). The
+            // name tie-breaks same-tick multi-item loot sharing qty/time.
             if !persistence::chat_gain_already_counted(
                 conn,
                 n.survey_use_id,
                 qty,
                 now_iso.as_deref(),
-                None,
+                item_name_opt,
                 CHAT_SWING_SLACK_SECS as u32,
             ) {
                 let _ = persistence::add_loot_qty(conn, n.survey_use_id, qty);
@@ -1356,13 +1377,14 @@ impl SurveySessionAggregator {
             }
         }
         // Single loot authority: skip the bump when the chat pipeline already
-        // counted this gain (tagged `survey_chat` twin).
+        // counted this gain (tagged `survey_chat` twin). The name tie-breaks
+        // same-tick multi-item loot sharing qty/time.
         if !persistence::chat_gain_already_counted(
             conn,
             pending.survey_use_id,
             qty,
             now_iso.as_deref(),
-            None,
+            item_name_opt,
             CHAT_SWING_SLACK_SECS as u32,
         ) {
             let _ = persistence::add_loot_qty(conn, pending.survey_use_id, qty);
@@ -1424,6 +1446,14 @@ impl SurveySessionAggregator {
         // Resolve this gain's own stamp while it *is* the newest line seen; the
         // deferred drain then never has to re-resolve an earlier time of day.
         let resolved_at = event_hms_timestamp(event).map(|hms| self.to_utc(hms));
+        // Log-internal name for the single-authority tie-break (same-tick
+        // multi-item loot shares qty/time; the name keeps a chat twin of A
+        // from suppressing the bump for B).
+        let item_name: Option<String> = match event {
+            PlayerEvent::ItemAdded { item_name, .. } => Some(item_name.clone()),
+            PlayerEvent::ItemStackChanged { item_name, .. } => item_name.clone(),
+            _ => None,
+        };
 
         // Find the most-recent (back of the queue) Basic pending use.
         let Some(idx) = self
@@ -1434,25 +1464,29 @@ impl SurveySessionAggregator {
             // No pending Basic use yet — the DeleteItem hasn't fired.
             // Buffer this gain so handle_survey_consumed can attribute it.
             // Bounded: if the delete never comes the buffer can't grow
-            // without limit; drop the oldest and count the loss.
+            // without limit; drop the oldest, keep the count on the log line.
             if self.deferred_basic_gains.len() >= DEFERRED_BASIC_CAP {
                 self.deferred_basic_gains.remove(0);
                 eprintln!("[survey-aggregator] deferred_basic_gains full; dropped oldest gain");
             }
-            self.deferred_basic_gains
-                .push(DeferredBasicGain { qty, resolved_at });
+            self.deferred_basic_gains.push(DeferredBasicGain {
+                qty,
+                item_name,
+                resolved_at,
+            });
             return;
         };
         let use_id = self.pending_uses[idx].survey_use_id;
 
         // Single loot authority: skip the bump when the chat pipeline already
-        // counted this gain (tagged `survey_chat` twin).
+        // counted this gain (tagged `survey_chat` twin). The name tie-breaks
+        // same-tick multi-item loot sharing qty/time.
         if !persistence::chat_gain_already_counted(
             conn,
             use_id,
             qty,
             resolved_at.as_deref(),
-            None,
+            item_name.as_deref(),
             CHAT_BASIC_WINDOW_SECS as u32,
         ) {
             let _ = persistence::add_loot_qty(conn, use_id, qty);
@@ -2838,6 +2872,81 @@ mod tests {
     }
 
     #[test]
+    fn test_player_side_guard_tiebreaks_multi_item_same_tick() {
+        // Regression: two different items with the same qty in the same tick
+        // must each bump loot_qty once, even when the chat pipeline saw one
+        // of them first. Without the item tie-break, the second Player.log
+        // gain matches the first gain's chat twin (same use/qty/time) and
+        // its bump is skipped → systematic undercount of Motherlode loot.
+        // Motherlode path: the node stays adopted across gains (no Basic
+        // completion orphaning the second gain), matching the real trigger.
+        let conn = fresh_db();
+        let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
+        agg.set_base_date(test_base_date());
+
+        // 1. Consume a Motherlode map -> pending use.
+        let mut delete_event = PlayerEvent::ItemDeleted {
+            timestamp: "12:00:00".to_string(),
+            instance_id: 1,
+            item_name: Some("MiningSurveyKurMountains1X".to_string()),
+            context: crate::player_event_parser::DeleteContext::Consumed,
+        };
+        agg.process_event(
+            &mut delete_event,
+            &conn,
+            "Zenith",
+            "Dreva",
+            Some("KurMountains"),
+        );
+        let session_id = persistence::active_session(&conn, "Zenith", "Dreva")
+            .unwrap()
+            .unwrap()
+            .id;
+        let use_id = persistence::uses_for_session(&conn, session_id).unwrap()[0].id;
+
+        let mining_prov = |node_id: u32| ItemProvenance::Attributed {
+            source: ActivitySource::Mining {
+                node_entity_id: Some(node_id),
+                node_name: Some("MiningNodeFromSurvey9".to_string()),
+            },
+            confidence: crate::player_event_parser::AttributionConfidence::Confident,
+            survey_use_id: None,
+        };
+        let mut gain = |name: &str| PlayerEvent::ItemAdded {
+            timestamp: "12:00:29".to_string(),
+            item_name: name.to_string(),
+            instance_id: 999,
+            slot_index: -1,
+            is_new: true,
+            initial_quantity: 1,
+            provenance: mining_prov(435138),
+        };
+        let details = format!(r#"{{"survey_use_id":{use_id}}}"#);
+        let tag_chat_row = |conn: &Connection, name: &str| {
+            conn.execute(
+                "INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, internal_name, quantity, context, source, source_kind, source_details)
+                 VALUES ('2026-04-15 12:00:29','Zenith','Dreva',?1,?1,1,'loot','chat_status','survey_chat',?2)",
+                rusqlite::params![name, details],
+            )
+            .unwrap();
+        };
+
+        // Interleave Player-A, Chat-A, Player-B as SEQ-ORDERED pipelines would:
+        // the chat twin of A must not suppress the Player.log bump for B.
+        let mut gain_a = gain("Fluorite");
+        agg.process_event(&mut gain_a, &conn, "Zenith", "Dreva", Some("KurMountains"));
+        tag_chat_row(&conn, "Fluorite");
+        let mut gain_b = gain("Azurite");
+        agg.process_event(&mut gain_b, &conn, "Zenith", "Dreva", Some("KurMountains"));
+
+        let su = persistence::get_use(&conn, use_id).unwrap().unwrap();
+        assert_eq!(
+            su.loot_qty, 2,
+            "each same-tick Player.log gain bumps once despite the other item's chat twin"
+        );
+    }
+
+    #[test]
     fn test_basic_survey_attribution_marks_use_completed() {
         // Basic survey: same-tick gain attributed via SurveyMapUse provenance
         // should land the survey_use_id link AND mark the use completed.
@@ -2972,6 +3081,67 @@ mod tests {
         let uses = persistence::uses_for_session(&conn, session.id).unwrap();
         assert_eq!(uses[0].loot_qty, 2, "deferred + normal gain");
         assert_eq!(uses[0].status, SurveyUseStatus::Completed);
+    }
+
+    #[test]
+    fn test_deferred_drain_tiebreaks_multi_item_same_tick() {
+        // Regression: two buffered gains sharing qty/time but with different
+        // items must each count, even when the chat pipeline saw only one of
+        // them. Without the item tie-break, both deferred gains match the
+        // single untagged chat row and both skips fire → the claim step below
+        // bumps only once (the chat row), undercounting the ledger twin.
+        let conn = fresh_db();
+        let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
+        agg.set_base_date(test_base_date());
+
+        let mut gain = |name: &str| PlayerEvent::ItemAdded {
+            timestamp: "12:00:00".to_string(),
+            item_name: name.to_string(),
+            instance_id: 999,
+            slot_index: -1,
+            is_new: true,
+            initial_quantity: 1,
+            provenance: ItemProvenance::Attributed {
+                source: ActivitySource::SurveyMapUse {
+                    survey_map_internal_name: Some("Serbule Blue Mineral Survey".to_string()),
+                },
+                confidence: crate::player_event_parser::AttributionConfidence::Confident,
+                survey_use_id: None,
+            },
+        };
+        // Both gains arrive before the DeleteItem → buffered.
+        let mut gain_a = gain("Fluorite");
+        agg.process_event(&mut gain_a, &conn, "Zenith", "Dreva", Some("Serbule"));
+        let mut gain_b = gain("Azurite");
+        agg.process_event(&mut gain_b, &conn, "Zenith", "Dreva", Some("Serbule"));
+        assert_eq!(agg.deferred_basic_gains.len(), 2);
+
+        // Chat saw only the Fluorite twin (untagged row, same tick/qty).
+        conn.execute(
+            "INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, internal_name, quantity, context, source)
+             VALUES ('2026-04-15 12:00:00','Zenith','Dreva','Fluorite','Fluorite',1,'loot','chat_status')",
+            [],
+        )
+        .unwrap();
+
+        // DeleteItem drains the buffer: Fluorite skips (chat claims it),
+        // Azurite bumps here → total 1 + 1 = 2.
+        let mut delete = PlayerEvent::ItemDeleted {
+            timestamp: "12:00:00".to_string(),
+            instance_id: 1,
+            item_name: Some("GeologySurveySerbule1".to_string()),
+            context: crate::player_event_parser::DeleteContext::Consumed,
+        };
+        agg.process_event(&mut delete, &conn, "Zenith", "Dreva", Some("Serbule"));
+        let session = persistence::active_session(&conn, "Zenith", "Dreva")
+            .unwrap()
+            .expect("session after DeleteItem");
+        let uses = persistence::uses_for_session(&conn, session.id).unwrap();
+        assert_eq!(uses.len(), 1);
+        assert_eq!(
+            uses[0].loot_qty, 2,
+            "chat-twin gain claimed (1) + untwinned gain bumped (1)"
+        );
     }
 
     #[test]
@@ -3375,10 +3545,12 @@ mod tests {
         // gains drop and the buffer stays bounded.
         let conn = fresh_db();
         let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
-        let gain = || PlayerEvent::ItemAdded {
+        let gain = |i: usize| PlayerEvent::ItemAdded {
             timestamp: "12:00:00".to_string(),
-            item_name: "Fluorite".to_string(),
-            instance_id: 999,
+            // Distinct names per push so the identity check below can tell
+            // a dropped oldest from a dropped newest.
+            item_name: format!("Fluorite{i}"),
+            instance_id: 999 + i as u64,
             slot_index: -1,
             is_new: true,
             initial_quantity: 1,
@@ -3390,14 +3562,19 @@ mod tests {
                 survey_use_id: None,
             },
         };
-        for _ in 0..(DEFERRED_BASIC_CAP + 1) {
-            let mut g = gain();
+        for i in 0..(DEFERRED_BASIC_CAP + 1) {
+            let mut g = gain(i);
             agg.process_event(&mut g, &conn, "Zenith", "Dreva", Some("Serbule"));
         }
         assert_eq!(
             agg.deferred_basic_gains.len(),
             DEFERRED_BASIC_CAP,
             "129th push must drop the oldest, keeping the buffer at cap"
+        );
+        assert_eq!(
+            agg.deferred_basic_gains.first().and_then(|g| g.item_name.as_deref()),
+            Some("Fluorite1"),
+            "oldest entry (Fluorite0) must be the one dropped, not the newest"
         );
     }
 
