@@ -88,6 +88,28 @@ pub struct CoordinatorStatus {
 /// rows via `GameStateManager::correct_stack_for_session` just before the
 /// live flip, because the Player.log drain already wrote fallback `stack_size
 /// = 1` rows before the chat drain ran.
+/// Which VIP report a `ReportSaved` chat line points at, by the game's own
+/// filename convention (mirrors `setup_commands.rs` `Character_*.json` and
+/// `*_items_*.json` scans). Matched on the file name only.
+enum ReportKind {
+    Character,
+    Items,
+}
+
+fn report_kind_for_path(path: &str) -> Option<ReportKind> {
+    let file = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    if !file.ends_with(".json") {
+        return None;
+    }
+    if file.starts_with("Character_") {
+        Some(ReportKind::Character)
+    } else if file.contains("_items_") {
+        Some(ReportKind::Items)
+    } else {
+        None
+    }
+}
+
 struct StagedChatGain {
     character: String,
     server: String,
@@ -1702,6 +1724,120 @@ impl DataIngestCoordinator {
                             ChatStatusEvent::MilkedBy { milker, timestamp } => {
                                 self.record_player_milk(milker, "milked_by", timestamp);
                             }
+                            ChatStatusEvent::LevelUp {
+                                skill,
+                                level,
+                                xp,
+                                timestamp,
+                            } => {
+                                // Post-10/21 this is the only live absolute skill
+                                // signal (ProcessUpdateSkill is gone). Same gating
+                                // as the SkillUpdated arm. Never emits
+                                // `skill-update`: session trackers key on log
+                                // skill names and need tnl/bonus, which chat lacks.
+                                if let (Some(character), Some(server)) = (
+                                    self.game_state.get_active_character().map(String::from),
+                                    self.game_state.get_active_server().map(String::from),
+                                ) {
+                                    let resolved = self
+                                        .game_data
+                                        .blocking_read()
+                                        .resolve_skill(skill)
+                                        .map(|info| (info.id as i64, info.name.clone()));
+                                    match resolved {
+                                        Some((skill_id, display_name)) => {
+                                            if let Ok(conn) = self.db_pool.get_write() {
+                                                if crate::db::game_state_commands::apply_chat_level_up(
+                                                    &conn,
+                                                    &character,
+                                                    &server,
+                                                    skill_id,
+                                                    &display_name,
+                                                    *level as i64,
+                                                    *xp as i64,
+                                                    timestamp,
+                                                )
+                                                .is_ok()
+                                                {
+                                                    self.app_handle
+                                                        .emit("game-state-updated", vec!["skills"])
+                                                        .ok();
+                                                }
+                                            }
+                                        }
+                                        None => {
+                                            // Never insert skill_id = 0 rows: the PK is
+                                            // (character, server, skill_id), so distinct
+                                            // unknown skills would overwrite each other.
+                                            eprintln!(
+                                                "[coordinator] Skipping chat level-up for unresolvable skill: {skill}"
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            ChatStatusEvent::ReportSaved { file_path, .. } => {
+                                // The player just ran /exportcharacter or /outputitems:
+                                // import the file they saved so snapshot-backed state
+                                // (skills/recipes/favor/storage/…) refreshes without a
+                                // manual import. The character seeder applies
+                                // newer-wins per domain (guarded by
+                                // last_confirmed_at); the inventory import replaces
+                                // storage/snapshot-inventory state. Failures just log.
+                                match report_kind_for_path(file_path) {
+                                    Some(ReportKind::Character) => {
+                                        let data = self.game_data.blocking_read();
+                                        match crate::db::character_commands::import_character_report_internal(
+                                            &self.db_pool,
+                                            file_path,
+                                            &data,
+                                        ) {
+                                            Ok(r) if !r.was_duplicate => {
+                                                self.app_handle
+                                                    .emit(
+                                                        "game-state-updated",
+                                                        vec![
+                                                            "skills",
+                                                            "recipes",
+                                                            "favor",
+                                                            "vendor",
+                                                            "currencies",
+                                                            "storage",
+                                                            "currency_estimate",
+                                                        ],
+                                                    )
+                                                    .ok();
+                                            }
+                                            Ok(_) => {}
+                                            Err(e) => eprintln!(
+                                                "[coordinator] ReportSaved auto-import failed for {file_path}: {e}"
+                                            ),
+                                        }
+                                    }
+                                    Some(ReportKind::Items) => {
+                                        match crate::db::inventory_commands::import_inventory_report_internal(
+                                            &self.db_pool,
+                                            file_path,
+                                        ) {
+                                            Ok(r) if !r.was_duplicate => {
+                                                self.app_handle
+                                                    .emit("game-state-updated", vec!["storage", "inventory"])
+                                                    .ok();
+                                            }
+                                            Ok(_) => {}
+                                            Err(e) => eprintln!(
+                                                "[coordinator] ReportSaved auto-import failed for {file_path}: {e}"
+                                            ),
+                                        }
+                                    }
+                                    None => {}
+                                }
+                            }
+                            // Intentionally dropped: `XpGained` deltas are non-idempotent
+                            // (replay double-counts; XP-rate widgets already read them via
+                            // the chat-status-event emit below), `ProdigyXpGained` is not
+                            // skill XP (no column for it), and `TreasureDistance` /
+                            // `AnatomyResult` have no table or consumer.
                             _ => {}
                         }
 
@@ -4237,6 +4373,39 @@ mod loadout_tests {
         assert_eq!(normalize_combat_loadout("none", "unknown"), None);
     }
 }
+#[cfg(test)]
+mod report_kind_tests {
+    use super::{report_kind_for_path, ReportKind};
+
+    #[test]
+    fn report_kind_classifies_character_path() {
+        let kind = report_kind_for_path(
+            "C:/Users/TestUser/AppData/LocalLow/Elder Game/Project Gorgon/Reports/Character_TestPlayer_Dreva.json",
+        );
+        assert!(matches!(kind, Some(ReportKind::Character)));
+    }
+
+    #[test]
+    fn report_kind_classifies_items_path() {
+        let kind = report_kind_for_path(
+            "C:/Users/TestUser/AppData/LocalLow/Elder Game/Project Gorgon/Reports/TwinkleofToes_Dreva_items_2026-10-25-19-29-53Z.json",
+        );
+        assert!(matches!(kind, Some(ReportKind::Items)));
+    }
+
+    #[test]
+    fn report_kind_rejects_book_and_bare_paths() {
+        assert!(report_kind_for_path(
+            "C:/Users/TestUser/AppData/LocalLow/Elder Game/Project Gorgon/Books/HelpScreen_260419_185352.txt"
+        )
+        .is_none());
+        assert!(report_kind_for_path(
+            "C:/Users/TestUser/AppData/LocalLow/Elder Game/Project Gorgon/Reports/Character_TestPlayer_Dreva.log"
+        )
+        .is_none());
+    }
+}
+
 
 
 /// True when two rez phrasings fall within the symmetric rez-dedup window

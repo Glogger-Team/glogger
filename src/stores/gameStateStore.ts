@@ -1139,6 +1139,9 @@ export const useGameStateStore = defineStore('gameState', () => {
         case 'vendor':
           vendor.value = await invoke('get_game_state_vendor', { characterName, serverName })
           break
+        case 'currency_estimate':
+          await fetchCurrencyEstimate()
+          break
       }
     } catch (e) {
       console.error(`[gameStateStore] Failed to refresh ${domain}:`, e)
