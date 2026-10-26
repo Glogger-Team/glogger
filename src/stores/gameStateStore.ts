@@ -181,7 +181,10 @@ export interface SkillSessionData {
 }
 
 function timestampToSeconds(ts: string): number {
-  const [h, m, s] = ts.split(':').map(Number)
+  // Chat stamps arrive as "YYYY-MM-DD HH:MM:SS"; skill-updates as "HH:MM:SS".
+  // Either way the trailing 8 chars are the time of day. Cross-midnight
+  // sessions read as 0 rate (end < start) — same as before.
+  const [h, m, s] = ts.slice(-8).split(':').map(Number)
   return h * 3600 + m * 60 + s
 }
 
@@ -219,9 +222,10 @@ export const useGameStateStore = defineStore('gameState', () => {
   const sessionSkills = ref<Record<string, SkillSessionData>>({})
 
   // ── Session XP-rate tracking (driven by [Status] chat events) ─────────
-  // Separate from sessionSkills (which tracks per-skill XP from skill-update
-  // events). This aggregates combat vs prodigy XP for the XP/hr widget, using
-  // wall-clock time so the rate stays live during play.
+  // Separate from sessionSkills (per-skill XP from skill-update events plus
+  // chat level-ups via handleChatLevelUp — tnl-less, levels exact). This
+  // aggregates combat vs prodigy XP for the XP/hr widget, using wall-clock
+  // time so the rate stays live during play.
   const xpRateSession = ref<{
     combatXp: number
     prodigyXp: number
@@ -602,6 +606,50 @@ export const useGameStateStore = defineStore('gameState', () => {
         s.xpGained += payload.xp - s.firstXp
         s.firstXp = payload.xp
       }
+    }
+  }
+
+  /**
+   * Fold a chat `[Status]` level-up into session tracking. Chat carries level
+   * + this-level XP but no tnl/bonus, so: levels gained are exact; XP gained
+   * counts the event's in-level XP verbatim (no remaining-in-old-level top-up
+   * — the old level's tnl is unknown when skill-update never fired); tnl comes
+   * from the persisted row (zeroed when the skill has no persisted row yet).
+   * With tnl unknown (0), the percent widgets render a full 100% bar and the
+   * TTL reads `< 1 min` once any XP rate exists — treat those as unknown,
+   * not as maxed.
+   */
+  function handleChatLevelUp(payload: {
+    skill: string
+    level: number
+    xp: number
+    timestamp: string
+  }) {
+    if (!startupComplete.value) return
+
+    const key = payload.skill
+    const persistedTnl = skillsByName.value[key]?.tnl ?? 0
+
+    if (!sessionSkills.value[key]) {
+      sessionSkills.value[key] = {
+        skillType: key,
+        currentLevel: payload.level,
+        tnl: persistedTnl,
+        xpGained: payload.xp,
+        levelsGained: 1,
+        firstTimestamp: payload.timestamp,
+        lastTimestamp: payload.timestamp,
+        firstXp: payload.xp,
+      }
+    } else {
+      const s = sessionSkills.value[key]
+      if (payload.level <= s.currentLevel) return
+      s.levelsGained += payload.level - s.currentLevel
+      s.currentLevel = payload.level
+      s.tnl = persistedTnl
+      s.lastTimestamp = payload.timestamp
+      s.xpGained += payload.xp
+      s.firstXp = payload.xp
     }
   }
 
@@ -1010,6 +1058,25 @@ export const useGameStateStore = defineStore('gameState', () => {
         accrueXpRate('prodigy', event.amount)
         break
 
+      case 'LevelUp':
+        // Post-10/21/2026 ProcessUpdateSkill lines are gone from Player.log,
+        // so no skill-update ever feeds sessionSkills live. Chat level-ups
+        // carry level + this-level XP but no tnl/bonus: fold them into the
+        // session entry with the persisted row's tnl (0 while unknown — the
+        // percent widgets then show 100% and TTL `< 1 min`, i.e. unknown,
+        // not maxed).
+        handleChatLevelUp({
+          skill: event.skill,
+          level: event.level,
+          xp: event.xp,
+          timestamp: event.timestamp,
+        })
+        // One tick per level — the only live XP signal for this skill.
+        if (combatSkillNames.value.has(event.skill)) {
+          accrueXpRate('combat', event.xp)
+        }
+        break
+
       case 'CombatWisdomEarned': {
         const atMs = Date.parse(event.timestamp.replace(' ', 'T') + 'Z')
         combatWisdomSession.value.total += event.amount
@@ -1139,6 +1206,9 @@ export const useGameStateStore = defineStore('gameState', () => {
         case 'vendor':
           vendor.value = await invoke('get_game_state_vendor', { characterName, serverName })
           break
+        case 'currency_estimate':
+          await fetchCurrencyEstimate()
+          break
       }
     } catch (e) {
       console.error(`[gameStateStore] Failed to refresh ${domain}:`, e)
@@ -1249,6 +1319,7 @@ export const useGameStateStore = defineStore('gameState', () => {
     sessionSkills,
     sessionSkillList,
     handleSkillUpdate,
+    handleChatLevelUp,
     xpPerHour,
     timeToNextLevel,
     resetSessionSkills,
