@@ -1,7 +1,9 @@
-# Fast local-feedback linters on PRs and main pushes. Rust (clippy/rustfmt)
-# and markdown stay advisory in AGENTS.md (823 unformatted spots, 167 clippy
-# findings, 6k+ markdown findings pre-existing) — only the green gates run
-# here. The release workflow's `validate` job owns the type/test gates.
+# PR gates on PRs and main pushes: frontend type-check/build, Rust tests,
+# plus fast local-feedback linters. Rust (clippy/rustfmt) and markdown stay
+# advisory in AGENTS.md (823 unformatted spots, 167 clippy findings, 6k+
+# markdown findings pre-existing) — only the green gates run here. The
+# release workflow re-runs the frontend build, Rust tests, and TOS scan
+# before bundling (its `validate` + `test` jobs); `check:grids` is PR-only.
 
 name: Lint
 
@@ -153,3 +155,107 @@ jobs:
       - name: Markdown lint (hand-maintained docs only)
         # Floor, not a freeze: no watcher here, so a freeze would rot silently.
         run: npx --yes markdownlint-cli2@0.23 --config .markdownlint-cli2.json "AGENTS.md" "README.md" "SECURITY.md" "CONTRIBUTING.md"
+
+  frontend:
+    name: Frontend type-check and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Frontend type-check and build
+        # Would have caught the TS 7 major: vue-tsc crashes on its removed
+        # './lib/tsc' export before checking a single file.
+        run: npm run build
+
+      - name: Grid standards
+        run: npm run check:grids
+
+      - name: Game-interaction hard lines (TOS/CoC)
+        shell: pwsh
+        run: ./scripts/check-glogger-constraints.ps1
+
+  rust-tests:
+    name: Rust tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+          # PR runs restore but never save: only pushes write the cache
+          # releases read, so no untrusted run can poison it. Same narrowing
+          # as release.yml; save-if is false on pull_request and
+          # workflow_dispatch alike.
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Prepare apt cache dir
+        # The runner user cannot write root-owned /var/cache/apt/archives;
+        # without this the restore step below hard-fails on extraction.
+        # Same preamble as release.yml's build job.
+        run: sudo mkdir -p /var/cache/apt/archives/partial && sudo chown -R "$(id -u):$(id -g)" /var/cache/apt/archives
+
+      - name: Restore apt packages
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          # Same narrowing rationale as the Rust cache: apt re-verifies every
+          # deb against a freshly fetched index, so a poisoned entry fails
+          # closed at install; only main pushes save (see below), so
+          # smoke-test dispatches and fork PRs can read but never write what
+          # PR/main runs consume. Cold cache degrades to an uncached install.
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-${{ github.run_id }}-${{ hashFiles('.github/workflows/lint.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-
+
+      - name: Install Linux dependencies
+        # cargo test compiles the full crate incl. Tauri/tao, which links
+        # glib/webkit system libs. Same set as release.yml's test job.
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Save apt packages
+        # Main pushes only: PR/dispatch runs restore but never save. The key
+        # folds in run_attempt because cache/save refuses an exact-key
+        # collision and run_id is stable across re-runs — without it a retry
+        # after a save would fail on the already-reserved key. Restore still
+        # hits via the `apt-<os>-` prefix fallthrough.
+        if: github.event_name == 'push'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ hashFiles('.github/workflows/lint.yml') }}
+
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --lib
