@@ -59,7 +59,6 @@ function formatAttrName(name: string): string {
     .toLowerCase()
     .replace(/\b\w/g, c => c.toUpperCase())
     .replace(/\bXp\b/g, 'XP')
-    .replace(/\bMod\b/g, 'Mod')
 }
 
 function labelFor(key: string): string {
