@@ -701,13 +701,15 @@ pub(crate) fn reconcile_gift_count(
 /// `base_level/bonus_levels/tnl/max_level` on conflict and always refreshes
 /// `skill_name` to the canonical display name (a fresh insert seeds
 /// `base_level = level`, `tnl/max = 0`). Same recency-gated shape as the
-/// snapshot seeder — except the comparator is lexicographic, so it only
-/// orders same-format stamps: chat feeds local wall-clock
-/// (`"YYYY-MM-DD HH:MM:SS"`) while snapshots carry `"…Z"` UTC. A same-day
-/// live level-up is never older, but no replay guard can be trusted across
-/// formats, so the unconditional winner is the genuine level-up
-/// (`excluded.level >` stored level always wins — chat is authoritative
-/// that the player *reached* that level, even under clock skew).
+/// snapshot seeder — except the comparator is lexicographic over two
+/// different formats: the coordinator UTC-converts chat stamps before parsing
+/// (`"YYYY-MM-DD HH:MM:SS"`), while snapshots carry `"…Z"` UTC. Space
+/// (`0x20`) sorts before `T` (`0x54`), so a same-day chat stamp is always
+/// lexicographically older than its snapshot — the timestamp guard only
+/// orders same-format stamps. The unconditional winner is the genuine
+/// level-up (`excluded.level >` stored level always wins — chat is
+/// authoritative that the player *reached* that level, even under clock
+/// skew); a same-level cross-format newer line is dropped.
 /// `tnl` from an older level can diverge from the new level; the widgets key
 /// persisted progress off columns they own, never this mixed pair.
 /// Returns true when the row was inserted or updated (changed the table).
@@ -2294,9 +2296,10 @@ mod tests {
             .expect("first apply");
         // A same-level line at an older timestamp replayed after newer state:
         // the guard drops it, and the timestamp must not move backward.
-        // (In production the coordinator feeds local wall-clock chat stamps
-        // against UTC snapshot stamps, so a same-day live level-up is never
-        // older — this pins the guard logic, not the wire formats.)
+        // (Same-format stamps only: production chat stamps are UTC-converted
+        // space-format vs `T…Z` snapshot stamps, so a same-day live level-up
+        // always sorts older — only `excluded.level >` rescues it. This pins
+        // the guard logic, not the wire formats.)
         let changed =
             apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 100, "2026-04-16 14:23:16")
                 .expect("stale apply");

@@ -1732,6 +1732,9 @@ impl DataIngestCoordinator {
                                     }
                                 }
                             }
+                            ChatStatusEvent::MilkedBy { milker, timestamp } => {
+                                self.record_player_milk(milker, "milked_by", timestamp);
+                            }
                             ChatStatusEvent::LevelUp {
                                 skill,
                                 level,
