@@ -1,15 +1,17 @@
 /**
- * One-shot history import for the cow-curse abilities (pooping / self-milking).
+ * One-shot history import for the cow-curse abilities (pooping / self-milking)
+ * plus incoming player milkings (`milked_by`).
  *
- * Both abilities only ever appear as `[Combat]` lines, and Combat is excluded
- * from `chat_messages`, so nothing was stored anywhere and position-based chat
- * scans had already run to EOF before either feature existed. The backend
- * command sweeps every archived `Chat-*.log` (hundreds of MB — it pre-filters
- * lines, so it is seconds not minutes), so this composable serialises it: the
- * first surface that needs the history triggers a scan, and every other surface
- * (Character → Stats' Dungcrafting group, Dashboard → Milking Timers'
- * self-milked counter) just watches `scanning` / `lastError` and refreshes from
- * the DB afterwards.
+ * Poop / self-milk lines only ever appear as `[Combat]` lines, and
+ * `"X has milked you."` only ever appears as a `[Status]` line; both channels
+ * are excluded from `chat_messages`, so nothing was stored anywhere and
+ * position-based chat scans had already run to EOF before the features
+ * existed. The backend command sweeps every archived `Chat-*.log` (hundreds
+ * of MB — it pre-filters lines, so it is seconds not minutes), so this
+ * composable serialises it: the first surface that needs the history triggers
+ * a scan, and every other surface (Character → Stats' Dungcrafting group,
+ * Dashboard → Milking Timers' self-milked counter) just watches `scanning` /
+ * `lastError` and refreshes from the DB afterwards.
  *
  * Callers ask on mount, never "only while my counter reads 0" — a single live
  * event arriving before the first scan would then freeze the rest of the archive
@@ -47,6 +49,7 @@ export interface AbilityHistoryBackfillResult {
   files_skipped: number
   poops_recorded: number
   self_milks_recorded: number
+  milked_by_recorded: number
 }
 
 /**

@@ -167,6 +167,7 @@ pub struct AbilityHistoryBackfillResult {
     pub files_skipped: usize,
     pub poops_recorded: usize,
     pub self_milks_recorded: usize,
+    pub milked_by_recorded: usize,
 }
 
 /// Result of scanning one Chat log for ability lines: the parsed candidate
@@ -175,19 +176,24 @@ pub struct AbilityHistoryBackfillResult {
 type ChatLogAbilityScan = (Vec<chat_parser::ChatMessage>, Option<i32>);
 
 /// Backfill the per-ability history tables from every archived `Chat-*.log`:
-/// `player_pooping_log` (Dungcrafting) and `player_milking_log` self-milks.
+/// `player_pooping_log` (Dungcrafting), `player_milking_log` self-milks, and
+/// `player_milking_log` incoming milkings (`milked_by`).
+ ///
+/// Poop and self-milk lines only ever appear as Combat-channel lines, and
+/// Combat is excluded from `chat_messages` by default — so nothing was stored
+/// anywhere and position-based chat scans had already reached EOF before
+/// either feature existed. Incoming-milking (`"X has milked you."`) is a
+/// Status line with the same problem: excluded from storage, and a manual
+/// scan that consumed it never fired the live structured hook. Read each file
+/// from byte 0 instead. Poop timestamps keep the log's LOCAL wall clock (the
+/// dedup key the live hook writes); self-milk and incoming-milk timestamps
+/// are UTC-converted RFC3339 (the shape `player_milking_log` has always
+/// used), converted with **the log file's own login-line offset** rather than
+/// today's setting, so re-running after a DST flip or a changed
+/// `manual_timezone_override` re-derives the identical instant instead of
+/// inserting a twin row.
 ///
-/// Both abilities only ever appear as Combat-channel lines, and Combat is
-/// excluded from `chat_messages` by default — so nothing was stored anywhere and
-/// position-based chat scans had already reached EOF before either feature
-/// existed. Read each file from byte 0 instead. Poop timestamps keep the log's
-/// LOCAL wall clock (the dedup key the live hook writes); self-milk timestamps are
-/// UTC-converted RFC3339 (the shape `player_milking_log` has always used),
-/// converted with **the log file's own login-line offset** rather than today's
-/// setting, so re-running after a DST flip or a changed `manual_timezone_override`
-/// re-derives the identical instant instead of inserting a twin row.
-///
-/// Both inserts only skip their own dedup key (`ON CONFLICT … DO NOTHING`), so
+/// All inserts only skip their own dedup key (`ON CONFLICT … DO NOTHING`), so
 /// re-running records nothing new and a real write error still surfaces.
 #[tauri::command]
 pub async fn backfill_ability_history(
@@ -219,6 +225,7 @@ pub async fn backfill_ability_history(
     let mut files_skipped = 0;
     let mut poops_recorded = 0;
     let mut self_milks_recorded = 0;
+    let mut milked_by_recorded = 0;
 
     for log_file in &log_files {
         // Disk I/O + parsing before checking out the writer, so a long backfill
@@ -229,7 +236,7 @@ pub async fn backfill_ability_history(
         // later file.
         let (messages, file_offset) = match ability_lines_in_file(
             &log_file.file_path,
-            &[POOP_LINE_MARKER, SELF_MILK_LINE_MARKER],
+            &[POOP_LINE_MARKER, SELF_MILK_LINE_MARKER, MILKED_BY_LINE_MARKER],
         ) {
             Ok(scan) => scan,
             Err(e) => {
@@ -246,7 +253,8 @@ pub async fn backfill_ability_history(
         let tz_offset = file_offset.unwrap_or(fallback_tz_offset);
         let poops = poop_events_in_messages(&messages, &character_name);
         let self_milks = self_milk_events_in_messages(&messages, &character_name, tz_offset);
-        if poops.is_empty() && self_milks.is_empty() {
+        let milked_bys = milked_by_events_in_messages(&messages, tz_offset);
+        if poops.is_empty() && self_milks.is_empty() && milked_bys.is_empty() {
             continue;
         }
 
@@ -274,9 +282,23 @@ pub async fn backfill_ability_history(
                 self_milks_recorded += 1;
             }
         }
+        for (milker, milked_at) in milked_bys {
+            if record_milking_event(
+                &conn,
+                &character_name,
+                &server_name,
+                &milker,
+                "milked_by",
+                &milked_at,
+            )
+            .map_err(|e| format!("Failed to record milking: {e}"))?
+            {
+                milked_by_recorded += 1;
+            }
+        }
     }
 
-    if poops_recorded > 0 || self_milks_recorded > 0 {
+    if poops_recorded > 0 || self_milks_recorded > 0 || milked_by_recorded > 0 {
         app.emit("game-state-updated", vec!["report_stats", "milking"])
             .ok();
     }
@@ -286,6 +308,7 @@ pub async fn backfill_ability_history(
         files_skipped,
         poops_recorded,
         self_milks_recorded,
+        milked_by_recorded,
     })
 }
 
@@ -293,6 +316,10 @@ pub async fn backfill_ability_history(
 /// about lines containing one of these.
 const POOP_LINE_MARKER: &str = "Poop on ";
 const SELF_MILK_LINE_MARKER: &str = "Collect Milk on ";
+/// Substring of the Status line "X has milked you." — the incoming-milking
+/// signal. Same normalizer as the live path (`strip_milked_by_suffix`,
+/// fail-closed on empty/dotted names).
+const MILKED_BY_LINE_MARKER: &str = " has milked you.";
 
 /// Parse only the lines of one Chat log that contain one of `needles`, plus the
 /// offset from the file's login line.
@@ -391,6 +418,36 @@ fn self_milk_events_in_messages(
                 chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(utc, chrono::Utc)
                     .to_rfc3339();
             Some((target, milked_at))
+        })
+        .collect()
+}
+
+/// Incoming-milking events in one parsed Chat log:
+/// `(milker, RFC3339 UTC timestamp)`.
+///
+/// `"X has milked you."` is a Status line, and Status is excluded from
+/// `chat_messages` by default — so a manual scan that consumed the line
+/// stored nothing and the live drain never saw it. Same UTC treatment as
+/// the self-milk helper (file's own login-line offset): the live hook
+/// writes UTC RFC3339 via `milking_event_timestamp`, and the shared unique
+/// index keeps a re-run from double-counting.
+/// Split out so the matching rules are testable without disk or Tauri state.
+fn milked_by_events_in_messages(
+    messages: &[chat_parser::ChatMessage],
+    tz_offset_seconds: i32,
+) -> Vec<(String, String)> {
+    messages
+        .iter()
+        .filter_map(|msg| {
+            if msg.channel.as_deref() != Some("Status") {
+                return None;
+            }
+            let milker = crate::chat_status_parser::strip_milked_by_suffix(&msg.message)?;
+            let utc = crate::parsers::chat_local_to_utc(msg.timestamp, tz_offset_seconds);
+            let milked_at =
+                chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(utc, chrono::Utc)
+                    .to_rfc3339();
+            Some((milker, milked_at))
         })
         .collect()
 }
@@ -922,6 +979,30 @@ mod tests {
     }
 
     #[test]
+    fn milked_by_events_convert_to_utc_rfc3339() {
+        let messages = parse_lines(&[
+            // 22:07:13 local at -05:00 → 2026-10-25T03:07:13Z (the Azyima line).
+            "26-10-24 22:07:13\t[Status] Azyima has milked you.",
+            // Dotted/empty names fail closed via the shared normalizer.
+            "26-10-24 22:08:00\t[Status] Someone. has milked you.",
+            "26-10-24 22:09:00\t[Status]  has milked you.",
+            // Wrong channel, right text.
+            "26-10-24 22:10:00\t[Guild] Azyima has milked you.",
+            // Status noise on the same channel.
+            "26-10-24 22:11:00\t[Status] Bottle of Milk added to inventory.",
+        ]);
+
+        let events = milked_by_events_in_messages(&messages, -5 * 3600);
+        assert_eq!(
+            events,
+            vec![(
+                "Azyima".to_string(),
+                "2026-10-25T03:07:13+00:00".to_string()
+            )]
+        );
+    }
+
+    #[test]
     fn ability_lines_in_file_prefilters_without_losing_matches() {
         let path = std::env::temp_dir().join(format!(
             "glogger-ability-lines-{}-{}.log",
@@ -941,7 +1022,7 @@ mod tests {
         .unwrap();
 
         let (messages, file_offset) =
-            ability_lines_in_file(&path, &[POOP_LINE_MARKER, SELF_MILK_LINE_MARKER]).unwrap();
+            ability_lines_in_file(&path, &[POOP_LINE_MARKER, SELF_MILK_LINE_MARKER, MILKED_BY_LINE_MARKER]).unwrap();
         let _ = std::fs::remove_file(&path);
 
         // The file's own offset travels with its lines — that, not today's
@@ -1023,13 +1104,16 @@ mod tests {
         let scan = |conn: &rusqlite::Connection, fallback: i32, record: bool| {
             let mut poops = 0;
             let mut self_milks = 0;
+            let mut milked_bys = 0;
             let mut instants: Vec<String> = Vec::new();
             for f in &files {
                 // Same helper the command uses — exercises the byte-level
                 // pre-filter and the per-file offset too.
-                let (messages, file_offset) =
-                    ability_lines_in_file(&f.file_path, &[POOP_LINE_MARKER, SELF_MILK_LINE_MARKER])
-                        .unwrap();
+                let (messages, file_offset) = ability_lines_in_file(
+                    &f.file_path,
+                    &[POOP_LINE_MARKER, SELF_MILK_LINE_MARKER, MILKED_BY_LINE_MARKER],
+                )
+                .unwrap();
                 let file_tz = file_offset.unwrap_or(fallback);
                 for (target, ts) in self_milk_events_in_messages(&messages, &character, file_tz) {
                     instants.push(ts.clone());
@@ -1047,21 +1131,29 @@ mod tests {
                         self_milks += 1;
                     }
                 }
+                for (milker, ts) in milked_by_events_in_messages(&messages, file_tz) {
+                    if record
+                        && record_milking_event(conn, &character, "Dreva", &milker, "milked_by", &ts)
+                            .unwrap()
+                    {
+                        milked_bys += 1;
+                    }
+                }
                 for (target, ts) in poop_events_in_messages(&messages, &character) {
                     if record && record_poop(conn, &character, "Dreva", &target, &ts).unwrap() {
                         poops += 1;
                     }
                 }
             }
-            (poops, self_milks, instants)
+            (poops, self_milks, milked_bys, instants)
         };
 
-        let (poops, self_milks, instants) = scan(&conn, fallback_tz, true);
+        let (poops, self_milks, milked_bys, instants) = scan(&conn, fallback_tz, true);
         let stats =
             crate::db::game_state_commands::get_pooping_stats_for(&conn, &character, "Dreva")
                 .unwrap();
         println!(
-            "ability history smoke: {poops} poop(s) + {self_milks} self-milk(s) over {} files; {character} total_poops={} days={} first={:?} last={:?}",
+            "ability history smoke: {poops} poop(s) + {self_milks} self-milk(s) + {milked_bys} milked-by(s) over {} files; {character} total_poops={} days={} first={:?} last={:?}",
             files.len(),
             stats.total_poops,
             stats.days_pooped,
@@ -1073,11 +1165,15 @@ mod tests {
             self_milks > 0,
             "expected self-milks in the archived chat logs"
         );
+        assert!(
+            milked_bys > 0,
+            "expected milked-by events in the archived chat logs"
+        );
         assert_eq!(stats.total_poops as usize, poops);
         let second_pass = scan(&conn, fallback_tz, true);
         assert_eq!(
-            (second_pass.0, second_pass.1),
-            (0, 0),
+            (second_pass.0, second_pass.1, second_pass.2),
+            (0, 0, 0),
             "second pass must record nothing new (ON CONFLICT DO NOTHING on both tables)"
         );
 
@@ -1085,7 +1181,7 @@ mod tests {
         // timezone setting: converting with a wildly different fallback offset must
         // yield byte-identical instants (every archive file has its own login line).
         assert_eq!(
-            scan(&conn, fallback_tz + 7 * 3600, false).2,
+            scan(&conn, fallback_tz + 7 * 3600, false).3,
             instants,
             "self-milk instants must not depend on the settings offset"
         );
