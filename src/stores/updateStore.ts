@@ -1,4 +1,4 @@
-import { defineStore } from "pinia";
+import { defineStore, acceptHMRUpdate } from "pinia";
 import { ref } from "vue";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -78,6 +78,9 @@ export const useUpdateStore = defineStore("update", () => {
   }
 
   function startPolling() {
+    // Guard against double-start (HMR re-execution + explicit startup call):
+    // a second ticker would double-fire update checks.
+    if (intervalId) return
     // Check once shortly after startup (give the app a moment to settle)
     setTimeout(() => checkForUpdate(), 5000);
     intervalId = setInterval(() => checkForUpdate(), CHECK_INTERVAL_MS);
@@ -115,3 +118,7 @@ export const useUpdateStore = defineStore("update", () => {
     dismiss,
   };
 });
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useUpdateStore, import.meta.hot))
+}
