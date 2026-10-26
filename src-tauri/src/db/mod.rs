@@ -141,13 +141,18 @@ impl DbRead for Connection {
 
 /// A pool pair for a WAL-mode SQLite database: a read pool (multiple
 /// connections — WAL readers never block the writer) and a single-connection
-/// write pool. All writers queue in the app on `get_write()` instead of
-/// fighting over SQLite's write lock via `busy_timeout`, which cannot queue
-/// fairly and starves under back-to-back holders.
+/// write pool.
 ///
-/// `get()` returns a read connection; `get_write()` returns the dedicated
-/// write connection. Signatures keep taking `&DbPool`, so routing a call site
-/// is a one-word change (`get()` → `get_write()`).
+/// INVARIANT — the pool is the lock. Do NOT add an app-level Mutex/RwLock
+/// (StallOpsLock, operation_lock, or any successor) around writers to
+/// "serialize" them: there is exactly one write connection, so writers
+/// already serialize at checkout. A second lock only adds deadlock shape
+/// (poll thread + command + watcher each holding one side) for zero extra
+/// safety. Rules:
+/// - `get()` for reads, `get_write()` for writes (one-word routing).
+/// - Multi-statement writes use `BEGIN IMMEDIATE` (`TransactionBehavior::Immediate`).
+/// - Never hold an app lock across a pool checkout; parse first, check out
+///   the writer only around the transaction.
 ///
 /// Both pools wait up to 15 s for a free connection (`connection_timeout`);
 /// exceeding it yields an `r2d2::Error` whose `Display` is always

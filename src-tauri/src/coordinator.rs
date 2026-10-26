@@ -39,46 +39,15 @@ macro_rules! startup_log {
     };
 }
 
-/// Blocking operation type - prevents overlapping heavy operations
-/// Note: Player tailing and chat tailing run concurrently and are tracked
-/// separately via their watcher Option fields, NOT through this lock.
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq)]
-pub enum OperationType {
-    /// No blocking operation in progress
-    Idle,
-
-    /// Full scan of chat logs in progress
-    FullChatScan {
-        total_files: usize,
-        processed_files: usize,
-    },
-
-    /// Character export import in progress
-    CharacterImport { progress: usize, total: usize },
-
-    /// User-triggered action (takes priority)
-    UserAction,
-}
-
-/// Progress information for long-running operations
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize)]
-pub struct ScanProgress {
-    pub current: usize,
-    pub total: usize,
-    pub current_file: String,
-    pub messages_processed: usize,
-}
-
-/// Status of the coordinator
+/// Status of the coordinator. Watcher activity is tracked separately via the
+/// watcher `Option` fields; there is no cross-operation lock (see the
+/// pool-is-the-lock invariant in `db/mod.rs`).
 #[derive(Debug, Clone, Serialize)]
 pub struct CoordinatorStatus {
     pub player_log_active: bool,
     pub chat_log_active: bool,
     pub active_character: Option<String>,
     pub current_chat_log: Option<String>,
-    pub operation: String, // Serialized OperationType
 }
 
 /// A chat `[Status] ItemGained` gain seen during catch-up, keyed by the
@@ -209,6 +178,11 @@ pub struct DataIngestCoordinator {
     /// Chat stack gains staged during catch-up (see `StagedChatGain`); applied
     /// just before the live flip. Cleared once live.
     staged_chat_gains: Vec<StagedChatGain>,
+    /// Skill updates skipped because the skill name did not resolve against
+    /// current game data (new game skill or stale CDN). Monotonic within the
+    /// process; logged with each skip so a growing total signals staleness.
+    /// The row is deliberately not written (skill_id 0 would collide PKs).
+    skipped_unknown_skills: u64,
 }
 
 impl DataIngestCoordinator {
@@ -255,13 +229,12 @@ impl DataIngestCoordinator {
             catch_up_chat_servers: std::collections::HashMap::new(),
             catch_up_servers_scanned: false,
             staged_chat_gains: Vec::new(),
+            skipped_unknown_skills: 0,
         })
     }
 
     /// Get current coordinator status
     pub fn get_status(&self) -> CoordinatorStatus {
-        let operation_str = "idle";
-
         CoordinatorStatus {
             player_log_active: self
                 .player_watcher
@@ -276,7 +249,6 @@ impl DataIngestCoordinator {
                 w.get_chat_log_path()
                     .and_then(|p| p.to_str().map(String::from))
             }),
-            operation: operation_str.to_string(),
         }
     }
 
@@ -1086,9 +1058,15 @@ impl DataIngestCoordinator {
                                 }
                             }
                             None => {
+                                // Unknown to current game data (new game skill or
+                                // stale CDN): counted, not silently dropped. The
+                                // row is skipped to protect the skill_id PK, but
+                                // the count surfaces in logs so a persistently
+                                // growing number signals CDN staleness.
+                                self.skipped_unknown_skills += 1;
                                 eprintln!(
-                                    "[coordinator] Skipping skill update for unresolvable skill: {}",
-                                    update.skill_type
+                                    "[coordinator] Skipping skill update for unresolvable skill: {} (total skipped: {})",
+                                    update.skill_type, self.skipped_unknown_skills
                                 );
                             }
                         }
