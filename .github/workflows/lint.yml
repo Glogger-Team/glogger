@@ -192,7 +192,7 @@ jobs:
   rust-tests:
     name: Rust tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -216,6 +216,25 @@ jobs:
           # workflow_dispatch alike.
           save-if: ${{ github.event_name == 'push' }}
 
+      - name: Prepare apt cache dir
+        # The runner user cannot write root-owned /var/cache/apt/archives;
+        # without this the restore step below hard-fails on extraction.
+        # Same preamble as release.yml's build job.
+        run: sudo mkdir -p /var/cache/apt/archives/partial && sudo chown -R "$(id -u):$(id -g)" /var/cache/apt/archives
+
+      - name: Restore apt packages
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          # Same narrowing rationale as the Rust cache: apt re-verifies every
+          # deb against a freshly fetched index, so a poisoned entry fails
+          # closed at install; only main pushes save (see below), so
+          # smoke-test dispatches and fork PRs can read but never write what
+          # PR/main runs consume. Cold cache degrades to an uncached install.
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-${{ github.run_id }}-${{ hashFiles('.github/workflows/lint.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-
+
       - name: Install Linux dependencies
         # cargo test compiles the full crate incl. Tauri/tao, which links
         # glib/webkit system libs. Same set as release.yml's test job.
@@ -223,6 +242,19 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Save apt packages
+        # Main pushes only: PR/dispatch runs restore but never save. The key
+        # folds in run_attempt because cache/save refuses an exact-key
+        # collision and run_id is stable across re-runs — without it a retry
+        # after a save would fail on the already-reserved key. Restore still
+        # hits via the `apt-<os>-` prefix fallthrough.
+        if: github.event_name == 'push'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /var/cache/apt/archives
+          key: apt-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ hashFiles('.github/workflows/lint.yml') }}
 
       - name: Rust tests
         working-directory: src-tauri
