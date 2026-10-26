@@ -44,6 +44,14 @@ updates:
           - "vite"
           - "typescript"
           - "vue-tsc"
+    # vue-tsc resolves the compiler via typescript/lib/tsc, removed in
+    # the TS 7 native rewrite (PR #41 crashed ERR_PACKAGE_PATH_NOT_EXPORTED
+    # before checking a file). Revisit when vue-tsc supports TS 7.
+    # Note: version-update ignores don't block security updates — a TS
+    # security release would still arrive as a PR and fail the frontend gate.
+    ignore:
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     schedule:
       interval: daily
     cooldown:
