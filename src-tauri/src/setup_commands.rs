@@ -644,11 +644,10 @@ pub fn import_latest_report_for_character(
     };
 
     let file_path_str = file_path.to_string_lossy().to_string();
-    let data = cdn.blocking_read();
     let result = crate::db::character_commands::import_character_report_internal(
         &db,
         &file_path_str,
-        &data,
+        &cdn,
     )?;
 
     // If it was a duplicate, return None (already imported)
@@ -727,14 +726,13 @@ pub fn import_reports_for_server(
     }
 
     // Import each character's latest report
-    let data = cdn.blocking_read();
     let mut imported = 0u32;
     for (character, (_, file_path)) in &best_per_character {
         let file_path_str = file_path.to_string_lossy().to_string();
         match crate::db::character_commands::import_character_report_internal(
             &db,
             &file_path_str,
-            &data,
+            &cdn,
         ) {
             Ok(result) if !result.was_duplicate => {
                 startup_log!(

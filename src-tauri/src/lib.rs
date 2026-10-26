@@ -638,7 +638,6 @@ pub fn run() {
             app.manage(db_pool.clone());
             app.manage(coordinator.clone());
             app.manage(polling_handle.clone());
-            app.manage(db::stall_tracker_commands::StallOpsLock::default());
             app.manage(ParseLogJobs(std::sync::Mutex::new(std::collections::HashMap::new())));
 
             startup_log!("Splash screen displayed (frontend rendering)");

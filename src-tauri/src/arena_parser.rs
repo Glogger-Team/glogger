@@ -335,12 +335,17 @@ impl ArenaBetTracker {
         }
 
         // ── Success! placement confirmed → promote tentative to active. ──
+        // Peek before taking: a mismatched Success! line (stale/duplicate log
+        // entry for a different pick) must preserve tentative so the real
+        // confirmation can still promote it. Only take on pick match.
         if line.contains("Success! You have placed your bet for ") {
             if let Some(pick) = parse_placed_pick(line) {
-                if let Some(t) = self.tentative.take() {
-                    if t.pick.eq_ignore_ascii_case(&pick) {
-                        self.active = Some(t);
-                    }
+                let matches = self
+                    .tentative
+                    .as_ref()
+                    .is_some_and(|t| t.pick.eq_ignore_ascii_case(&pick));
+                if matches {
+                    self.active = self.tentative.take();
                 }
             }
             return None;
@@ -639,5 +644,19 @@ mod tests {
         let base = NaiveDate::from_ymd_opt(2026, 7, 20);
         let bet = parse_confirm_bet(CONFIRM, base).unwrap();
         assert_eq!(bet.placed_at, "2026-07-20 16:22:03");
+    }
+
+    #[test]
+    fn mismatched_success_preserves_tentative() {
+        let mut t = ArenaBetTracker::new();
+        t.observe_line(CONFIRM, None);
+        // Stale/duplicate Success! for a different pick must not destroy tentative.
+        let wrong_success = SUCCESS.replace("your bet for Otis.", "your bet for Leo.");
+        assert!(t.observe_line(&wrong_success, None).is_none());
+        // The real confirmation still promotes tentative to active.
+        assert!(t.observe_line(SUCCESS, None).is_none());
+        let bet = t.observe_line(PAYOUT, None).unwrap();
+        assert!(bet.won);
+        assert_eq!(bet.pick, "Otis");
     }
 }

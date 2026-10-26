@@ -218,39 +218,43 @@ is the remainder plus ParseFixB's out-of-budget skips. No marker was written for
 
 ### Reviewer backlog (needs design decision or is minor)
 
-- [ ] `build_planner`/`words_of_power` bare-id writes (no privilege boundary in a single-user local app — decided not-a-bug, listed for the record).
+- [x] ~~`build_planner`/`words_of_power` bare-id writes (no privilege boundary in a single-user local app — decided not-a-bug, listed for the record).~~ — **CLOSED 2026-10-26 triage (A1): decided not-a-bug, record-only in single-user local app.**
 - [ ] Roulette `CHECK (number BETWEEN 0 AND 36)` DB constraint (parser guard `>36 → None` applied; constraint is a migration).
 - [ ] NpcResolve case-insensitive match (`statehelm_commands.rs:219,730` — `COLLATE NOCASE` + trim).
 - [ ] Trip-router nits: `casino_portal` exact-lowercase match (`trip_router.rs:385-395`); unresolved friendly names silently kept (`zone_graph.rs:243-280` + `trip_router.rs:404-418`); `AreaDesert2` missing from `friendly_zone_name`; `AreaCaves1` mislabeled (Eltibule dungeon per CDN); stale trip-routing doc paragraph (lines 61-68); undocumented score-`1` tier + monster-ability skip (`unified_search.rs:310-330,759-762`).
-- [ ] Debug-capture hardening: truncation flag on `LIMIT 5000` bundles + error (not `vec![]`) on DB failure; `missing temp → vec![]` "successful" empty bundle; counters incrementing on failed writes (`debug_capture.rs:298-303,148-160`).
-- [ ] Survey Types dead arms: `Aborted` never written outside the new sweep path; `UseCompleted`/`Multihit*` emitted-never-matched arms — emit or remove; `crafted_count` guard to Crafting triggers; `update_last_loot_at` tightening guard; bound `deferred_basic_gains` queue.
+- [x] ~~Debug-capture hardening~~ — **CLOSED 2026-10-26 triage (verify-first): truncation-flag half shipped (`debug_capture.rs:491-526` manifest); DB-failure path already errors (`snapshot_game_state` `?` at both `coordinator.rs:3256,3297` call sites + `Snapshot DB connection failed` inside); the `vec![]` arms are temp-file reads (missing temp = nothing captured yet, legitimately empty — not a DB failure). Counters increment on failed writes by design (consecutive-failure give-up). No change.**
+- [ ] Survey Types dead arms: `UseCompleted`/`Multihit*` emitted-never-matched arms — emit or remove; `crafted_count` guard to Crafting triggers; `update_last_loot_at` tightening guard; bound `deferred_basic_gains` queue. *(2026-10-26 triage: `Aborted`-outside-sweep half shipped — sweep path writes it. Residual owned by series PR2.)*
 - [ ] Stall aggregation validation: unparseable inventory dates (drop with count); weekly `show_year` calendar-vs-ISO documentation; `GROUP BY name` → add id; cost `LEFT JOIN` unification; `StallScanRow.quantity` wiring or documented `Option`; chrome/price gate thresholds (`buy`/pay, sub-100).
-- [ ] Shop-log comment/BOM/owner docs (`shop_log_parser.rs:189-193`; `books_watcher.rs:399-406,464-483`): narrow the stacked-path invariant comment, strip BOM symmetric with twin, default missing owner to active character explicitly; arena degenerate pair clear on resolve + payout trigger on resolve (`arena_parser.rs:~120`).
+- [ ] Shop-log comment/BOM/owner docs (`shop_log_parser.rs:189-193`; `books_watcher.rs:399-406,464-483`): narrow the stacked-path invariant comment, strip BOM symmetric with twin, default missing owner to active character explicitly; arena payout trigger on resolve (`arena_parser.rs:~120`). *(2026-10-26 triage: degenerate-clear half shipped — `arena_parser.rs:124-128`. Take-only-on-match residual owned by series PR1 step 5.)*
 - [ ] Chat-status parity: wisdom comma-grouping to match councils twin; timestamp digit gate; `" stole "` anchored to `^<thief> stole <amount> Councils!`; empty ItemGained/Xp/Prodigy/Summoned arms (anatomy-guard pattern already applied to siblings).
 - [ ] `setup_commands.rs:174-210` non-empty name validation + sticky-report-source documentation; `gst_manager.rs:150-175` full-buffer download hash-before-exec + document/cap.
 - [ ] ParseFixB runtime follow-ups: mid-loop `parse_log` read errors currently `continue` without failing the job — decide if they should flip to Failed; `App.vue` now polls `get_parse_log_status` until Done/Failed (the fire-and-forget `await` on the job-id return is fixed); `debug_capture_save` `overwrite` is optional and `truncated_sections` serde-defaulted, so no other frontend changes were needed.
 
 ### ParseFixB skipped (not started — out of budget)
 
-- [ ] `books_watcher.rs:205-225` mid-write TOCTOU (post-read stat, store post-read mtime, skip when changed during read).
+- [ ] `books_watcher.rs:205-225` post-read stat + store post-read mtime (pre-read guard shipped `books_watcher.rs:215-226`; residual owned by series PR1 step 4).
 - [ ] `stall_ocr.rs:195-216` trigram 1.0 on empty gram sets (return `a==b ? 1 : 0`); `:549-550` panel header identity OCR pass (fallback to legacy only with explicit flag); `:367-411,705-716` chrome/price gates.
 - [ ] `stall_year_resolver.rs:53-73` day-aware year wrap (currently month-only; document single-wrap limit).
 - [ ] `setup_commands.rs` save_user_character non-empty validation + sticky source doc.
 - [ ] Survey loot single-authority (`aggregator.rs:1146-1165` + `commands.rs:328-346` double-count in stitch + chat attribution — pick the summary `NOT EXISTS` as authority, remove the other); `last_basic_use_for_bonus` clearing (`~175,590-600`); `crafted_count` trigger guard; `update_last_loot_at` tightening; `deferred_basic_gains` bounds.
 - [ ] `survey/types.rs` dead-arm sweep (see Reviewer backlog above — same item, owned here if the sweep owner doesn't take it).
-- [ ] Arena tentative-bet `take()`-only-on-match + payout trigger on resolve.
+- [ ] Arena tentative-bet `take()`-only-on-match (payout arm already takes-only-on-match; mismatched-`Success!` residual owned by series PR1 step 5).
 
 ### Chat level-up ingest backlog (2026-10-25 PR #40 review, fix-now applied)
 
 Fix-now from that review is applied (monotonic `last_confirmed_at` + `>=` level floor in
-`apply_chat_level_up`, LevelUp DB/pool error logging in the coordinator). What follows is the
+`apply_chat_level_up`, LevelUp DB/pool error logging in the coordinator). Triage 2026-10-26 closes the accepted-cost/documented halves below; the owned-by-series residuals keep their own lines above.
 backlog half of the same review, verified still present at `e21c1a2`:
 
-- [ ] `coordinator.rs:1806` game_data read guard held across character import — scope the `blocking_read()` to resolve/copy only, drop before file I/O, or pass an owned snapshot (Items arm already avoids the guard). Contention only; CDN writers are rare post-startup.
-- [ ] `coordinator.rs:110-117` Reports path check hardening — normalize out `..` segments and require the parent dir name to be `Reports` (today any path segment matches, so `Reports/../Downloads/...` passes); tighten `contains("_items_")` to the game filename convention. Overbroad match fails safely at import today; source is the game's own chat line, no realistic attacker.
-- [ ] `coordinator.rs:1761` zero-id guard — skip + log when `resolve_skill` returns id 0 (the never-insert-0 comment has no enforcement; needs the `resolve_skill` contract checked first — None vs 0-placeholder).
-- [ ] `gameStateStore.ts:649` `firstXp` overwrite in `handleChatLevelUp` — consistent with `handleSkillUpdate` (rolling delta-baseline, not session-start immutable; write-only in the chat-only flow), so keep unless consumers change; document as rolling baseline at most.
-- [ ] `gameStateStore.ts:628` tnl=0 unknown sentinel — docs now honest (e21c1a2: 100% bar + `< 1 min` TTL mean unknown, not maxed); nullable-tnl + widget unknown-state is widget-scope work.
+- [x] ~~Fallback-key/server-switch residuals — accepted costs documented in `HANDOFF.md:368-386`.~~ — **CLOSED 2026-10-26 triage (E3): accepted, documented.**
+- [x] ~~`1500ms` drift — pre-existing docs (`startup-sequence.md:37,130`), untouched by this series.~~ — **CLOSED 2026-10-26 triage (E4): pre-existing docs, untouched.**
+- [x] ~~F ledger items — do-not-re-file per the accepted-drift ledger (`ux-standards.md:219`).~~ — **CLOSED 2026-10-26 triage (F): decided, do not re-file.**
+- [x] ~~D1 multihit TODO — no CDN signal separates Basic from Multihit except `MotherlodeMap` + the hardcoded area table (`items.rs:7-18`, `survey-mechanics.md:85-99`); code-side TODO stays as-is.~~ — **CLOSED 2026-10-26 triage (D1): no CDN signal, documented.**
+
+- [ ] `coordinator.rs:110-117` Reports path check hardening — normalize out `..` segments and require the parent dir name to be `Reports`; tighten `contains("_items_")` to the game filename convention. (Owned by series PR1 step 1.)
+- [ ] `coordinator.rs:1761` zero-id guard — skip + log when `resolve_skill` returns None (LevelUp half already skips + logs, `coordinator.rs:1792-1799`; residual owned by series PR1 step 2).
+- [x] ~~`gameStateStore.ts:649` `firstXp` overwrite in `handleChatLevelUp` — consistent with `handleSkillUpdate` (rolling delta-baseline, not session-start immutable; write-only in the chat-only flow), so keep unless consumers change; document as rolling baseline at most.~~ — **CLOSED 2026-10-26 triage (C4): keep rolling baseline; no consumer change.**
+- [x] ~~`gameStateStore.ts:628` tnl=0 unknown sentinel — docs now honest (e21c1a2: 100% bar + `< 1 min` TTL mean unknown, not maxed); nullable-tnl + widget unknown-state is widget-scope work.~~ — **CLOSED 2026-10-26 triage (C5): docs honest; nullable-tnl/widget unknown-state deferred to widget scope.**
 - [ ] `game_state_commands.rs` mixed space-vs-`T…Z` timestamp test (guard pins same-format only) + traversal/subdir/overbroad-`_items_` `report_kind_for_path` tests; timestamp-normalization audit for `firstTimestamp`/`lastTimestamp` vs `timestampToSeconds`; `fetchCurrencyEstimate` full-refresh-path audit.
 - [ ] `chat_commands.rs` scan/tail paths (`scan_chat_logs`, `scan_chat_log_file`, `tail_chat_log`) never run `parse_status_message` — any Status line (level-ups, XP-rate ticks, roulette, WoP, ReportSaved auto-import, arena narration) consumed by a manual scan instead of the coordinator drain is structured-data lost (stored nowhere: Status/Combat excluded from `chat_messages`) while the cursor advances past it. Observed 2026-10-26: evening session 16:46→22:42 ingested by manual scan, `Azyima has milked you.` 22:07 never reached `player_milking_log` (recovered afterward via `backfill_ability_history` milked_by sweep, `32b3be0`). Fix options: (a) run the coordinator's structured Status dispatch over scanned lines with per-line file-marker attribution, or (b) route manual scans through the coordinator drain. Needs the attribution model first — scans run outside the coordinator with no ingest identity (explicit character args today); LevelUp/XP/WoP/roulette need game_data + refresh semantics, not just a row write.
 

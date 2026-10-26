@@ -19,7 +19,7 @@ use crate::coordinator::{
     ingest_hoplology_content, ingest_report_stats_content, ingest_teleport_binds_content,
     persist_book_content,
 };
-use crate::db::stall_tracker_commands::{insert_stall_events, StallEventInput, StallOpsLock};
+use crate::db::stall_tracker_commands::{insert_stall_events, StallEventInput};
 use crate::db::DbPool;
 use crate::settings::SettingsManager;
 use crate::shop_log_parser::parse_shop_log;
@@ -191,13 +191,6 @@ fn scan_books_dir(
         ts_a.cmp(&ts_b).then_with(|| key_a.cmp(&key_b))
     });
 
-    // Shared stall-ops lock instance (managed in lib.rs before the watcher
-    // spawns) so shop-log writes serialize with live ingest and Clear — same
-    // synchronous State borrow the coordinator's ingest_shop_log uses.
-    let Some(ops_lock) = app.try_state::<StallOpsLock>() else {
-        eprintln!("[books-watcher] StallOpsLock not managed yet; skipping tick");
-        return;
-    };
 
     for (path, mtime) in to_process {
         let file_name = path
@@ -245,8 +238,17 @@ fn scan_books_dir(
                 );
             }
             Ok(bytes) => {
+                // Post-read stat: the game may have rewritten the file
+                // between the pre-read guard and (or during) the read, so
+                // the bytes may be truncated. A changed or unstattable
+                // file skips this tick with no `seen` insert and no
+                // failure count; the next scan retries with a fresh mtime.
+                let post = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+                let Some(stable_mtime) = stable_post_read_mtime(mtime, post) else {
+                    continue;
+                };
                 let content = String::from_utf8_lossy(&bytes);
-                match process_book_file(&path, &content, &character, &server, db, &ops_lock, app) {
+                match process_book_file(&path, &content, &character, &server, db, app) {
                     Ok(note) => {
                         // Success — including a stats-report attribution
                         // skip for another alt: the file belongs to that
@@ -255,12 +257,12 @@ fn scan_books_dir(
                         // correct. When the owning alt is active, the game
                         // rewrites the file (new mtime) on report open and
                         // it's ingested under the right character then.
-                        failures.remove(&(path.clone(), mtime));
-                        seen.insert(path.clone(), mtime);
+                        failures.remove(&(path.clone(), stable_mtime));
+                        seen.insert(path.clone(), stable_mtime);
                         eprintln!("[books-watcher] {file_name}: {note}");
                     }
                     Err(err) => {
-                        record_failure(failures, seen, &path, mtime, &file_name, &err);
+                        record_failure(failures, seen, &path, stable_mtime, &file_name, &err);
                     }
                 }
             }
@@ -273,6 +275,15 @@ fn scan_books_dir(
     // mtime tracking reprocesses it).
     seen.retain(|path, _| path.is_file() && path.starts_with(&books_dir));
     failures.retain(|(path, _), _| path.is_file() && path.starts_with(&books_dir));
+}
+
+/// Post-read stability check: `Some(pre)` only when the post-read stat
+/// matches the pre-read mtime, else `None` (changed or unstattable).
+fn stable_post_read_mtime(pre: SystemTime, post: Option<SystemTime>) -> Option<SystemTime> {
+    match post {
+        Some(current) if current == pre => Some(current),
+        _ => None,
+    }
 }
 
 /// Count one failed attempt for a file — unless the error is transient
@@ -368,7 +379,6 @@ pub(crate) fn process_book_file(
     character: &str,
     server: &str,
     db: &DbPool,
-    ops_lock: &StallOpsLock,
     app: &AppHandle,
 ) -> Result<String, String> {
     let stem = path
@@ -384,7 +394,7 @@ pub(crate) fn process_book_file(
     let content = crate::coordinator::normalize_book_content(content);
 
     match kind {
-        BookKind::ShopLog => ingest_shop_log_file(&title, &content, character, db, ops_lock, app),
+        BookKind::ShopLog => ingest_shop_log_file(&title, &content, character, db, app),
         BookKind::SkillReport => {
             // Attribution limitation: SkillReport content (binds, hoplology,
             // gourmand) carries no character name, so first-scan backfills
@@ -497,7 +507,6 @@ fn ingest_shop_log_file(
     content: &str,
     character: &str,
     db: &DbPool,
-    ops_lock: &StallOpsLock,
     app: &AppHandle,
 ) -> Result<String, String> {
     // Probe parse (base year 1970) only to learn whether the file has any
@@ -550,7 +559,7 @@ fn ingest_shop_log_file(
         })
         .collect();
 
-    let inserted = insert_stall_events(db, ops_lock, &inputs)?;
+    let inserted = insert_stall_events(db, &inputs)?;
     if inserted > 0 {
         app.emit("stall-events-updated", inserted).ok();
     }
@@ -924,6 +933,36 @@ mod tests {
             seen.is_empty(),
             "2 failures at m2 + 1 at m1 never reaches 3"
         );
+    }
+
+    #[test]
+    fn mid_write_post_read_change_skips_without_seen_or_failure() {
+        // Regression: a file rewritten between the pre-read guard and (or
+        // during) the read must skip this tick — no `seen` insert, no
+        // failure count. Exercises `stable_post_read_mtime` (the unit
+        // behind the post-`fs::read` stat) reusing the `mtime()` /
+        // `record_failure` test helpers' maps: the skip path returns
+        // before either map is touched.
+        let failures = failure_map();
+        let seen = seen_map();
+        let pre = mtime();
+        let changed = pre + Duration::from_secs(1);
+        assert_eq!(
+            stable_post_read_mtime(pre, Some(pre)),
+            Some(pre),
+            "stable file keeps its pre-read mtime"
+        );
+        assert_eq!(
+            stable_post_read_mtime(pre, Some(changed)),
+            None,
+            "mid-write change must skip: no seen insert, no failure count"
+        );
+        assert_eq!(
+            stable_post_read_mtime(pre, None),
+            None,
+            "unstatable file must skip like the guard's Err arm"
+        );
+        assert!(seen.is_empty() && failures.is_empty());
     }
 
     // ── gourmand ──────────────────────────────────────────────────

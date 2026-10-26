@@ -10,18 +10,7 @@ use rusqlite::types::Value;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Mutex;
 use tauri::State;
-
-/// Serialization lock for stall-tracker DB mutations.
-///
-/// Both the coordinator's live-ingest path (`insert_stall_events`) and future
-/// Clear/Import commands acquire this around their DB writes so a Clear
-/// can never interleave with a concurrent PlayerShopLog insert and leave
-/// partial or orphaned rows behind. Critical sections are intentionally
-/// small (one batch / one DELETE); contention is invisible in practice.
-#[derive(Default)]
-pub struct StallOpsLock(pub Mutex<()>);
 
 /// Input shape for a single stall event, built by the coordinator from the
 /// shop log parser's output.
@@ -53,21 +42,13 @@ pub struct StallEventInput {
 /// `(event_timestamp, raw_message, entry_index)`. Returns the number of
 /// rows actually inserted (i.e. not skipped by `INSERT OR IGNORE`).
 ///
-/// Holds `StallOpsLock` for the duration of the transaction so Clear
-/// cannot interleave.
-pub fn insert_stall_events(
-    db: &DbPool,
-    ops_lock: &StallOpsLock,
-    events: &[StallEventInput],
-) -> Result<usize, String> {
+/// Clear-vs-insert serialization comes from the single-write pool plus the
+/// `BEGIN IMMEDIATE` transaction below: Clear is a single `DELETE` on the
+/// same pool, so SQLite serializes the two statements atomically.
+pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<usize, String> {
     if events.is_empty() {
         return Ok(0);
     }
-
-    let _guard = ops_lock
-        .0
-        .lock()
-        .map_err(|e| format!("StallOpsLock poisoned: {e}"))?;
 
     let mut conn = db
         .get_write()
@@ -752,22 +733,14 @@ pub fn get_stall_sales_timeseries(
 }
 
 /// Delete every stall event for a single character. Requires non-empty owner —
-/// we never want a typo to wipe all data across every alt. Holds `StallOpsLock`
-/// so a concurrent live-ingest batch can't write after the DELETE.
+/// we never want a typo to wipe all data across every alt. Serialized with
+/// live ingest at the SQLite level: this is a single `DELETE` on the
+/// single-write pool while inserts run in a `BEGIN IMMEDIATE` transaction.
 #[tauri::command]
-pub fn clear_stall_events(
-    db: State<'_, DbPool>,
-    ops_lock: State<'_, StallOpsLock>,
-    owner: Option<String>,
-) -> Result<usize, String> {
+pub fn clear_stall_events(db: State<'_, DbPool>, owner: Option<String>) -> Result<usize, String> {
     let owner = opt_nonempty(&owner)
         .ok_or_else(|| "clear_stall_events requires an owner".to_string())?
         .to_string();
-
-    let _guard = ops_lock
-        .0
-        .lock()
-        .map_err(|e| format!("StallOpsLock poisoned: {e}"))?;
 
     let conn = db
         .get_write()
@@ -865,7 +838,6 @@ fn sanitize_owner(owner: &str) -> String {
 #[tauri::command]
 pub fn import_shop_log_file(
     db: State<'_, DbPool>,
-    ops_lock: State<'_, StallOpsLock>,
     path: String,
     current_owner: Option<String>,
 ) -> Result<ImportResult, String> {
@@ -911,7 +883,7 @@ pub fn import_shop_log_file(
         })
         .collect();
 
-    let new_entries = insert_stall_events(&db, &ops_lock, &inputs)?;
+    let new_entries = insert_stall_events(&db, &inputs)?;
 
     Ok(ImportResult {
         total_entries,
@@ -1008,11 +980,10 @@ pub fn export_shop_log_files(
 /// Generates a realistic-looking mix of `bought` / `added` / `visible` /
 /// `configured` / `removed` events spread across the past year, attributed
 /// to the active character. Uses the same `insert_stall_events` helper as
-/// live ingest so the StallOpsLock and dedup behavior are identical.
+/// live ingest so the dedup behavior is identical.
 #[tauri::command]
 pub fn seed_stall_events_dev(
     db: State<'_, DbPool>,
-    ops_lock: State<'_, StallOpsLock>,
     count: usize,
     owner: Option<String>,
 ) -> Result<usize, String> {
@@ -1140,7 +1111,7 @@ pub fn seed_stall_events_dev(
         });
     }
 
-    insert_stall_events(&db, &ops_lock, &inputs)
+    insert_stall_events(&db, &inputs)
 }
 
 #[cfg(test)]
