@@ -3367,7 +3367,7 @@ use tauri::State;
 pub fn start_player_tailing(
     coordinator: State<'_, Arc<Mutex<DataIngestCoordinator>>>,
 ) -> Result<(), String> {
-    let mut coord = coordinator.lock().unwrap();
+    let mut coord = coordinator.lock().map_err(|e| e.to_string())?;
     coord.start_player_log_tailing()
 }
 
@@ -3376,18 +3376,31 @@ pub fn start_player_tailing(
 pub fn stop_player_tailing(
     coordinator: State<'_, Arc<Mutex<DataIngestCoordinator>>>,
 ) -> Result<(), String> {
-    let mut coord = coordinator.lock().unwrap();
+    let mut coord = coordinator.lock().map_err(|e| e.to_string())?;
     coord.stop_player_log_tailing()
 }
 
 /// Scan every Player.log source for past poem recitals and backfill the poems table
 /// (called from the Poems tab). Returns the number of newly inserted poems.
+///
+/// Lock discipline: snapshot the Arc handles under a short lock, then run the
+/// (potentially tens-of-seconds) scan + write outside it. The backfill takes
+/// only `&SettingsManager` + `&DbPool` — both shared, never coordinator
+/// state — so holding the mutex across it would stall polling and every
+/// other command for no safety gain (pool-is-the-lock invariant).
 #[tauri::command]
 pub fn scan_player_log_for_poems(
     coordinator: State<'_, Arc<Mutex<DataIngestCoordinator>>>,
 ) -> Result<usize, String> {
-    let coord = coordinator.lock().unwrap();
-    coord.backfill_poems_from_player_log()
+    let (settings, db_pool, app_handle) = {
+        let coord = coordinator.lock().map_err(|e| e.to_string())?;
+        (
+            Arc::clone(&coord.settings),
+            coord.db_pool.clone(),
+            coord.app_handle.clone(),
+        )
+    };
+    crate::db::poem_commands::backfill_from_player_logs_with_emit(&settings, &db_pool, &app_handle)
 }
 
 /// Start chat log tailing (called from frontend)
@@ -3410,7 +3423,7 @@ pub fn start_chat_tailing(
     );
     let chat_log_file = chat_logs_dir.join(format!("Chat-{}.log", date_str));
 
-    let mut coord = coordinator.lock().unwrap();
+    let mut coord = coordinator.lock().map_err(|e| e.to_string())?;
     coord.start_chat_log_tailing(chat_log_file)
 }
 
@@ -3419,7 +3432,7 @@ pub fn start_chat_tailing(
 pub fn stop_chat_tailing(
     coordinator: State<'_, Arc<Mutex<DataIngestCoordinator>>>,
 ) -> Result<(), String> {
-    let mut coord = coordinator.lock().unwrap();
+    let mut coord = coordinator.lock().map_err(|e| e.to_string())?;
     coord.stop_chat_log_tailing()
 }
 
@@ -3428,7 +3441,7 @@ pub fn stop_chat_tailing(
 pub fn get_coordinator_status(
     coordinator: State<'_, Arc<Mutex<DataIngestCoordinator>>>,
 ) -> Result<CoordinatorStatus, String> {
-    let coord = coordinator.lock().unwrap();
+    let coord = coordinator.lock().map_err(|e| e.to_string())?;
     Ok(coord.get_status())
 }
 
@@ -3437,7 +3450,7 @@ pub fn get_coordinator_status(
 pub fn poll_watchers(
     coordinator: State<'_, Arc<Mutex<DataIngestCoordinator>>>,
 ) -> Result<(), String> {
-    let mut coord = coordinator.lock().unwrap();
+    let mut coord = coordinator.lock().map_err(|e| e.to_string())?;
     coord.poll()
 }
 
@@ -3547,7 +3560,7 @@ pub fn stop_background_polling(handle: State<'_, Arc<Mutex<PollingHandle>>>) -> 
 pub fn debug_capture_start(
     coordinator: State<'_, Arc<Mutex<DataIngestCoordinator>>>,
 ) -> Result<(), String> {
-    let mut coord = coordinator.lock().unwrap();
+    let mut coord = coordinator.lock().map_err(|e| e.to_string())?;
     coord.debug_capture_start()
 }
 
@@ -3556,7 +3569,7 @@ pub fn debug_capture_start(
 pub fn debug_capture_stop(
     coordinator: State<'_, Arc<Mutex<DataIngestCoordinator>>>,
 ) -> Result<DebugCaptureResult, String> {
-    let mut coord = coordinator.lock().unwrap();
+    let mut coord = coordinator.lock().map_err(|e| e.to_string())?;
     coord.debug_capture_stop()
 }
 
@@ -3570,7 +3583,7 @@ pub fn debug_capture_save(
     output_path: String,
     overwrite: Option<bool>,
 ) -> Result<DebugCaptureResult, String> {
-    let mut coord = coordinator.lock().unwrap();
+    let mut coord = coordinator.lock().map_err(|e| e.to_string())?;
     coord.debug_capture_save(notes, filter_mode, output_path, overwrite.unwrap_or(false))
 }
 
@@ -3579,7 +3592,7 @@ pub fn debug_capture_save(
 pub fn debug_capture_discard(
     coordinator: State<'_, Arc<Mutex<DataIngestCoordinator>>>,
 ) -> Result<(), String> {
-    let mut coord = coordinator.lock().unwrap();
+    let mut coord = coordinator.lock().map_err(|e| e.to_string())?;
     coord.debug_capture_discard();
     Ok(())
 }
@@ -3589,7 +3602,7 @@ pub fn debug_capture_discard(
 pub fn debug_capture_status(
     coordinator: State<'_, Arc<Mutex<DataIngestCoordinator>>>,
 ) -> Result<DebugCaptureStatus, String> {
-    let coord = coordinator.lock().unwrap();
+    let coord = coordinator.lock().map_err(|e| e.to_string())?;
     Ok(coord.debug_capture_status())
 }
 
