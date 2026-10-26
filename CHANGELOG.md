@@ -5,6 +5,21 @@ Per-release notes use the same grouping as scripts/generate-changelog.sh
 (`feat:` → Features, `impv:` → Improvements, `fix:` → Fixes).
 Releases that predate the commit-prefix convention list all commit subjects.
 
+## v1.5.1 (2026-10-26)
+
+### Features
+- feat: ingest chat skill level-ups and auto-import VIP reports (`35ebb54`)
+
+### Fixes
+- fix: parse chat timestamps in timestampToSeconds, accrue level-up XP to combat rate (`59cd420`)
+- fix: fetch version over HTTPS; drop no-op Mod replace (`571315e`)
+- fix: monotonic last_confirmed_at in apply_chat_level_up, log coordinator DB errors (`c9eced5`)
+- fix: restore chat MilkedBy arm, correct tnl-unknown and timestamp-format docs (`e21c1a2`)
+- fix: review findings on chat level-up ingest — recency guard, session fold-in, Reports-dir confinement (`4f84aff`)
+
+---
+*9 commits since v1.5.0*
+
 ## v1.5.0 (2026-10-25)
 
 ### Features
@@ -17,6 +32,9 @@ Releases that predate the commit-prefix convention list all commit subjects.
 - impv: milked_by backlog — shared normalizer, fixture tests, doc, frontend union (#32) (`45ebfd8`)
 
 ### Fixes
+- fix: install Linux system deps in release test job; docs: stop-and-ask rule for CI startup_failure (`b1e0c3d`)
+- fix: move flatpak concurrency from top level into jobs (inputs unavailable at top level) (`6a21a13`)
+- fix: use local-path syntax for flatpak reusable workflow call (`231a8a8`)
 - fix: drop pinact-action from CI (aqua bootstrap broken) — pin check stays local-only (`d11dcb5`)
 - fix: pinact validate-only mode; drop audit-script shebang (ruff EXE001) (`7a71459`)
 - fix: frozen-review PR30 findings batch — login-batch latch, idle delete backstop, audit gate fail-closed (`8320025`)
@@ -31,7 +49,7 @@ Releases that predate the commit-prefix convention list all commit subjects.
 - fix: review fixes — script +x bits, backfill empty-set guard, tagless changelog (`cb3a072`)
 
 ---
-*41 commits since v1.4.0*
+*49 commits since v1.4.0*
 
 ## v1.4.0 (2026-10-23)
 
