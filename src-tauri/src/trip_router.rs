@@ -410,6 +410,7 @@ fn friendly_zone_name(zone: &str) -> &str {
         "AreaSunVale" => "Sun Vale",
         "AreaKurMountains" => "Kur Mountains",
         "AreaCasino" => "Red Wing Casino",
+        "AreaDesert1" => "Ilmari",
         "AreaDesert2" => "Phantom Ilmari Desert",
         "AreaRahu" => "Rahu",
         "AreaGazluk" => "Gazluk",

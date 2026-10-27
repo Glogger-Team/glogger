@@ -1398,13 +1398,16 @@ impl GameStateManager {
 /// Scan-callable session-keyed stack correction. Same targeting as
 /// `GameStateManager::correct_stack_for_session` but without the manager:
 /// scan paths (`run_scan_dispatch` in `chat_commands.rs`) have no manager
-/// instance, only the line's own session identity. Matches by display name
-/// only (no CDN handle); idempotent — only `stack_size = 1` rows match.
+/// instance, only the line's own session identity — so the caller resolves
+/// the internal name via its `GameDataState` handle and passes it in.
+/// Matches internal-first with display fallback (same as the manager path);
+/// idempotent — only `stack_size = 1` rows match.
 pub fn correct_stack_in_table_for(
     conn: &rusqlite::Connection,
     character: &str,
     server: &str,
     display_name: &str,
+    internal_name: Option<&str>,
     quantity: u32,
 ) -> Vec<&'static str> {
     if quantity <= 1 {
@@ -1418,7 +1421,7 @@ pub fn correct_stack_in_table_for(
         character,
         server,
         None,
-        None,
+        internal_name,
         display_name,
         quantity,
     ) {
@@ -1431,7 +1434,7 @@ pub fn correct_stack_in_table_for(
         character,
         server,
         None,
-        None,
+        internal_name,
         display_name,
         quantity,
     ) {

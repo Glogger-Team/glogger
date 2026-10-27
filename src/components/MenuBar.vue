@@ -339,9 +339,10 @@ const tabIds = computed(() => currentTabs.value.map(t => t.id));
 const activeTabRef = computed({
   get: () => activeSubTabs[props.currentView] ?? "",
   set: (val: string) => {
-    activeSubTabs[props.currentView] = val;
-    updateSubTabPrefs({ [props.currentView]: val });
-    emit("update:subTab", val);
+    const resolved = resolveSubTab(props.currentView, val);
+    activeSubTabs[props.currentView] = resolved;
+    updateSubTabPrefs({ [props.currentView]: resolved });
+    emit("update:subTab", resolved);
   },
 });
 

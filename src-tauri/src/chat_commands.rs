@@ -562,12 +562,24 @@ fn run_scan_dispatch(
         for (item_name, quantity) in std::mem::take(&mut outcome.staged_gains) {
             if let Some(id) = identity.as_ref() {
                 if quantity > 1 {
+                    // Resolve the internal name like the manager path does:
+                    // inventory rows store the Player.log internal token,
+                    // which often differs from the chat display name
+                    // (e.g. "BottleOfMilk" vs "Bottle of Milk").
+                    let internal_name: Option<String> = game_data
+                        .try_read()
+                        .ok()
+                        .and_then(|gd| {
+                            gd.resolve_item(&item_name)
+                                .and_then(|info| info.internal_name.clone())
+                        });
                     if let Ok(conn) = db_pool.get_write() {
                         let changed = crate::game_state::correct_stack_in_table_for(
                             &conn,
                             &id.character,
                             &id.server,
                             &item_name,
+                            internal_name.as_deref(),
                             quantity,
                         );
                         for d in changed {
