@@ -232,7 +232,10 @@ pub fn backfill_gifts_from_paths(
                         let tastes = stored_has_gift_tastes(&key, &raw);
                         (key, name, tastes)
                     })
-                    .unwrap_or_else(|_| (note.npc_name.clone(), note.npc_name.clone(), true));
+                    .unwrap_or_else(|_| {
+                        let trimmed = note.npc_name.trim().to_string();
+                        (trimmed.clone(), trimmed, true)
+                    });
                 (key, name, note, tastes)
             })
             .collect()

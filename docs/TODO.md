@@ -25,7 +25,7 @@ Small tasks and notes that don't belong in a dedicated plan.
     - Skills — **chat fallback (degraded).** `apply_chat_level_up` keeps level current; base/bonus/tnl/max frozen (progress bars 100%/`<1min` = unknown). Character-report re-import re-anchors.
     - Arena bets — **dark** (bets); matches **unaffected** via Kuzavek chat narration. No Confirm-Bet source exists.
     - Poems — **dark** (new recitals lost; old-log backfill only). No chat/Reports source.
-    - Gifts — **dark / manual** (tiers unaffected via snapshot; weekly counts need `add_manual_gift`).
+    - Gifts — **dark** (tiers unaffected via snapshot; weekly-count UI hidden with the strip — `add_manual_gift`/`remove_last_gift` exist in `useStatehelmTracker.ts` but have no visible caller; rewire tracked under dark-state UI item (2) below).
     - Kill loot — **dark** (chat `EnemyKilled` covers counts/UI only; items, extracts, drop linkage lost).
     - Inventory live — **dark / manual** (stale until login, then empty; `/outputitems` re-import reseeds snapshot rows).
     - Vendor live + other-stall browse — **dark / manual**; own-stall sales **unaffected** (shop-log books poll).

@@ -156,6 +156,7 @@ pub async fn scan_chat_logs(
             let current_server = app_settings.active_server_name.clone();
             run_scan_dispatch(
                 &db_pool,
+                &settings,
                 &game_data,
                 Some(&app),
                 &messages,
@@ -500,6 +501,7 @@ fn milked_by_events_in_messages(
 #[allow(clippy::too_many_arguments)]
 fn run_scan_dispatch(
     db_pool: &DbPool,
+    settings: &crate::settings::SettingsManager,
     game_data: &GameDataState,
     app: Option<&AppHandle>,
     utc_messages: &[chat_parser::ChatMessage],
@@ -537,8 +539,12 @@ fn run_scan_dispatch(
             recent_damage: &mut recent_damage,
             pending_cow_interaction: &mut pending_cow,
             current_area: None,
+            // Scan paths never accrue: the accumulator has no per-line
+            // memory, so re-scanning lines the live drain already counted
+            // would double-count (see flag docs on `DispatchState`).
+            count_currency: false,
         };
-        let outcome = chat_status_dispatch::dispatch_chat_message(
+        let mut outcome = chat_status_dispatch::dispatch_chat_message(
             db_pool,
             game_data,
             identity.as_ref(),
@@ -548,9 +554,57 @@ fn run_scan_dispatch(
             &mut dstate,
             watch_rules,
         );
-        for d in outcome.domains {
+        // Session-keyed stack correction (see `DispatchOutcome::staged_gains`
+        // docs): the Player.log drain wrote fallback `stack_size = 1` rows,
+        // and the chat line carries the real quantity. Correct inline per
+        // line, keyed by the line's own session identity — never the
+        // drain-final identity. Idempotent: only `stack_size = 1` rows match.
+        for (item_name, quantity) in std::mem::take(&mut outcome.staged_gains) {
+            if let Some(id) = identity.as_ref() {
+                if quantity > 1 {
+                    if let Ok(conn) = db_pool.get_write() {
+                        let changed = crate::game_state::correct_stack_in_table_for(
+                            &conn,
+                            &id.character,
+                            &id.server,
+                            &item_name,
+                            quantity,
+                        );
+                        for d in changed {
+                            if !domains.iter().any(|x| *x == d) {
+                                domains.push(d.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let had_arena = outcome.domains.iter().any(|d| d == "arena");
+        for d in std::mem::take(&mut outcome.domains) {
             if !domains.iter().any(|x| *x == d) {
                 domains.push(d);
+            }
+        }
+        // Arena bet rescan on a fresh resolution (mirrors the live drain):
+        // the idempotent Player.log rescan resolves bets against the new
+        // match. Same retain/drop rule — drop `arena` when the rescan found
+        // nothing and the match arm didn't claim it.
+        if outcome.arena_resolved {
+            let mut changed = true;
+            match crate::db::arena_commands::backfill_bets_from_player_logs(settings, db_pool) {
+                Ok(n) if n > 0 => {}
+                Ok(_) => changed = had_arena,
+                Err(e) => {
+                    eprintln!("[run_scan_dispatch] Arena bet rescan failed: {e}");
+                    changed = had_arena;
+                }
+            }
+            if changed {
+                if !domains.iter().any(|x| x == "arena") {
+                    domains.push("arena".to_string());
+                }
+            } else {
+                domains.retain(|d| d != "arena");
             }
         }
         // Forward the same structured events the live drain emits so a scan
@@ -590,49 +644,42 @@ fn run_scan_dispatch(
 /// UTC conversion matches the backfill path exactly — the settings offset
 /// may be unset or stale when the scan runs, which would stamp different
 /// UTC instants for the same lines and defeat the idempotency guards.
+///
+/// Built on `parse_chat_lines_tagged`, not a parallel raw-line walk: the
+/// tagged stream yields one tag per *parsed* message by construction, so an
+/// unparseable timestamped line (parsed as zero messages) cannot shift every
+/// later index the way a `is_timestamped_line`-gated push would.
 fn scan_session_identity(
     raw_text: &str,
     parsed_count: usize,
 ) -> (Vec<Option<DispatchIdentity>>, Option<String>, Option<i32>) {
-    let mut session: Option<DispatchIdentity> = None;
     let mut fallback: Option<String> = None;
     let mut file_tz_offset: Option<i32> = None;
-    // Login/logout markers are line-anchored; multiline continuations never
-    // carry them. Walk raw lines and parsed messages in lockstep: every
-    // timestamped raw line yields exactly one parsed message (or zero when
-    // unparseable), while continuation lines attach to the previous message.
-    let mut session_at_line: Vec<Option<DispatchIdentity>> = Vec::new();
+    // The file's own offset + fallback come from the raw login lines (the
+    // backfill uses the same source). Login lines are line-anchored, so a
+    // plain line scan is exact here — session identity itself comes from
+    // the tagged parse below.
     for line in raw_text.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
         if let Some(info) = chat_parser::parse_chat_login_line(line) {
             fallback.get_or_insert_with(|| info.character_name.clone());
-            // First login line carrying an offset owns the file's UTC
-            // conversion (backfill uses the same source).
             if file_tz_offset.is_none() {
                 file_tz_offset = info.timezone_offset_seconds;
             }
-            session = Some(DispatchIdentity {
-                character: info.character_name,
-                server: info.server_name,
-            });
-            // The login line itself parses as an untagged system message.
-            session_at_line.push(session.clone());
-            continue;
-        }
-        if line.contains("******** Logged Out") {
-            session_at_line.push(session.clone());
-            session = None;
-            continue;
-        }
-        if chat_parser::is_timestamped_line(line) {
-            session_at_line.push(session.clone());
         }
     }
+    let mut session_at_line: Vec<Option<DispatchIdentity>> =
+        chat_parser::parse_chat_lines_tagged(raw_text)
+            .into_iter()
+            .map(|(_, tag)| {
+                tag.map(|t| DispatchIdentity {
+                    character: t.character_name,
+                    server: t.server_name,
+                })
+            })
+            .collect();
     session_at_line.truncate(parsed_count);
     while session_at_line.len() < parsed_count {
-        session_at_line.push(session.clone());
+        session_at_line.push(None);
     }
     (session_at_line, fallback, file_tz_offset)
 }
@@ -702,16 +749,21 @@ pub async fn scan_chat_log_file(
         })
         .collect();
 
-    let conn = db_pool
-        .get_write()
-        .map_err(|e| format!("Database error: {e}"))?;
-
+    // The single-writer checkout MUST drop before run_scan_dispatch below:
+    // the writes pool is max_size(1) and every dispatch arm checks out its
+    // own write connection, so holding `conn` across dispatch would starve
+    // it (15s pool timeout, arms silently skip).
     let mut messages_imported = 0;
-    if !messages.is_empty() {
-        messages_imported =
-            chat_commands::insert_chat_messages(&conn, &messages, &file_name, &excluded_channels)
-                .map_err(|e| format!("Failed to insert messages: {e}"))?;
-    }
+    {
+        let conn = db_pool
+            .get_write()
+            .map_err(|e| format!("Database error: {e}"))?;
+
+        if !messages.is_empty() {
+            messages_imported =
+                chat_commands::insert_chat_messages(&conn, &messages, &file_name, &excluded_channels)
+                    .map_err(|e| format!("Failed to insert messages: {e}"))?;
+        }
 
     let metadata = file_date.map(|d| {
         serde_json::json!({
@@ -730,6 +782,7 @@ pub async fn scan_chat_log_file(
         metadata.as_deref(),
     )
     .map_err(|e| format!("Failed to update log position: {e}"))?;
+    }
 
     // Structured dispatch with per-file identity (same rows the live
     // drain would persist). Replay-safe: re-scan inserts nothing new.
@@ -737,6 +790,7 @@ pub async fn scan_chat_log_file(
     if !messages.is_empty() {
         run_scan_dispatch(
             &db_pool,
+            &settings,
             &game_data,
             Some(&app),
             &messages,
@@ -927,11 +981,13 @@ pub async fn tail_chat_log(
         None
     };
 
-    let conn = db_pool
-        .get_write()
-        .map_err(|e| format!("Database error: {e}"))?;
-    chat_commands::insert_chat_messages(&conn, &messages, file_name, &excluded_channels)
-        .map_err(|e| format!("Failed to insert messages: {e}"))?;
+    // Same scoping as above: drop the writer before run_scan_dispatch.
+    {
+        let conn = db_pool
+            .get_write()
+            .map_err(|e| format!("Database error: {e}"))?;
+        chat_commands::insert_chat_messages(&conn, &messages, file_name, &excluded_channels)
+            .map_err(|e| format!("Failed to insert messages: {e}"))?;
 
     let file_date = chat_parser::parse_chat_log_filename(file_name)
         .ok_or("Invalid chat log filename format")?;
@@ -951,12 +1007,14 @@ pub async fn tail_chat_log(
         Some(&metadata),
     )
     .map_err(|e| format!("Failed to update log position: {e}"))?;
+    }
 
     // Structured dispatch with per-file identity (same rows the live
     // drain would persist). Replay-safe: re-tail inserts nothing new.
     // Identity comes from the same walk that supplied the tz offset.
     run_scan_dispatch(
         &db_pool,
+        &settings,
         &game_data,
         Some(&app),
         &messages,
@@ -1170,12 +1228,20 @@ mod tests {
     fn scan_identity_prefers_file_tz_offset() {
         // Raw slice with a login line carrying -05:00: identity resolves and
         // the file offset is captured for UTC conversion (backfill parity).
-        let raw = "**************************************** Logged In As Alice. Server Dreva. Timezone Offset -05:00:00.\n\
+        // Tags come from `parse_chat_lines_tagged`: the login line itself
+        // keeps the *previous* session (`None` here — it is an untagged
+        // system message no identity-scoped arm touches); the gain line
+        // after it carries the new session.
+        let raw = "26-10-26 19:59:00\t**************************************** Logged In As Alice. Server Dreva. Timezone Offset -05:00:00.\n\
                    26-10-26 20:00:00\t[Status] Azyima has milked you.\n";
         let (at_line, fallback, tz) = scan_session_identity(raw, 2);
         assert_eq!(fallback.as_deref(), Some("Alice"));
         assert_eq!(tz, Some(-18000));
-        assert!(at_line.iter().all(|s| s.is_some()));
+        assert_eq!(at_line.len(), 2);
+        assert!(at_line[0].is_none());
+        let id = at_line[1].as_ref().expect("gain line tagged");
+        assert_eq!(id.character, "Alice");
+        assert_eq!(id.server, "Dreva");
         // No login line: no identity, no offset — caller falls back to settings.
         let raw2 = "26-10-26 20:00:00\t[Status] Azyima has milked you.\n";
         let (at_line2, fallback2, tz2) = scan_session_identity(raw2, 1);

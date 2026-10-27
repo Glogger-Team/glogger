@@ -98,7 +98,7 @@ function searchPlayerData(query: string, cap: number): SearchCategory[] {
         category: "Your Items",
         label: name,
         detail: `x${count} · Backpack${marketSuffix(name)}`,
-        navigation: { view: "inventory", subTab: "inventory" },
+        navigation: { view: "inventory", subTab: "storage" },
       })
     }
   }

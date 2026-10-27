@@ -24,7 +24,8 @@
 /// # Replay safety
 ///
 /// Every arm here is idempotent or recency-guarded, so re-scanning a file
-/// inserts nothing new:
+/// inserts nothing new — except currency, which is live-only by design
+/// (see below):
 /// - item ledger: `INSERT` is guarded by an existence check on the full
 ///   `(timestamp, character, server, item, quantity, context, source)` key —
 ///   a re-scan's second write finds the row and skips it.
@@ -37,8 +38,10 @@
 /// - rezzes: rolling 30-second per-target window, same as the live path.
 /// - hoplology: `insert_hoplology_study_from_chat` only touches the row when
 ///   the study is new or upgrades a report-only row to chat.
-/// - currency: only counts events newer than the export anchor (`event_ts >
-///   anchor_at`), so replaying pre-export chat never double-counts.
+/// - currency: live-only (see arm below) — scans skip it, because a
+///   scan cannot know which of its lines the live drain already counted
+///   (the accumulator has no per-line memory), while replaying
+///   pre-export chat would double-count.
 ///
 /// # Survey attribution (documented exclusion)
 ///
@@ -100,6 +103,13 @@ pub struct DispatchState<'a> {
     pub pending_cow_interaction: &'a mut Option<String>,
     /// Current area, attached to death rows.
     pub current_area: Option<String>,
+    /// Whether wallet-delta arms (`CoinsLooted`/`CouncilsChanged`) may
+    /// accrue into `currency_estimate.delta_since`. The accumulator has no
+    /// per-line memory, so a scan cannot know which of its lines the live
+    /// drain already counted — re-scanning double-counts whenever the live
+    /// path also saw the lines. The live coordinator sets this; scan paths
+    /// (`run_scan_dispatch`) leave the default `false` and skip accrual.
+    pub count_currency: bool,
 }
 
 /// What one dispatched message changed, for the caller to emit.
@@ -363,14 +373,21 @@ fn dispatch_status_event(
             // Already recorded with the local-ts key before this fn —
             // nothing to do here (arm exists so the match stays exhaustive).
         }
+        // Live-only (gated on `state.count_currency`): the accumulator has
+        // no per-line memory, so a scan cannot know which of its lines the
+        // live drain already counted. Scan paths leave the flag `false`.
         ChatStatusEvent::CoinsLooted { amount, timestamp } => {
-            if let Some(id) = identity {
-                accrue_currency_delta(db, &id.character, &id.server, *amount as i64, timestamp);
+            if state.count_currency {
+                if let Some(id) = identity {
+                    accrue_currency_delta(db, &id.character, &id.server, *amount as i64, timestamp);
+                }
             }
         }
         ChatStatusEvent::CouncilsChanged { amount, timestamp } => {
-            if let Some(id) = identity {
-                accrue_currency_delta(db, &id.character, &id.server, *amount, timestamp);
+            if state.count_currency {
+                if let Some(id) = identity {
+                    accrue_currency_delta(db, &id.character, &id.server, *amount, timestamp);
+                }
             }
         }
         ChatStatusEvent::RouletteResult { timestamp, number } => {
@@ -685,6 +702,13 @@ fn persist_rez_event(
         )
         .unwrap_or(false);
     if exists {
+        // Cross-run duplicate: a previous run persisted this row, but this
+        // run's in-memory dedup map is fresh. Prime it so the paired
+        // phrasing (same target within 30s, different caster/stamp) dedups
+        // against this run's memory instead of inserting a second row.
+        if success {
+            last_rez_dedup.insert(target_name.clone(), timestamp.clone());
+        }
         return false;
     }
     let ok = conn
@@ -794,6 +818,25 @@ mod tests {
             recent_damage: dmg,
             pending_cow_interaction: cow,
             current_area: None,
+            // Tests exercise arms directly (live-equivalent coverage).
+            count_currency: true,
+        }
+    }
+
+    /// Scan-equivalent state: currency accrual off, like `run_scan_dispatch`.
+    fn state_scan<'a>(
+        arena: &'a mut ArenaTracker,
+        rez: &'a mut std::collections::HashMap<String, String>,
+        dmg: &'a mut Vec<ChatCombatEvent>,
+        cow: &'a mut Option<String>,
+    ) -> DispatchState<'a> {
+        DispatchState {
+            arena_tracker: arena,
+            last_rez_dedup: rez,
+            recent_damage: dmg,
+            pending_cow_interaction: cow,
+            current_area: None,
+            count_currency: false,
         }
     }
 
@@ -916,7 +959,40 @@ mod tests {
         assert_eq!(spins, 1);
         let milks: i64 = conn.query_row("SELECT COUNT(*) FROM player_milking_log", [], |r| r.get(0)).unwrap();
         assert_eq!(milks, 1);
-
+        // Live-equivalent dispatch (count_currency: true) accrues the
+        // wallet delta exactly once. The anchor is required first.
+        conn.execute(
+            "INSERT INTO currency_estimate (character_name, server_name, currency_name, anchor_amount, anchor_at, delta_since)
+             VALUES ('Alice','Dreva','GOLD',1000,'2026-04-01 05:00:00',0)",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let m = status_msg("You received 10 Councils.", ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        dispatch_chat_message(&pool, &gd, Some(&id()), &m, ts, None, &mut st, &[]);
+        let conn = pool.get_write().unwrap();
+        let delta: i64 = conn
+            .query_row(
+                "SELECT delta_since FROM currency_estimate WHERE character_name = 'Alice'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(delta, 10);
+        // Scan-equivalent dispatch (count_currency: false) must not accrue.
+        drop(conn);
+        let mut st = state_scan(&mut arena, &mut rez, &mut dmg, &mut cow);
+        dispatch_chat_message(&pool, &gd, Some(&id()), &m, ts, None, &mut st, &[]);
+        let conn = pool.get_write().unwrap();
+        let delta2: i64 = conn
+            .query_row(
+                "SELECT delta_since FROM currency_estimate WHERE character_name = 'Alice'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(delta2, 10);
         // Re-scan inserts nothing new.
         for m in &msgs {
             let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);

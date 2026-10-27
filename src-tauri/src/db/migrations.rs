@@ -3793,7 +3793,7 @@ mod tests {
             .unwrap();
         assert_eq!(kept, "2026-10-17T02:49:52+00:00", "file-offset row survives");
     }
-
+    #[test]
     fn run_migrations_is_idempotent_and_atomic() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn, None).unwrap();

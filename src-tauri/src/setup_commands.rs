@@ -195,6 +195,9 @@ pub fn save_user_character(
     if server_name.trim().is_empty() {
         return Err("server_name must not be empty".to_string());
     }
+    if !["report", "manual", "login"].contains(&source.as_str()) {
+        return Err("source must be one of 'report', 'manual', 'login'".to_string());
+    }
     let conn = db
         .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;

@@ -137,12 +137,12 @@ pub async fn gst_check_status(app: tauri::AppHandle) -> Result<GstStatus, String
 /// `api.github.com`/`github.com` and written atomically (tmp file + rename),
 /// but the bytes are executed without a checksum — GitHub's release API
 /// exposes no digest to verify against, and GST publishes no signed manifest.
-/// The `512 MiB`-style cap is inherent (a GST exe is tens of MB; anything
-/// larger aborts before touching disk — see the length guard below), not a
+/// The 256 MiB cap is inherent (a GST exe is tens of MB; anything larger
+/// aborts before touching disk — see the chunked read below), not a
 /// substitute for a hash. If GST ever ships checksums, hash-before-exec goes
 /// here: buffer the body, compare, and only then write `final_path`.
- #[tauri::command]
- pub async fn gst_download(app: tauri::AppHandle) -> Result<GstStatus, String> {
+#[tauri::command]
+pub async fn gst_download(app: tauri::AppHandle) -> Result<GstStatus, String> {
     if !cfg!(target_os = "windows") {
         return Err("GST download is only available on Windows. See the GST GitHub page for Mac/Linux instructions.".to_string());
     }
@@ -159,24 +159,38 @@ pub async fn gst_check_status(app: tauri::AppHandle) -> Result<GstStatus, String
         .build()
         .map_err(|e| format!("HTTP client error: {e}"))?;
 
-    let bytes = client
+    let mut resp = client
         .get(&asset.browser_download_url)
         .send()
         .await
-        .map_err(|e| format!("Download failed: {e}"))?
-        .bytes()
-        .await
-        .map_err(|e| format!("Failed to read download: {e}"))?;
+        .map_err(|e| format!("Download failed: {e}"))?;
     // Cap: a GST exe is tens of MB. Anything larger is a wrong asset or a
-    // hostile response — abort before touching disk (the doc comment's
-    // "length guard").
-    const MAX_GST_BYTES: usize = 256 * 1024 * 1024;
-    if bytes.len() > MAX_GST_BYTES {
-        return Err(format!(
-            "Download too large ({} bytes, cap {} MiB): refusing to write",
-            bytes.len(),
-            MAX_GST_BYTES / (1024 * 1024)
-        ));
+    // hostile response — abort before buffering it all (RAM) or touching
+    // disk. Checked two ways: the declared Content-Length up front when
+    // present, then the running total per chunk (a lying header can't smuggle
+    // a big body past the chunk cap).
+    const MAX_GST_BYTES: u64 = 256 * 1024 * 1024;
+    if let Some(len) = resp.content_length() {
+        if len > MAX_GST_BYTES {
+            return Err(format!(
+                "Download too large (declared {len} bytes, cap {} MiB): refusing to download",
+                MAX_GST_BYTES / (1024 * 1024)
+            ));
+        }
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = resp
+        .chunk()
+        .await
+        .map_err(|e| format!("Failed to read download: {e}"))?
+    {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() as u64 > MAX_GST_BYTES {
+            return Err(format!(
+                "Download too large (over {} MiB): refusing to write",
+                MAX_GST_BYTES / (1024 * 1024)
+            ));
+        }
     }
     let dir = gst_dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create GST dir: {e}"))?;

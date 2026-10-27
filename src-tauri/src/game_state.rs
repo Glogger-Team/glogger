@@ -1395,8 +1395,50 @@ impl GameStateManager {
         .ok();
     }
 }
-
-/// Correct a single stack_size=1 row in an inventory/storage table.
+/// Scan-callable session-keyed stack correction. Same targeting as
+/// `GameStateManager::correct_stack_for_session` but without the manager:
+/// scan paths (`run_scan_dispatch` in `chat_commands.rs`) have no manager
+/// instance, only the line's own session identity. Matches by display name
+/// only (no CDN handle); idempotent — only `stack_size = 1` rows match.
+pub fn correct_stack_in_table_for(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    display_name: &str,
+    quantity: u32,
+) -> Vec<&'static str> {
+    if quantity <= 1 {
+        return vec![];
+    }
+    let mut domains = Vec::new();
+    if correct_stack_in_table(
+        conn,
+        "game_state_inventory",
+        "character_name = ?2 AND server_name = ?3",
+        character,
+        server,
+        None,
+        None,
+        display_name,
+        quantity,
+    ) {
+        domains.push("inventory");
+    }
+    if correct_stack_in_table(
+        conn,
+        "game_state_storage",
+        "character_name = ?2 AND server_name = ?3",
+        character,
+        server,
+        None,
+        None,
+        display_name,
+        quantity,
+    ) {
+        domains.push("storage");
+    }
+    domains
+}
 /// Returns true if a row was updated.
 fn correct_stack_in_table(
     conn: &Connection,

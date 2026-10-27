@@ -154,9 +154,11 @@ const viewTabs: Partial<Record<AppView, SubTab[]>> = {
     { id: "account", label: "Account" },
   ],
   inventory: [
-    // Live tab hidden: the current game client writes no Player.log item
-    // events, so live tracking is dark. Restore `{ id: "live", ... }` here
-    // (and the wrapper branch) if the game restores the events.
+    // Live tab kept visible but dark: the current game client writes no
+    // Player.log item events, so the tab renders the no-new-data banner
+    // (see LiveInventoryTab) instead of an empty tracker. Remove the entry
+    // (and the wrapper branch) only if live tracking is deleted outright.
+    { id: "live", label: "Live" },
     { id: "storage", label: "Storage" },
     { id: "vaults", label: "Vaults" },
     { id: "consolidate", label: "Consolidate" },
@@ -189,8 +191,10 @@ const viewTabs: Partial<Record<AppView, SubTab[]>> = {
     { id: "system", label: "System" },
     { id: "all", label: "All Messages" },
     { id: "watchwords", label: "Watchwords" },
-    // Poems hidden: new recitals are Player.log-only (dark on the current
-    // client). Restore the entry below if the game restores the events.
+    // Poems kept visible but dark: new recitals are Player.log-only (dark
+    // on the current client) — the tab carries the no-new-data banner plus
+    // the historic list and the old-log backfill scan.
+    { id: "poems", label: "Poems" },
   ],
 };
 
@@ -304,27 +308,30 @@ const currentTabs = computed(() => viewTabs[props.currentView] ?? []);
 
 const hasTabs = computed(() => currentTabs.value.length > 0);
 
+// One resolver for every sub-tab assignment: an unknown id (stale pref,
+// programmatic nav, keyboard cycle) falls back to the view's first tab
+// instead of emitting an id no child handles (blank pane).
+function resolveSubTab(view: string, tabId: string | undefined): string {
+  const tabs = viewTabs[view as AppView] ?? [];
+  if (tabId !== undefined && tabs.some((t) => t.id === tabId)) return tabId;
+  return tabs[0]?.id ?? tabId ?? "";
+}
+
 function selectSubTab(tabId: string) {
-  activeSubTabs[props.currentView] = tabId;
-  updateSubTabPrefs({ [props.currentView]: tabId });
-  emit("update:subTab", tabId);
+  const resolved = resolveSubTab(props.currentView, tabId);
+  activeSubTabs[props.currentView] = resolved;
+  updateSubTabPrefs({ [props.currentView]: resolved });
+  emit("update:subTab", resolved);
 }
 
 // Emit current sub-tab whenever the view changes (so the child view gets the right tab).
-// A persisted tab can go stale when a tab is removed (e.g. the hidden live
-// inventory tab) — fall back to the view's first tab instead of emitting an
-// id no child handles (blank pane).
 watch(() => props.currentView, (view) => {
-  const tabs = viewTabs[view];
-  if (tabs) {
-    const saved = activeSubTabs[view];
-    const valid = saved !== undefined && tabs.some((t) => t.id === saved);
-    if (!valid) {
-      activeSubTabs[view] = tabs[0].id;
-      updateSubTabPrefs({ [view]: tabs[0].id });
-    }
-    emit("update:subTab", activeSubTabs[view]);
+  const resolved = resolveSubTab(view, activeSubTabs[view]);
+  if (resolved !== activeSubTabs[view]) {
+    activeSubTabs[view] = resolved;
+    updateSubTabPrefs({ [view]: resolved });
   }
+  emit("update:subTab", resolved);
 }, { immediate: true });
 
 // Keyboard tab cycling for the sub-tab row
@@ -348,6 +355,7 @@ useKeyboard({
 // Expose for parent to read current sub-tab
 defineExpose({
   activeSubTabs,
+  resolveSubTab,
   viewTabs,
   hasTabs,
 });

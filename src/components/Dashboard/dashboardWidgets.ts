@@ -32,7 +32,8 @@ import MessagesWidget from "./widgets/MessagesWidget.vue";
 import HoplologyWidget from "./widgets/HoplologyWidget.vue";
 import VendorCouncilWidget from "./widgets/VendorCouncilWidget.vue";
 import RouletteWidget from "./widgets/RouletteWidget.vue";
-
+import ArenaWidget from "./widgets/ArenaWidget.vue";
+import StatehelmSummaryWidget from "./widgets/StatehelmSummaryWidget.vue";
 export type WidgetSize = "small" | "medium" | "large";
 
 export interface DashboardWidget {
@@ -141,8 +142,15 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     component: CriticalResourcesWidget,
     defaultSize: "small",
   },
-  // Statehelm widget hidden: weekly gift counts are Player.log-only (dark on
-  // the current client). Restore the entry below if the game restores them.
+  // Statehelm: weekly gift counts are Player.log-only (dark on the current
+  // client) but the summary stays useful for favor tiers/snapshots — keep
+  // the widget; the per-NPC gift rows simply stay at 0/x until counts return.
+  {
+    id: "statehelm-summary",
+    name: "Statehelm",
+    component: StatehelmSummaryWidget,
+    defaultSize: "medium",
+  },
   {
     id: "watchword-detections",
     name: "Watchword Alerts",
@@ -241,9 +249,15 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     component: RouletteWidget,
     defaultSize: "medium",
   },
-  // Arena widget hidden: personal bets are Player.log-only (dark on the
-  // current client) and match history alone doesn't carry the widget.
-  // Restore the entry below if the game restores the events.
+  // Arena: personal bets are Player.log-only (dark on the current client,
+  // banner inside the widget says so) but match history tracks via Kuzavek
+  // chat narration — keep the widget so matches stay visible.
+  {
+    id: "arena",
+    name: "Arena",
+    component: ArenaWidget,
+    defaultSize: "medium",
+  },
 ];
 
 /** Default card order — used when no user preferences exist */

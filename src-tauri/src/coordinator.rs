@@ -1419,6 +1419,9 @@ impl DataIngestCoordinator {
                             recent_damage: &mut self.recent_damage,
                             pending_cow_interaction: &mut self.pending_cow_interaction,
                             current_area: self.current_area.clone(),
+                            // Live drain owns the accumulator: each line is
+                            // seen once here, so accrual is exactly-once.
+                            count_currency: true,
                         };
                         // Live feeds the survey hook so loot rows stamp
                         // `survey_chat` immediately; catch-up/scan rows stay
