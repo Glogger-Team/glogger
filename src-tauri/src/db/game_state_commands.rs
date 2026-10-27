@@ -468,8 +468,41 @@ pub fn get_currency_estimate(
     character_name: String,
     server_name: String,
 ) -> Result<Option<CurrencyEstimate>, String> {
-    use rusqlite::OptionalExtension;
     let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    get_currency_estimate_for(&conn, &character_name, &server_name)
+}
+
+/// Split out from the command so tests can exercise it without Tauri state.
+/// Generic over `DbRead` (same convention as the other read helpers here).
+///
+/// Timestamp-normalization audit (2026-10-26, corrected 2026-10-27):
+/// `anchor_at` is written by `import_character_report_internal` as the ISO
+/// export timestamp with the trailing `Z` stripped AND the `T` separator
+/// replaced with a space (`character_commands.rs`), i.e. space-format
+/// `"YYYY-MM-DD HH:MM:SS"` UTC — the same shape `parse_status_message`
+/// stamps into chat events (migration v80 repairs pre-existing `T`-shaped
+/// anchors, which sorted after same-day space stamps and dropped intraday
+/// deltas). The accrual guard (`accrue_currency_delta`,
+/// `event_ts > anchor_at`) therefore string-compares like with like;
+/// zero-padded fixed-width stamps sort chronologically. The one asymmetry is
+/// documented on `apply_chat_level_up`: snapshot `"…Z"` stamps sort *after*
+/// same-day space-format chat stamps, but that arm doesn't touch this table.
+///
+/// `fetchCurrencyEstimate` audit (2026-10-26): the frontend
+/// (`gameStateStore.ts`) reconciles its optimistic counter against this on
+/// every load and no-ops `applyWalletDelta` until `has_anchor` is true —
+/// mirroring the backend accrual guard (`anchor_at IS NOT NULL`), so a
+/// pre-export session can neither double-count nor fabricate a balance.
+/// `traversal`/`report_kind_for_path` audit: no path handling here — the
+/// only path-shaped input in this file's orbit is the VIP-report path, which
+/// is classified by `report_kind_for_path` in `coordinator.rs` (5 tests there
+/// cover Character/Items shapes, non-Reports parents, and `..` traversal).
+pub fn get_currency_estimate_for<C: crate::db::DbRead + ?Sized>(
+    conn: &C,
+    character_name: &str,
+    server_name: &str,
+) -> Result<Option<CurrencyEstimate>, String> {
+    use rusqlite::OptionalExtension;
     conn.query_row(
         "SELECT currency_name, anchor_amount, anchor_at, delta_since
          FROM currency_estimate
@@ -2353,5 +2386,39 @@ mod tests {
             apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 100, "2026-04-16 14:59:30")
                 .expect("stale apply");
         assert!(!stale);
+    }
+
+    #[test]
+    fn currency_estimate_none_until_anchored_then_anchor_plus_delta() {
+        let conn = setup();
+
+        // No row yet (no export imported): None, so the UI prompts for one.
+        assert!(get_currency_estimate_for(&conn, "Zen", "Dreva").unwrap().is_none());
+
+        // Seeded row without an anchor (migration backfill shape): estimate
+        // is not meaningful, flagged via has_anchor = false.
+        conn.execute(
+            "INSERT INTO currency_estimate (character_name, server_name, currency_name, anchor_amount, anchor_at, delta_since)
+             VALUES ('Zen','Dreva','GOLD',0,NULL,150)",
+            [],
+        )
+        .unwrap();
+        let e = get_currency_estimate_for(&conn, "Zen", "Dreva").unwrap().unwrap();
+        assert!(!e.has_anchor);
+        assert_eq!(e.estimated, 150);
+
+        // Anchored row: estimated = anchor_amount + delta_since, and another
+        // character's row never leaks in.
+        conn.execute(
+            "UPDATE currency_estimate SET anchor_amount = 5000, anchor_at = '2026-10-26 12:00:00', delta_since = -320
+             WHERE character_name = 'Zen' AND server_name = 'Dreva' AND currency_name = 'GOLD'",
+            [],
+        )
+        .unwrap();
+        let e = get_currency_estimate_for(&conn, "Zen", "Dreva").unwrap().unwrap();
+        assert!(e.has_anchor);
+        assert_eq!(e.anchor_at.as_deref(), Some("2026-10-26 12:00:00"));
+        assert_eq!(e.estimated, 4680);
+        assert!(get_currency_estimate_for(&conn, "Alt", "Dreva").unwrap().is_none());
     }
 }

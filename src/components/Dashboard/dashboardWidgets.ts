@@ -12,7 +12,6 @@ import ItemsOutgoingWidget from "./widgets/ItemsOutgoingWidget.vue";
 import CouncilsWidget from "./widgets/CouncilsWidget.vue";
 import FavorChangesWidget from "./widgets/FavorChangesWidget.vue";
 import CriticalResourcesWidget from "./widgets/CriticalResourcesWidget.vue";
-import StatehelmSummaryWidget from "./widgets/StatehelmSummaryWidget.vue";
 import WatchwordDetectionsWidget from "./widgets/WatchwordDetectionsWidget.vue";
 import DeathTrackerWidget from "./widgets/DeathTrackerWidget.vue";
 import RecipeItemsWidget from "./widgets/RecipeItemsWidget.vue";
@@ -34,7 +33,7 @@ import HoplologyWidget from "./widgets/HoplologyWidget.vue";
 import VendorCouncilWidget from "./widgets/VendorCouncilWidget.vue";
 import RouletteWidget from "./widgets/RouletteWidget.vue";
 import ArenaWidget from "./widgets/ArenaWidget.vue";
-
+import StatehelmSummaryWidget from "./widgets/StatehelmSummaryWidget.vue";
 export type WidgetSize = "small" | "medium" | "large";
 
 export interface DashboardWidget {
@@ -143,9 +142,12 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     component: CriticalResourcesWidget,
     defaultSize: "small",
   },
+  // Statehelm: weekly gift counts are Player.log-only (dark on the current
+  // client) but the summary stays useful for favor tiers/snapshots — keep
+  // the widget; the per-NPC gift rows simply stay at 0/x until counts return.
   {
     id: "statehelm-summary",
-    name: "Statehelm Gifting",
+    name: "Statehelm",
     component: StatehelmSummaryWidget,
     defaultSize: "medium",
   },
@@ -247,11 +249,14 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     component: RouletteWidget,
     defaultSize: "medium",
   },
+  // Arena: personal bets are Player.log-only (dark on the current client,
+  // banner inside the widget says so) but match history tracks via Kuzavek
+  // chat narration — keep the widget so matches stay visible.
   {
     id: "arena",
-    name: "Casino Arena",
+    name: "Arena",
     component: ArenaWidget,
-    defaultSize: "large",
+    defaultSize: "medium",
   },
 ];
 

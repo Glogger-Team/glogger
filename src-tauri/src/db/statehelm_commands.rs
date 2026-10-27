@@ -206,23 +206,23 @@ pub fn backfill_gifts_from_paths(
         return Ok(0);
     }
 
-    // Resolve each display name to its CDN key (exact-name match, mirroring
+    // Resolve each display name to its CDN key (case-insensitive and trimmed —
+    // the game prints names exactly, but a note with stray casing or
+    // whitespace must not fork a new tracker row; mirrors
     // `GameDataState::npc_name_index`; `ORDER BY key` because the table holds
     // duplicate names, e.g. 8× "Work Orders"). Fall back to the raw name,
     // mirroring `resolve_npc`'s raw-name fallback. The CDN entry rides along so
     // the tastes rule can be applied to notes for NPCs whose gifts cannot move
-    // their reputation (they are dropped below, exactly as the live arm drops
-    // them).
     let resolved: Vec<(String, String, GiftNote, bool)> = {
         let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
         let mut stmt = conn
-            .prepare("SELECT key, name, raw_json FROM npcs WHERE name = ?1 ORDER BY key LIMIT 1")
+            .prepare("SELECT key, name, raw_json FROM npcs WHERE name = ?1 COLLATE NOCASE ORDER BY key LIMIT 1")
             .map_err(|e| format!("Query error: {e}"))?;
         latest
             .into_values()
             .map(|note| {
                 let (key, name, tastes) = stmt
-                    .query_row(rusqlite::params![&note.npc_name], |row| {
+                    .query_row(rusqlite::params![note.npc_name.trim()], |row| {
                         let key: String = row.get(0)?;
                         let name: String = row.get(1)?;
                         let raw: String = row.get(2)?;
@@ -232,7 +232,10 @@ pub fn backfill_gifts_from_paths(
                         let tastes = stored_has_gift_tastes(&key, &raw);
                         (key, name, tastes)
                     })
-                    .unwrap_or_else(|_| (note.npc_name.clone(), note.npc_name.clone(), true));
+                    .unwrap_or_else(|_| {
+                        let trimmed = note.npc_name.trim().to_string();
+                        (trimmed.clone(), trimmed, true)
+                    });
                 (key, name, note, tastes)
             })
             .collect()
@@ -727,7 +730,7 @@ mod tests {
             .get()
             .unwrap()
             .query_row(
-                "SELECT key FROM npcs WHERE name = ?1 ORDER BY key LIMIT 1",
+                "SELECT key FROM npcs WHERE name = ?1 COLLATE NOCASE ORDER BY key LIMIT 1",
                 ["Twin"],
                 |row| row.get(0),
             )
@@ -742,6 +745,39 @@ mod tests {
 
         let _ = std::fs::remove_file(&db_path);
     }
+
+    /// Notes resolve case-insensitively: a mixed-case display name lands on the
+    /// same CDN key instead of forking a raw-name row.
+    #[test]
+    fn backfill_resolves_mixed_case_npc_names() {
+        let (pool, db_path) = temp_pool();
+        {
+            let conn = pool.get_write().unwrap();
+            insert_npc(&conn, "NPC_Corinth", "Corinth");
+        }
+
+        let log = format!(
+            "[12:04:37] Logged in as character TestPlayer. Time UTC=10/14/2026 12:04:37. Timezone Offset -05:00:00\n{}\n",
+            note_line("12:20:00", "cOrInTh", 2),
+        );
+        let path = write_log(&log);
+
+        let changed =
+            backfill_gifts_from_paths(std::slice::from_ref(&path), WEEK_START, "TestServer", &pool)
+                .unwrap();
+        assert_eq!(changed, 1, "mixed-case note reconciles");
+
+        let key: String = pool
+            .get()
+            .unwrap()
+            .query_row("SELECT npc_key FROM game_state_gift_log", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(key, "NPC_Corinth", "lands on the CDN key, not the raw note");
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
 
     #[test]
     fn backfill_adds_rows_to_match_game_count_and_is_idempotent() {

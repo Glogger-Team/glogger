@@ -125,6 +125,15 @@ pub async fn parse_log(path: String, app: AppHandle) -> Result<String, String> {
             let l = match line {
                 Ok(l) => l.trim_end().to_string(),
                 Err(e) => {
+                    // DECISION (ParseFixB follow-up): keep `continue`, do NOT
+                    // flip the job to Failed. A mid-loop `lines()` error is a
+                    // single undecodable line (UTF-8 boundary mid-buffer), not
+                    // a dead file — failing the whole job over one bad line
+                    // would discard every event parsed before it. The open
+                    // error above (file vanished) *does* fail the job: no
+                    // lines were readable at all. A `Failed` here would also
+                    // lie — `Done` already means "best effort", since
+                    // unparseable lines are skipped silently throughout.
                     eprintln!("[parse_log] read error: {e}");
                     continue;
                 }
@@ -229,9 +238,11 @@ pub async fn parse_log(path: String, app: AppHandle) -> Result<String, String> {
 }
 
 /// Parse-log job status for `parse_log`'s background worker. The worker
-/// marks the job `Failed` on open/read errors (previously only `eprintln!`)
-/// and `Done` on clean completion; an entry that is still `Running` after
-/// the command returned means the worker is mid-file.
+/// marks the job `Failed` on open errors (file unreadable — nothing parsed)
+/// and `Done` on loop completion, which is best-effort by design: single bad
+/// lines are skipped mid-loop (see the DECISION note there) and unparseable
+/// lines never fail the job. An entry still `Running` after the command
+/// returned means the worker is mid-file.
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum ParseLogStatus {

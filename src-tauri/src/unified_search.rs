@@ -386,6 +386,11 @@ fn score_match(haystack: &str, query: &str) -> u32 {
 
 /// Score across multiple fields. Returns the highest score from name, then
 /// adds secondary field bonus if those match too.
+///
+/// Tier note: `.max(1)` at each call site floors a text-term match to score 1,
+/// so a row that matched every term but scored 0 on name + secondaries still
+/// ranks above a non-match (which is `continue`d out, never pushed). Score 1
+/// therefore means "matched all terms, but only in unweighted fields".
 fn score_entity(name: &str, secondary_fields: &[&str], query: &str) -> u32 {
     let name_score = score_match(name, query);
     if name_score > 0 {
@@ -1032,7 +1037,10 @@ fn search_abilities(
     let neg_skill = query.negated_skill_filter();
 
     for family in data.ability_families.values() {
-        // Skip monster abilities by default
+        // Monster-only families are hidden by default: `Lint_MonsterAbility` on
+        // every tier marks the whole family (see game_data ability grouping).
+        // There is currently no `show_monster` / `include_monster` query flag
+        // to opt back in — a future `has:monster`-style filter could add one.
         if family.is_monster_ability {
             continue;
         }

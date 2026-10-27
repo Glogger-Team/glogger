@@ -151,7 +151,7 @@
       v-if="!searchAllChars && !store.inventorySnapshots.length && !store.loading"
       variant="panel"
       primary="No inventory data found"
-      secondary="Use /outputitems in-game, then import the report." />
+      secondary="In-game, go to Settings → VIP and export a storage report, then import it here." />
 
     <!-- All-characters storage search -->
     <div v-if="searchAllChars" class="overflow-auto flex-1 min-h-0">
@@ -163,7 +163,7 @@
         v-else-if="!store.allCharacterItems.length"
         variant="panel"
         primary="No inventory data for any character"
-        secondary="Use /outputitems in-game on each character, then import their reports." />
+        secondary="In-game, go to Settings → VIP and export a storage report on each character, then import their reports." />
       <EmptyState
         v-else-if="crossCharFiltered.length === 0"
         variant="compact"

@@ -65,12 +65,13 @@ The Red Wing Casino has two portal exits. Which one is active depends on the moo
 | New Moon, Quarter Moon, Full Moon, Last Quarter | Rahu |
 | Waxing Crescent, Waning Crescent, Waxing Gibbous, Waning Gibbous | Statehelm |
 
-Both edges (Casino↔Rahu and Casino↔Statehelm) are in the static graph. The solver currently treats both as always-available. A future improvement could filter edges by the current moon phase (already tracked via Meeus algorithms in `cdn_commands.rs`).
+Both edges (Casino↔Rahu and Casino↔Statehelm) are in the static graph. `plan_trip` filters edges by the current moon phase via `TravelConfig.casino_portal` (matched case-insensitively; anything unrecognized keeps both edges, optimistic): `"rahu"` excludes the Casino↔Statehelm edge, `"statehelm"` excludes Casino↔Rahu. The Trip Planner widget maps `get_current_moon_phase` to the portal destination using the same phase table as `ContextBar.vue`, and the graph is built with `ZoneGraph::new_excluding()` to remove the inactive edge before BFS runs.
 
 ### Friendly Name Resolution
 
-Bind locations from the game use friendly names ("Red Wing Casino", "Caves Beneath Gazluk") while the graph uses CDN area keys. `ZoneGraph::resolve_friendly_name()` handles the mapping. Supported names include all overworld zones plus common sub-zone names that appear in teleportation status reports.
+Bind locations from the game use friendly names ("Red Wing Casino", "Caves Beneath Gazluk", "Dungeons Beneath Eltibule") while the graph uses CDN area keys. `ZoneGraph::resolve_friendly_name()` handles the mapping. Supported names include all overworld zones (including Phantom Ilmari Desert / `AreaDesert2`) plus common sub-zone names that appear in teleportation status reports.
 
+Unrecognized names in `TravelConfig` are kept as-is and logged (`eprintln!`) at resolution; the solver then fails the plan with an "Unknown zone" error naming the zone rather than silently dropping the stop.
 ## How to Modify the Zone Graph
 
 ### Adding a new zone

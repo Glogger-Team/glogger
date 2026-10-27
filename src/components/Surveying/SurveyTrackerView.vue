@@ -28,7 +28,8 @@
             Start New Session
           </button>
 
-          <label class="flex items-center gap-2 text-xs text-text-secondary cursor-pointer px-1">
+          <label class="flex items-center gap-2 text-xs text-text-secondary cursor-pointer px-1"
+            title="Automatic detection needs Player.log survey events, which the current game client no longer writes. Manual start always works.">
             <input
               type="checkbox"
               class="accent-accent-gold"
@@ -109,7 +110,10 @@
       >
         <template v-if="store.historical.length === 0 && !store.hasActiveSession">
           <p class="italic">No sessions yet.</p>
-          <p>Start a session or craft a survey map to begin tracking.</p>
+          <p>Start a session manually to begin tracking — the current game client
+            writes no survey events to Player.log, so automatic use detection is
+            unavailable. Chat-loot attribution also needs a manually-entered
+            survey use (still pending), so no loot attributes yet.</p>
         </template>
         <template v-else>
           <p class="italic">Select a session from the list to view its detail.</p>

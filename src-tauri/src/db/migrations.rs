@@ -417,6 +417,26 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 76)?;
     }
 
+    if current_version < 77 {
+        migration_v77_roulette_number_check(conn)?;
+        super::record_migration(conn, 77)?;
+    }
+
+    if current_version < 78 {
+        migration_v78_milking_tz_twins(conn)?;
+        super::record_migration(conn, 78)?;
+    }
+
+    if current_version < 79 {
+        migration_v79_milking_tz_twins_corrected(conn)?;
+        super::record_migration(conn, 79)?;
+    }
+
+    if current_version < 80 {
+        migration_v80_currency_anchor_space_format(conn)?;
+        super::record_migration(conn, 80)?;
+    }
+
     tx.commit()?;
     Ok(())
 }
@@ -493,6 +513,117 @@ fn migration_v76_npc_favor_details(conn: &Connection) -> Result<()> {
          ALTER TABLE character_npc_favor ADD COLUMN councils_spent_at_vendor INTEGER;
          ALTER TABLE character_npc_favor ADD COLUMN vendor_reset_time TEXT;
          ALTER TABLE character_npc_favor ADD COLUMN player_notes TEXT;",
+    )?;
+    Ok(())
+}
+
+/// Migration V77: constrain `roulette_results.number` to the European wheel
+/// (0..=36). SQLite cannot add a CHECK to an existing table, so rebuild it
+/// (the v38 precedent). Out-of-range rows predate the parser guard and are
+/// deleted — they cannot be real spins.
+fn migration_v77_roulette_number_check(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DELETE FROM roulette_results WHERE number < 0 OR number > 36;
+         CREATE TABLE roulette_results_new (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             spun_at TEXT NOT NULL,
+             number INTEGER NOT NULL CHECK (number BETWEEN 0 AND 36)
+         );
+         INSERT INTO roulette_results_new (id, spun_at, number)
+             SELECT id, spun_at, number FROM roulette_results;
+         DROP TABLE roulette_results;
+         ALTER TABLE roulette_results_new RENAME TO roulette_results;
+         CREATE UNIQUE INDEX idx_roulette_dedup
+             ON roulette_results(spun_at, number);",
+    )?;
+    Ok(())
+}
+
+/// Migration V78: collapse `player_milking_log` tz twins — SUPERSEDED by V79.
+/// Shipped with the twin comparison backwards and matched nothing; harmless
+/// no-op kept as a version marker. See V79 for the corrected predicate.
+fn migration_v78_milking_tz_twins(_conn: &Connection) -> Result<()> {
+    // Superseded by V79: shipped with the twin comparison backwards (matched
+    // nothing on affected DBs — harmless no-op). Stays as a version marker so
+    // the chain never rewinds.
+    Ok(())
+}
+
+/// Migration V80: normalize `currency_estimate.anchor_at` to space-format UTC.
+///
+/// Export stamps are ISO (`2026-10-21T12:00:00Z`); the writer used to strip
+/// only the trailing `Z`, leaving `2026-10-21T12:00:00`. Chat event stamps
+/// are space-format (`%Y-%m-%d %H:%M:%S`), and at string position 10 a space
+/// (0x20) sorts before `T` (0x54) — so same-calendar-day post-export events
+/// compared *less* than their own anchor and the `event_ts > anchor_at`
+/// accrual guard silently dropped intraday wallet deltas until midnight. The
+/// writer now normalizes (`T` → space); this migration repairs existing rows.
+/// Next-day events were unaffected (date prefix decides), and the writer-side
+/// `WHERE anchor_at IS NULL OR excluded.anchor_at > ...` re-anchor rule
+/// compares normalised new values against repaired old ones, so no
+/// re-import ordering hazard.
+fn migration_v80_currency_anchor_space_format(conn: &Connection) -> Result<()> {
+    // Minimal test fixtures (e.g. the roulette v77 test) build only the
+    // tables they need — skip when the estimate table is absent (same guard
+    // shape as v79).
+    let has_table: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'currency_estimate')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_table {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "UPDATE currency_estimate
+            SET anchor_at = replace(anchor_at, 'T', ' ')
+          WHERE anchor_at LIKE '%T%';",
+    )?;
+    Ok(())
+}
+
+/// Migration V79: collapse `player_milking_log` tz twins (corrected).
+///
+/// offset while the archive backfill used each file's *own login-line* offset.
+/// When the two disagreed (scan before any login line set the settings), the
+/// same line produced two rows whose `milked_at` instants differ by exactly
+/// the offset disagreement — the v72 UNIQUE key compares stamped text, so it
+/// could not collapse them. The scan now prefers the file offset (same source
+/// as the backfill). This migration deletes, per same-key group, every row
+/// whose instant is an exact whole-hour multiple (1–12h) *below* a surviving
+/// row's instant. Assumption: the buggy writer stamped early (settings at the
+/// UTC default while the file offset was behind UTC), so the later instant is
+/// the file-offset truth — verified on the originating DB (196/196 pairs at
+/// exactly 5h, kept rows all carry file-offset stamps). Genuine milkings
+/// spaced to the second on whole-hour boundaries would also collapse; none
+/// existed there, and the group keeps a row either way, never zero.
+fn migration_v79_milking_tz_twins_corrected(conn: &Connection) -> Result<()> {
+    // Minimal test fixtures (e.g. the roulette v77 test) build only the
+    // tables they need — skip when the milking log is absent.
+    let has_table: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'player_milking_log')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_table {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "DELETE FROM player_milking_log AS twin
+          WHERE EXISTS (
+                SELECT 1 FROM player_milking_log AS orig
+                 WHERE orig.character_name = twin.character_name
+                   AND orig.server_name = twin.server_name
+                   AND orig.direction = twin.direction
+                   AND orig.other_player = twin.other_player
+                   AND orig.id != twin.id
+                   AND (strftime('%s', orig.milked_at) - strftime('%s', twin.milked_at)) % 3600 = 0
+                   AND (strftime('%s', orig.milked_at) - strftime('%s', twin.milked_at)) BETWEEN 3600 AND 43200
+          );",
     )?;
     Ok(())
 }
@@ -3539,7 +3670,7 @@ mod tests {
 
         // The new key is per-cow: re-milking Homer from another zone updates the
         // single row instead of inserting a second one. This mirrors
-        // `coordinator::record_cow_milk` — keep the two in step.
+        // `chat_status_dispatch::record_cow_milk_session` — keep the two in step.
         c.execute(
             "INSERT INTO milking_timers (character_name, server_name, cow_name, zone, last_milked_at)
              VALUES ('Me','Alpha','Homer','Serbule','2026-07-20T11:30:00+00:00')
@@ -3668,18 +3799,85 @@ mod tests {
     }
 
     #[test]
+    fn v79_collapses_tz_twins_keeping_file_offset_rows() {
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        // Same line twice: backfill stamp (file offset) + scan stamp
+        // (settings at UTC default, 5h early). Plus a genuine distinct milking.
+        c.execute_batch(
+            "INSERT INTO player_milking_log
+                (character_name, server_name, direction, other_player, milked_at)
+             VALUES
+               ('Me','Dreva','self_milked','Me','2026-10-17T02:49:52+00:00'),
+               ('Me','Dreva','self_milked','Me','2026-10-16T21:49:52+00:00'),
+               ('Me','Dreva','self_milked','Me','2026-10-17T03:00:06+00:00');",
+        )
+        .unwrap();
+        // Fresh run would skip v79 (already at head); call the fn directly.
+        migration_v79_milking_tz_twins_corrected(&c).unwrap();
+        let n: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM player_milking_log WHERE direction = 'self_milked'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 2, "twin collapses, distinct milking survives");
+        let kept: String = c
+            .query_row(
+                "SELECT milked_at FROM player_milking_log WHERE direction = 'self_milked' ORDER BY milked_at LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, "2026-10-17T02:49:52+00:00", "file-offset row survives");
+    }
+    #[test]
     fn run_migrations_is_idempotent_and_atomic() {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            76,
+            80,
             "fresh DB migrates to the head version"
         );
-        // Second run: every `if current_version < N` block is skipped. If the
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 76);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 80);
+    }
+
+    #[test]
+    fn v80_normalizes_t_shaped_currency_anchors() {
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        // Legacy writer shape: ISO with `Z` stripped, `T` intact. A same-day
+        // post-export event must accrue (space ' ' < 'T' before the fix meant
+        // the guard dropped it).
+        c.execute_batch(
+            "INSERT INTO currency_estimate (character_name, server_name, currency_name, anchor_amount, anchor_at, delta_since)
+             VALUES ('T','Dreva','GOLD',1000,'2026-10-26T12:00:00',0);",
+        )
+        .unwrap();
+        // Fresh run would skip v80 (already at head); call the fn directly.
+        migration_v80_currency_anchor_space_format(&c).unwrap();
+        let anchor: String = c
+            .query_row(
+                "SELECT anchor_at FROM currency_estimate WHERE character_name = 'T'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(anchor, "2026-10-26 12:00:00", "T separator normalized to space");
+        // Idempotent: already-normalized rows untouched, re-run is a no-op.
+        migration_v80_currency_anchor_space_format(&c).unwrap();
+        let anchor2: String = c
+            .query_row(
+                "SELECT anchor_at FROM currency_estimate WHERE character_name = 'T'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(anchor2, "2026-10-26 12:00:00");
     }
 }

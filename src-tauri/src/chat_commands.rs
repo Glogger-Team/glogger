@@ -1,6 +1,9 @@
 /// Tauri commands for chat functionality
+use crate::cdn_commands::GameDataState;
 use crate::chat_combat_parser;
 use crate::chat_parser;
+use crate::chat_status_dispatch::{self, DispatchIdentity, DispatchState};
+use crate::coordinator::{session_server_for, SessionServerLookup};
 use crate::db::game_state_commands::{record_milking_event, record_poop};
 use crate::db::queries::log_positions;
 use crate::db::{chat_commands, DbPool};
@@ -22,6 +25,7 @@ pub async fn scan_chat_logs(
     path: String,
     db_pool: State<'_, DbPool>,
     settings: State<'_, Arc<SettingsManager>>,
+    game_data: State<'_, GameDataState>,
     app: AppHandle,
 ) -> Result<ScanResult, String> {
     let chat_logs_path = PathBuf::from(&path);
@@ -67,19 +71,31 @@ pub async fn scan_chat_logs(
             None
         };
 
-        let (messages, new_position) =
+        let (local_messages, new_position) =
             chat_parser::read_chat_log(&log_file.file_path, start_position)
                 .map_err(|e| format!("Failed to read chat log: {e}"))?;
+        // Raw slice for per-line login identity (same byte window).
+        let (raw_text, _) = chat_parser::read_chat_log_raw(&log_file.file_path, start_position)
+            .map_err(|e| format!("Failed to read chat log: {e}"))?;
+        // Identity + the file's own tz offset come from one walk of the raw
+        // slice. Prefer the file offset for UTC conversion (backfill uses the
+        // same source); fall back to settings only when the slice carries no
+        // login line. A settings-only conversion stamps different UTC
+        // instants for the same lines and defeats the idempotency guards.
+        let (session_at_line, fallback, file_tz_offset) =
+            scan_session_identity(&raw_text, local_messages.len());
+        let convert_offset = file_tz_offset.unwrap_or(tz_offset);
 
-        // Convert chat timestamps from local time to UTC
-        let messages: Vec<_> = messages
-            .into_iter()
-            .map(|mut msg| {
-                msg.timestamp = chat_local_to_utc(msg.timestamp, tz_offset);
-                msg
+        // Convert chat timestamps from local time to UTC (keep the local
+        // copy for the dispatch's local-time dedup keys).
+        let messages: Vec<_> = local_messages
+            .iter()
+            .map(|msg| {
+                let mut converted = msg.clone();
+                converted.timestamp = chat_local_to_utc(msg.timestamp, convert_offset);
+                converted
             })
             .collect();
-
         // insert_chat_messages runs its own transaction internally, so no
         // outer transaction here — single-file and tail paths already call
         // it directly on the write connection. Position updates run on the
@@ -133,6 +149,24 @@ pub async fn scan_chat_logs(
             .map_err(|e| format!("Failed to update log position: {e}"))?;
             inserted
         };
+        // Structured dispatch with per-file identity (same rows the live
+        // drain would persist). Replay-safe: re-scan inserts nothing new.
+        // Identity comes from the same walk that supplied the tz offset.
+        if !messages.is_empty() {
+            let current_server = app_settings.active_server_name.clone();
+            run_scan_dispatch(
+                &db_pool,
+                &settings,
+                &game_data,
+                Some(&app),
+                &messages,
+                &local_messages,
+                &session_at_line,
+                fallback.as_deref(),
+                current_server.as_deref(),
+                &app_settings.watch_rules,
+            );
+        }
         total_messages += inserted;
         files_processed += 1;
     }
@@ -452,11 +486,242 @@ fn milked_by_events_in_messages(
         .collect()
 }
 
+/// Run the shared structured dispatch over freshly scanned messages with
+/// per-file session identity, then emit one `game-state-updated` for the
+/// union of touched domains. Shared by `scan_chat_logs`,
+/// `scan_chat_log_file`, and `tail_chat_log` (command signatures unchanged).
+///
+/// Identity: the file's own login lines name the producing session; callers
+/// pass them line-indexed (`session_at_line`). Lines before the first login
+/// line in a resumed file fall back to `session_server_for`
+/// (`user_characters`); lines with no resolvable session skip structured
+/// dispatch (never misattributed to whoever is active). `local_messages`
+/// carry local timestamps for the dispatch's dedup keys; `utc_messages` are
+/// the converted rows already stored.
+#[allow(clippy::too_many_arguments)]
+fn run_scan_dispatch(
+    db_pool: &DbPool,
+    settings: &crate::settings::SettingsManager,
+    game_data: &GameDataState,
+    app: Option<&AppHandle>,
+    utc_messages: &[chat_parser::ChatMessage],
+    local_messages: &[chat_parser::ChatMessage],
+    session_at_line: &[Option<DispatchIdentity>],
+    fallback_character: Option<&str>,
+    current_server: Option<&str>,
+    watch_rules: &[crate::settings::WatchRule],
+) -> Vec<String> {
+    let mut arena = crate::arena_parser::ArenaTracker::new();
+    let mut last_rez_dedup = std::collections::HashMap::new();
+    let mut recent_damage: Vec<crate::chat_combat_parser::ChatCombatEvent> = Vec::new();
+    let mut pending_cow: Option<String> = None;
+    let mut domains: Vec<String> = Vec::new();
+    for (idx, (utc_msg, local_msg)) in utc_messages.iter().zip(local_messages.iter()).enumerate() {
+        let identity: Option<DispatchIdentity> = match session_at_line.get(idx).and_then(|s| s.clone()) {
+            Some(id) => Some(id),
+            None => match fallback_character {
+                // Resumed mid-session: the user_characters row for the file's
+                // character, else skip the line.
+                Some(character) => match session_server_for(db_pool, character, current_server) {
+                    SessionServerLookup::Row(server) => Some(DispatchIdentity {
+                        character: character.to_string(),
+                        server,
+                    }),
+                    SessionServerLookup::NoRow | SessionServerLookup::Failed => None,
+                },
+                None => None,
+            },
+        };
+        let local_ts = local_msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
+        let mut dstate = DispatchState {
+            arena_tracker: &mut arena,
+            last_rez_dedup: &mut last_rez_dedup,
+            recent_damage: &mut recent_damage,
+            pending_cow_interaction: &mut pending_cow,
+            current_area: None,
+            // Scan paths never accrue: the accumulator has no per-line
+            // memory, so re-scanning lines the live drain already counted
+            // would double-count (see flag docs on `DispatchState`).
+            count_currency: false,
+        };
+        let mut outcome = chat_status_dispatch::dispatch_chat_message(
+            db_pool,
+            game_data,
+            identity.as_ref(),
+            utc_msg,
+            &local_ts,
+            None,
+            &mut dstate,
+            watch_rules,
+        );
+        // Session-keyed stack correction (see `DispatchOutcome::staged_gains`
+        // docs): the Player.log drain wrote fallback `stack_size = 1` rows,
+        // and the chat line carries the real quantity. Correct inline per
+        // line, keyed by the line's own session identity — never the
+        // drain-final identity. Idempotent: only `stack_size = 1` rows match.
+        for (item_name, quantity) in std::mem::take(&mut outcome.staged_gains) {
+            if let Some(id) = identity.as_ref() {
+                if quantity > 1 {
+                    // Resolve the internal name like the manager path does:
+                    // inventory rows store the Player.log internal token,
+                    // which often differs from the chat display name
+                    // (e.g. "BottleOfMilk" vs "Bottle of Milk").
+                    let internal_name: Option<String> = game_data
+                        .try_read()
+                        .ok()
+                        .and_then(|gd| {
+                            gd.resolve_item(&item_name)
+                                .and_then(|info| info.internal_name.clone())
+                        });
+                    if let Ok(conn) = db_pool.get_write() {
+                        let changed = crate::game_state::correct_stack_in_table_for(
+                            &conn,
+                            &id.character,
+                            &id.server,
+                            &item_name,
+                            internal_name.as_deref(),
+                            quantity,
+                        );
+                        for d in changed {
+                            if !domains.iter().any(|x| *x == d) {
+                                domains.push(d.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let had_arena = outcome.domains.iter().any(|d| d == "arena");
+        for d in std::mem::take(&mut outcome.domains) {
+            if !domains.iter().any(|x| *x == d) {
+                domains.push(d);
+            }
+        }
+        // Arena bet rescan on a fresh resolution (mirrors the live drain):
+        // the idempotent Player.log rescan resolves bets against the new
+        // match. Same retain/drop rule — drop `arena` when the rescan found
+        // nothing and the match arm didn't claim it.
+        if outcome.arena_resolved {
+            let mut changed = true;
+            match crate::db::arena_commands::backfill_bets_from_player_logs(settings, db_pool) {
+                Ok(n) if n > 0 => {}
+                Ok(_) => changed = had_arena,
+                Err(e) => {
+                    eprintln!("[run_scan_dispatch] Arena bet rescan failed: {e}");
+                    changed = had_arena;
+                }
+            }
+            if changed {
+                if !domains.iter().any(|x| x == "arena") {
+                    domains.push("arena".to_string());
+                }
+            } else {
+                domains.retain(|d| d != "arena");
+            }
+        }
+        // Forward the same structured events the live drain emits so a scan
+        // refreshes open widgets identically (death/rez feeds, chat-status
+        // listeners, watch toasts).
+        if let Some(app) = app {
+            if let Some(ev) = outcome.chat_status_event {
+                app.emit("chat-status-event", &ev).ok();
+            }
+            if let Some(ev) = outcome.character_death {
+                app.emit("character-death", &ev).ok();
+            }
+            if let Some(ev) = outcome.enemy_killed {
+                app.emit("enemy-killed", &ev).ok();
+            }
+            if let Some(ev) = outcome.character_resuscitated {
+                app.emit("character-resuscitated", &ev).ok();
+            }
+            for ev in outcome.watch_triggered {
+                app.emit("watch-rule-triggered", &ev).ok();
+            }
+        }
+        // Observability parity with the live drain (no behavior change):
+        // scans neither import ReportSaved files (live-only by design) nor
+        // count unknown skills — but log both so a scan-hit skill or report
+        // line leaves a trace instead of vanishing silently.
+        for path in std::mem::take(&mut outcome.report_saved_paths) {
+            eprintln!("[run_scan_dispatch] Skipping scan ReportSaved import (live-only): {path}");
+        }
+        for skill in std::mem::take(&mut outcome.unknown_skills) {
+            eprintln!("[run_scan_dispatch] Skipping scan chat level-up for unresolvable skill: {skill}");
+        }
+    }
+    if !domains.is_empty() {
+        if let Some(app) = app {
+            app.emit("game-state-updated", &domains).ok();
+        }
+    }
+    domains
+}
+
+/// Per-line session identity for one scanned file slice: for each parsed
+/// message index, the login session in force (`Logged In As` lines open a
+/// session; `Logged Out` closes it). Also returns a fallback character (the
+/// file's first login character) for pre-login lines in resumed files, and
+/// the file's own timezone offset (first login line that carries one) so
+/// UTC conversion matches the backfill path exactly — the settings offset
+/// may be unset or stale when the scan runs, which would stamp different
+/// UTC instants for the same lines and defeat the idempotency guards.
+///
+/// Built on `parse_chat_lines_tagged`, not a parallel raw-line walk: the
+/// tagged stream yields one tag per *parsed* message by construction, so an
+/// unparseable timestamped line (parsed as zero messages) cannot shift every
+/// later index the way a `is_timestamped_line`-gated push would.
+fn scan_session_identity(
+    raw_text: &str,
+    parsed_count: usize,
+) -> (Vec<Option<DispatchIdentity>>, Option<String>, Option<i32>) {
+    let mut fallback: Option<String> = None;
+    let mut file_tz_offset: Option<i32> = None;
+    let mut logged_out_before_first_login = false;
+    // The file's own offset + fallback come from the raw login lines (the
+    // backfill uses the same source). Login lines are line-anchored, so a
+    // plain line scan is exact here — session identity itself comes from
+    // the tagged parse below.
+    for line in raw_text.lines() {
+        if let Some(info) = chat_parser::parse_chat_login_line(line) {
+            fallback.get_or_insert_with(|| info.character_name.clone());
+            if file_tz_offset.is_none() {
+                file_tz_offset = info.timezone_offset_seconds;
+            }
+        } else if line.contains("******** Logged Out") && fallback.is_none() {
+            // Resumed slice whose first login comes after a logout: the
+            // pre-login lines belong to a closed session, not to whoever
+            // logs in next — no fallback attribution (skip those lines).
+            logged_out_before_first_login = true;
+        }
+    }
+    if logged_out_before_first_login {
+        fallback = None;
+    }
+    let mut session_at_line: Vec<Option<DispatchIdentity>> =
+        chat_parser::parse_chat_lines_tagged(raw_text)
+            .into_iter()
+            .map(|(_, tag)| {
+                tag.map(|t| DispatchIdentity {
+                    character: t.character_name,
+                    server: t.server_name,
+                })
+            })
+            .collect();
+    session_at_line.truncate(parsed_count);
+    while session_at_line.len() < parsed_count {
+        session_at_line.push(None);
+    }
+    (session_at_line, fallback, file_tz_offset)
+}
+
 #[tauri::command]
 pub async fn scan_chat_log_file(
     path: String,
     db_pool: State<'_, DbPool>,
     settings: State<'_, Arc<SettingsManager>>,
+    game_data: State<'_, GameDataState>,
+    app: AppHandle,
 ) -> Result<ScanResult, String> {
     let log_path = PathBuf::from(&path);
     let app_settings = settings.get();
@@ -495,28 +760,41 @@ pub async fn scan_chat_log_file(
         None
     };
 
-    let (messages, new_position) = chat_parser::read_chat_log(&log_path, start_position)
+    let (local_messages, new_position) = chat_parser::read_chat_log(&log_path, start_position)
         .map_err(|e| format!("Failed to read chat log: {e}"))?;
+    let (raw_text, _) = chat_parser::read_chat_log_raw(&log_path, start_position)
+        .map_err(|e| format!("Failed to read chat log: {e}"))?;
+    // File's own tz offset first (backfill parity), settings as fallback.
+    let (session_at_line, fallback, file_tz_offset) =
+        scan_session_identity(&raw_text, local_messages.len());
+    let convert_offset = file_tz_offset.unwrap_or(tz_offset);
 
-    // Convert chat timestamps from local time to UTC
-    let messages: Vec<_> = messages
-        .into_iter()
-        .map(|mut msg| {
-            msg.timestamp = chat_local_to_utc(msg.timestamp, tz_offset);
-            msg
+    // Convert chat timestamps from local time to UTC (keep the local
+    // copy for the dispatch's local-time dedup keys).
+    let messages: Vec<_> = local_messages
+        .iter()
+        .map(|msg| {
+            let mut converted = msg.clone();
+            converted.timestamp = chat_local_to_utc(msg.timestamp, convert_offset);
+            converted
         })
         .collect();
 
-    let conn = db_pool
-        .get_write()
-        .map_err(|e| format!("Database error: {e}"))?;
-
+    // The single-writer checkout MUST drop before run_scan_dispatch below:
+    // the writes pool is max_size(1) and every dispatch arm checks out its
+    // own write connection, so holding `conn` across dispatch would starve
+    // it (15s pool timeout, arms silently skip).
     let mut messages_imported = 0;
-    if !messages.is_empty() {
-        messages_imported =
-            chat_commands::insert_chat_messages(&conn, &messages, &file_name, &excluded_channels)
-                .map_err(|e| format!("Failed to insert messages: {e}"))?;
-    }
+    {
+        let conn = db_pool
+            .get_write()
+            .map_err(|e| format!("Database error: {e}"))?;
+
+        if !messages.is_empty() {
+            messages_imported =
+                chat_commands::insert_chat_messages(&conn, &messages, &file_name, &excluded_channels)
+                    .map_err(|e| format!("Failed to insert messages: {e}"))?;
+        }
 
     let metadata = file_date.map(|d| {
         serde_json::json!({
@@ -535,6 +813,25 @@ pub async fn scan_chat_log_file(
         metadata.as_deref(),
     )
     .map_err(|e| format!("Failed to update log position: {e}"))?;
+    }
+
+    // Structured dispatch with per-file identity (same rows the live
+    // drain would persist). Replay-safe: re-scan inserts nothing new.
+    // Identity comes from the same walk that supplied the tz offset.
+    if !messages.is_empty() {
+        run_scan_dispatch(
+            &db_pool,
+            &settings,
+            &game_data,
+            Some(&app),
+            &messages,
+            &local_messages,
+            &session_at_line,
+            fallback.as_deref(),
+            app_settings.active_server_name.as_deref(),
+            &app_settings.watch_rules,
+        );
+    }
 
     Ok(ScanResult {
         files_processed: 1,
@@ -653,6 +950,8 @@ pub async fn tail_chat_log(
     chat_log_file: String,
     db_pool: State<'_, DbPool>,
     settings: State<'_, Arc<SettingsManager>>,
+    game_data: State<'_, GameDataState>,
+    app: AppHandle,
 ) -> Result<Vec<chat_commands::ChatMessageRow>, String> {
     let log_path = PathBuf::from(&chat_log_file);
     let app_settings = settings.get();
@@ -676,19 +975,28 @@ pub async fn tail_chat_log(
             .map_err(|e| format!("Failed to get log position: {e}"))?
     };
 
-    let (messages, new_position) = chat_parser::read_chat_log(&log_path, start_position)
+    let (local_messages, new_position) = chat_parser::read_chat_log(&log_path, start_position)
+        .map_err(|e| format!("Failed to read chat log: {e}"))?;
+    let (raw_text, _) = chat_parser::read_chat_log_raw(&log_path, start_position)
         .map_err(|e| format!("Failed to read chat log: {e}"))?;
 
-    if messages.is_empty() {
+    if local_messages.is_empty() {
         return Ok(Vec::new());
     }
 
-    // Convert chat timestamps from local time to UTC
-    let messages: Vec<_> = messages
-        .into_iter()
-        .map(|mut msg| {
-            msg.timestamp = chat_local_to_utc(msg.timestamp, tz_offset);
-            msg
+    // File's own tz offset first (backfill parity), settings as fallback.
+    let (session_at_line, fallback, file_tz_offset) =
+        scan_session_identity(&raw_text, local_messages.len());
+    let convert_offset = file_tz_offset.unwrap_or(tz_offset);
+
+    // Convert chat timestamps from local time to UTC (keep the local
+    // copy for the dispatch's local-time dedup keys).
+    let messages: Vec<_> = local_messages
+        .iter()
+        .map(|msg| {
+            let mut converted = msg.clone();
+            converted.timestamp = chat_local_to_utc(msg.timestamp, convert_offset);
+            converted
         })
         .collect();
 
@@ -704,11 +1012,13 @@ pub async fn tail_chat_log(
         None
     };
 
-    let conn = db_pool
-        .get_write()
-        .map_err(|e| format!("Database error: {e}"))?;
-    chat_commands::insert_chat_messages(&conn, &messages, file_name, &excluded_channels)
-        .map_err(|e| format!("Failed to insert messages: {e}"))?;
+    // Same scoping as above: drop the writer before run_scan_dispatch.
+    {
+        let conn = db_pool
+            .get_write()
+            .map_err(|e| format!("Database error: {e}"))?;
+        chat_commands::insert_chat_messages(&conn, &messages, file_name, &excluded_channels)
+            .map_err(|e| format!("Failed to insert messages: {e}"))?;
 
     let file_date = chat_parser::parse_chat_log_filename(file_name)
         .ok_or("Invalid chat log filename format")?;
@@ -728,6 +1038,23 @@ pub async fn tail_chat_log(
         Some(&metadata),
     )
     .map_err(|e| format!("Failed to update log position: {e}"))?;
+    }
+
+    // Structured dispatch with per-file identity (same rows the live
+    // drain would persist). Replay-safe: re-tail inserts nothing new.
+    // Identity comes from the same walk that supplied the tz offset.
+    run_scan_dispatch(
+        &db_pool,
+        &settings,
+        &game_data,
+        Some(&app),
+        &messages,
+        &local_messages,
+        &session_at_line,
+        fallback.as_deref(),
+        app_settings.active_server_name.as_deref(),
+        &app_settings.watch_rules,
+    );
 
     // Convert to ChatMessageRow for return
     let rows: Vec<chat_commands::ChatMessageRow> = messages
@@ -926,6 +1253,32 @@ mod tests {
             .iter()
             .filter_map(|l| chat_parser::parse_chat_line(l))
             .collect()
+    }
+
+    #[test]
+    fn scan_identity_prefers_file_tz_offset() {
+        // Raw slice with a login line carrying -05:00: identity resolves and
+        // the file offset is captured for UTC conversion (backfill parity).
+        // Tags come from `parse_chat_lines_tagged`: the login line itself
+        // keeps the *previous* session (`None` here — it is an untagged
+        // system message no identity-scoped arm touches); the gain line
+        // after it carries the new session.
+        let raw = "26-10-26 19:59:00\t**************************************** Logged In As Alice. Server Dreva. Timezone Offset -05:00:00.\n\
+                   26-10-26 20:00:00\t[Status] Azyima has milked you.\n";
+        let (at_line, fallback, tz) = scan_session_identity(raw, 2);
+        assert_eq!(fallback.as_deref(), Some("Alice"));
+        assert_eq!(tz, Some(-18000));
+        assert_eq!(at_line.len(), 2);
+        assert!(at_line[0].is_none());
+        let id = at_line[1].as_ref().expect("gain line tagged");
+        assert_eq!(id.character, "Alice");
+        assert_eq!(id.server, "Dreva");
+        // No login line: no identity, no offset — caller falls back to settings.
+        let raw2 = "26-10-26 20:00:00\t[Status] Azyima has milked you.\n";
+        let (at_line2, fallback2, tz2) = scan_session_identity(raw2, 1);
+        assert_eq!(fallback2, None);
+        assert_eq!(tz2, None);
+        assert!(at_line2.iter().all(|s| s.is_none()));
     }
 
     #[test]

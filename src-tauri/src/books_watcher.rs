@@ -533,12 +533,13 @@ fn ingest_shop_log_file(
     let shop_log = parse_shop_log(title, content, "imported", base_year);
 
     // Owner resolution (mirrors import_shop_log_file): the parsed advisory
-    // owner wins; a bought-only file is claimed for the active character.
+    // owner wins; a bought-only file is claimed for the active character
+    // (the game only lets a player open their own shop log, so active ==
+    // owner by construction — the coordinator's live path does the same).
     let effective_owner = shop_log
         .owner
         .clone()
         .or_else(|| Some(character.to_string()));
-
     let inputs: Vec<StallEventInput> = shop_log
         .entries
         .iter()

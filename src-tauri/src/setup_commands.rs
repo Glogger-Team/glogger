@@ -173,6 +173,13 @@ pub fn scan_reports_for_characters(path: String) -> Result<Vec<DiscoveredCharact
     Ok(result)
 }
 
+/// Record a character in `user_characters` (startup picker state).
+///
+/// `source` is sticky toward `'report'`: a row is `'report'` once a VIP
+/// report names the character (`SetupCharacterStep.vue` picks `"report"` vs
+/// `"manual"`), and neither a later manual pick nor a later report import
+/// can move it back (see the `ON CONFLICT` CASE). Consumers treat `'report'`
+/// as "a real export exists"; `'manual'` means typed-in by hand.
 #[tauri::command]
 pub fn save_user_character(
     db: State<'_, DbPool>,
@@ -180,6 +187,18 @@ pub fn save_user_character(
     server_name: String,
     source: String,
 ) -> Result<(), String> {
+    // The schema only CHECKs `source`, not names — blank names would
+    // otherwise insert empty-string rows and pollute identity lookups.
+    // Reject them (and off-schema sources) here with the column named.
+    if character_name.trim().is_empty() {
+        return Err("character_name must not be empty".to_string());
+    }
+    if server_name.trim().is_empty() {
+        return Err("server_name must not be empty".to_string());
+    }
+    if !["report", "manual", "login"].contains(&source.as_str()) {
+        return Err("source must be one of 'report', 'manual', 'login'".to_string());
+    }
     let conn = db
         .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;

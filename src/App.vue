@@ -215,11 +215,14 @@ function handleSearchNavigate(result: SearchResult) {
     return;
   }
 
-  // Otherwise navigate to the view + sub-tab
+  // Otherwise navigate to the view + sub-tab. Resolve through MenuBar's
+  // `resolveSubTab` so a stale/invalid id (e.g. pre-rename pref) falls back
+  // to the view's first tab instead of rendering a blank pane.
   navigateToView(result.navigation.view);
   if (result.navigation.subTab && menuBarRef.value) {
-    menuBarRef.value.activeSubTabs[result.navigation.view] = result.navigation.subTab;
-    activeSubTab.value = result.navigation.subTab;
+    const resolved = menuBarRef.value.resolveSubTab(result.navigation.view, result.navigation.subTab);
+    menuBarRef.value.activeSubTabs[result.navigation.view] = resolved;
+    activeSubTab.value = resolved;
   }
 }
 
@@ -228,8 +231,9 @@ provideViewNavigation((target) => {
   visited.add(view);
   currentView.value = view;
   if (target.subTab && menuBarRef.value) {
-    menuBarRef.value.activeSubTabs[view] = target.subTab;
-    activeSubTab.value = target.subTab;
+    const resolved = menuBarRef.value.resolveSubTab(view, target.subTab);
+    menuBarRef.value.activeSubTabs[view] = resolved;
+    activeSubTab.value = resolved;
   }
 });
 

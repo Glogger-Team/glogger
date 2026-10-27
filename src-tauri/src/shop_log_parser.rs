@@ -84,7 +84,10 @@ pub struct ShopLog {
     /// (`added`, `removed`, `configured`, `visible`, `collected`). Used ONLY
     /// by the Import command to distinguish friend-file / alt-file /
     /// bought-only cases. The live-tailing coordinator path ignores this
-    /// and stamps the active character as owner instead.
+    /// and stamps the active character as owner instead (the game only lets
+    /// a player open their own shop log, so active == owner by
+    /// construction); the file watcher does the same via
+    /// `effective_owner = owner.or(active_character)`.
     pub owner: Option<String>,
 }
 
@@ -97,8 +100,16 @@ pub struct ShopLog {
 /// * `base_year` — the year to start the resolver at; use
 ///   [`stall_year_resolver::base_year_for_live`] for live tailing.
 pub fn parse_shop_log(title: &str, content: &str, log_timestamp: &str, base_year: i32) -> ShopLog {
-    let content = content.replace("\\n", "\n");
-
+    // Live book bodies carry literal `\n` escapes (ProcessBook shape); files
+    // read from disk already have real newlines, for which this is a no-op.
+    // Strip a leading UTF-8 BOM first, symmetric with `parse_drop_data`
+    // (kill_tracking_commands.rs) and `stats_owner` (books_watcher.rs): an
+    // Excel-saved or re-exported book would otherwise glue `\u{feff}` to the
+    // first timestamp and shift its entry's match start.
+    let content = content
+        .strip_prefix('\u{feff}')
+        .unwrap_or(content)
+        .replace("\\n", "\n");
     let matches: Vec<_> = ENTRY_RE.find_iter(&content).collect();
     let mut raw_entries: Vec<(String, String)> = Vec::new();
     for (i, m) in matches.iter().enumerate() {

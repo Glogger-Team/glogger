@@ -320,12 +320,29 @@ async function loadLeaderboards() {
     // scan must not block the rest of the archive.
     if (char) {
       await ensureAbilityHistory(char, server)
-      const refreshed = await invoke<PlayerMilkingEntry[]>('get_player_milking_leaderboard', {
-        characterName: char,
-        serverName: server,
-        direction: 'self_milked',
-      })
-      selfMilkedCount.value = refreshed.reduce((sum, e) => sum + e.count, 0)
+      // The backfill records milked/milked_by rows silently (no
+      // game-state-updated emit), so re-read all three lists, not just
+      // the counter — otherwise the tabs stay empty until the next live event.
+      const refreshed = await Promise.all([
+        invoke<PlayerMilkingEntry[]>('get_player_milking_leaderboard', {
+          characterName: char,
+          serverName: server,
+          direction: 'milked',
+        }),
+        invoke<PlayerMilkingEntry[]>('get_player_milking_leaderboard', {
+          characterName: char,
+          serverName: server,
+          direction: 'milked_by',
+        }),
+        invoke<PlayerMilkingEntry[]>('get_player_milking_leaderboard', {
+          characterName: char,
+          serverName: server,
+          direction: 'self_milked',
+        }),
+      ])
+      milkedLeaderboard.value = refreshed[0]
+      milkedByLeaderboard.value = refreshed[1]
+      selfMilkedCount.value = refreshed[2].reduce((sum, e) => sum + e.count, 0)
     }
   } catch (e) {
     console.error('Failed to load milking leaderboards:', e)

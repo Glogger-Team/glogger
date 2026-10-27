@@ -47,7 +47,10 @@ pub fn is_timestamped_line(line: &str) -> bool {
     if line.len() < 19 {
         return false;
     }
-    // Quick check: digits-digits-digits space digits:digits:digits tab
+    // Gate on the full shape, not just separators: every other position in
+    // the stamp must be an ASCII digit. A separator-only check would treat
+    // a continuation line like "ab-cd-ef gh:ij:kl\t..." as a new message
+    // boundary and split one message in two.
     let bytes = line.as_bytes();
     bytes[2] == b'-'
         && bytes[5] == b'-'
@@ -56,6 +59,10 @@ pub fn is_timestamped_line(line: &str) -> bool {
         && bytes[14] == b':'
         && bytes.len() > 17
         && bytes[17] == b'\t'
+        && {
+            const DIGIT: [usize; 12] = [0, 1, 3, 4, 6, 7, 9, 10, 12, 13, 15, 16];
+            DIGIT.iter().all(|&i| bytes[i].is_ascii_digit())
+        }
 }
 
 /// Parse a single chat log line into a ChatMessage.
@@ -528,6 +535,32 @@ pub fn read_chat_log(
     Ok((messages, file_size))
 }
 
+/// Read the raw text of a chat log slice (same byte window as
+/// [`read_chat_log`]) without parsing. Scan paths use this to recover the
+/// file's own login lines for per-file session identity: the parsed
+/// `ChatMessage` stream drops the login marker's server info (system
+/// messages keep only text), so identity must come from the raw lines.
+pub fn read_chat_log_raw(
+    file_path: &Path,
+    start_position: u64,
+) -> std::io::Result<(String, u64)> {
+    use std::io::Read;
+
+    let mut file = File::open(file_path)?;
+    let file_size = file.metadata()?.len();
+
+    if start_position >= file_size {
+        return Ok((String::new(), start_position));
+    }
+
+    file.seek(SeekFrom::Start(start_position))?;
+
+    let mut content = Vec::new();
+    file.read_to_end(&mut content)?;
+
+    Ok((String::from_utf8_lossy(&content).into_owned(), file_size))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -789,6 +822,8 @@ Dying together\n\
         assert!(!is_timestamped_line("[Item: Sword]"));
         assert!(!is_timestamped_line("just some text"));
         assert!(!is_timestamped_line(""));
+        // Separator-shaped but letter-filled: must not open a new message.
+        assert!(!is_timestamped_line("ab-cd-ef gh:ij:kl\t[Global] hi"));
     }
 
     // ── Tell parsing tests ───────────────────────────────────────────────

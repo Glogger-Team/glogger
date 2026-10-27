@@ -13,8 +13,9 @@
 
 <script setup lang="ts">
 import PaneLayout from '../Shared/PaneLayout.vue'
-import LiveInventoryTab from './LiveInventoryTab.vue'
+
 import InventoryView from '../Character/InventoryView.vue'
+import LiveInventoryTab from './LiveInventoryTab.vue'
 import VaultDatabaseTab from './VaultDatabaseTab.vue'
 import ConsolidateTab from './ConsolidateTab.vue'
 

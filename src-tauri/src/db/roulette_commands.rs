@@ -46,11 +46,16 @@ pub struct RouletteStats {
 }
 
 /// Persist a single roulette spin outcome. Idempotent via `idx_roulette_dedup`.
+/// Rejects numbers outside the European wheel (0..=36), matching the parser
+/// guard and the `roulette_results` CHECK constraint (migration v77).
 pub fn record_roulette_result(
     conn: &rusqlite::Connection,
     spun_at: &str,
     number: u32,
 ) -> Result<(), String> {
+    if number > 36 {
+        return Err(format!("Invalid roulette number: {number} (must be 0..=36)"));
+    }
     conn.execute(
         "INSERT OR IGNORE INTO roulette_results (spun_at, number) VALUES (?1, ?2)",
         rusqlite::params![spun_at, number],
@@ -188,6 +193,11 @@ pub fn backfill_from_chat_logs(settings: &SettingsManager, db: &DbPool) -> Resul
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| format!("Failed to begin transaction: {e}"))?;
         for (timestamp, number) in &spins {
+            // Defense in depth alongside the parser guard and the DB CHECK:
+            // never let one bad row abort the whole file's transaction.
+            if *number > 36 {
+                continue;
+            }
             let n = tx
                 .execute(
                     "INSERT OR IGNORE INTO roulette_results (spun_at, number)
@@ -280,5 +290,59 @@ mod tests {
         assert_eq!(stats.total, 0);
         assert!(stats.counts.is_empty());
         assert_eq!(stats.last_number, None);
+    }
+
+    #[test]
+    fn test_record_rejects_out_of_range() {
+        let conn = setup();
+        record_roulette_result(&conn, "2026-06-25 21:58:40", 0).unwrap();
+        record_roulette_result(&conn, "2026-06-25 21:59:40", 36).unwrap();
+        assert!(record_roulette_result(&conn, "2026-06-25 22:00:00", 37).is_err());
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM roulette_results", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2, "out-of-range spin must not be stored");
+    }
+
+    #[test]
+    fn test_migrated_check_rejects_out_of_range() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);
+             CREATE TABLE roulette_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                spun_at TEXT NOT NULL,
+                number INTEGER NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_roulette_dedup
+                ON roulette_results(spun_at, number);
+            INSERT INTO roulette_results (spun_at, number)
+                VALUES ('2026-06-25 21:58:40', 37);
+            INSERT INTO schema_migrations (version) VALUES (76);",
+        )
+        .unwrap();
+        crate::db::migrations::run_migrations(&conn, None).unwrap();
+        // Pre-existing out-of-range row is purged by the rebuild.
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM roulette_results", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+        // Boundaries pass; 37 is rejected by the CHECK itself.
+        conn.execute(
+            "INSERT INTO roulette_results (spun_at, number) VALUES ('t1', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO roulette_results (spun_at, number) VALUES ('t2', 36)",
+            [],
+        )
+        .unwrap();
+        assert!(conn
+            .execute(
+                "INSERT INTO roulette_results (spun_at, number) VALUES ('t3', 37)",
+                [],
+            )
+            .is_err());
     }
 }

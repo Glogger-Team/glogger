@@ -6,37 +6,6 @@
       <!-- Header -->
       <div class="flex items-center justify-between">
         <h2 class="text-lg font-semibold text-text-primary">Statehelm Reputation</h2>
-        <div class="flex items-center gap-3">
-          <div v-if="filteredStatuses.length > 0" class="flex items-center gap-3">
-            <span
-              class="text-sm text-text-muted"
-              :title="`Each Statehelm NPC accepts ${MAX_GIFTS_PER_WEEK} gifts per week — ${trackedNpcCount} tracked NPCs × ${MAX_GIFTS_PER_WEEK}. Every NPC's cap resets Monday 00:00 America/New_York.`">
-              {{ totalGiftsGiven }} of {{ totalGiftsMax }} gift slots used
-            </span>
-            <span class="text-xs text-text-dim">
-              Resets {{ weekResetLabel }}
-            </span>
-          </div>
-          <button
-            @click="rescanLogs"
-            :disabled="rescanning"
-            class="px-3 py-1.5 bg-surface-elevated border border-border-light rounded text-text-secondary text-sm cursor-pointer transition-all hover:bg-border-default hover:text-text-primary disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
-            title="Re-read Player.log, Player-prev.log and archived copies, and reconcile each NPC's weekly gift count to the game's own note"
-          >{{ rescanning ? 'Rescanning…' : 'Rescan logs' }}</button>
-        </div>
-      </div>
-
-      <!-- Where the week's gifts went — the same traceable line the dashboard
-           widget carries, so the two views teach the same reading. -->
-      <div v-if="giftedThisWeek.length > 0" class="text-xs text-text-dim">
-        Gifted this week:
-        {{ giftedThisWeek.slice(0, 6).map(g => `${g.name} ${g.gifts}/${g.max}`).join(' · ')
-        }}<span v-if="giftedThisWeek.length > 6"> +{{ giftedThisWeek.length - 6 }} more</span>
-      </div>
-
-      <!-- Rescan status -->
-      <div v-if="rescanMessage" class="text-xs" :class="rescanError ? 'text-value-negative' : 'text-text-dim'">
-        {{ rescanMessage }}
       </div>
 
       <!-- Filters -->
@@ -68,24 +37,11 @@
           Storage
         </label>
 
-        <span class="text-border-default">|</span>
-
-        <!-- Hide maxed gifts -->
-        <label class="flex items-center gap-1 text-text-secondary cursor-pointer">
-          <input type="checkbox" v-model="hideMaxedGifts" class="accent-accent-gold" />
-          Hide maxed gifts
-        </label>
-        <label
-          class="flex items-center gap-1 text-text-secondary cursor-pointer"
-          title="Keeps only the NPCs whose gifts can move their reputation — the set the header's gift total counts">
-          <input type="checkbox" v-model="onlyGiftMattering" class="accent-accent-gold" />
-          Only NPCs whose gifts matter
-        </label>
       </div>
 
       <EmptyState
         v-if="!loading && npcStatuses.length === 0"
-        primary="No giftable Statehelm NPCs found."
+        primary="No Statehelm NPCs found."
         secondary="NPC data may still be loading — the CDN game data is fetched in the background at startup." />
 
       <EmptyState
@@ -100,31 +56,10 @@
           :key="status.npc.key"
           :npc="status.npc"
           :favor-tier="status.favorTier"
-          :gift-tracking="{ giftsThisWeek: status.giftsThisWeek, maxGifts: status.maxGifts }"
           :vendor-status="gameState.vendorByNpc[status.npc.key] ?? null"
-          :show-gift-tracking="status.giftTracking"
           :selected="selectedNpcKey === status.npc.key"
           @select="selectNpc(status.npc.key)"
-        >
-          <template #gift-actions>
-            <div class="flex items-center gap-0.5">
-              <button
-                class="w-4 h-4 flex items-center justify-center rounded text-[10px] text-text-muted hover:text-text-primary hover:bg-surface-default transition-colors"
-                :class="{ 'opacity-30 pointer-events-none': status.giftsThisWeek <= 0 }"
-                title="Remove a gift"
-                @click.stop="removeGift(status.npc.key)">
-                -
-              </button>
-              <button
-                class="w-4 h-4 flex items-center justify-center rounded text-[10px] text-text-muted hover:text-text-primary hover:bg-surface-default transition-colors"
-                :class="{ 'opacity-30 pointer-events-none': status.giftsThisWeek >= status.maxGifts }"
-                title="Add a gift"
-                @click.stop="addGift(status.npc.key, status.npc.name)">
-                +
-              </button>
-            </div>
-          </template>
-        </NpcCard>
+        />
       </div>
     </div>
 
@@ -140,9 +75,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
-import { useStatehelmTracker, MAX_GIFTS_PER_WEEK } from '../../composables/useStatehelmTracker'
+import { computed, ref } from 'vue'
+import { useStatehelmTracker } from '../../composables/useStatehelmTracker'
 import { useGameStateStore } from '../../stores/gameStateStore'
 import { useGameDataStore } from '../../stores/gameDataStore'
 import { tierDisplayName, isTierAtOrAbove, FAVOR_TIERS } from '../../composables/useFavorTiers'
@@ -157,15 +91,7 @@ const gameData = useGameDataStore()
 
 const {
   npcStatuses,
-  totalGiftsGiven,
-  totalGiftsMax,
-  trackedNpcCount,
-  giftedThisWeek,
   loading,
-  loadGiftLog,
-  addGift,
-  removeGift,
-  nextWeekStart,
 } = useStatehelmTracker()
 
 // Selection state
@@ -202,10 +128,7 @@ const hideAtOrAboveTier = ref('')
 const showOnlyTrainers = ref(false)
 const showOnlyVendors = ref(false)
 const showOnlyStorage = ref(false)
-const hideMaxedGifts = ref(false)
-/** Keep only NPCs whose gifts can move their reputation (`giftTracking`) — the
- *  28 of 68 Statehelm NPCs with no CDN gift data are clutter for a cap tracker. */
-const onlyGiftMattering = ref(false)
+
 
 // Tiers available for the "hide at/above" dropdown (exclude Despised — hiding at/above Despised hides everything)
 const filterableTiers = FAVOR_TIERS.filter(t => t !== 'Despised')
@@ -240,57 +163,8 @@ const filteredStatuses = computed(() => {
       if (!matches) return false
     }
 
-    // Hide maxed gifts (meaningless for NPCs whose gift tracking is off)
-    if (hideMaxedGifts.value && status.giftTracking && status.giftsThisWeek >= status.maxGifts) {
-      return false
-    }
-
-    // Gifts cannot move a tasteless NPC's reputation, so their cards are
-    // optional clutter here (Gossamyr the Great, Captain Gregory, Slim Ostren,
-    // Fenna…). Opt-in: they stay visible by default.
-    if (onlyGiftMattering.value && !status.giftTracking) return false
-
     return true
   })
 })
 
-const weekResetLabel = computed(() => {
-  const next = new Date(nextWeekStart.value)
-  const now = new Date()
-  const diffMs = next.getTime() - now.getTime()
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
-  const diffHours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
-  if (diffDays > 0) return `in ${diffDays}d ${diffHours}h`
-  return `in ${diffHours}h`
-})
-
-// ── Rescan logs ─────────────────────────────────────────────────────────
-// Re-read the game's own Player.log / Player-prev.log / archived copies and
-// reconcile each capped NPC's weekly gift count to the game's note.
-const rescanning = ref(false)
-const rescanMessage = ref('')
-const rescanError = ref(false)
-
-async function rescanLogs() {
-  rescanning.value = true
-  rescanMessage.value = ''
-  rescanError.value = false
-  try {
-    const n = await invoke<number>('backfill_statehelm_gifts')
-    await loadGiftLog()
-    rescanMessage.value = n > 0
-      ? `Reconciled ${n} NPC${n === 1 ? '' : 's'} from the logs.`
-      : 'No new gift info found in the logs.'
-  } catch (e) {
-    rescanError.value = true
-    rescanMessage.value = `Rescan failed: ${e}`
-    console.error('[statehelm] Rescan failed:', e)
-  } finally {
-    rescanning.value = false
-  }
-}
-
-onMounted(() => {
-  loadGiftLog()
-})
 </script>
