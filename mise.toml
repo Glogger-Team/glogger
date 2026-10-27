@@ -11,7 +11,7 @@ jactionlint = "latest"
 # Opt-in / advisory only (see AGENTS.md Linting table).
 "npm:markdownlint-cli2" = "latest"
 # Runtime for npx-based linters; matches package.json engines.
-node = "24"
+node = "lts"
 # Runtime for scripts/cargo-audit-gate.py (CI uses runner python3).
 python = "latest"
 
