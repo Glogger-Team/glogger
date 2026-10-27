@@ -27,6 +27,9 @@
             <div class="text-[10px] text-text-dim">
               {{ totalLevels.toLocaleString() }} levels
               <span v-if="totalBonusLevels > 0">({{ totalBonusLevels }} bonus)</span>
+              <span v-if="store.prodigySessionCount > 0" class="text-accent-gold" title="Resets on login or log reparse; lifetime total is not available from logs or exports">
+                · {{ store.prodigySessionCount }} Prodigy this session
+              </span>
             </div>
           </div>
           <SkillListPanel
@@ -94,6 +97,10 @@ const selectedGameStateSkill = computed<GameStateSkill | null>(() => {
       level: session.currentLevel,
       base_level: session.currentLevel,
       bonus_levels: 0,
+      // xp stays 0: chat level-up lines carry the killing-blow XP for the
+      // level just landed on, not XP banked into it, so firstXp is not
+      // into-level progress on that path. Exact-boundary hints untick on
+      // transient session-only rows until the login dump supplies real xp.
       xp: 0,
       tnl: session.tnl,
       max_level: 0,

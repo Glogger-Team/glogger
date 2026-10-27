@@ -254,6 +254,12 @@ export const useGameStateStore = defineStore('gameState', () => {
     }>
   }>({ total: 0, earns: [] })
 
+  /** Session Prodigy levels earned (null-name Combat Wisdom earns carry no
+   *  skill name or lifetime total, so this is honestly this-session only). */
+  const prodigySessionCount = computed(() =>
+    combatWisdomSession.value.earns.filter(e => e.name == null).length
+  )
+
   /** Persisted per-monster Combat Wisdom cooldown data (from the DB). */
   const combatWisdomMonsters = ref<CombatWisdomMonster[]>([])
 
@@ -1382,6 +1388,7 @@ export const useGameStateStore = defineStore('gameState', () => {
 
     // Combat Wisdom tracking
     combatWisdomSession,
+    prodigySessionCount,
     combatWisdomMonsters,
     fetchCombatWisdomMonsters,
 
