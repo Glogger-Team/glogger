@@ -26,6 +26,7 @@
             <span v-if="cdnData?.combat === true" class="text-[0.65rem] px-1.5 py-0.5 bg-red-900/30 border border-red-700/40 text-red-300 rounded">Combat</span>
             <span v-else-if="cdnData?.combat === false" class="text-[0.65rem] px-1.5 py-0.5 bg-blue-900/30 border border-blue-700/40 text-blue-300 rounded">Non-Combat</span>
             <span v-if="isActive" class="text-[0.65rem] px-1.5 py-0.5 bg-accent-gold/20 border border-accent-gold/40 text-accent-gold rounded">Active</span>
+            <span v-if="isProdigyEnabled" class="text-[0.65rem] px-1.5 py-0.5 bg-accent-gold/20 border border-accent-gold/40 text-accent-gold rounded" title="Eligible for Prodigy levels">Prodigy</span>
           </div>
         </div>
 
@@ -266,6 +267,10 @@ const isTracked = computed(() =>
   props.skill ? store.isSkillTracked(props.skill.skill_name) : false
 )
 
+const isProdigyEnabled = computed(() =>
+  !!((cdnData.value?.raw_json as unknown as Record<string, unknown> | undefined)?.ProdigyEnabledInteractionFlag)
+)
+
 async function toggleTrack() {
   if (!props.skill) return
   if (isTracked.value) {
@@ -292,13 +297,17 @@ const xpPercent = computed(() => {
   return Math.min(100, Math.round((props.skill.xp / total) * 100))
 })
 
-// Parse all advancement hints from CDN data, marking attained levels
+// Parse all advancement hints from CDN data, marking attained levels.
+// Favor-gated XP-cap hints require the BASE level: bonus levels don't unlock
+// them. A hint at exactly base level counts only with XP banked into the next
+// level (xp > 0); at xp == 0 the boundary hasn't been crossed yet.
 const allHints = computed(() => {
   if (!cdnData.value?.advancement_hints || !props.skill) return []
   const hints = cdnData.value.advancement_hints as Record<string, string>
-  const currentLevel = props.skill!.level
+  const base = props.skill!.base_level
+  const xpIntoNext = props.skill!.xp
   return Object.entries(hints)
-    .map(([level, text]) => ({ level: Number(level), text, attained: Number(level) <= currentLevel }))
+    .map(([level, text]) => ({ level: Number(level), text, attained: base > Number(level) || (base === Number(level) && xpIntoNext > 0) }))
     .sort((a, b) => a.level - b.level)
 })
 

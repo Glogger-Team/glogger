@@ -172,6 +172,8 @@ const allRows = computed<SkillRow[]>(() => {
         level: session.currentLevel,
         base_level: session.currentLevel,
         bonus_levels: 0,
+        // Same as SkillsScreen's detail fallback: chat lines can't supply
+        // into-level XP, so xp stays 0 until the persisted row exists.
         xp: 0,
         tnl: session.tnl,
         max_level: 0,
