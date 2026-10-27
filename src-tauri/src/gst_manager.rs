@@ -134,9 +134,10 @@ pub async fn gst_check_status(app: tauri::AppHandle) -> Result<GstStatus, String
 /// Download (or update) GST to the app data directory. Windows only.
 ///
 /// Integrity model (documented limit): the release is fetched over TLS from
-/// `api.github.com`/`github.com` and written atomically (tmp file + rename),
-/// but the bytes are executed without a checksum — GitHub's release API
-/// exposes no digest to verify against, and GST publishes no signed manifest.
+/// `api.github.com`/`github.com` and written via tmp file + rename
+/// (atomic-ish — brief window with no file on Windows), but the bytes are
+/// executed without a checksum — GitHub's release API exposes no digest to
+/// verify against, and GST publishes no signed manifest.
 /// The 256 MiB cap is inherent (a GST exe is tens of MB; anything larger
 /// aborts before touching disk — see the chunked read below), not a
 /// substitute for a hash. If GST ever ships checksums, hash-before-exec goes

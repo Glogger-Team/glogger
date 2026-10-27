@@ -475,11 +475,14 @@ pub fn get_currency_estimate(
 /// Split out from the command so tests can exercise it without Tauri state.
 /// Generic over `DbRead` (same convention as the other read helpers here).
 ///
-/// Timestamp-normalization audit (2026-10-26): `anchor_at` is written by
-/// `import_character_report_internal` as the export timestamp with the
-/// trailing `Z` stripped (`character_commands.rs`), i.e. space-format
+/// Timestamp-normalization audit (2026-10-26, corrected 2026-10-27):
+/// `anchor_at` is written by `import_character_report_internal` as the ISO
+/// export timestamp with the trailing `Z` stripped AND the `T` separator
+/// replaced with a space (`character_commands.rs`), i.e. space-format
 /// `"YYYY-MM-DD HH:MM:SS"` UTC — the same shape `parse_status_message`
-/// stamps into chat events. The accrual guard (`accrue_currency_delta`,
+/// stamps into chat events (migration v80 repairs pre-existing `T`-shaped
+/// anchors, which sorted after same-day space stamps and dropped intraday
+/// deltas). The accrual guard (`accrue_currency_delta`,
 /// `event_ts > anchor_at`) therefore string-compares like with like;
 /// zero-padded fixed-width stamps sort chronologically. The one asymmetry is
 /// documented on `apply_chat_level_up`: snapshot `"…Z"` stamps sort *after*

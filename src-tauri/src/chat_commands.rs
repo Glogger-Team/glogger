@@ -639,6 +639,16 @@ fn run_scan_dispatch(
                 app.emit("watch-rule-triggered", &ev).ok();
             }
         }
+        // Observability parity with the live drain (no behavior change):
+        // scans neither import ReportSaved files (live-only by design) nor
+        // count unknown skills — but log both so a scan-hit skill or report
+        // line leaves a trace instead of vanishing silently.
+        for path in std::mem::take(&mut outcome.report_saved_paths) {
+            eprintln!("[run_scan_dispatch] Skipping scan ReportSaved import (live-only): {path}");
+        }
+        for skill in std::mem::take(&mut outcome.unknown_skills) {
+            eprintln!("[run_scan_dispatch] Skipping scan chat level-up for unresolvable skill: {skill}");
+        }
     }
     if !domains.is_empty() {
         if let Some(app) = app {
@@ -667,6 +677,7 @@ fn scan_session_identity(
 ) -> (Vec<Option<DispatchIdentity>>, Option<String>, Option<i32>) {
     let mut fallback: Option<String> = None;
     let mut file_tz_offset: Option<i32> = None;
+    let mut logged_out_before_first_login = false;
     // The file's own offset + fallback come from the raw login lines (the
     // backfill uses the same source). Login lines are line-anchored, so a
     // plain line scan is exact here — session identity itself comes from
@@ -677,7 +688,15 @@ fn scan_session_identity(
             if file_tz_offset.is_none() {
                 file_tz_offset = info.timezone_offset_seconds;
             }
+        } else if line.contains("******** Logged Out") && fallback.is_none() {
+            // Resumed slice whose first login comes after a logout: the
+            // pre-login lines belong to a closed session, not to whoever
+            // logs in next — no fallback attribution (skip those lines).
+            logged_out_before_first_login = true;
         }
+    }
+    if logged_out_before_first_login {
+        fallback = None;
     }
     let mut session_at_line: Vec<Option<DispatchIdentity>> =
         chat_parser::parse_chat_lines_tagged(raw_text)

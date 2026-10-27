@@ -966,11 +966,13 @@ fn seed_game_state_from_snapshot(
     // GOLD balance, resetting the running `delta_since` to 0 — live chat deltas
     // accrue from here (see coordinator::accrue_currency_delta). Only re-anchors
     // when this snapshot post-dates the stored anchor, so importing an older
-    // export can't clobber a fresher anchor. `anchor_at` drops the trailing 'Z'
-    // so it string-compares cleanly against the UTC "%Y-%m-%d %H:%M:%S" event
-    // timestamps used by the accrual guard.
+    // export can't clobber a fresher anchor. Export stamps are ISO
+    // (`2026-10-21T12:00:00Z`); normalize to space-format UTC so the accrual
+    // guard (`event_ts > anchor_at`) string-compares like with like against
+    // the `"%Y-%m-%d %H:%M:%S"` chat stamps — a raw `T` sorts after same-day
+    // space stamps and would drop intraday post-export deltas.
     if let Some(gold) = report.currencies.get("GOLD") {
-        let anchor_at = ts.trim_end_matches('Z');
+        let anchor_at = ts.trim_end_matches('Z').replace('T', " ");
         conn.execute(
             "INSERT INTO currency_estimate
                 (character_name, server_name, currency_name, anchor_amount, anchor_at, delta_since, updated_at)

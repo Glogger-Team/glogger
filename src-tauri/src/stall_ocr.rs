@@ -580,11 +580,8 @@ pub fn scan_panel(
     // Header identity: NOT parsed from the panel pass. Row bands exclude the
     // header strip, and the header (`<Owner>'s Shop [<slot>]`) needs a
     // full-width legacy OCR pass to read reliably, so this returns None/None
-    // by design and the caller (`scan_stall_window`) falls back to the
-    // legacy pass for `stall_name`/`stall_slot`. Set
-    // `GLOGGER_OCR_PANEL_HEADER=1` once a dedicated header-band OCR pass
-    // lands to enable it here; until then the explicit None keeps the
-    // fallback path authoritative instead of shipping half-read headers.
+    // by design — on panel success the header stays None; the legacy pass
+    // (with header parse) runs only when the panel yields no rows.
     let (stall_name, stall_slot) = (None, None);
     if rows.is_empty() {
         // Nothing paired — treat as scan failure so the caller's legacy path

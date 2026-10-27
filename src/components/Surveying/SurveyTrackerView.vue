@@ -112,7 +112,8 @@
           <p class="italic">No sessions yet.</p>
           <p>Start a session manually to begin tracking — the current game client
             writes no survey events to Player.log, so automatic use detection is
-            unavailable. Chat loot still attributes once a session exists.</p>
+            unavailable. Chat-loot attribution also needs a manually-entered
+            survey use (still pending), so no loot attributes yet.</p>
         </template>
         <template v-else>
           <p class="italic">Select a session from the list to view its detail.</p>

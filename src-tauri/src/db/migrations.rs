@@ -432,6 +432,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 79)?;
     }
 
+    if current_version < 80 {
+        migration_v80_currency_anchor_space_format(conn)?;
+        super::record_migration(conn, 80)?;
+    }
+
     tx.commit()?;
     Ok(())
 }
@@ -544,9 +549,43 @@ fn migration_v78_milking_tz_twins(_conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Migration V80: normalize `currency_estimate.anchor_at` to space-format UTC.
+///
+/// Export stamps are ISO (`2026-10-21T12:00:00Z`); the writer used to strip
+/// only the trailing `Z`, leaving `2026-10-21T12:00:00`. Chat event stamps
+/// are space-format (`%Y-%m-%d %H:%M:%S`), and at string position 10 a space
+/// (0x20) sorts before `T` (0x54) — so same-calendar-day post-export events
+/// compared *less* than their own anchor and the `event_ts > anchor_at`
+/// accrual guard silently dropped intraday wallet deltas until midnight. The
+/// writer now normalizes (`T` → space); this migration repairs existing rows.
+/// Next-day events were unaffected (date prefix decides), and the writer-side
+/// `WHERE anchor_at IS NULL OR excluded.anchor_at > ...` re-anchor rule
+/// compares normalised new values against repaired old ones, so no
+/// re-import ordering hazard.
+fn migration_v80_currency_anchor_space_format(conn: &Connection) -> Result<()> {
+    // Minimal test fixtures (e.g. the roulette v77 test) build only the
+    // tables they need — skip when the estimate table is absent (same guard
+    // shape as v79).
+    let has_table: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'currency_estimate')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_table {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "UPDATE currency_estimate
+            SET anchor_at = replace(anchor_at, 'T', ' ')
+          WHERE anchor_at LIKE '%T%';",
+    )?;
+    Ok(())
+}
+
 /// Migration V79: collapse `player_milking_log` tz twins (corrected).
 ///
-/// The folder/single-file scan converted chat timestamps with the *settings*
 /// offset while the archive backfill used each file's *own login-line* offset.
 /// When the two disagreed (scan before any login line set the settings), the
 /// same line produced two rows whose `milked_at` instants differ by exactly
@@ -3799,12 +3838,46 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            79,
+            80,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 79);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 80);
+    }
+
+    #[test]
+    fn v80_normalizes_t_shaped_currency_anchors() {
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        // Legacy writer shape: ISO with `Z` stripped, `T` intact. A same-day
+        // post-export event must accrue (space ' ' < 'T' before the fix meant
+        // the guard dropped it).
+        c.execute_batch(
+            "INSERT INTO currency_estimate (character_name, server_name, currency_name, anchor_amount, anchor_at, delta_since)
+             VALUES ('T','Dreva','GOLD',1000,'2026-10-26T12:00:00',0);",
+        )
+        .unwrap();
+        // Fresh run would skip v80 (already at head); call the fn directly.
+        migration_v80_currency_anchor_space_format(&c).unwrap();
+        let anchor: String = c
+            .query_row(
+                "SELECT anchor_at FROM currency_estimate WHERE character_name = 'T'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(anchor, "2026-10-26 12:00:00", "T separator normalized to space");
+        // Idempotent: already-normalized rows untouched, re-run is a no-op.
+        migration_v80_currency_anchor_space_format(&c).unwrap();
+        let anchor2: String = c
+            .query_row(
+                "SELECT anchor_at FROM currency_estimate WHERE character_name = 'T'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(anchor2, "2026-10-26 12:00:00");
     }
 }

@@ -64,10 +64,11 @@
 /// the coordinator the referenced file may not exist (different machine, or
 /// the user cleaned up `Reports/`), so failed imports would spam errors on
 /// every re-scan and — worse — import a stale local path over newer state.
-/// The domain is therefore reported back as `report_saved_seen` in
-/// [`DispatchOutcome::report_saved_paths`] and left for the caller, which
-/// documents the skip. Importing stays a live-path privilege where the file
-/// was just written by the game on this machine.
+/// Paths are therefore reported back in
+/// [`DispatchOutcome::report_saved_paths`] (NOT auto-imported): the live
+/// drain imports each path; scan paths log-and-skip (see
+/// `run_scan_dispatch`). Importing stays a live-path privilege where the
+/// file was just written by the game on this machine.
 use crate::arena_parser::ArenaTracker;
 use crate::cdn_commands::GameDataState;
 use crate::chat_combat_parser::{self, ChatCombatEvent};
@@ -126,10 +127,11 @@ pub struct DispatchOutcome {
     pub character_resuscitated: Option<ChatResuscitateEvent>,
     /// Watch rules that fired for this message.
     pub watch_triggered: Vec<WatchRuleTriggered>,
-    /// ReportSaved paths seen (NOT auto-imported — see module docs).
+    /// ReportSaved paths seen (live drain imports them; scan paths
+    /// log-and-skip — see module docs).
     pub report_saved_paths: Vec<String>,
     /// Skill names that did not resolve against game data (live path keeps
-    /// a monotonic counter; the scan path reports them).
+    /// a monotonic counter and logs; scan paths log-and-skip).
     pub unknown_skills: Vec<String>,
     /// Item gains the caller treats as chat-sourced stack corrections
     /// (display name, quantity). The live coordinator feeds the
@@ -159,13 +161,16 @@ impl DispatchOutcome {
 ///   the dedup key for Combat Wisdom / arena / poop (matches the backfill).
 /// - `identity`: `None` skips identity-scoped arms (ledger, skills, milk,
 ///   currency, hoplology, deaths) instead of misattributing them.
-/// - `survey_hook`: live drain passes a closure into the coordinator's
-///   `SurveySessionAggregator::attribute_chat_gain`; scan paths pass `None`
-///   (rows stay untagged for `claim_unlinked_chat_loot_near` — see module
-///   docs). Stack correction and the player-watcher correlation feed stay
-///   caller-side: live/catch-up need coordinator state the scan path cannot
-///   (and must not) touch, so gains are reported in
-///   [`DispatchOutcome::staged_gains`] for the caller to apply session-keyed.
+/// - `survey_hook`: reserved hook into the coordinator's
+///   `SurveySessionAggregator::attribute_chat_gain`. Currently always `None`
+///   in production: both the live drain and scan paths pass `None` (rows
+///   stay untagged for `claim_unlinked_chat_loot_near` — see module docs),
+///   and the live drain runs attribution post-dispatch per staged gain
+///   (same timestamps the dispatch just wrote). Stack correction and the
+///   player-watcher correlation feed stay caller-side: live/catch-up need
+///   coordinator state the scan path cannot (and must not) touch, so gains
+///   are reported in [`DispatchOutcome::staged_gains`] for the caller to
+///   apply session-keyed.
 pub fn dispatch_chat_message(
     db: &DbPool,
     game_data: &GameDataState,
@@ -219,7 +224,7 @@ pub fn dispatch_chat_message(
                 .ok();
             }
         }
-        dispatch_status_event(db, game_data, identity, &status_event, &mut out, survey_hook, state);
+        dispatch_status_event(db, game_data, identity, &status_event, &mut out, survey_hook, state, local_ts);
         out.chat_status_event = Some(status_event);
     }
 
@@ -257,7 +262,12 @@ pub fn dispatch_chat_message(
             .as_deref()
                 == Some(id.character.as_str())
             {
-                record_player_milk(db, &id.character, &id.server, &id.character, "self_milked", local_ts);
+                // UTC basis (like the MilkedBy arm and the backfill): `msg`
+                // arrives UTC-converted, while `local_ts` is the wall clock
+                // the converter would misread as UTC (off by the tz offset,
+                // defeating the v72 UNIQUE key against backfill rows).
+                let utc_ts = msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
+                record_player_milk(db, &id.character, &id.server, &id.character, "self_milked", &utc_ts);
                 out.domain("milking");
             }
             if let Some(target) = chat_combat_parser::parse_self_poop_line(
@@ -289,6 +299,7 @@ fn dispatch_status_event(
     out: &mut DispatchOutcome,
     mut survey_hook: Option<&mut dyn FnMut(Option<&str>, u32, &str) -> Option<i64>>,
     state: &mut DispatchState<'_>,
+    local_ts: &str,
 ) {
     match event {
         ChatStatusEvent::ItemGained {
@@ -390,9 +401,12 @@ fn dispatch_status_event(
                 }
             }
         }
-        ChatStatusEvent::RouletteResult { timestamp, number } => {
+        // Local wall-clock key, like Combat Wisdom and arena: the chat
+        // backfill parses raw log lines (local time, no UTC conversion),
+        // so the UTC event stamp would never dedup against it.
+        ChatStatusEvent::RouletteResult { number, .. } => {
             if let Ok(conn) = db.get_write() {
-                crate::db::roulette_commands::record_roulette_result(&conn, timestamp, *number).ok();
+                crate::db::roulette_commands::record_roulette_result(&conn, local_ts, *number).ok();
             }
         }
         ChatStatusEvent::WordOfPowerUsed { word, .. } => {

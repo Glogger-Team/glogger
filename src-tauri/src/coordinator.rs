@@ -1521,6 +1521,9 @@ impl DataIngestCoordinator {
                                                    AND character_name = ?3
                                                    AND server_name = ?4
                                                    AND source = 'chat_status'
+                                                   AND source_kind IS NULL
+                                                   AND item_name = ?5
+                                                   AND quantity = ?6
                                                  ORDER BY rowid DESC LIMIT 1
                                               )",
                                             rusqlite::params![
@@ -1528,6 +1531,8 @@ impl DataIngestCoordinator {
                                                 ts_utc,
                                                 id.character,
                                                 id.server,
+                                                item_name,
+                                                quantity as i64,
                                             ],
                                         )
                                         .ok();

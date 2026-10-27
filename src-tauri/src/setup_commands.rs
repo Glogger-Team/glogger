@@ -187,8 +187,9 @@ pub fn save_user_character(
     server_name: String,
     source: String,
 ) -> Result<(), String> {
-    // Blank names fail the migration CHECK and surface as a cryptic
-    // constraint error — reject them here with the offending column named.
+    // The schema only CHECKs `source`, not names — blank names would
+    // otherwise insert empty-string rows and pollute identity lookups.
+    // Reject them (and off-schema sources) here with the column named.
     if character_name.trim().is_empty() {
         return Err("character_name must not be empty".to_string());
     }
