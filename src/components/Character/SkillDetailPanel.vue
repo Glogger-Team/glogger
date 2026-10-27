@@ -301,13 +301,17 @@ const xpPercent = computed(() => {
 // Favor-gated XP-cap hints require the BASE level: bonus levels don't unlock
 // them. A hint at exactly base level counts only with XP banked into the next
 // level (xp > 0); at xp == 0 the boundary hasn't been crossed yet.
+// Chat-sourced rows are exempt from the boundary clause: their xp is the
+// killing-blow XP of the line that reached the level, not XP banked into it,
+// so it must not tick the boundary until the login dump supplies real xp.
 const allHints = computed(() => {
   if (!cdnData.value?.advancement_hints || !props.skill) return []
   const hints = cdnData.value.advancement_hints as Record<string, string>
   const base = props.skill!.base_level
   const xpIntoNext = props.skill!.xp
+  const chatSourced = (props.skill!.source as string) === 'chat'
   return Object.entries(hints)
-    .map(([level, text]) => ({ level: Number(level), text, attained: base > Number(level) || (base === Number(level) && xpIntoNext > 0) }))
+    .map(([level, text]) => ({ level: Number(level), text, attained: base > Number(level) || (base === Number(level) && !chatSourced && xpIntoNext > 0) }))
     .sort((a, b) => a.level - b.level)
 })
 
