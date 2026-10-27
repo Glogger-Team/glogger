@@ -1,5 +1,9 @@
 <template>
   <div class="flex flex-col gap-3 text-sm h-full">
+    <div class="text-[11px] text-text-dim italic"
+      title="Personal bets are read from Player.log talk screens, which the current game client no longer writes. Match results still track via chat.">
+      No new bets can be recorded on the current game client — historic bets below, if any.
+    </div>
     <div v-if="stats.total_matches === 0" class="text-xs text-text-dim italic">
       No arena fights recorded yet. Stand in the casino arena while Kuzavek
       narrates — matchups and winners are read from the chat log's
@@ -20,6 +24,12 @@
               {{ stats.betting.win_pct.toFixed(0) }}%
             </span>
             Betting Rate
+          </span>
+          <span
+            v-else
+            class="cursor-help italic"
+            title="Personal bets are read from Player.log talk screens, which the current game client no longer writes. Match results above still track via chat.">
+            No bets tracked
           </span>
           <span>
             <span class="text-sm font-semibold text-accent-gold">{{ stats.total_matches.toLocaleString() }}</span>

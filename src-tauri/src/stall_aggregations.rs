@@ -89,7 +89,12 @@ fn period_label(key: &str, granularity: Granularity, show_year: bool) -> String 
             }
         }
         Granularity::Weekly => {
-            // key = "YYYY-Www"
+            // key = "YYYY-Www" in ISO-8601 week-numbering (Monday-start,
+            // week 1 = the week with the first Thursday). Labels render the
+            // ISO Monday..Sunday span, NOT a locale calendar week — a Sunday
+            // belongs to the week its Monday started, so Dec 29–31 can label
+            // as next year's W01. The year in the key is the ISO week-year,
+            // which differs from the calendar year at both boundaries.
             let parts: Vec<&str> = key.split("-W").collect();
             if parts.len() == 2 {
                 if let (Ok(year), Ok(week)) = (parts[0].parse::<i32>(), parts[1].parse::<u32>()) {
@@ -131,6 +136,18 @@ fn period_label(key: &str, granularity: Granularity, show_year: bool) -> String 
 /// alphabetically-sorted item rows and chronologically-sorted period columns
 /// for free, since `YYYY-MM-DD` / `YYYY-Www` / `YYYY-MM` all sort correctly
 /// as plain strings.
+///
+/// Grouping is by item *name string*, not catalog id, by design: shop-log
+/// events carry only the parsed display name (the parser strips `xN` stack
+/// suffixes so the name is canonical), and this module is deliberately
+/// DB-free so it cannot join a catalog. Collisions between distinct items
+/// sharing a display name collapse into one row — accepted because the game
+/// has no such collisions in the stall-sellable set.
+///
+/// There is no cost-basis JOIN to unify: no table tracks acquisition cost
+/// for stall inventory, so `estimated_value` prices tiers at last-known
+/// sale price. If a cost source ever lands, join it in the SQL callers
+/// (which have DB access), not here.
 pub fn aggregate_revenue(
     events: impl IntoIterator<Item = RevenueEvent>,
     granularity: Granularity,
@@ -142,6 +159,12 @@ pub fn aggregate_revenue(
     let mut years: HashSet<i32> = HashSet::new();
 
     for ev in events {
+        // Unparseable `event_at` rows are dropped here: every SQL site
+        // filters `event_at IS NOT NULL` but cannot filter malformed strings,
+        // so `parse_event_at → None` is the drop point. The `unknown`-action
+        // filter in SQL already excludes most of these (the parser leaves
+        // `event_at` as None only when the timestamp regex misses); a
+        // malformed-but-present string that reaches this loop is skipped.
         let Some(dt) = parse_event_at(&ev.event_at) else {
             continue;
         };

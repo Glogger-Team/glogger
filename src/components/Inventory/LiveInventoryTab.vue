@@ -6,6 +6,16 @@
       <span>Player log tailing is not active. Start tailing to track your inventory in real-time.</span>
       <button @click="startTailing" class="btn btn-secondary text-xs whitespace-nowrap ml-3">Start Tailing</button>
     </div>
+    <!-- Current-client note: the game no longer writes item events, so this
+         live tab stays empty even while tailing. For a snapshot view, run
+         /outputitems in-game, then Character → Inventory → Import Inventory. -->
+    <div v-else
+      class="p-3 bg-surface-dark border border-border-default rounded text-xs text-text-dim italic">
+      Live tracking is unavailable: the current game client writes no item events to
+      Player.log, so this tab stays empty. For a snapshot view, export a storage
+      report in-game (<span class="font-semibold">Settings → VIP</span>), then use
+      <span class="font-semibold">Character → Inventory → Import Inventory</span>.
+    </div>
 
     <!-- Summary bar -->
     <div class="flex gap-6 text-sm items-center">

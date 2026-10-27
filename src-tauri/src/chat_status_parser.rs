@@ -162,11 +162,11 @@ fn try_milked_by(text: &str, ts: &str) -> Option<ChatStatusEvent> {
     })
 }
 
-/// "Roulette ball ended on N!" — casino roulette spin outcome.
+/// "Roulette ball ended on N!" — casino spin outcome.
 /// N is a European-wheel number, 0..=36. Anything else is not a roulette
-/// result (future format drift) and returns None. (DB CHECK on
-/// `roulette_results.number` is backlog — this parser guard is the
-/// enforcement point for now.)
+/// result (future format drift) and returns None. The `roulette_results`
+/// CHECK (migration v77) and the `record_roulette_result` guard enforce the
+/// same range at the DB boundary.
 fn try_roulette_result(text: &str, ts: &str) -> Option<ChatStatusEvent> {
     let prefix = "Roulette ball ended on ";
     let inner = text.strip_prefix(prefix)?.strip_suffix('!')?;
@@ -219,7 +219,9 @@ fn try_combat_wisdom_earned(text: &str, ts: &str) -> Option<ChatStatusEvent> {
     let after = &text["You earned ".len()..];
     let infix = " Combat Wisdom: ";
     let infix_pos = after.find(infix)?;
-    let amount: u32 = after[..infix_pos].parse().ok()?;
+    // Comma-grouped thousands ("1,250") like the councils twin — the game
+    // groups large award amounts the same way it groups wallet deltas.
+    let amount: u32 = after[..infix_pos].replace(',', "").parse().ok()?;
     let reason = after[infix_pos + infix.len()..].trim();
     if reason.is_empty() {
         return None;
@@ -328,6 +330,11 @@ fn try_level_up(text: &str, ts: &str) -> Option<ChatStatusEvent> {
     let level_end = after_level.find(" in ")?;
     let level: u32 = after_level[..level_end].parse().ok()?;
     let skill = &after_level[level_end + " in ".len()..];
+    // Reject "You earned 5 XP and reached level 3 in !" — matches the sibling
+    // empty-name guards (ItemGained/Xp/Prodigy/Summoned).
+    if skill.trim().is_empty() {
+        return None;
+    }
 
     Some(ChatStatusEvent::LevelUp {
         timestamp: ts.to_string(),
@@ -1074,5 +1081,30 @@ mod tests {
     fn test_joined_chat_room_returns_none() {
         let msg = status_msg("Joined chat room \"Trade\". There are 280 other users here.");
         assert!(parse_status_message(&msg).is_none());
+    }
+
+    #[test]
+    fn test_wisdom_comma_grouped_amount() {
+        // Parity with the councils twin (`try_councils_changed` strips commas):
+        // a grouped award must parse to the same value.
+        let msg = status_msg("You earned 1,250 Combat Wisdom: Killed the Aktaari Queen");
+        match parse_status_message(&msg).unwrap() {
+            ChatStatusEvent::CombatWisdomEarned { amount, source_name, .. } => {
+                assert_eq!(amount, 1250);
+                assert_eq!(source_name.as_deref(), Some("the Aktaari Queen"));
+            }
+            other => panic!("Expected CombatWisdomEarned(1250), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_empty_skill_arms_reject() {
+        // ItemGained / Xp / Prodigy / Summoned guards landed earlier; LevelUp
+        // is the last of the family to grow one. All must reject blank names.
+        assert!(parse_status_message(&status_msg(" added to inventory.")).is_none());
+        assert!(parse_status_message(&status_msg("You earned 62 XP in .")).is_none());
+        assert!(parse_status_message(&status_msg("You earned 45 Prodigy XP in .")).is_none());
+        assert!(parse_status_message(&status_msg("Summoned ")).is_none());
+        assert!(parse_status_message(&status_msg("You earned 5 XP and reached level 3 in !")).is_none());
     }
 }

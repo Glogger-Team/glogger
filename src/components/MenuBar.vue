@@ -154,7 +154,9 @@ const viewTabs: Partial<Record<AppView, SubTab[]>> = {
     { id: "account", label: "Account" },
   ],
   inventory: [
-    { id: "live", label: "Inventory" },
+    // Live tab hidden: the current game client writes no Player.log item
+    // events, so live tracking is dark. Restore `{ id: "live", ... }` here
+    // (and the wrapper branch) if the game restores the events.
     { id: "storage", label: "Storage" },
     { id: "vaults", label: "Vaults" },
     { id: "consolidate", label: "Consolidate" },
@@ -187,14 +189,15 @@ const viewTabs: Partial<Record<AppView, SubTab[]>> = {
     { id: "system", label: "System" },
     { id: "all", label: "All Messages" },
     { id: "watchwords", label: "Watchwords" },
-    { id: "poems", label: "Poems" },
+    // Poems hidden: new recitals are Player.log-only (dark on the current
+    // client). Restore the entry below if the game restores the events.
   ],
 };
 
 // Default sub-tab per view
 const defaultSubTabs: Partial<Record<AppView, string>> = {
   character: "skills",
-  inventory: "live",
+  inventory: "storage",
   crafting: "quick-calc",
   economics: "market",
   chat: "search",
@@ -307,11 +310,20 @@ function selectSubTab(tabId: string) {
   emit("update:subTab", tabId);
 }
 
-// Emit current sub-tab whenever the view changes (so the child view gets the right tab)
+// Emit current sub-tab whenever the view changes (so the child view gets the right tab).
+// A persisted tab can go stale when a tab is removed (e.g. the hidden live
+// inventory tab) — fall back to the view's first tab instead of emitting an
+// id no child handles (blank pane).
 watch(() => props.currentView, (view) => {
   const tabs = viewTabs[view];
   if (tabs) {
-    emit("update:subTab", activeSubTabs[view] ?? tabs[0].id);
+    const saved = activeSubTabs[view];
+    const valid = saved !== undefined && tabs.some((t) => t.id === saved);
+    if (!valid) {
+      activeSubTabs[view] = tabs[0].id;
+      updateSubTabPrefs({ [view]: tabs[0].id });
+    }
+    emit("update:subTab", activeSubTabs[view]);
   }
 }, { immediate: true });
 

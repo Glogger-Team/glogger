@@ -35,6 +35,11 @@
         </div>
       </div>
 
+      <div class="px-6 py-1.5 border-b border-border-default text-[11px] text-text-dim italic"
+        title="New recitals are read from Player.log talk screens, which the current game client no longer writes. Scanning still finds poems in older logs.">
+        No new poems can be recorded on the current game client — historic poems below, if any.
+      </div>
+
       <!-- Table -->
       <div class="flex-1 overflow-y-auto">
         <div v-if="loading" class="p-6 text-text-dim text-sm">Loading poems...</div>
@@ -42,8 +47,10 @@
         <div v-else-if="filteredPoems.length === 0" class="p-6 text-text-dim text-sm">
           <template v-if="poems.length === 0">
             <p class="italic mb-3">
-              No poems recorded yet. Poems are captured automatically when another
-              player recites one at a poetry podium while your Player.log is being watched.
+              No poems recorded yet. Poems were captured automatically when another
+              player recited one at a poetry podium — but the current game client
+              no longer writes those lines to Player.log, so new recitals can't be
+              tracked. Scan still finds poems in older logs.
             </p>
             <button
               @click="scanLog"

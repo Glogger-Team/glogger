@@ -46,26 +46,38 @@ fn format_iso(year: i32, month: u32, day: u32, hour: u32, minute: u32) -> Option
 }
 
 /// Walks timestamps in **oldest-first order**, assigning a year to each and
-/// incrementing when a backward month jump (e.g. Dec → Jan) is detected.
+/// incrementing on a backward time jump: month goes backward, or the same
+/// month goes to an earlier day (same-month log reorder across New Year is
+/// not expected from the game, so a same-month day regression means the
+/// year rolled — e.g. a Jan 31 → Jan 02 book spanning the boundary).
+/// Day-of-month ties within the same month do NOT bump (same-day entries
+/// arriving out of time order stay in the current year).
 ///
 /// Caller MUST reverse the book's newest-first content before passing it here,
 /// matching the parser's `raw_entries.reverse()` contract.
+///
+/// Single-wrap limit: the counter only ever increments by one per backward
+/// jump and `base_year` anchors the first entry, so books spanning more than
+/// two calendar years (kept unopened for 12+ months) resolve the earliest
+/// entries a year too late. The game overwrites the book on each open and
+/// the live path re-anchors via `base_year_for_live`, so multi-year spans
+/// don't occur in practice — this is documented, not handled.
 pub fn resolve_timestamps_oldest_first(timestamps: &[&str], base_year: i32) -> Vec<Option<String>> {
     let mut out = Vec::with_capacity(timestamps.len());
     let mut year = base_year;
-    let mut prev_month: Option<u32> = None;
+    let mut prev: Option<(u32, u32)> = None;
 
     for raw in timestamps {
         let Some((month, day, hour, minute)) = parse_month_day_time(raw) else {
             out.push(None);
             continue;
         };
-        if let Some(pm) = prev_month {
-            if month < pm {
+        if let Some((pm, pd)) = prev {
+            if (month, day) < (pm, pd) {
                 year += 1;
             }
         }
-        prev_month = Some(month);
+        prev = Some((month, day));
         out.push(format_iso(year, month, day, hour, minute));
     }
     out
@@ -122,6 +134,35 @@ mod tests {
                 Some("2025-12-30 10:00:00".to_string()),
                 Some("2026-01-02 11:00:00".to_string()),
                 Some("2026-01-03 12:00:00".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn same_month_day_regression_bumps_year() {
+        // A Jan 31 → Jan 02 book spans the New Year boundary.
+        let ts = vec!["Mon Jan 31 09:00", "Mon Jan 02 10:00"];
+        let out = resolve_timestamps_oldest_first(&ts, 2025);
+        assert_eq!(
+            out,
+            vec![
+                Some("2025-01-31 09:00:00".to_string()),
+                Some("2026-01-02 10:00:00".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn same_day_out_of_order_does_not_bump() {
+        // Same (month, day) arriving out of time order stays in-year —
+        // only a strict regression wraps.
+        let ts = vec!["Mon Apr 13 11:00", "Mon Apr 13 09:00"];
+        let out = resolve_timestamps_oldest_first(&ts, 2026);
+        assert_eq!(
+            out,
+            vec![
+                Some("2026-04-13 11:00:00".to_string()),
+                Some("2026-04-13 09:00:00".to_string()),
             ]
         );
     }

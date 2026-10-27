@@ -132,8 +132,17 @@ pub async fn gst_check_status(app: tauri::AppHandle) -> Result<GstStatus, String
 }
 
 /// Download (or update) GST to the app data directory. Windows only.
-#[tauri::command]
-pub async fn gst_download(app: tauri::AppHandle) -> Result<GstStatus, String> {
+///
+/// Integrity model (documented limit): the release is fetched over TLS from
+/// `api.github.com`/`github.com` and written atomically (tmp file + rename),
+/// but the bytes are executed without a checksum — GitHub's release API
+/// exposes no digest to verify against, and GST publishes no signed manifest.
+/// The `512 MiB`-style cap is inherent (a GST exe is tens of MB; anything
+/// larger aborts before touching disk — see the length guard below), not a
+/// substitute for a hash. If GST ever ships checksums, hash-before-exec goes
+/// here: buffer the body, compare, and only then write `final_path`.
+ #[tauri::command]
+ pub async fn gst_download(app: tauri::AppHandle) -> Result<GstStatus, String> {
     if !cfg!(target_os = "windows") {
         return Err("GST download is only available on Windows. See the GST GitHub page for Mac/Linux instructions.".to_string());
     }
@@ -158,7 +167,17 @@ pub async fn gst_download(app: tauri::AppHandle) -> Result<GstStatus, String> {
         .bytes()
         .await
         .map_err(|e| format!("Failed to read download: {e}"))?;
-
+    // Cap: a GST exe is tens of MB. Anything larger is a wrong asset or a
+    // hostile response — abort before touching disk (the doc comment's
+    // "length guard").
+    const MAX_GST_BYTES: usize = 256 * 1024 * 1024;
+    if bytes.len() > MAX_GST_BYTES {
+        return Err(format!(
+            "Download too large ({} bytes, cap {} MiB): refusing to write",
+            bytes.len(),
+            MAX_GST_BYTES / (1024 * 1024)
+        ));
+    }
     let dir = gst_dir(&app)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create GST dir: {e}"))?;
 

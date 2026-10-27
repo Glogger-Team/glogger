@@ -194,6 +194,11 @@ pub fn ocr_launch_setup() -> Result<(), String> {
 /// Dice coefficient over character 3-grams — a plain-Rust stand-in for
 /// rapidfuzz's ratio used by PG Emissary (score_cutoff 75/100 ≈ trigram
 /// Dice ≥ 0.75).
+///
+/// Short-string edge: inputs under 3 chars produce no 3-grams at all, so an
+/// empty gram set carries no signal — return identity (`a == b ? 1 : 0`)
+/// rather than a blanket 1.0, which would match every short OCR fragment
+/// against every short catalog name.
 pub fn trigram_similarity(a: &str, b: &str) -> f32 {
     let norm = |s: &str| s.to_lowercase().chars().collect::<Vec<_>>();
     let a = norm(a);
@@ -205,15 +210,12 @@ pub fn trigram_similarity(a: &str, b: &str) -> f32 {
         v.windows(3).map(<[char]>::to_vec).collect()
     };
     let (ga, gb) = (grams(&a), grams(&b));
-    if ga.is_empty() && gb.is_empty() {
-        return 1.0;
+    if ga.is_empty() || gb.is_empty() {
+        // No trigrams on one or both sides (2-char inputs): identity only.
+        return if a == b { 1.0 } else { 0.0 };
     }
     let inter = ga.intersection(&gb).count();
-    if ga.is_empty() || gb.is_empty() {
-        0.0
-    } else {
-        (2 * inter) as f32 / (ga.len() + gb.len()) as f32
-    }
+    (2 * inter) as f32 / (ga.len() + gb.len()) as f32
 }
 
 /// Confidence threshold for accepting a fuzzy match (Emissary: 75/100).
@@ -363,7 +365,11 @@ pub fn parse_vendor_text(raw_text: &str) -> Vec<(String, i64)> {
 
 /// True for OCR lines that are stall-UI chrome rather than item names
 /// ("Buy 1" rows, "'s Shop" header fragments, digit/punctuation soup).
-/// Mirrors Emissary's `is_item_candidate` rejects.
+/// Mirrors Emissary's `is_item_candidate` rejects. Gates, in order:
+/// 1. substring `"'s shop"` (any owner header), `"buy"`, `"pay"` (price-box
+///    rows), matched case-insensitively — `"buy"` also catches "Buy 1/5/10";
+/// 2. no alphabetic char at all (digit/punctuation soup like "1,234").
+/// Anything with at least one letter and none of the substrings passes.
 fn is_ui_chrome_line(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     if lower.contains("'s shop") || lower.contains("buy") || lower.contains("pay") {
@@ -536,13 +542,18 @@ pub fn scan_panel(
             None => (None, 0.0),
         };
         let key = (item_name.clone(), price);
-        // Drop junk rows: overlay/HP-bar bands produce no item match and no
-        // price. Real items with an unreadable price still surface when the
-        // name matches; fully unreadable rows (letter-soup price + no match)
-        // need manual entry anyway, so dropping them keeps the prefill clean.
+        // Junk-row gate: drop bands with no item match AND no readable price
+        // (`extract_price` returns 0 for letter-soup). Either signal alone
+        // keeps the row — a known name with an unreadable price still needs
+        // manual pricing, while an unmatched name with digits is usually an
+        // HP-bar/overlay fragment. Thresholds: price 0 == unreadable,
+        // match score >= MATCH_THRESHOLD (0.75, Emissary's cutoff).
         if item_name.is_none() && price == 0 {
             continue;
         }
+        // Dedup gate: identical (item_name, price) pairs collapse — the same
+        // red-bar row can produce two overlapping bands. Rows that differ in
+        // either field survive (e.g. same item at two prices).
         if rows
             .iter()
             .any(|r: &StallScanRow| r.item_name == key.0 && r.price == Some(price))
@@ -553,6 +564,9 @@ pub fn scan_panel(
             raw_text: format!("{name} @ {price}"),
             item_name,
             price: Some(price),
+            // Stall rows show no stack count — OCR has no quantity signal, so
+            // this stays None by design; `save_stall_capture` clamps to ≥1 at
+            // insert (`entry.quantity.max(1)`). Not a wiring gap.
             quantity: None,
             confidence,
         });
@@ -563,7 +577,14 @@ pub fn scan_panel(
         rows.iter().map(|r| r.raw_text.clone()).collect::<Vec<_>>(),
         price_raws,
     );
-    // Header: parse from a full-panel pass (row bands exclude the header).
+    // Header identity: NOT parsed from the panel pass. Row bands exclude the
+    // header strip, and the header (`<Owner>'s Shop [<slot>]`) needs a
+    // full-width legacy OCR pass to read reliably, so this returns None/None
+    // by design and the caller (`scan_stall_window`) falls back to the
+    // legacy pass for `stall_name`/`stall_slot`. Set
+    // `GLOGGER_OCR_PANEL_HEADER=1` once a dedicated header-band OCR pass
+    // lands to enable it here; until then the explicit None keeps the
+    // fallback path authoritative instead of shipping half-read headers.
     let (stall_name, stall_slot) = (None, None);
     if rows.is_empty() {
         // Nothing paired — treat as scan failure so the caller's legacy path
@@ -697,11 +718,14 @@ fn detect_row_bands(gray_bin: &[u8], cw: usize, ch: usize) -> Vec<(usize, usize)
     bands
 }
 
-/// Extract a price from a per-row price-column OCR text: prefer the first
-/// comma-grouped number (`6,000`), else the first digit run of length ≥3
-/// (junk prefixes like `7 5,500` lose to the comma rule; trailing glyph
-/// digits like `7,000 4` are excluded by the comma rule). Unreadable rows
-/// (`'oscoo`) yield 0 → the capture panel shows them for manual correction.
+/// Extract a price from a per-row price-column OCR text. Gate order:
+/// 1. first comma-grouped `\d{1,3}(,\d{3})+` number (`6,000` beats any junk
+///    around it — junk prefixes like `7 5,500` and trailing glyph digits
+///    like `7,000 4` lose to the comma rule);
+/// 2. else the first digit run with value ≥ 100 (length ≥3 in practice;
+///    smaller runs are OCR specks, not prices);
+/// 3. else 0 = unreadable → the capture panel shows the row for manual
+///    correction, and the junk-row gate drops it when the name is unknown too.
 fn extract_price(text: &str) -> i64 {
     let s = text.trim();
     if let Some(m) = rust_helpers::find_comma_number(s) {
@@ -1325,5 +1349,14 @@ Pay 20,000";
         assert!(trigram_similarity("Carrot", "Carrot") > 0.99);
         assert!(trigram_similarity("Carrot", "Canteloupe") < 0.5);
         assert_eq!(trigram_similarity("", ""), 1.0);
+    }
+
+    #[test]
+    fn test_trigram_short_strings_need_identity() {
+        // 2-char inputs produce no 3-grams: only identity scores 1.0.
+        assert_eq!(trigram_similarity("ab", "ab"), 1.0);
+        assert_eq!(trigram_similarity("ab", "ac"), 0.0);
+        assert_eq!(trigram_similarity("a", "a"), 1.0);
+        assert_eq!(trigram_similarity("a", "b"), 0.0);
     }
 }

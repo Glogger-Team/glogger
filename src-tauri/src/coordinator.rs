@@ -1,7 +1,6 @@
 use crate::cdn_commands::GameDataState;
-use crate::chat_combat_parser::parse_combat_message;
-use crate::chat_resuscitate_parser::parse_resuscitate_message;
-use crate::chat_status_parser::{parse_status_message, ChatStatusEvent};
+use crate::chat_status_dispatch::{self, DispatchIdentity, DispatchState};
+use crate::chat_status_parser::ChatStatusEvent;
 use crate::db::chat_commands::insert_chat_messages;
 use crate::db::queries::log_positions;
 use crate::db::stall_tracker_commands::{insert_stall_events, StallEventInput};
@@ -15,7 +14,6 @@ use crate::settings::SettingsManager;
 use crate::shop_log_parser::parse_shop_log;
 use crate::stall_year_resolver::base_year_for_live;
 use crate::survey::aggregator::{SurveyAggregatorEvent, SurveySessionAggregator};
-use crate::watch_rules::evaluate_rules;
 use chrono::{Datelike, Local};
 use serde::Serialize;
 /// DataIngestCoordinator - Central coordinator for all file watching and database operations
@@ -481,22 +479,7 @@ impl DataIngestCoordinator {
         Ok(())
     }
 
-    /// Backfill the `poems` table from every Player.log source (archived
-    /// rotated copies, `Player-prev.log`, live `Player.log`).
-    ///
-    /// The live watcher resumes from a saved byte offset, so poems recited
-    /// while glogger was closed live only in the rotated/archived copies.
-    /// Delegates to `db::poem_commands` so the startup chain, the Poems tab
-    /// button and (eventually) the Player-prev watcher share one scan.
-    /// `INSERT OR IGNORE` dedups on `UNIQUE(author, title, content)`; safe to
-    /// run repeatedly. Returns the number of newly inserted poems.
-    pub fn backfill_poems_from_player_log(&self) -> Result<usize, String> {
-        crate::db::poem_commands::backfill_from_player_logs_with_emit(
-            &self.settings,
-            &self.db_pool,
-            &self.app_handle,
-        )
-    }
+
 
     /// Stop player log tailing
     pub fn stop_player_log_tailing(&mut self) -> Result<(), String> {
@@ -1369,620 +1352,239 @@ impl DataIngestCoordinator {
             match event {
                 LogEvent::ChatMessage(msg, session_tag) => {
                     // Capture the local wall-clock timestamp BEFORE the UTC
-                    // conversion below — the Combat Wisdom store keys on local
-                    // time to stay consistent with the chat-log backfill (which
-                    // never converts), so live + backfill dedup correctly.
+                    // conversion below — Combat Wisdom / arena / poop dedup
+                    // keys use local time to stay consistent with the chat-log
+                    // backfill (which never converts), so live + backfill
+                    // dedup correctly.
                     let local_ts = msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
 
                     // Convert chat timestamp from local time to UTC
                     let mut msg = msg;
                     msg.timestamp = chat_local_to_utc(msg.timestamp, tz_offset);
 
-                    // Casino arena narration (Kuzavek on [NPC Chatter]) → resolved
-                    // matches for the Arena widget. Uses the local wall-clock
-                    // timestamp so live records dedup against the chat backfill.
-                    if let Some(m) = self.arena_tracker.observe(
-                        msg.channel.as_deref(),
-                        msg.sender.as_deref(),
-                        &msg.message,
-                        &local_ts,
-                    ) {
-                        let mut arena_changed = false;
-                        if let Ok(conn) = self.db_pool.get_write() {
-                            if let Ok(1) = crate::db::arena_commands::record_arena_match(
-                                &conn,
-                                &m.fought_at,
-                                &m.fighter_a,
-                                &m.fighter_b,
-                                &m.winner,
-                            ) {
-                                arena_changed = true;
-                            }
-                        }
-                        // A resolved fight means one of the player's own bets
-                        // likely just resolved too (the payout lands in Player.log
-                        // at fight end). Re-scan for bets — this only fires while
-                        // the player is at the casino watching, so it's naturally
-                        // infrequent. Idempotent, so re-scans are cheap no-ops.
-                        match crate::db::arena_commands::backfill_bets_from_player_logs(
-                            &self.settings,
-                            &self.db_pool,
+                    // Catch-up vs live: the Player.log drain already wrote
+                    // fallback `stack_size = 1` rows, and no future
+                    // `ProcessAddItem` will consult the parser buffer — so
+                    // stage gains session-keyed for
+                    // `apply_staged_chat_corrections` instead of
+                    // feeding/correcting now under a drain-order identity.
+                    // The tag is the login session that produced the line;
+                    // only when the file was resumed mid-session (`None`) do
+                    // we fall back to the drain identity. Live, the tag is
+                    // ignored and the active identity rules.
+                    let is_live = self.game_state.is_live();
+                    let identity: Option<DispatchIdentity> = if is_live {
+                        match (
+                            self.game_state.get_active_character(),
+                            self.game_state.get_active_server(),
                         ) {
-                            Ok(n) if n > 0 => arena_changed = true,
-                            Ok(_) => {}
-                            Err(e) => eprintln!("[coordinator] Arena bet rescan failed: {e}"),
+                            (Some(c), Some(s)) => Some(DispatchIdentity {
+                                character: c.to_string(),
+                                server: s.to_string(),
+                            }),
+                            _ => None,
                         }
-                        if arena_changed {
-                            self.app_handle
-                                .emit("game-state-updated", vec!["arena"])
-                                .ok();
-                        }
-                    }
-
-                    // Run Status channel messages through the structured parser
-                    if let Some(status_event) = parse_status_message(&msg) {
-                        // Cross-reference with general inventory for stack correction
-                        // and record item transactions from chat status events.
-                        // (Loot-quantity correction for the survey tracker happens
-                        // inside the SurveySessionAggregator on the player-event side
-                        // now — chat ItemGained events feed feed_chat_gain so the
-                        // parser can seed AddItem stack sizes correctly. No separate
-                        // post-hoc correction is needed.)
-                        match &status_event {
-                            ChatStatusEvent::ItemGained {
-                                item_name,
-                                quantity,
-                                timestamp,
-                            }
-                            | ChatStatusEvent::Summoned {
-                                item_name,
-                                quantity,
-                                timestamp,
-                            } => {
-                                let context = match &status_event {
-                                    ChatStatusEvent::Summoned { .. } => "summoned",
-                                    _ => "loot",
-                                };
-
-                                // Feed the chat quantity into the player event parser's
-                                // correlation buffer. Upcoming ProcessAddItem events within
-                                // a small time window will seed their stack size from this
-                                // chat quantity instead of the fallback 1. The parser needs
-                                // the internal name (player.log uses internal names) so we
-                                // resolve here where we have CDN access.
-                                // Resolve both the internal name (for the
-                                // correlation buffer) and the CDN item id (for
-                                // valuation joins on the ledger row) in one
-                                // read borrow.
-                                let (internal_name, item_type_id): (Option<String>, Option<i64>) =
-                                    self.game_data
-                                        .try_read()
-                                        .ok()
-                                        .and_then(|gd| {
-                                            gd.resolve_item(item_name).map(|info| {
-                                                (info.internal_name.clone(), Some(info.id as i64))
-                                            })
-                                        })
-                                        .unwrap_or((None, None));
-                                if !self.game_state.is_live() {
-                                    // Catch-up: the Player.log drain already wrote
-                                    // fallback `stack_size = 1` rows, and no future
-                                    // `ProcessAddItem` will consult the parser
-                                    // buffer — so stage the gain session-keyed
-                                    // for `apply_staged_chat_corrections`
-                                    // instead of feeding/correcting now under a
-                                    // drain-order identity. The tag is the login
-                                    // session that produced the line; only when
-                                    // the file was resumed mid-session (`None`)
-                                    // do we fall back to the drain identity.
-                                    let staged_identity: Option<(String, String)> = session_tag
-                                        .as_ref()
-                                        .map(|tag| {
-                                            (tag.character_name.clone(), tag.server_name.clone())
-                                        })
-                                        .or_else(|| {
-                                            match (
-                                                self.game_state.get_active_character(),
-                                                self.game_state.get_active_server(),
-                                            ) {
-                                                (Some(c), Some(s)) => {
-                                                    Some((c.to_string(), s.to_string()))
-                                                }
-                                                _ => None,
-                                            }
-                                        });
-                                    if let Some((character, server)) = staged_identity {
-                                        self.staged_chat_gains.push(StagedChatGain {
-                                            character,
-                                            server,
-                                            item_name: item_name.clone(),
-                                            quantity: *quantity,
-                                        });
-                                    }
-                                } else {
-                                    if let (Some(internal), Some(watcher)) =
-                                        (internal_name.clone(), self.player_watcher.as_mut())
-                                    {
-                                        // timestamp is "YYYY-MM-DD HH:MM:SS" UTC — extract the time portion
-                                        let hms = timestamp
-                                            .split_whitespace()
-                                            .nth(1)
-                                            .unwrap_or(timestamp);
-                                        watcher.feed_chat_gain(internal, *quantity, hms);
-                                    }
-
-                                    // Correct inventory/storage stack sizes
-                                    let corrected_domains =
-                                        self.game_state.correct_stack_from_chat(
-                                            item_name,
-                                            *quantity,
-                                            &self.db_pool,
-                                        );
-                                    if !corrected_domains.is_empty() {
-                                        self.app_handle
-                                            .emit("game-state-updated", &corrected_domains)
-                                            .ok();
-                                    }
-                                }
-
-                                // Milking timer: if we gained milk while interacting with a cow
-                                if (item_name == "Bottle of Milk"
-                                    || internal_name.as_deref() == Some("BottleOfMilk"))
-                                    && self.pending_cow_interaction.is_some()
-                                {
-                                    if let Some(cow_internal) = self.pending_cow_interaction.take()
-                                    {
-                                        let cow_display = cow_internal
-                                            .strip_prefix("Cow_")
-                                            .unwrap_or(&cow_internal)
-                                            .to_string();
-                                        self.record_cow_milk(&cow_display, timestamp);
-                                    }
-                                }
-
-                                // Record in transaction ledger.
-                                //
-                                // Chat-status rows normally carry no
-                                // ItemProvenance — the correlated player.log
-                                // event is the provenance-bearing row. The one
-                                // exception is *survey* loot: when this gain
-                                // lands inside an active survey collection
-                                // window (same tick as a Basic survey use, or
-                                // during a mining swing on a survey-spawned
-                                // node) we attribute it to that use and tag
-                                // the row with `source_kind = 'survey_chat'` +
-                                // `survey_use_id`. This is the chat-authoritative
-                                // loot path the session summary reads (Player.log
-                                // survey attribution can be absent — see
-                                // SurveySessionAggregator::attribute_chat_gain).
-                                // Gains outside those windows (kill loot,
-                                // foraging, …) are not survey loot.
-                                if let (Some(character), Some(server)) = (
-                                    self.game_state.get_active_character().map(String::from),
-                                    self.game_state.get_active_server().map(String::from),
+                    } else {
+                        session_tag
+                            .as_ref()
+                            .map(|tag| DispatchIdentity {
+                                character: tag.character_name.clone(),
+                                server: tag.server_name.clone(),
+                            })
+                            .or_else(|| {
+                                match (
+                                    self.game_state.get_active_character(),
+                                    self.game_state.get_active_server(),
                                 ) {
-                                    if let Ok(conn) = self.db_pool.get_write() {
-                                        // Only "loot" gains can belong to a
-                                        // survey; summoned items never do.
-                                        let survey_use_id = if context == "loot" {
-                                            self.survey_aggregator.attribute_chat_gain(
-                                                &conn,
-                                                &character,
-                                                &server,
-                                                internal_name.as_deref(),
-                                                *quantity,
-                                                timestamp,
-                                            )
-                                        } else {
-                                            None
-                                        };
-                                        let (source_kind, source_details): (
-                                            Option<&str>,
-                                            Option<String>,
-                                        ) = match survey_use_id {
-                                            Some(id) => (
-                                                Some("survey_chat"),
-                                                Some(format!("{{\"survey_use_id\":{id}}}")),
-                                            ),
-                                            None => (None, None),
-                                        };
+                                    (Some(c), Some(s)) => Some(DispatchIdentity {
+                                        character: c.to_string(),
+                                        server: s.to_string(),
+                                    }),
+                                    _ => None,
+                                }
+                            })
+                    };
+
+                    // The shared dispatch owns every idempotent DB arm. Three
+                    // live-only follow-ups stay here because they need
+                    // `&mut self` borrows the dispatch does not take:
+                    // (1) the player-watcher's `feed_chat_gain` correlation
+                    // buffer, (2) stack correction inline (live) vs
+                    // session-keyed (catch-up), (3) survey attribution
+                    // through the live aggregator's gating state.
+                    let mut outcome = {
+                        let mut dstate = DispatchState {
+                            arena_tracker: &mut self.arena_tracker,
+                            last_rez_dedup: &mut self.last_rez_dedup,
+                            recent_damage: &mut self.recent_damage,
+                            pending_cow_interaction: &mut self.pending_cow_interaction,
+                            current_area: self.current_area.clone(),
+                        };
+                        // Live feeds the survey hook so loot rows stamp
+                        // `survey_chat` immediately; catch-up/scan rows stay
+                        // untagged for `claim_unlinked_chat_loot_near`.
+                        // The hook needs `&mut self.survey_aggregator` while
+                        // the dispatch also runs — so the dispatch takes no
+                        // hook, and attribution runs here per staged gain
+                        // after the dispatch returns (same timestamps the
+                        // dispatch just wrote).
+                        chat_status_dispatch::dispatch_chat_message(
+                            &self.db_pool,
+                            &self.game_data,
+                            identity.as_ref(),
+                            &msg,
+                            &local_ts,
+                            None,
+                            &mut dstate,
+                            &self.settings.get().watch_rules,
+                        )
+                    };
+
+                    // (1+3) Correlation feed + survey attribution per gain.
+                    for (item_name, quantity) in std::mem::take(&mut outcome.staged_gains) {
+                        let (internal_name, item_type_id): (Option<String>, Option<i64>) =
+                            self.game_data
+                                .try_read()
+                                .ok()
+                                .and_then(|gd| {
+                                    gd.resolve_item(&item_name).map(|info| {
+                                        (info.internal_name.clone(), Some(info.id as i64))
+                                    })
+                                })
+                                .unwrap_or((None, None));
+                        let ts_utc = msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
+                        if is_live {
+                            if let (Some(internal), Some(watcher)) =
+                                (internal_name.clone(), self.player_watcher.as_mut())
+                            {
+                                // Timestamp is UTC — extract the time portion.
+                                let hms = ts_utc
+                                    .split_whitespace()
+                                    .nth(1)
+                                    .unwrap_or(&ts_utc);
+                                watcher.feed_chat_gain(internal, quantity, hms);
+                            }
+                            // Correct inventory/storage stack sizes.
+                            let corrected = self.game_state.correct_stack_from_chat(
+                                &item_name,
+                                quantity,
+                                &self.db_pool,
+                            );
+                            if !corrected.is_empty() {
+                                self.app_handle.emit("game-state-updated", &corrected).ok();
+                            }
+                        } else if let Some(id) = identity.as_ref() {
+                            // Catch-up: the Player.log drain already wrote
+                            // fallback rows — stage session-keyed for
+                            // `apply_staged_chat_corrections`.
+                            self.staged_chat_gains.push(StagedChatGain {
+                                character: id.character.clone(),
+                                server: id.server.clone(),
+                                item_name: item_name.clone(),
+                                quantity,
+                            });
+                        }
+                        // (3) Survey, live loot gains only: attribute the
+                        // just-written ledger row, then tag it — mirrors the
+                        // old inline arm. Summoned gains never attribute.
+                        if is_live {
+                            let is_loot = matches!(
+                                crate::chat_status_parser::parse_status_message(&msg),
+                                Some(ChatStatusEvent::ItemGained { .. })
+                            );
+                            if is_loot {
+                                if let (Some(id), Ok(conn)) =
+                                    (identity.as_ref(), self.db_pool.get_write())
+                                {
+                                    if let Some(use_id) =
+                                        self.survey_aggregator.attribute_chat_gain(
+                                            &conn,
+                                            &id.character,
+                                            &id.server,
+                                            internal_name.as_deref(),
+                                            quantity,
+                                            &ts_utc,
+                                        )
+                                    {
+                                        let source_details =
+                                            format!("{{\"survey_use_id\":{use_id}}}");
                                         conn.execute(
-                                            "INSERT INTO item_transactions
-                                                (timestamp, character_name, server_name, item_name,
-                                                 internal_name, item_type_id, quantity, context,
-                                                 source, source_kind, source_details)
-                                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'chat_status', ?9, ?10)",
+                                            "UPDATE item_transactions
+                                                SET source_kind = 'survey_chat',
+                                                    source_details = ?1
+                                              WHERE rowid = (
+                                                SELECT rowid FROM item_transactions
+                                                 WHERE timestamp = ?2
+                                                   AND character_name = ?3
+                                                   AND server_name = ?4
+                                                   AND source = 'chat_status'
+                                                 ORDER BY rowid DESC LIMIT 1
+                                              )",
                                             rusqlite::params![
-                                                timestamp,
-                                                character,
-                                                server,
-                                                item_name,
-                                                internal_name,
-                                                item_type_id,
-                                                *quantity as i32,
-                                                context,
-                                                source_kind,
                                                 source_details,
+                                                ts_utc,
+                                                id.character,
+                                                id.server,
                                             ],
                                         )
                                         .ok();
                                     }
                                 }
                             }
-                            ChatStatusEvent::ItemStudied {
-                                timestamp,
-                                item_name,
-                            } => {
-                                // Resolve to base equipment name (strip TSys prefixes/suffixes).
-                                // "Hailin' Thorian Kilt of Deathspark" → "Thorian Kilt"
-                                let base_name = self
-                                    .game_data
-                                    .try_read()
-                                    .ok()
-                                    .and_then(|gd| gd.find_equipment_base_name(item_name))
-                                    .unwrap_or_else(|| item_name.to_string());
-
-                                if let Ok(conn) = self.db_pool.get_write() {
-                                    if let (Some(character), Some(server)) = (
-                                        self.game_state.get_active_character(),
-                                        self.game_state.get_active_server(),
-                                    ) {
-                                        match crate::db::hoplology_commands::insert_hoplology_study_from_chat(
-                                            &conn,
-                                            &character,
-                                            &server,
-                                            &base_name,
-                                            timestamp,
-                                        ) {
-                                            Ok(Some(_)) => {
-                                                self.app_handle
-                                                    .emit("game-state-updated", &vec!["hoplology"])
-                                                    .ok();
-                                            }
-                                            Ok(None) => {} // already studied
-                                            Err(e) => {
-                                                eprintln!("Failed to persist hoplology study: {}", e);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            ChatStatusEvent::CombatWisdomEarned {
-                                amount,
-                                source_name,
-                                verb,
-                                zone,
-                                ..
-                            } => {
-                                // Persist monster awards for the Combat Wisdom
-                                // widget's per-monster cooldowns. Non-monster
-                                // (prodigy-level) awards are skipped by the
-                                // recorder; they still reach the frontend below.
-                                if let Ok(conn) = self.db_pool.get_write() {
-                                    crate::db::combat_wisdom_commands::record_combat_wisdom_earn(
-                                        &conn,
-                                        &local_ts,
-                                        *amount,
-                                        source_name.as_deref(),
-                                        verb,
-                                        zone.as_deref(),
-                                    )
-                                    .ok();
-                                }
-                            }
-                            ChatStatusEvent::CoinsLooted { amount, timestamp } => {
-                                // Corpse coins — a wallet gain. Feeds the council
-                                // estimate (migration v56).
-                                self.accrue_currency_delta(*amount as i64, timestamp);
-                            }
-                            ChatStatusEvent::CouncilsChanged { amount, timestamp } => {
-                                // Signed wallet delta (received/used/recovered/
-                                // stolen) — feeds the council estimate.
-                                self.accrue_currency_delta(*amount, timestamp);
-                            }
-                            ChatStatusEvent::RouletteResult { timestamp, number } => {
-                                // Persist the casino roulette spin outcome for the
-                                // Roulette widget's history pie chart. Idempotent.
-                                if let Ok(conn) = self.db_pool.get_write() {
-                                    crate::db::roulette_commands::record_roulette_result(
-                                        &conn, timestamp, *number,
-                                    )
-                                    .ok();
-                                }
-                            }
-                            ChatStatusEvent::WordOfPowerUsed { word, .. } => {
-                                // Speaking a word consumes it game-wide — remove
-                                // every saved copy so the Words of Power widget
-                                // stops offering a dead word. Idempotent (a
-                                // replayed use line deletes nothing).
-                                if let Ok(conn) = self.db_pool.get_write() {
-                                    match crate::db::words_of_power_commands::delete_words_by_word(
-                                        &conn, word,
-                                    ) {
-                                        Ok(0) => {}
-                                        Ok(n) => {
-                                            startup_log!(
-                                                "[coordinator] Word of power used: {} ({} saved row(s) removed)",
-                                                word,
-                                                n
-                                            );
-                                            self.app_handle
-                                                .emit("game-state-updated", vec!["words_of_power"])
-                                                .ok();
-                                        }
-                                        Err(e) => {
-                                            eprintln!(
-                                                "[coordinator] Failed to remove used word of power: {e}"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            ChatStatusEvent::MilkedBy { milker, timestamp } => {
-                                self.record_player_milk(milker, "milked_by", timestamp);
-                            }
-                            ChatStatusEvent::LevelUp {
-                                skill,
-                                level,
-                                xp,
-                                timestamp,
-                            } => {
-                                // Post-10/21 this is the only live absolute skill
-                                // signal (ProcessUpdateSkill is gone). Same gating
-                                // as the SkillUpdated arm. Never emits
-                                // `skill-update` (the log-shaped payload needs
-                                // tnl/bonus chat lacks); instead the persisted
-                                // row refreshes `skills` and the LevelUp case in
-                                // handleChatStatusEvent folds it into sessionSkills.
-                                if let (Some(character), Some(server)) = (
-                                    self.game_state.get_active_character().map(String::from),
-                                    self.game_state.get_active_server().map(String::from),
-                                ) {
-                                    let resolved = self
-                                        .game_data
-                                        .blocking_read()
-                                        .resolve_skill(skill)
-                                        .map(|info| (info.id as i64, info.name.clone()));
-                                    match resolved {
-                                        Some((skill_id, display_name)) => {
-                                            match self.db_pool.get_write() {
-                                                Ok(conn) => {
-                                                    match crate::db::game_state_commands::apply_chat_level_up(
-                                                        &conn,
-                                                        &character,
-                                                        &server,
-                                                        skill_id,
-                                                        &display_name,
-                                                        *level as i64,
-                                                        *xp as i64,
-                                                        timestamp,
-                                                    ) {
-                                                        Ok(true) => {
-                                                            self.app_handle
-                                                                .emit("game-state-updated", vec!["skills"])
-                                                                .ok();
-                                                        }
-                                                        // Stale replay dropped by the recency
-                                                        // guard — no state changed, no refresh.
-                                                        Ok(false) => {}
-                                                        Err(e) => eprintln!(
-                                                            "[coordinator] Chat level-up apply failed for {skill} L{level} ({character}@{server}): {e}"
-                                                        ),
-                                                    }
-                                                }
-                                                Err(e) => eprintln!(
-                                                    "[coordinator] Chat level-up dropped for {skill} L{level} ({character}@{server}): no write conn: {e}"
-                                                ),
-                                            }
-                                        }
-                                        None => {
-                                            // Never insert skill_id = 0 rows: the PK is
-                                            // (character, server, skill_id), so distinct
-                                            // unknown skills would overwrite each other.
-                                            eprintln!(
-                                                "[coordinator] Skipping chat level-up for unresolvable skill: {skill}"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                            ChatStatusEvent::ReportSaved { file_path, .. } => {
-                                // The player just ran /exportcharacter or /outputitems:
-                                // import the file they saved so snapshot-backed state
-                                // (skills/recipes/favor/storage/…) refreshes without a
-                                // manual import. The character seeder applies
-                                // newer-wins per domain (guarded by
-                                // last_confirmed_at); the inventory import replaces
-                                // storage/snapshot-inventory state. Failures just log.
-                                match report_kind_for_path(file_path) {
-                                    Some(ReportKind::Character) => {
-                                        match crate::db::character_commands::import_character_report_internal(
-                                            &self.db_pool,
-                                            file_path,
-                                            &self.game_data,
-                                        ) {
-                                            Ok(r) if !r.was_duplicate => {
-                                                self.app_handle
-                                                    .emit(
-                                                        "game-state-updated",
-                                                        vec![
-                                                            "skills",
-                                                            "recipes",
-                                                            "favor",
-                                                            "vendor",
-                                                            "currencies",
-                                                            "storage",
-                                                            "currency_estimate",
-                                                        ],
-                                                    )
-                                                    .ok();
-                                            }
-                                            Ok(_) => {}
-                                            Err(e) => eprintln!(
-                                                "[coordinator] ReportSaved auto-import failed for {file_path}: {e}"
-                                            ),
-                                        }
-                                    }
-                                    Some(ReportKind::Items) => {
-                                        match crate::db::inventory_commands::import_inventory_report_internal(
-                                            &self.db_pool,
-                                            file_path,
-                                        ) {
-                                            Ok(r) if !r.was_duplicate => {
-                                                self.app_handle
-                                                    .emit("game-state-updated", vec!["storage", "inventory"])
-                                                    .ok();
-                                            }
-                                            Ok(_) => {}
-                                            Err(e) => eprintln!(
-                                                "[coordinator] ReportSaved auto-import failed for {file_path}: {e}"
-                                            ),
-                                        }
-                                    }
-                                    None => {}
-                                }
-                            }
-                            // Intentionally dropped: `XpGained` deltas are non-idempotent
-                            // (replay double-counts; XP-rate widgets already read them via
-                            // the chat-status-event emit below), `ProdigyXpGained` is not
-                            // skill XP (no column for it), and `TreasureDistance` /
-                            // `AnatomyResult` have no table or consumer.
-                            _ => {}
                         }
-
-                        self.app_handle
-                            .emit("chat-status-event", &status_event)
-                            .ok();
+                        let _ = item_type_id;
                     }
 
-                    // Check Combat channel for player combat events
-                    if let Some(character_name) = self.game_state.get_active_character() {
-                        if let Some(combat_event) = parse_combat_message(&msg, character_name) {
-                            match &combat_event {
-                                crate::chat_combat_parser::ChatCombatEvent::PlayerDeath {
-                                    ..
-                                } => {
-                                    if let Err(e) = self.persist_death_event(&combat_event) {
-                                        eprintln!("Failed to persist death event: {}", e);
-                                    }
-                                    self.app_handle.emit("character-death", &combat_event).ok();
-                                    // Clear buffer after death
-                                    self.recent_damage.clear();
-                                }
-                                crate::chat_combat_parser::ChatCombatEvent::EnemyKilled {
-                                    ..
-                                } => {
-                                    // Drop-rate kills are now sourced from Player.log
-                                    // corpse searches (see process_corpse_search), not
-                                    // chat FATALITY lines — their entity_ids don't match
-                                    // the loot's corpse entity_id. We still emit the live
-                                    // event for the farming-session UI.
-                                    self.app_handle.emit("enemy-killed", &combat_event).ok();
-                                }
-                                crate::chat_combat_parser::ChatCombatEvent::DamageOnPlayer {
-                                    ..
-                                } => {
-                                    // Keep rolling buffer of last 10 damage events
-                                    if self.recent_damage.len() >= 10 {
-                                        self.recent_damage.remove(0);
-                                    }
-                                    self.recent_damage.push(combat_event);
-                                }
+                    // Arena bet rescan on a fresh resolution.
+                    if outcome.arena_resolved {
+                        let mut changed = true;
+                        match crate::db::arena_commands::backfill_bets_from_player_logs(
+                            &self.settings,
+                            &self.db_pool,
+                        ) {
+                            Ok(n) if n > 0 => {}
+                            Ok(_) => changed = outcome.domains.iter().any(|d| d == "arena"),
+                            Err(e) => {
+                                eprintln!("[coordinator] Arena bet rescan failed: {e}");
+                                changed = outcome.domains.iter().any(|d| d == "arena");
                             }
+                        }
+                        if !changed {
+                            outcome.domains.retain(|d| d != "arena");
                         }
                     }
 
-                    // Check Combat channel for self-milking (cow player milking themselves).
-                    // Format: "[Combat] PlayerName: Collect Milk on PlayerName!"
-                    // No entity ID (unlike NPC attacks), so the existing combat parser skips it.
-                    // The chat parser has ALREADY split the sender off player lines, so this
-                    // must compare the split message against the matcher — comparing the raw
-                    // line (sender included) never matched and recorded nothing.
-                    if msg.channel.as_deref() == Some("Combat") {
-                        if let Some(character_name) = self.game_state.get_active_character() {
-                            if crate::chat_combat_parser::parse_self_ability_line(
-                                msg.sender.as_deref(),
-                                &msg.message,
-                                character_name,
-                                "Collect Milk",
-                            )
-                            .as_deref()
-                                == Some(character_name)
-                            {
-                                let ts = msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
-                                self.record_player_milk(character_name, "self_milked", &ts);
-                            }
-
-                            // Cow-curse "Poop" ability — same shape as the milk line:
-                            // "[Combat] PlayerName: Poop on TargetName!". Combat lines are
-                            // excluded from chat_messages by default, so the lifetime count
-                            // is fed from the raw stream (and from the Chat.log backfill).
-                            // Keyed on the LOCAL wall clock so live + backfill dedup.
-                            if let Some(target) = crate::chat_combat_parser::parse_self_poop_line(
-                                msg.sender.as_deref(),
-                                &msg.message,
-                                character_name,
-                            ) {
-                                self.record_poop(&target, &local_ts);
-                            }
+                    // Forward structured emits + touched domains.
+                    if let Some(ev) = outcome.chat_status_event.take() {
+                        self.app_handle.emit("chat-status-event", &ev).ok();
+                    }
+                    if let Some(ev) = outcome.character_death.take() {
+                        self.app_handle.emit("character-death", &ev).ok();
+                    }
+                    if let Some(ev) = outcome.enemy_killed.take() {
+                        self.app_handle.emit("enemy-killed", &ev).ok();
+                    }
+                    if let Some(ev) = outcome.character_resuscitated.take() {
+                        self.app_handle.emit("character-resuscitated", &ev).ok();
+                    }
+                    for ev in std::mem::take(&mut outcome.watch_triggered) {
+                        self.app_handle.emit("watch-rule-triggered", &ev).ok();
+                    }
+                    for path in std::mem::take(&mut outcome.report_saved_paths) {
+                        // Live import for the just-written report (same as
+                        // the old inline arm); failures just log.
+                        self.import_report_saved(&path);
+                    }
+                    if !outcome.unknown_skills.is_empty() {
+                        self.skipped_unknown_skills += outcome.unknown_skills.len() as u64;
+                        for skill in &outcome.unknown_skills {
+                            eprintln!(
+                                "[coordinator] Skipping chat level-up for unresolvable skill: {skill}"
+                            );
                         }
                     }
-
-                    // Check Action Emotes channel for resuscitate events
-                    if let Some(rez_event) = parse_resuscitate_message(&msg) {
-                        // Dedup guard: if the game emits both phrasings for
-                        // one rez ("X resuscitates Y" + "Y comes back to
-                        // life!" within ~30s of each other), persist only the
-                        // first. Identity = target + a rolling 30-second
-                        // window since the last persisted rez of that target
-                        // — NOT minute buckets, which double-count pairs
-                        // straddling a minute boundary. Keyed per target so
-                        // interleaved rezzes of different targets each
-                        // dedup independently. Old targets are pruned to
-                        // bound memory.
-                        let dup_key = match &rez_event {
-                            crate::chat_resuscitate_parser::ChatResuscitateEvent::Resuscitated { timestamp, target_name, .. } => {
-                                Some((target_name.clone(), timestamp.clone()))
-                            }
-                            _ => None,
-                        };
-                        let is_duplicate = dup_key
-                            .as_ref()
-                            .map(|(target, ts)| {
-                                self.last_rez_dedup
-                                    .get(target)
-                                    .map(|prev| rez_within_dedup_window(prev, ts))
-                                    .unwrap_or(false)
-                            })
-                            .unwrap_or(false);
-
-                        // Prune stale entries: keep a target only while the
-                        // current event still falls inside its dedup window
-                        // — once the window passes, the paired line (if any)
-                        // has long since arrived and the entry is dead.
-                        if let Some((_, ts)) = &dup_key {
-                            self.last_rez_dedup
-                                .retain(|_, prev| rez_within_dedup_window(prev, ts));
-                        }
-
-                        if is_duplicate {
-                            eprintln!("[coordinator] Skipped duplicate rez event for {}", match &rez_event {
-                                crate::chat_resuscitate_parser::ChatResuscitateEvent::Resuscitated { target_name, .. } => target_name.clone(),
-                                _ => String::new(),
-                            });
-                        } else {
-                            if let Err(e) = self.persist_resuscitate_event(&rez_event) {
-                                eprintln!("Failed to persist resuscitate event: {}", e);
-                            } else if let Some((target, ts)) = dup_key {
-                                // Arm the dedup guard only AFTER a successful
-                                // persist: if the insert fails, the paired
-                                // line must still be able to produce a row.
-                                self.last_rez_dedup.insert(target, ts);
-                            }
-                            self.app_handle
-                                .emit("character-resuscitated", &rez_event)
-                                .ok();
-                        }
+                    if !outcome.domains.is_empty() {
+                        self.app_handle.emit("game-state-updated", &outcome.domains).ok();
                     }
 
                     messages.push(msg);
@@ -2065,7 +1667,8 @@ impl DataIngestCoordinator {
             }
         }
 
-        // Batch insert messages
+        // Batch insert messages (watch rules already evaluated per message
+        // through the shared dispatch, which forwards what fired).
         if !messages.is_empty() {
             let conn = self
                 .db_pool
@@ -2088,17 +1691,6 @@ impl DataIngestCoordinator {
                     .emit("chat-messages-inserted", inserted)
                     .ok();
             }
-
-            // Evaluate watch rules against new messages
-            let settings = self.settings.get();
-            if !settings.watch_rules.is_empty() {
-                for msg in &messages {
-                    let triggered = evaluate_rules(msg, &settings.watch_rules);
-                    for event in triggered {
-                        self.app_handle.emit("watch-rule-triggered", &event).ok();
-                    }
-                }
-            }
         }
 
         Ok(())
@@ -2112,139 +1704,61 @@ impl DataIngestCoordinator {
             .map_err(|e| format!("Failed to emit event: {}", e))
     }
 
-    /// Add a signed wallet delta (parsed from a chat `[Status]` line) to the
-    /// council-estimate's running `delta_since` for the active character+server.
-    ///
-    /// Guards (see migration v56 / `seed_game_state_from_snapshot` anchoring):
-    /// - no-op until a character export has seeded an anchor (`anchor_at` set),
-    ///   since without an absolute the estimate is meaningless;
-    /// - only counts events that post-date the anchor (`event_ts > anchor_at`),
-    ///   so replaying pre-export chat during catch-up can't double-count.
-    ///
-    /// `event_ts` is the event's UTC `"%Y-%m-%d %H:%M:%S"` timestamp, which
-    /// string-compares cleanly against the stored `anchor_at` (Z-stripped).
-    fn accrue_currency_delta(&self, amount: i64, event_ts: &str) {
-        if amount == 0 {
-            return;
-        }
-        let (Some(character), Some(server)) = (
-            self.game_state.get_active_character(),
-            self.game_state.get_active_server(),
-        ) else {
-            return;
-        };
-        if let Ok(conn) = self.db_pool.get_write() {
-            conn.execute(
-                "UPDATE currency_estimate
-                    SET delta_since = delta_since + ?1, updated_at = datetime('now')
-                  WHERE character_name = ?2 AND server_name = ?3
-                    AND currency_name = 'GOLD'
-                    AND anchor_at IS NOT NULL
-                    AND ?4 > anchor_at",
-                rusqlite::params![amount, character, server, event_ts],
-            )
-            .ok();
-        }
-    }
-
-    /// Persist a player death event to the character_deaths table,
-    /// along with the recent damage sources leading up to the death.
-    fn persist_death_event(
-        &self,
-        event: &crate::chat_combat_parser::ChatCombatEvent,
-    ) -> Result<(), String> {
-        let crate::chat_combat_parser::ChatCombatEvent::PlayerDeath {
-            timestamp,
-            killer_name,
-            killer_entity_id,
-            killing_ability,
-            health_damage,
-            armor_damage,
-        } = event
-        else {
-            return Ok(());
-        };
-
-        let character_name = self.game_state.get_active_character().unwrap_or("Unknown");
-        let server_name = self.game_state.get_active_server().unwrap_or("Unknown");
-        let area = self.current_area.as_deref();
-
-        // Resolve ability from CDN to get damage type
-        let damage_type: Option<String> = self.game_data.try_read().ok().and_then(|gd| {
-            let ability = gd.resolve_ability(killing_ability)?;
-            ability.damage_type.clone()
-        });
-
-        let mut conn = self
-            .db_pool
-            .get_write()
-            .map_err(|e| format!("Database connection error: {e}"))?;
-        let tx = conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(|e| format!("Failed to begin transaction: {e}"))?;
-        tx.execute(
-            "INSERT INTO character_deaths
-                (character_name, server_name, died_at, killer_name, killer_entity_id,
-                 killing_ability, health_damage, armor_damage, area, damage_type)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-            rusqlite::params![
-                character_name,
-                server_name,
-                timestamp,
-                killer_name,
-                killer_entity_id,
-                killing_ability,
-                health_damage,
-                armor_damage,
-                area,
-                damage_type,
-            ],
-        )
-        .map_err(|e| format!("Failed to insert death: {}", e))?;
-
-        let death_id = tx.last_insert_rowid();
-
-        // Persist recent damage sources leading up to the death
-        for (order, dmg_event) in self.recent_damage.iter().enumerate() {
-            if let crate::chat_combat_parser::ChatCombatEvent::DamageOnPlayer {
-                timestamp: dmg_ts,
-                attacker_name,
-                attacker_entity_id,
-                ability_name,
-                health_damage: hp,
-                armor_damage: ap,
-                is_crit,
-            } = dmg_event
-            {
-                tx.execute(
-                    "INSERT INTO death_damage_sources
-                        (death_id, event_order, timestamp, attacker_name, attacker_entity_id,
-                         ability_name, health_damage, armor_damage, is_crit)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                    rusqlite::params![
-                        death_id,
-                        order as i64,
-                        dmg_ts,
-                        attacker_name,
-                        attacker_entity_id,
-                        ability_name,
-                        hp,
-                        ap,
-                        *is_crit,
-                    ],
-                )
-                .map_err(|e| format!("Failed to insert damage source: {}", e))?;
+    /// Auto-import one VIP report the game just wrote (`ReportSaved` chat
+    /// line). Same behavior as the old inline arm; failures just log.
+    fn import_report_saved(&self, file_path: &str) {
+        match report_kind_for_path(file_path) {
+            Some(ReportKind::Character) => {
+                match crate::db::character_commands::import_character_report_internal(
+                    &self.db_pool,
+                    file_path,
+                    &self.game_data,
+                ) {
+                    Ok(r) if !r.was_duplicate => {
+                        self.app_handle
+                            .emit(
+                                "game-state-updated",
+                                vec![
+                                    "skills",
+                                    "recipes",
+                                    "favor",
+                                    "vendor",
+                                    "currencies",
+                                    "storage",
+                                    "currency_estimate",
+                                ],
+                            )
+                            .ok();
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!(
+                        "[coordinator] ReportSaved auto-import failed for {file_path}: {e}"
+                    ),
+                }
             }
+            Some(ReportKind::Items) => {
+                match crate::db::inventory_commands::import_inventory_report_internal(
+                    &self.db_pool,
+                    file_path,
+                ) {
+                    Ok(r) if !r.was_duplicate => {
+                        self.app_handle
+                            .emit("game-state-updated", vec!["storage", "inventory"])
+                            .ok();
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!(
+                        "[coordinator] ReportSaved auto-import failed for {file_path}: {e}"
+                    ),
+                }
+            }
+            None => {}
         }
-
-        tx.commit()
-            .map_err(|e| format!("Failed to commit transaction: {e}"))?;
-
-        Ok(())
     }
 
     /// Persist an enemy kill to the database and cache the entity_id→kill_id mapping
     /// for later loot attribution.
+
     /// Record a lootable searched corpse as a kill row (the drop-rate
     /// denominator) and cache its entity_id → kill_id for loot attribution.
     ///
@@ -2444,53 +1958,6 @@ impl DataIngestCoordinator {
                 _ => {}
             }
         }
-    }
-
-    /// Persist a resuscitate event (successful or failed) to the database.
-    /// We record all resuscitate events (not just those involving the active character)
-    /// so the player can see who they rezzed and who rezzed them.
-    fn persist_resuscitate_event(
-        &self,
-        event: &crate::chat_resuscitate_parser::ChatResuscitateEvent,
-    ) -> Result<(), String> {
-        let (timestamp, caster_name, target_name, success) = match event {
-            crate::chat_resuscitate_parser::ChatResuscitateEvent::Resuscitated {
-                timestamp,
-                caster_name,
-                target_name,
-            } => (timestamp, caster_name, target_name, true),
-            crate::chat_resuscitate_parser::ChatResuscitateEvent::ResuscitateFailed {
-                timestamp,
-                caster_name,
-                target_name,
-            } => (timestamp, caster_name, target_name, false),
-        };
-
-        let character_name = self.game_state.get_active_character().unwrap_or("Unknown");
-        let server_name = self.game_state.get_active_server().unwrap_or("Unknown");
-        let area = self.current_area.as_deref();
-
-        let conn = self
-            .db_pool
-            .get_write()
-            .map_err(|e| format!("Database connection error: {e}"))?;
-        conn.execute(
-            "INSERT INTO character_resuscitations
-                (character_name, server_name, occurred_at, caster_name, target_name, success, area)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                character_name,
-                server_name,
-                timestamp,
-                caster_name,
-                target_name,
-                success,
-                area,
-            ],
-        )
-        .map_err(|e| format!("Failed to insert resuscitation: {}", e))?;
-
-        Ok(())
     }
 
     /// Translate a [`SurveyAggregatorEvent`] into a Tauri event emit. Each
@@ -2805,38 +2272,7 @@ impl DataIngestCoordinator {
 
     // ── Milking timers ────────────────────────────────────────────
 
-    /// Record a successful cow milk (from the chat "Bottle of Milk added to
-    /// inventory" line while interacting with a `Cow_` NPC) and update that cow's
-    /// cooldown timer, using the current area as the zone.
-    ///
-    /// `timestamp` is the event's own UTC time (`"YYYY-MM-DD HH:MM:SS"`, taken from
-    /// the `[Status]` chat item-gain line — this is the chat path, not Player.log):
-    /// the cooldown must start when the cow was milked, not when Glogger read the
-    /// chat log, or a catch-up replay of an old log would hand out a fresh hour
-    /// every time. The upsert keeps the *newer* of the two stamps
-    /// (`MAX(excluded, stored)`) so a replay can't push a cooldown back while the
-    /// `zone` merge below still learns a previously-unknown area.
-    fn record_cow_milk(&self, cow_name: &str, timestamp: &str) {
-        let (character, server) = match self.active_character_server() {
-            Some(cs) => cs,
-            None => return,
-        };
-        let zone = self.current_area.clone().unwrap_or_default();
-        let milked_at = milking_event_timestamp(timestamp);
-        let conn = match self.db_pool.get_write() {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        if let Err(e) = crate::db::game_state_commands::record_cow_milk(
-            &conn, &character, &server, cow_name, &zone, &milked_at,
-        ) {
-            eprintln!("[coordinator] {e}");
-            return;
-        }
-        self.app_handle
-            .emit("game-state-updated", vec!["milking"])
-            .ok();
-    }
+
 
     /// The game refused the milk with "You've already milked X in the past hour.",
     /// which bounds the real milk to `(attempt - 1h, attempt]` — it does not say
@@ -2910,34 +2346,7 @@ impl DataIngestCoordinator {
             .ok();
     }
 
-    /// Record one "Poop on <target>!" event from the Combat channel (the
-    /// cow-curse ability whose skill is Dungcrafting).
-    ///
-    /// `local_ts` is the chat log's local wall-clock timestamp — deliberately
-    /// NOT the UTC-converted one, because the chat-log backfill never converts
-    /// and both paths must agree on the dedup key.
-    fn record_poop(&self, target: &str, local_ts: &str) {
-        let (character, server) = match self.active_character_server() {
-            Some(cs) => cs,
-            None => return,
-        };
-        let conn = match self.db_pool.get_write() {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        match crate::db::game_state_commands::record_poop(
-            &conn, &character, &server, target, local_ts,
-        ) {
-            Ok(true) => {
-                self.app_handle
-                    .emit("game-state-updated", vec!["report_stats"])
-                    .ok();
-            }
-            // Already recorded (the backfill got there first) — nothing changed.
-            Ok(false) => {}
-            Err(e) => eprintln!("[coordinator] Failed to record poop: {e}"),
-        }
-    }
+
 
     /// Parse teleportation bind locations from a "Skill Info" SkillReport book
     /// and persist them to `game_state_teleportation`.
@@ -4157,14 +3566,15 @@ impl SessionServerSource {
     }
 }
 
-/// Answer of [`session_server_for`].
+/// Answer of [`session_server_for`]. Public to the crate so scan paths
+/// (`chat_commands`) resolve the same per-file identity the drain uses.
 ///
 /// `NoRow` and `Failed` must stay distinct: the caller keys a whole replayed
 /// session on the answer, and the accepted residual is that those rows are not
 /// self-correcting — a transient read failure must not borrow another
 /// character's server by looking like an unknown character.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum SessionServerLookup {
+pub(crate) enum SessionServerLookup {
     /// The character's own `user_characters` row.
     Row(String),
     /// The character has no row at all: consult the chat-login scan.
@@ -4245,7 +3655,7 @@ fn apply_catch_up_login(
 /// The order is total: `updated_at` is written with second precision
 /// (`CURRENT_TIMESTAMP`), so `id` breaks its ties and the same rows resolve the
 /// same way on every launch.
-fn session_server_for(
+pub(crate) fn session_server_for(
     db: &DbPool,
     character_name: &str,
     current_server: Option<&str>,

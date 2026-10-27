@@ -2,82 +2,46 @@
 
 Small tasks and notes that don't belong in a dedicated plan.
 
-## Fix poetry backfill
-- **Fixed: poem backfill now covers archived copies + `Player-prev.log` + live `Player.log`, and runs at startup.** Root cause was two-layered: (1) the backfill scanned only the live `Player.log` and ran only on button press, so anything recited while glogger was closed lived only in the rotated `Player-prev.log` / `player-logs/` archive — same gap the arena-bet (`arena_commands.rs:394`) and statehelm-gift (`statehelm_commands.rs:290`) backfills already closed. Moved the scan to `db::poem_commands::backfill_from_player_logs` (archive → prev → live, per-file mtime-dated, `INSERT OR IGNORE`, single BEGIN IMMEDIATE tx; 3 unit tests) and wired it into the Step 5d startup chain (`lib.rs`) — the coordinator method and Poems tab button delegate to the same function, and the tab copy now says "game logs". (2) **This specific jam is unrecoverable**: the game stripped every `LocalPlayer:` line (all `ProcessTalkScreen` poem recitals included) from Player.log as of ~10/21 23:49 UTC — matches the 10/21 update note "remove excessive client logging" already tracked under *Log-signal items* — so no log source holds the 10/23 poems. `Chat-26-10-23.log` confirms attendance (present until the 22:18 logout) but carries no poem text; the newest stored poem is 2026-10-18 (Release DB holds 552).
-
-*Last reviewed: 2026-10-13* — **audited end-to-end the same day** against the tree at `e103595` (v1.2.0).
-Every item carries an inline **Audit 2026-10-13** verdict with `path:line` evidence:
-
-- **closed** — shipped, or the question is already answered elsewhere.
-- **re-scoped** — partly shipped, or the item's own stated cause/blocker/counts were wrong (the item stays open only for the residual work named in the note).
-- **verified** — the item is accurate as written and still unimplemented.
-
-**Tally: 26 checkbox items open at review → 3 closed, 13 re-scoped, 10 verified**, plus one new item (the
-narrowed Cook's-Helper defect that replaced the closed recipe-learning investigation — since fixed and closed) and one re-homed item
-(the appearance-only equipment view, promoted out of the reference notes below), plus one item **added 2026-10-15** from the
-character-attribution review (the catch-up guard's own accepted cost — see *Closed*; fixed the same day) — **24 open, 8 closed now**.
-The five Investigation reference notes carry no `- [ ]` checkbox, so they were never in any of these counts;
-three remain, all blocked outside the repo, after one closed and one was promoted to live work. The biggest
-misses were the casino bet tracker (fully shipped; its plan doc previously said "not yet built"), the
-macro/process-interaction question (already answered by the hard-lines research doc), and recipe learning
-(the live path exists — the real defect is narrower). Everything closed — including the two older
-resolutions — is collected in **Closed — kept for the record** at the end; everything above is either live
-work or settled research blocked outside the repo.
-
----
-
 ## Deferred tuning (needs real-world data)
 
-- [ ] One item left for real-log tuning — see `docs/plans/deferred-tuning.md`:
-      rez-dedup 30s window calibration (needs a captured rez pair; the window is
-      still forward-only, so backward-ordered pairs fail open). The other two are
-      closed in that file: brewing bulk-scan memory **measured 1.79 MB total** on the
-      dev DB (2026-10-13 — leave as-is), and the ChatMessageList day-jump scroll race
-      was **superseded** by the Session 38 day-log rewrite.
-  - **Audit 2026-10-13: verified.** `rez_within_dedup_window` is still `WINDOW = 30s`, forward-only
-    (`coordinator.rs:3823-3833`), and **no fixture contains either rez phrasing**
-    (`grep 'resuscitates\|comes back to life' test_data --include=Chat.log` → 0 rows), so the capture is
-    genuinely outstanding. Symptom to watch: duplicate rows in `character_resuscitations` (no UNIQUE key,
-    cosmetic only).
+- [ ] rez-dedup 30s window calibration — see `docs/plans/deferred-tuning.md` (needs a captured rez pair; window still forward-only so backward-ordered pairs fail open; no fixture contains either phrasing; watch for duplicate `character_resuscitations` rows, cosmetic only).
 
 ---
 
-## Investigations — settled research, blocked outside the repo
-
-Settled research kept for reference: **nothing in this section is actionable code work.** Each entry is blocked on something outside the repo — a game capture that no fixture contains, or a fundamental `Player.log` format limitation — and names that blocker inline. (An earlier occupant, the appearance-only equipment view, was never actually blocked and now lives under *Medium Effort*.)
-
-- **Match-3 winnings tracker** — No log events exist for the Match-3 minigame. Zero references in parser, chat logs, or Player.log. No feasible path without game-side changes. Minigame niche.
-  - **Blocked on: a casino capture (no fixture contains the minigame).**
-  - **Audit: re-scoped — "zero references" is wrong.** Correct: no fixture contains the minigame (`grep -ri 'match.?3' test_data` → 0) and there is no parser/table/UI. Wrong: the CDN *does* carry it — `CasinoFreePlayTicketMatch3`/`CasinoFreePlayTicketMatch3B` (`docs/CDN-full-examples/items.json:18588-18609`) and the **Gaming** skill whose rewards read "New match-3 stat visible" (`skills.json:6132-6190`). Existing generic ingestion (item gains + `ProcessUpdateSkill`) may already yield a partial view — needs a casino capture to tell.
-- **Monsters and Mantids winnings tracker** — Same as Match-3: no log events exist. No feasible path without game-side changes. Minigame niche.
-  - **Blocked on: a casino capture (no fixture contains the minigame).**
-  - **Audit: re-scoped.** Same capture requirement (0 fixture hits for `mantid`; the Chat.log `mantis` hits are unrelated NPC/combat text). But the CDN exposes a real **win counter**: quest_45084 `Event_Halloween_TheGamblersCurse` carries the objective `{"Target":"WonMonstersAndMantids","Type":"Special"}` (`quests.json:60635-60651`), and the parser already handles that vehicle — `ProcessCompleteDirectedGoals` → `DirectedGoalsLoaded` (`player_event_parser.rs:1379-1382,3245-3264`). Whether the counter's progress reaches Player.log is untestable on current fixtures.
-- **Hot tips tracker** — No log events, chat channels, or CDN data references to "hot tips" found in current samples. Need to collect samples, or just find what Kaeus has...
-  - **Blocked on: a sample or a link to an existing artifact (none in-repo).**
-  - **Audit: verified — but it is a request, not a scoped item.** Repo-wide `grep -ri 'hot.?tip'` returns exactly one hit: this line. No in-repo Kaeus artifact exists (`gst_manager.rs` is GorgonSurveyTracker; no GorgonBetTracker anywhere), so there is nothing to scope until a sample or a link arrives.
-
----
-
-## Log-signal items (parser-adjacent; nothing left here is capture-blocked)
-
-The audit cleared both capture blockers in this bucket: recipe learning is shipped end-to-end (moved to
-*Closed — kept for the record*), and the gardening blocker is wrong — the captures the item asked for already
-exist. The narrow frontend defect this bucket produced is now fixed (see *Closed*); what remains is the unimplemented garden Phase 1.
+## Log-signal items
 
 - [ ] Gardening helper — see `docs/plans/gardening-helper.md`
-  - Parser events exist (`EntityDescriptionUpdated`), plan written, garden almanac (Phase 0) complete.
-  - **Audit: re-scoped — the "needs additional captures" blocker is wrong.** `docs/architecture/capture-analysis-results.md:16-34` already documents the whole observed state machine (Thirsty/Hungry/Growing/Ripe/Blooming, `Water`/`Fertilize`/`Check`/`Harvest`, varying `Scale=`) from existing captures. What is actually missing is Phase 1+ code: **no** `EntityDescriptionUpdated` arm in `game_state.rs`/`coordinator.rs` (0 hits), **no** `garden_plots` table (`migrations.rs` 0 hits), **no** `get_garden_plots` command. Phase 0 = the almanac widget/table only (`GardenAlmanacWidget.vue`, `dashboardWidgets.ts:221-224`).
+  - Parser events exist (`EntityDescriptionUpdated`), plan written, garden almanac (Phase 0) complete. Missing is Phase 1+ code: no `EntityDescriptionUpdated` arm, no `garden_plots` table, no `get_garden_plots` command.
   - **Effort: Medium for Phase 1 (plot tracker) | Impact: High**
+- [ ] Product decisions (from 10/21 update-notes triage; each needs a yes/no, no code until decided): rename-orphan history on Rename-Golem/server-merge (character tables key on `(character, server)`, no rename path); "no stall rented" vs "rented, zero sales" indistinguishable (no stall-rental table); No-Resell flag has no item-model counterpart (`vendor_prices` dead); Angling Perfect Catches as a new loot signal (nothing parses angling).
 
-- [ ] Survey log-signal diff against post-10/21/2026 client (added 2026-10-21; needs live surveys first)
-  - The 10/21/2026 update revamped non-motherlode surveys (map-spot icons, click-to-reuse, facing turns, distance pings, 10→60 active-spot cap) and warns third-party log readers "may need revising due to changes in player logging", plus "remove excessive client logging to Player.log". glogger's use detection (`ProcessDeleteItem`, `player_event_parser.rs:1687`) and loot attribution (`ProcessScreenText` collected!/speed-bonus, `parsers.rs:250-292`) depend on the exact lines at risk. Run a few non-motherlode surveys on a live client and diff new lines against the brittle patterns (`Using ... Survey`, `Mining...`+`ChopLumber`, `FromSurvey`, treasure-distance shapes — already-unparsed two-number `"384m east and 1006m south"` in `test_data/surveyLogs/50x-povusmarvelous-ringandpick/Chat.log:136-159`). Opportunities once lines are known: active-spot counter vs cap, ping-vs-use split, spot-close on logout/zone/item-loss. Fixtures + `replay_tests.rs` are the before/after harness.
-  - **Effort: Small-Medium (capture + parser follow-ups) | Impact: High (survey accuracy is core)**
-- [ ] 10/21/2026 update-notes backlog (added 2026-10-21; items 2+3 shipped, rest triaged)
-  - Shipped: known-abilities persistence (`snapshot_skill_abilities`, v74), VIP NPC fields (raw favor/councils/reset/notes, v76), `achievements.json` + `strings_achievements` pipeline (v75). Automatic via CDN refresh, no code: new skills (Swimming/Situational Awareness), NPC buy-list/favor deltas, work-order rebalance, monster Accuracy/Stealthy rework (nothing parses those). Explicitly no action: Barbran buff rework, fox revamp, favor-up screen, persona additions.
-  - Still open, needs product decisions: name-keyed history orphans on Rename-Golem/server-merge renames (all character tables key on `(character_name, server_name)`; no rename path exists); "no stall rented" vs "rented, zero sales" indistinguishable (no stall-rental table); No-Resell flag has no item-model counterpart (`vendor_prices` table is dead — zero readers/writers). Angling Perfect Catches are an optional new loot signal (nothing parses angling today).
-  - **Effort: varies per item | Impact: Medium**
 
-## Medium Effort
+## Post-10/21 client: Player.log emits zero game events — LocalPlayer: pipeline blind (added 2026-10-26; needs scoping, then investigation)
+
+- [x] ~~Player.log game-event outage triage~~ — **TRIAGED 2026-10-26: verdicts above; survey manual-framing split to next item; dark-state UI + cheap polling remain.**
+  - Verified 2026-10-26 against the live game dir: live `Player.log` (24MB) and `Player-prev.log` (13.7MB, 68,708 lines) contain **zero** `LocalPlayer:` lines — no `ProcessAddItem/DeleteItem/UpdateItemCode/ScreenText/TalkScreen`, nothing. Remaining `Process*` hits are engine noise (`ServerCmdProcessor`, `ProcessCommand Create/Update`, Unity input, `AreaCmdProcessor` animation/attack). Only the `Logged in as character … Time UTC=` login line survives. The 10/21 update's "remove excessive client logging to Player.log" removed the verbose player events, not just noise. `player_event_parser.rs:1257-1262` fast-path-skips every line without the prefix, so the entire `PlayerEvent` stream is dark; only `LogSessionAnchored` (login line, handled above the fast path) still fires. Chat.log is healthy (999 `[Status]` + 9,510 `[Combat]` lines today, live loot lines in the scored format).
+  - Casualties — triaged 2026-10-26 (zero `LocalPlayer:` lines confirmed; verdict per tracker):
+    - Surveys — **manual framing, chat loot survives.** Loot *data* flows (`ItemGained` → `survey_chat` rows, idempotent, 97.5% on fixtures); loot *framing* (uses, sessions, nodes, bonus) scores 0 — all `DeleteItem`/`DelayLoop`/`ScreenText`-derived (`aggregator.rs:535-704`). Short-term: hand-framed sessions + a new `survey_tracker_record_use {map, kind}` command reuses the chat-loot pipeline untouched. Treasure pings (`TreasureDistance`, parsed but unwritten) carry no kind/map/area — unclassified counter at best, not use detection. Nodes + speed bonus go **dark**.
+    - Skills — **chat fallback (degraded).** `apply_chat_level_up` keeps level current; base/bonus/tnl/max frozen (progress bars 100%/`<1min` = unknown). Character-report re-import re-anchors.
+    - Arena bets — **dark** (bets); matches **unaffected** via Kuzavek chat narration. No Confirm-Bet source exists.
+    - Poems — **dark** (new recitals lost; old-log backfill only). No chat/Reports source.
+    - Gifts — **dark / manual** (tiers unaffected via snapshot; weekly counts need `add_manual_gift`).
+    - Kill loot — **dark** (chat `EnemyKilled` covers counts/UI only; items, extracts, drop linkage lost).
+    - Inventory live — **dark / manual** (stale until login, then empty; `/outputitems` re-import reseeds snapshot rows).
+    - Vendor live + other-stall browse — **dark / manual**; own-stall sales **unaffected** (shop-log books poll).
+    - Recipes (Cook's Helper) — **dark / manual** (report re-anchors). Effects/equipment/mount/weather/moon/guild/goals/strings/attributes/live-loadout — **dark** (snapshot abilities + guild-motd text survive via books/reports).
+  - Open work: (1) `survey_tracker_record_use` command + manual-framing UI — **next build** (unblocks survey on current client); (2) per-tracker dark-state UI (hide vs explain — no silent stale); (3) watcher keeps polling cheaply (game may restore events). Player.log tailing stays — the login line still anchors sessions.
+- [ ] Survey manual use framing (`survey_tracker_record_use {map_internal_name, kind}` + session buttons) — unblocks survey tracking on the zero-`LocalPlayer:` client: hand-created uses re-attach the live chat-loot pipeline (`claim_unlinked_chat_loot_near` + `survey_chat` attribution need a use row; scans already leave rows untagged for it).
+  - **Effort: Medium (command + UI) | Impact: High (survey works again on current client)**
+
+  - Historical note (fixture-era, pre-10/21): on April fixtures with live Player.log events, the full pipeline captures 1500/2400 expected pieces (62.5%, all deltas negative, use detection 50/50 + 100/100 — attribution lossy, measured 2026-10-26 `npm run survey-test`):
+    | 50x-povus-marvelous (multihit) | 486 | 169 | 34.8% |
+    | 100x-eltmetal (basic, ring+pick) | 299 | 241 | 80.6% |
+    | 100x-serbcrystal (basic, with ring) | 406 | 269 | 66.3% |
+    | 100x-serbcrystal (basic, vanilla) | 407 | 213 | 52.3% |
+    | 100x-eltblue (basic, ring+pick) | 405 | 275 | 67.9% |
+    | 100x-eltcrystal (basic, vanilla) | 397 | 333 | 83.9% |
+    Item-level: 15 exact, 23 close, 65 off (>2) of 103. The plan-doc 99.9% claim (`docs/archive/plans/survey-tracker-rewrite.md`, written in the same commit as the harness, `7edd681`) is not reproducible from history — that commit needs an uncommitted CDN snapshot and chat files from a later commit, and it trimmed povus ground truth to survey-attributable-only. Chat-only replay on the same fixtures: 97.5% (2340/2400, all 5 basic datasets 100.0%; multihit 87.7% with extras the hand count excluded). The Oct-2026 item-identity tie-break is an overcount guard, byte-identical on replay — never going to move the undercount. Per-dataset miss attribution (which lines drop at which gate) is the right investigation *after* use detection is re-sourced, not before.
 
 - [ ] Bug: occasional inventory item miscounts
   - **Root causes identified:** (1) Chat-to-player event correlation uses a ±2 second window — mismatches fall back to stack_size=1. (2) Parser's 1-line lookahead buffer for deletions (`pending_deletes`) can fail if log lines reorder. (3) During catch-up replay, stack count corrections from chat may arrive before/after Player.log events depending on replay ordering. (4) Login doesn't treat inventory as a full state dump, so items from earlier sessions can pollute later ones. The widget itself warns "item tracking is not great right now." Fix requires reconciliation logic and smarter replay-mode handling.
@@ -109,37 +73,17 @@ exist. The narrow frontend defect this bucket produced is now fixed (see *Closed
   - **Inventory (`/outputitems`): 5 keys parsed-and-dropped** (never enter `StorageItem` / `character_snapshot_items`): `IsAugmented` (8/1194 items in the fixture), `IngredientItemTypeIds` (1 — only survives as a brewing-scan read straight off `raw_json`, `brewing_commands.rs:405`), `DyeCount` (4), `Inscription` + `Inscriber` (1). Augmentation is the only one with a plausible consumer ("which gear is augmented" is currently unanswerable from the DB); the rest are single-digit-occurrence curiosities — persist for completeness alongside the migration, no UI owed.
   - **Unblocks:** the Skillbook autowatchwords prerequisite (Larger Efforts — its audit names the missing `snapshot_skill_abilities` table explicitly), an honest "Hide unlearned abilities" in `AbilityPickerDialog.vue:52` (currently a `level <= skill level` proxy, `:246-248`), and a true "My abilities" filter in `ModBrowser.vue:16` (currently scoped to the build's assigned bars).
   - **Effort: Medium (migrations + import write paths + raw_json backfill + known-ability query) | Impact: Medium-High (unblocks skillbook watch, fixes two filters; closes the snapshot audit)**
-- [ ] Current gear display (blocked: no source knows what's worn)
-  - The ask is a "what's my character wearing" tab — names, stats, details. Neither source answers it. The log path (`ProcessSetEquippedItems` → `EquipmentChanged`, stored as `slot`+`appearance_key` only) is live but nameless: appearance look-codes, never item names. The snapshot path has names/mods/TSys (`character_snapshot_items` via `get_equipped_gear_candidates`) but the report carries no "currently equipped" flag — worn gear and carried spares are indistinguishable, so the picker returns best-guess candidates and asks the user to confirm. An appearance-keys-only view was built and reverted: it rendered correctly but answered nothing the user asked.
-  - **Unblocks when:** a source identifies worn gear — either a log event carrying item identity per slot, or a snapshot/VIP report flagging equipped items.
-  - **Effort: unknown (needs the source first) | Impact: Medium**
+- [ ] Current gear display (blocked: no source flags what's worn — log path is nameless appearance keys, snapshot path can't distinguish worn from carried; appearance-only view built and reverted).
+  - **Unblocks when:** a log event carrying item identity per slot, or a snapshot/VIP flag for equipped items. **Effort: unknown | Impact: Medium**
 
-- [ ] Per-attacker damage history on a specific monster (blocked: the log never shows other players' outgoing attacks)
-  - The ask was a pane logging every hit any player lands on a named monster (e.g. Aktaari Cocks): attacker, damage, one-shot flag. A full implementation was built and reverted (2026-10-20): parser variant, `aktaari_cock_hits` table, live capture, Chat tab — it worked end to end, but against 5 months of logs it recorded 215 of the user's own hits, 1 pet hit, and 0 from any other player, because the game only writes `[Combat]` attack lines for fights the local client observes. Other players' hits on the same monster are simply absent (only their regen ticks, burials, and banter appear); other players' deaths likewise leave no `[Combat]` line, only `comes back to life!` aftermath in `[Action Emotes]`. Kill credit via corpse searches has the same ceiling: `enemy_kills` stores the searcher (always the local player), never the killer.
-  - **Unblocks when:** a source attributes other players' damage — either a log/chat setting that echoes nearby players' outgoing attacks, or a game/client change emitting them.
-  - **Effort: small (the reverted build is the template) | Impact: Medium (group-fight awareness)**
+- [ ] Per-attacker damage history on a specific monster (blocked: the log never shows other players' outgoing attacks — 5 months of logs: 215 own hits, 1 pet, 0 others).
+  - **Unblocks when:** a source attributes other players' damage (log/chat echo setting, or game emitting it). Reverted build is the template. **Effort: small | Impact: Medium (group-fight awareness)**
 
-- [ ] Evaluate ingestion pipeline / coordinator architecture
-  - **Partial investigation (see `docs/architecture/pipeline-structure.md`):** Coordinator is a manual dispatch hub (~2K lines). No formal event bus — each new feature adds match arms. No history/audit tables for most domains (only `item_transactions` is append-only). No shared schema contract for Tauri event payloads. Current design works at this scale but these are real gaps to watch as features grow.
-  - **Partial investigation:** Two-tier architecture: `PlayerLogWatcher` → `PlayerEventParser` → `GameStateManager` (50-event batches, 20ms flush window). Chat parallel: `ChatLogWatcher` → bulk insert + per-event status parsing. Main concerns: (1) chat-to-player correlation window is tight at ±2 seconds, (2) no query-side indexing on `game_state_inventory` for per-character/per-server lookups, (3) pending chat gains buffer ages items after 10s with no metrics on correlation failure rate, (4) all inventory deletes require 1-line lookahead. Overall reasonable design — main focus should be correlation tuning and reconciliation.
-  - **Audit: re-scoped — two of three headline claims are stale.** `coordinator.rs` is **3927 lines** (not ~2K), `PlayerEvent` has **40 variants**, and **17** `game-state-updated` emits live in-file (24 repo-wide). "Only `item_transactions` is append-only" is wrong: history tables now exist for milking, pooping, garden, hoplology, arena (`arena_matches`/`arena_bets`), roulette, combat-wisdom and books; only the `game_state_*` "last known value" family has no history. The one real remaining gap: **no shared schema contract for Tauri event payloads** (no specta/ts-rs/typeshare in `src-tauri/` or `package.json`).
+- [ ] Ingestion architecture: no shared schema contract for Tauri event payloads (no specta/ts-rs/typeshare). Coordinator is a 3927-line manual dispatch hub; history tables exist per-domain except `game_state_*`. The outage re-source design belongs here.
   - **Effort: Medium | Impact: Medium (reliability)**
-
-- [ ] Investigate dashboard refresh issues
-  - Reported as "weird page refresh issues." No explicit refresh/reload logic in `DashboardView.vue`. Main reactive trigger is `orderedWidgets` computed property tied to `useViewPrefs` + settings store. `useViewPrefs` debounces writes (500ms) but mutations can fire during transitions. Likely caused by reactive store updates triggering unexpected re-renders on pane resizing or settings updates. Needs runtime debugging to reproduce.
-  - **Audit: verified (unreproduced, unfixed).** `DashboardView.vue` still has no refresh path; every refresh-like behaviour is per-widget — 30 s tickers in `GardenAlmanacWidget:152`, `HarvestAlmanacWidget:273`, `HoplologyWidget:257,279`, `MilkingTimersWidget:338`, `WordsOfPowerWidget:424`; 500 ms debounced reload in `RecipeItemsWidget:144-151`; `watch` reload in `VendorCouncilWidget:405`. Still needs a live repro.
-  - **Effort: Low-Medium (once reproduced) | Impact: Unknown**
-
-- [ ] Color theme support
-  - Investigate whether supporting user-selectable color themes makes sense. Low priority but high delight.
-  - **Audit: verified (not started, no investigation artifact).** The only user-facing appearance settings are font family, font size, UI scale and widget opacity (`settingsStore.ts:5-47`, `AppSettingsTab.vue`); `src/assets/css/theme.css` is Tailwind's `@theme`, not user theming. Needs a design decision (what a theme owns — tokens only? chart palette too?) before an estimate.
-  - **Effort: Medium (investigation + implementation) | Impact: Low (personalization/delight)**
-
-- [ ] Continue UI/UX standardization across screens
-  - Some screens still don't look like they fit within the app, or have their own paradigms. Sidebars that don't use standardized panels, inconsistent patterns, etc. Should write a consolidated UI/UX checklist for new frontend features and then do a pass on existing screens against it.
-  - **Progress:** Color tokens, typography scale, and widget sizing are now standardized. DataTable/FilterBar/SkeletonLoader shared components are available. **Table sweep done 2026-10-17:** `DataTable` now covers **35 instances across 30 files** (was 6/5) — every grid that is not on the exemption list below is migrated, including `PlayerAttributesCard`, which the first pass mis-filed as a label/value panel and left on a raw `<table>` (the counts also stopped including `<DataTableSkeleton>`, a different component imported by `CooksHelperTab`, `HistoryTab` and `ProjectMaterialsPanel`). The standard (`docs/architecture/ux-standards.md` § Visual Consistency Checklist) now says which tables MUST use it. What remains is genuinely not a grid and was left alone on purpose: `ComputedStatsCard` (label/value with `colspan` section rows), `ReportStatsSection` (label/value, no header row — its group headings are `<h4>`s outside the table), `DeathsView` (its parent rows expand into a full-width `colspan` row; only the nested damage-source table is a sub-table), `BreweryRecipeDetail` (columns are the recipe's `variable_slots`), `AggregateView` skills-across-characters, `ArenaWidget` (runtime columns / pivot), `StallRevenueTab` (pivot + `tfoot`), plus the debug dumps (`Settings/GameStateDebug`, dev-panel `GameStateTab`). Next incremental steps: heading class standardization (see `docs/architecture/typography-audit.md`), color token Tier 3 cleanup (see `docs/architecture/color-standards.md`) — **the table-migration half of this item is finished**.
-  - **Audit: re-scoped — the Progress line's counts were wrong (corrected here).** *Measured at `ebeb295` (v1.3.1), before the table sweep.* Shared `DataTable` was used in **6 instances across 5 files** (not 10). Raw `<table>` remained in **34 files** — 33 consumers plus `Shared/DataTable.vue` itself: Character 10, Crafting 8, Surveying 4, Dashboard 3, DataBrowser 2, Chat/Inventory/Market/Settings/StallTracker 1 each, dev-panel `GameStateTab` 1 — i.e. **14** in the three named areas (Crafting + Surveying + DataBrowser), not ~30. `FilterBar`: **1 file**. `SkeletonLoader`: **21 files**. Heading classes are defined (`components.css:3-13`) and adopted; color Tier 3 has a small literal-hex tail (5 files) plus the chart palette. The consolidated checklist the item asks for **exists**: `docs/architecture/ux-standards.md`. *(Superseded 2026-10-17 by the sweep in Progress above, which has the current counts.)*
-  - **Effort: Medium (iterative) | Impact: Medium (consistency/polish)**
++
+- [ ] UI/UX standardization: Table sweep done — **35 instances across 30 files** (`ux-standards.md` checklist owns it). Remaining: heading-class standardization (`typography-audit.md`), color Tier 3 cleanup (`color-standards.md`).
+  - **Effort: Medium (iterative) | Impact: Medium**
 
 ---
 
@@ -207,92 +151,17 @@ exist. The narrow frontend defect this bucket produced is now fixed (see *Closed
   - **Audit: verified open — but the candidate list is now identifiable.** Largest TS logic: `craftingStore.ts` (1746 lines — recursive ingredient tree + material aggregation with per-node IPC and hand-rolled caches), `gameStateStore.ts` (1301), `buildPlannerStore.ts` (951), `useStorageConsolidation.ts` (944 — cross-alt vault math), `useRecipeCost.ts` (per-ingredient recursion + IPC). The target pattern already exists in-tree: `aggregateStore.ts` (thin IPC shim) and `useAbilityBuildStats.ts` ("the math lives in the Rust `compute_ability_build_stats` command").
   - **Effort: Large (research) | Impact: Medium (performance/architecture)**
 
----
+## Small fixes (verified open)
 
-## Frozen-review backlog (2026-10-24 pass, working tree on 3bfb238)
+- [x] ~~Roulette number CHECK~~ — **FIXED 2026-10-26: migration v77 (table rebuild per v38 precedent, out-of-range rows purged, `CHECK (number BETWEEN 0 AND 36)`); `record_roulette_result` rejects >36, backfill skips bad rows.**
+- [x] ~~NpcResolve case-insensitive match~~ — **FIXED 2026-10-26: `COLLATE NOCASE` + trim at both sites; mixed-case test.**
+- [x] ~~Trip-router nits~~ — **FIXED 2026-10-26: case-insensitive `casino_portal`, unresolved-name `eprintln`, `AreaDesert2` friendly name, `AreaCaves1`→Eltibule-dungeon relabel, score-`1`/monster-skip docs, `trip-routing.md` refresh.**
+- [x] ~~Stall aggregation validation~~ — **FIXED 2026-10-26: trigram empty-set identity, OCR/chrome/price gate docs, day-aware year wrap + single-wrap limit, aggregation items documented as by-design, `StallScanRow.quantity: None` by-design.**
+- [x] ~~Shop-log docs + arena payout trigger~~ — **FIXED 2026-10-26: stacked-path comment narrowed, BOM symmetric, owner defaults to active character; result-line resolve documented as the payout trigger.**
+- [x] ~~Chat-status parity~~ — **FIXED 2026-10-26: wisdom comma-grouping, timestamp digit gate, `try_level_up` empty-skill reject; steal-anchor + empty-arm guards verified already present.**
+- [x] ~~setup/gst validation~~ — **FIXED 2026-10-26: blank name/server rejected with column named; GST 256MiB cap + integrity-limit docs.**
+- [x] ~~ParseFixB read-error follow-up~~ — **DECIDED 2026-10-26: keep `continue` (one undecodable line ≠ dead file); recorded at site.**
+- [x] ~~stall_ocr edge + year wrap~~ — **FIXED 2026-10-26 (see stall validation line).**
+- [x] ~~game_state_commands audits~~ — **FIXED 2026-10-26: `get_currency_estimate_for` split + anchor/delta test; normalization + fetch + traversal audits as code comments.**
+- [x] ~~Scan-path Status dispatch loss~~ — **FIXED 2026-10-26: shared `chat_status_dispatch` module (live drain + all three scan/tail paths run the same arms with per-file session identity; re-scan inserts nothing). ReportSaved intentionally excluded on scans (path may not exist locally); survey rows stay untagged for retro-claim.**
 
-Findings the pass re-verdict as backlog (pre-existing, not regressions from the reviewed tree).
-Fix-now from that round is already applied (critical + 13 highs + PoemsView low); what follows
-is the remainder plus ParseFixB's out-of-budget skips. No marker was written for the pass
-(working-tree target), so these carry forward as ordinary work.
-
-### Reviewer backlog (needs design decision or is minor)
-
-- [x] ~~`build_planner`/`words_of_power` bare-id writes (no privilege boundary in a single-user local app — decided not-a-bug, listed for the record).~~ — **CLOSED 2026-10-26 triage (A1): decided not-a-bug, record-only in single-user local app.**
-- [ ] Roulette `CHECK (number BETWEEN 0 AND 36)` DB constraint (parser guard `>36 → None` applied; constraint is a migration).
-- [ ] NpcResolve case-insensitive match (`statehelm_commands.rs:219,730` — `COLLATE NOCASE` + trim).
-- [ ] Trip-router nits: `casino_portal` exact-lowercase match (`trip_router.rs:385-395`); unresolved friendly names silently kept (`zone_graph.rs:243-280` + `trip_router.rs:404-418`); `AreaDesert2` missing from `friendly_zone_name`; `AreaCaves1` mislabeled (Eltibule dungeon per CDN); stale trip-routing doc paragraph (lines 61-68); undocumented score-`1` tier + monster-ability skip (`unified_search.rs:310-330,759-762`).
-- [x] ~~Debug-capture hardening~~ — **CLOSED 2026-10-26 triage (verify-first): truncation-flag half shipped (`debug_capture.rs:491-526` manifest); DB-failure path already errors (`snapshot_game_state` `?` at both `coordinator.rs:3256,3297` call sites + `Snapshot DB connection failed` inside); the `vec![]` arms are temp-file reads (missing temp = nothing captured yet, legitimately empty — not a DB failure). Counters increment on failed writes by design (consecutive-failure give-up). No change.**
-- [x] ~~Survey Types dead arms + bounds~~ — **FIXED 2026-10-26 triage PR2 (`eb160be`): single `loot_qty` authority (twin-guarded bumps both pipelines, `NOT EXISTS` read guard kept), `deferred_basic_gains` capped at 128, `last_basic_use_for_bonus` cleared per contract, `crafted_count` gated to `SurveyMapCraft` provenance, `MultihitNodeOpened` emit wired; `update_session_loot_timestamps` audited (all log-derived stamps). 757 passed.**
-- [ ] Stall aggregation validation: unparseable inventory dates (drop with count); weekly `show_year` calendar-vs-ISO documentation; `GROUP BY name` → add id; cost `LEFT JOIN` unification; `StallScanRow.quantity` wiring or documented `Option`; chrome/price gate thresholds (`buy`/pay, sub-100). *(2026-10-26 triage: lock half removed — `StallOpsLock` deleted in PR1 `64c43eb`; validation residuals deferred.)*
-- [ ] Shop-log comment/BOM/owner docs (`shop_log_parser.rs:189-193`; `books_watcher.rs:399-406,464-483`): narrow the stacked-path invariant comment, strip BOM symmetric with twin, default missing owner to active character explicitly; arena payout trigger on resolve (`arena_parser.rs:~120`). *(2026-10-26 triage: degenerate-clear shipped `arena_parser.rs:124-128`, take-only-on-match fixed PR1 `64c43eb`; doc nits deferred.)*
-- [ ] Chat-status parity: wisdom comma-grouping to match councils twin; timestamp digit gate; `" stole "` anchored to `^<thief> stole <amount> Councils!`; empty ItemGained/Xp/Prodigy/Summoned arms (anatomy-guard pattern already applied to siblings).
-- [ ] `setup_commands.rs:174-210` non-empty name validation + sticky-report-source documentation; `gst_manager.rs:150-175` full-buffer download hash-before-exec + document/cap.
-- [ ] ParseFixB runtime follow-ups: mid-loop `parse_log` read errors currently `continue` without failing the job — decide if they should flip to Failed; `App.vue` now polls `get_parse_log_status` until Done/Failed (the fire-and-forget `await` on the job-id return is fixed); `debug_capture_save` `overwrite` is optional and `truncated_sections` serde-defaulted, so no other frontend changes were needed.
-
-### ParseFixB skipped (not started — out of budget)
-
-- [x] ~~`books_watcher.rs` mid-write TOCTOU~~ — **FIXED 2026-10-26 triage PR1 (`64c43eb`): post-read stat + `stable_post_read_mtime`, success/failure bookkeeping on the verified mtime. 752 passed.**
-- [ ] `stall_ocr.rs:195-216` trigram 1.0 on empty gram sets (return `a==b ? 1 : 0`); `:549-550` panel header identity OCR pass (fallback to legacy only with explicit flag); `:367-411,705-716` chrome/price gates.
-- [ ] `stall_year_resolver.rs:53-73` day-aware year wrap (currently month-only; document single-wrap limit).
-- [ ] `setup_commands.rs` save_user_character non-empty validation + sticky source doc.
-- [x] ~~Survey loot single-authority + bounds~~ — **FIXED 2026-10-26 triage PR2 (`eb160be`, see Reviewer-backlog twin line).**
-- [x] ~~`survey/types.rs` dead-arm sweep~~ — **CLOSED 2026-10-26 triage PR2 (`eb160be`): coordinator already matched all three arms; wired the missing `MultihitNodeOpened` emit instead of deleting.**
-- [x] ~~Arena tentative-bet `take()`-only-on-match~~ — **FIXED 2026-10-26 triage PR1 (`64c43eb`): peek-before-take + `mismatched_success_preserves_tentative`.**
-
-### Chat level-up ingest backlog (2026-10-25 PR #40 review, fix-now applied)
-
-Fix-now from that review is applied (monotonic `last_confirmed_at` + `>=` level floor in
-`apply_chat_level_up`, LevelUp DB/pool error logging in the coordinator). Triage 2026-10-26 closes the accepted-cost/documented halves below; the owned-by-series residuals keep their own lines above.
-backlog half of the same review, verified still present at `e21c1a2`:
-
-- [x] ~~Fallback-key/server-switch residuals — accepted costs documented in `HANDOFF.md:368-386`.~~ — **CLOSED 2026-10-26 triage (E3): accepted, documented.**
-- [x] ~~`1500ms` drift — pre-existing docs (`startup-sequence.md:37,130`), untouched by this series.~~ — **CLOSED 2026-10-26 triage (E4): pre-existing docs, untouched.**
-- [x] ~~F ledger items — do-not-re-file per the accepted-drift ledger (`ux-standards.md:219`).~~ — **CLOSED 2026-10-26 triage (F): decided, do not re-file.**
-- [x] ~~D1 multihit TODO — no CDN signal separates Basic from Multihit except `MotherlodeMap` + the hardcoded area table (`items.rs:7-18`, `survey-mechanics.md:85-99`); code-side TODO stays as-is.~~ — **CLOSED 2026-10-26 triage (D1): no CDN signal, documented.**
-
-- [x] ~~`coordinator.rs` Reports path hardening + zero-id guard~~ — **FIXED 2026-10-26 triage PR1 (`64c43eb`): lexical `..` normalization + parent-`Reports` requirement + `_items_` stem rule; SkillUpdated skip-on-None unifying the LevelUp invariant; Character-import guard scoped to short reads via `GameDataState`.**
-- [x] ~~`coordinator.rs` game_data read guard across character import~~ — **FIXED 2026-10-26 triage PR1 (`64c43eb`, same change).**
-- [x] ~~`gameStateStore.ts:649` `firstXp` overwrite in `handleChatLevelUp` — consistent with `handleSkillUpdate` (rolling delta-baseline, not session-start immutable; write-only in the chat-only flow), so keep unless consumers change; document as rolling baseline at most.~~ — **CLOSED 2026-10-26 triage (C4): keep rolling baseline; no consumer change.**
-- [x] ~~`gameStateStore.ts:628` tnl=0 unknown sentinel — docs now honest (e21c1a2: 100% bar + `< 1 min` TTL mean unknown, not maxed); nullable-tnl + widget unknown-state is widget-scope work.~~ — **CLOSED 2026-10-26 triage (C5): docs honest; nullable-tnl/widget unknown-state deferred to widget scope.**
-- [ ] `game_state_commands.rs` mixed space-vs-`T…Z` timestamp test (guard pins same-format only) + traversal/subdir/overbroad-`_items_` `report_kind_for_path` tests; timestamp-normalization audit for `firstTimestamp`/`lastTimestamp` vs `timestampToSeconds`; `fetchCurrencyEstimate` full-refresh-path audit.
-- [ ] `chat_commands.rs` scan/tail paths (`scan_chat_logs`, `scan_chat_log_file`, `tail_chat_log`) never run `parse_status_message` — any Status line (level-ups, XP-rate ticks, roulette, WoP, ReportSaved auto-import, arena narration) consumed by a manual scan instead of the coordinator drain is structured-data lost (stored nowhere: Status/Combat excluded from `chat_messages`) while the cursor advances past it. Observed 2026-10-26: evening session 16:46→22:42 ingested by manual scan, `Azyima has milked you.` 22:07 never reached `player_milking_log` (recovered afterward via `backfill_ability_history` milked_by sweep, `32b3be0`). Fix options: (a) run the coordinator's structured Status dispatch over scanned lines with per-line file-marker attribution, or (b) route manual scans through the coordinator drain. Needs the attribution model first — scans run outside the coordinator with no ingest identity (explicit character args today); LevelUp/XP/WoP/roulette need game_data + refresh semantics, not just a row write.
-
----
-
-- [x] ~~Catch-up guard drops a non-selected character's login snapshot~~ — **FIXED 2026-10-15**: the Player.log login line now *attributes* the session that follows it instead of gating on the selection.
-  - **One owner for the ingest identity.** `DataIngestCoordinator::adopt_player_log_session` (`coordinator.rs`) writes only `GameStateManager` — the single owner — and every log-derived writer reads it, including `ingest_shop_log`, which used to read `settings.active_character_name` directly and was the reason per-session attribution was unsafe before. `settings` is the durable/display selection (picker; the Chat.log marker, which writes it in both modes; the live Player.log re-arm when `active_character` is `None`; and `poll()` right after the Player.log drain, syncing character *and* server to the ingest identity — the chat drain that follows may then re-set them from its own marker). `GameStateManager::clear_active_character` is deleted.
-  - **One frontend line was needed anyway.** The plan assumed `startupStore`'s post-catch-up refresh re-read the backend settings; it does not (`settingsStore.initialize()` early-returns on `isLoaded`, set during the splash phase), so the UI stayed on the pre-catch-up character while ingest wrote the adopted one. `initialize(force)` + `await settingsStore.initialize(true)` there fixes it — verified over CDP (header `OtherAltServer — OtherAlt`, the adopted character's own skills loaded).
-  - **`session_server_for` fallback.** A Player.log login line has no server, so it is resolved from `user_characters` (written by the chat-login marker): the server already in use wins, else the picker's active row, else the newest (`updated_at`, with `id` breaking its second-precision ties); a character **absent from `user_characters`** takes its own `Chat.log` login line instead, and only a character absent from *both* keeps the server in use — as does a lookup that could not run (`SessionServerLookup::Failed` — a read error answers `Failed`, never `NoRow`, so it never borrows the chat tier). **Those fallback-keyed rows then stay under that key for good** — a full-state dump only replaces its own `(character, server)` slice, so a later real login fixes the rows written after it, not those. Accepted: the fallback key is the one that character's other sessions use unless it plays on a different server than the current selection, and the alternative (leaving the server unset) drops the whole session — the cost this change exists to remove. Invisible only to the server-scoped UI, and named in the console.
-  - **Evidence:** unit tests `coordinator::session_identity_tests::session_server` (all six resolution cases, including a dropped `user_characters` table for `Failed` and that an alt resolves through its own row rather than through the server in use) and `game_state::tests::identity_switch_keeps_each_sessions_skills` (a contract guard on the pair-scoped dump — two sessions' skill dumps stay separate; it passes on the pre-change code too, since the routing is the coordinator's `adopt_player_log_session`, which the smoke covers); full two-character catch-up smoke on a throwaway profile, both orders. Live switches and the `character-login` emit remain the Chat.log marker's job.
-
-- [x] ~~Bug: instant-snack foods missing from gourmand report~~ — **RESOLVED 2026-10-11 (real cause: category-token drift; fixed in migration v70)**
-  - The 2026-10-03 "stale import" diagnosis was wrong, and the same session's evidence pointed at the answer: the `foods` table holds 57 **`'Instant Snack'`** rows (CDN 486 builds the token from the `Food_Effect_Level_InstantSnack` string — `"Level {0} Instant Snack"`) while `gourmandStore` matches **`'Instant-Snack'`**. The Instant-Snacks section and its progress bar were therefore permanently empty — 57 of 606 foods invisible to the UI, no import or watcher could change that.
-  - **Fixed:** `parse_food_desc` canonicalises the category via `canonical_food_category` (case- and separator-insensitive; unknown categories pass through) and migration v70 backfills rows already on disk in place — no CDN re-download. Verified on a copy of the dev DB: 606/606 foods match the UI's three category literals, idempotent, eaten joins intact.
-  - Lesson: name-based joins (every eaten entry resolves to a `foods` row) cannot detect this class of bug — compare the *token* the UI filters on against what ingestion stored.
-  - Note: `Flesh Lump` report lines carry race variants (`Flesh Lump (Elf)` etc.) — the tag stripper only removes `(HAS MEAT)`-class tags, so variant names match the CDN exactly. No fix needed (an earlier "variant matching gap" suspicion was a bug in the test script, not the app).
-
-- [x] ~~Bug: rez counter not working~~ — **ROOT CAUSE FOUND 2026-10-03; FIX IMPLEMENTED**
-  - The Action Emotes channel hypothesis was wrong: 22 `[Action Emotes]` lines reach the chat log today. The real gap: the game emits TWO rez phrasings — `<Caster> resuscitates <Target>` (parsed, populated the 78 historic rows) and `<Target> comes back to life!` (target-only, no caster named, UNPARSED). Sessions where the game uses the second phrasing left the counter silent.
-  - **Fixed:** `chat_resuscitate_parser.rs` now parses the second shape with `caster_name = "Unknown"` (3 new tests incl. real-log lines and a spaced-target case). "Top rezzers" stays caster-based; "times rezzed" counting is now complete for newly tailed sessions (historic backfill of the second phrasing is not retroactive — backfilled chat logs don't re-parse old lines).
-  - Still live in that area: the 30 s dedup window calibration (see *Deferred tuning* above).
-
-- [x] ~~Investigate detecting recipe learning without character.json import~~ — **CLOSED 2026-10-13 (audit): the feature was already live**
-  - `ProcessUpdateRecipe`/`ProcessLoadRecipes` parse into `RecipeUpdated` (`player_event_parser.rs:2878-2892,3021-3030`); the coordinator UPSERTs every update into `game_state_recipes` and emits the `recipes` domain (`game_state.rs:599-615`); Cook's Helper consumes it live through `learnedRecipeKeys` (`cooksHelperStore.ts:68`; `gameStateStore.ts:406-411`, refreshed on the `recipes` domain at `:1116`). The item's "STILL UNKNOWN — does it fire on a first learn (count 0)?" is answered **yes**: `test_data/surveyLogs/gazluk-motherlodes-vanilla/Player.log:27604` shows `ProcessUpdateRecipe(9116, 0)` for a recipe appearing nowhere else in the file.
-  - The narrowed defect this item produced — "Cook's Helper hides recipes that were learned but never cooked" — was **fixed 2026-10-13** (see *Closed*, below).
-
-- [x] ~~Bug: Cook's Helper hides recipes that were learned but never cooked~~ — **FIXED 2026-10-13**
-  - Was the original report ("bought a recipe, helper didn't update"): `cooksHelperStore.ts` filtered the helper list on `knownRecipeKeys` (`completion_count > 0`), so a recipe whose learn event carried count 0 (`ProcessUpdateRecipe(id, 0)`) looked "not learned". Now it filters on `learnedRecipeKeys` (`gameStateStore.ts:406-411` — the presence of any `game_state_recipes` row), so learned-but-uncooked recipes are offered.
-
-- [x] ~~Casino arena bet tracker~~ — **CLOSED 2026-10-13 (audit): shipped, as the arena widget rather than the plan's `casino_*` shape**
-  - Bets parse from the log (`arena_parser.rs:286-369` — `Confirm Bet`, placement, payout gate; tests `:563-618`), outcomes from NPC Chatter (Kuzavek) chats (`arena_parser.rs:93-97`, wired `coordinator.rs:1192-1230`), persisted in `arena_matches` (v64) / `arena_bets` (v65, dedup index `idx_arena_bets_dedup`), exposed via `record_arena_bet`/`get_arena_stats` (`lib.rs:704`) and rendered by `ArenaWidget.vue`.
-  - `docs/plans/casino-bet-tracker.md:13` previously listed the betting/P&L half as "Still TODO … not yet built"; corrected in this pass, because that is exactly what `ArenaBetTracker` + `arena_bets` + `record_arena_bet` now do (the plan's own Status section already documents the shipped fighter-prediction half). The plan's richer Economics→Casino tab (`:48,:73`) was never the shipped shape and is not part of this item.
-
-- [x] ~~Macros or process interaction~~ — **CLOSED 2026-10-13 (audit): answered, and mechanically enforced**
-  - `docs/research/glogger-game-interaction-limits.md` settles it: **targeting/sending to the game process is forbidden** — never open a handle to `WindowsPlayer.exe`, never inject, never read/write game memory, never synthesize input (§2, plus the TOS §5/§8 rows). Allowed: reading files the user's own client wrote (`Player.log`/`Chat.log`/glogger's DB), own-screen pixels via GDI `BitBlt`+OCR (passive, `stall_ocr.rs`), and CDN GETs.
-  - `scripts/check-glogger-constraints.ps1` enforces the lines (`OpenProcess(`, `ReadProcessMemory`, `WriteProcessMemory`, `CreateRemoteThread`, `SendInput(`, `keybd_event(`, packet tooling, port 9002, …) on pre-push and in the release `validate` job. The old claim that "mouse/keyboard macros are okay" was wrong and is deleted.
-  - Any future ask here starts from that doc, not from a feasibility study.
-
-- [x] ~~Item mods/augments not shown in inventory~~ — **CLOSED 2026-10-13 (audit): log-format limitation, no feasible path — the data exists only in the VIP JSON export, which snapshot import already consumes**
-  - Player.log does NOT include TSys mod/augment data. Only `ProcessAddItem` (name + instance_id) and `ProcessUpdateItemCode` (stack size + type ID) are available. TSys data is only in VIP Inventory JSON export (snapshot imports already store it). Fundamental log format limitation.
-  - **Audit: verified.** 0 hits for `TSysPowers|IsAugmented|ProcessSetMods` in any `Player.log` fixture; the snapshot path does surface mods (`inventory_commands.rs:38-39,213-238` → `InventoryTable.vue:92-95`), and the user-visible note lives in `KnownIssuesTab.vue:115-119`. Log-format limitation stands as written.

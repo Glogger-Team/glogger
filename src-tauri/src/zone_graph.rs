@@ -34,7 +34,7 @@ pub const AREA_STATEHELM: &str = "AreaStatehelm";
 pub const AREA_GAZLUK_CAVES: &str = "AreaGazlukCaves";
 pub const AREA_GAZLUK_KEEP: &str = "AreaGazlukKeep";
 pub const AREA_SERBULE_CAVES: &str = "AreaSerbuleCaves";
-pub const AREA_SERBULE_HILLS_CAVES: &str = "AreaCave1"; // Dungeons Beneath Eltibule? Actually Cave1 = Eltibule dungeon
+pub const AREA_ELTIBULE_DUNGEON: &str = "AreaCave1"; // Dungeons Beneath Eltibule (Goblin Dungeon / Hogan's Keep)
 pub const AREA_KUR_CAVES: &str = "AreaKurCaves";
 pub const AREA_RAHU_CAVES: &str = "AreaRahuCaves";
 pub const AREA_SUN_VALE_CAVES: &str = "AreaSunValeCaves";
@@ -81,7 +81,7 @@ const SUBZONE_PARENTS: &[(&str, &str)] = &[
     (AREA_GAZLUK_CAVES, AREA_GAZLUK),
     (AREA_GAZLUK_KEEP, AREA_GAZLUK),
     (AREA_SERBULE_CAVES, AREA_SERBULE),
-    (AREA_SERBULE_HILLS_CAVES, AREA_ELTIBULE), // "Dungeons Beneath Eltibule"
+    (AREA_ELTIBULE_DUNGEON, AREA_ELTIBULE), // "Dungeons Beneath Eltibule"
     (AREA_KUR_CAVES, AREA_KUR_MOUNTAINS),
     (AREA_RAHU_CAVES, AREA_RAHU),
     (AREA_SUN_VALE_CAVES, AREA_SUN_VALE),
@@ -292,6 +292,8 @@ impl ZoneGraph {
             // Sub-zones / dungeons that appear in bind locations
             "Caves Beneath Gazluk" | "Gazluk Caves" => AREA_GAZLUK_CAVES,
             "Caves Under Serbule" | "Serbule Caves" => AREA_SERBULE_CAVES,
+            "Dungeons Beneath Eltibule" | "Beneath Eltibule" | "Goblin Dungeon"
+            | "Hogan's Basement" => AREA_ELTIBULE_DUNGEON,
             "Rahu Sewers" | "Rahu Sewer" => AREA_RAHU_CAVES,
             "Caves Beneath Kur Mountains" | "Kur Caves" => AREA_KUR_CAVES,
             "Statehelm Undercity" => AREA_STATEHELM_CAVES,
@@ -458,6 +460,18 @@ mod tests {
         assert_eq!(
             g.resolve_friendly_name("Caves Beneath Gazluk"),
             Some(AREA_GAZLUK_CAVES)
+        );
+        assert_eq!(
+            g.resolve_friendly_name("Goblin Dungeon"),
+            Some(AREA_ELTIBULE_DUNGEON)
+        );
+        assert_eq!(
+            g.resolve_friendly_name("Dungeons Beneath Eltibule"),
+            Some(AREA_ELTIBULE_DUNGEON)
+        );
+        assert_eq!(
+            g.resolve_friendly_name("Phantom Ilmari Desert"),
+            Some(AREA_PHANTOM_ILMARI)
         );
         assert_eq!(g.resolve_friendly_name("Ilmari Desert"), Some(AREA_ILMARI));
         assert_eq!(g.resolve_friendly_name("AreaSerbule"), Some(AREA_SERBULE)); // CDN key passthrough

@@ -411,7 +411,7 @@ fn friendly_zone_name(zone: &str) -> &str {
         "AreaKurMountains" => "Kur Mountains",
         "AreaCasino" => "Red Wing Casino",
         "AreaDesert1" => "Ilmari",
-        "AreaRahu" => "Rahu",
+        "AreaDesert2" => "Phantom Ilmari Desert",
         "AreaGazluk" => "Gazluk",
         "AreaFaeRealm1" => "Fae Realm",
         "AreaPovus" => "Povus",
@@ -441,12 +441,15 @@ pub fn plan_trip(
     let config = travel_config.unwrap_or_default();
 
     // Build graph with the correct casino edge based on current moon phase.
-    // If casino_portal is "rahu", exclude Casino↔Statehelm edge (and vice versa).
-    // If not specified, both edges are available (optimistic).
-    let excluded = match config.casino_portal.as_deref() {
-        Some("rahu") => vec![("AreaCasino", "AreaStatehelm")],
-        Some("statehelm") => vec![("AreaCasino", "AreaRahu")],
-        _ => vec![],
+    // The portal value is matched case-insensitively (the frontend may send
+    // "Rahu", "RAHU", or "rahu") — anything else keeps both edges (optimistic).
+    let portal = config.casino_portal.as_deref().unwrap_or("");
+    let excluded: Vec<(&str, &str)> = if portal.eq_ignore_ascii_case("rahu") {
+        vec![("AreaCasino", "AreaStatehelm")]
+    } else if portal.eq_ignore_ascii_case("statehelm") {
+        vec![("AreaCasino", "AreaRahu")]
+    } else {
+        vec![]
     };
     let graph = if excluded.is_empty() {
         ZoneGraph::new()
@@ -459,13 +462,26 @@ pub fn plan_trip(
 }
 
 /// Resolve friendly names in travel config to CDN area keys.
+///
+/// Unrecognized names are kept as-is (the solver later reports an "Unknown
+/// zone" error naming the zone). Keeping the original preserves the user's
+/// input for that error; an `eprintln!` is emitted here so the unresolved
+/// name is visible in logs at the point of resolution rather than silently
+/// passing through.
 fn resolve_travel_config(graph: &ZoneGraph, mut config: TravelConfig) -> TravelConfig {
     let resolve = |name: &Option<String>| -> Option<String> {
-        name.as_ref().and_then(|n| {
+        name.as_ref().map(|n| {
             graph
                 .resolve_friendly_name(n)
                 .map(|k| k.to_string())
-                .or_else(|| Some(n.clone())) // keep original if unresolved
+                .unwrap_or_else(|| {
+                    // Only log when it is not already a known CDN key — unknown
+                    // keys fail loudly in plan_route; typos deserve a trace.
+                    if graph.resolve_overworld(n).is_none() {
+                        eprintln!("[trip_router] unresolved friendly zone name kept as-is: {n}");
+                    }
+                    n.clone()
+                })
         })
     };
     config.primary_bind = resolve(&config.primary_bind);
@@ -727,5 +743,30 @@ mod tests {
         assert_eq!(resolved.primary_bind.as_deref(), Some("AreaCasino"));
         assert_eq!(resolved.secondary_bind.as_deref(), Some("AreaGazlukCaves"));
         assert_eq!(resolved.mushroom_circle_1.as_deref(), Some("AreaSerbule"));
+    }
+
+    #[test]
+    fn test_casino_portal_case_insensitive() {
+        // "RAHU" must behave like "rahu": Casino↔Statehelm excluded.
+        for portal in ["rahu", "RAHU", "Rahu"] {
+            let config = TravelConfig {
+                casino_portal: Some(portal.to_string()),
+                ..Default::default()
+            };
+            let stops = vec![stop("AreaRahu", StopPurpose::TurnIn, "Rahu stop")];
+            let route = plan_trip("AreaSerbule".to_string(), stops, Some(config));
+            assert!(route.is_ok(), "portal {portal} should plan");
+        }
+        // Unknown values keep both edges (optimistic) — still plans.
+        let config = TravelConfig {
+            casino_portal: Some("bogus".to_string()),
+            ..Default::default()
+        };
+        assert!(plan_trip(
+            "AreaSerbule".to_string(),
+            vec![stop("AreaRahu", StopPurpose::TurnIn, "x")],
+            Some(config)
+        )
+        .is_ok());
     }
 }

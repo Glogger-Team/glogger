@@ -115,6 +115,14 @@ impl ArenaTracker {
         // attributed to the current pending pair.
         self.discover(text);
 
+        // Payout trigger: a result line that names exactly one pending fighter
+        // resolves the WHOLE match (winner inferred, payout attribution left
+        // to the bet tracker). The personal-bet side (`ArenaBetTracker`)
+        // resolves its payout on the same line shape — a `You received N
+        // Councils.` screen-text line whose amount equals the confirmed
+        // bet's payout. No separate payout hook is needed here: this
+        // narrator emits the match outcome, the bet tracker emits the
+        // won/lost outcome, and the coordinator persists both.
         let (Some(a), Some(b)) = (self.pending_a.clone(), self.pending_b.clone()) else {
             return None;
         };

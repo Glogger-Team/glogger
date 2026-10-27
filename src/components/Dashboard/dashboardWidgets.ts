@@ -12,7 +12,6 @@ import ItemsOutgoingWidget from "./widgets/ItemsOutgoingWidget.vue";
 import CouncilsWidget from "./widgets/CouncilsWidget.vue";
 import FavorChangesWidget from "./widgets/FavorChangesWidget.vue";
 import CriticalResourcesWidget from "./widgets/CriticalResourcesWidget.vue";
-import StatehelmSummaryWidget from "./widgets/StatehelmSummaryWidget.vue";
 import WatchwordDetectionsWidget from "./widgets/WatchwordDetectionsWidget.vue";
 import DeathTrackerWidget from "./widgets/DeathTrackerWidget.vue";
 import RecipeItemsWidget from "./widgets/RecipeItemsWidget.vue";
@@ -33,7 +32,6 @@ import MessagesWidget from "./widgets/MessagesWidget.vue";
 import HoplologyWidget from "./widgets/HoplologyWidget.vue";
 import VendorCouncilWidget from "./widgets/VendorCouncilWidget.vue";
 import RouletteWidget from "./widgets/RouletteWidget.vue";
-import ArenaWidget from "./widgets/ArenaWidget.vue";
 
 export type WidgetSize = "small" | "medium" | "large";
 
@@ -143,12 +141,8 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     component: CriticalResourcesWidget,
     defaultSize: "small",
   },
-  {
-    id: "statehelm-summary",
-    name: "Statehelm Gifting",
-    component: StatehelmSummaryWidget,
-    defaultSize: "medium",
-  },
+  // Statehelm widget hidden: weekly gift counts are Player.log-only (dark on
+  // the current client). Restore the entry below if the game restores them.
   {
     id: "watchword-detections",
     name: "Watchword Alerts",
@@ -247,12 +241,9 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     component: RouletteWidget,
     defaultSize: "medium",
   },
-  {
-    id: "arena",
-    name: "Casino Arena",
-    component: ArenaWidget,
-    defaultSize: "large",
-  },
+  // Arena widget hidden: personal bets are Player.log-only (dark on the
+  // current client) and match history alone doesn't carry the widget.
+  // Restore the entry below if the game restores the events.
 ];
 
 /** Default card order — used when no user preferences exist */
