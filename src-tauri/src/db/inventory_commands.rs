@@ -210,10 +210,10 @@ pub fn import_inventory_report_internal(
             let mut backfill_stmt = conn
                 .prepare(
                     "UPDATE character_snapshot_items
-                     SET is_augmented = COALESCE(?1, is_augmented),
-                         dye_count = COALESCE(?2, dye_count),
-                         inscription = COALESCE(?3, inscription),
-                         inscriber = COALESCE(?4, inscriber)
+                     SET is_augmented = COALESCE(is_augmented, ?1),
+                         dye_count = COALESCE(dye_count, ?2),
+                         inscription = COALESCE(inscription, ?3),
+                         inscriber = COALESCE(inscriber, ?4)
                      WHERE item_snapshot_id = ?5 AND type_id = ?6 AND storage_vault = ?7",
                 )
                 .map_err(|e| format!("Failed to prepare detail backfill: {e}"))?;
@@ -903,5 +903,36 @@ mod tests {
             )
             .expect("aug row");
         assert_eq!(aug, Some(true), "stale re-import must not clobber is_augmented");
+    }
+    #[test]
+    fn duplicate_import_backfill_preserves_newer_non_null_values() {
+        // Fill-only both directions: a re-imported file with CONFLICTING
+        // non-NULL values must not overwrite the stored (newer) values.
+        // The UPDATE uses COALESCE(existing, incoming) per column.
+        let db = pool();
+        let result = import_inventory_report_internal(&db, FIXTURE).expect("import");
+        assert!(!result.was_duplicate);
+        // Newer truth lands first: mark row 21803 unaugmented + inscribed.
+        let conn = db.get_write().expect("write conn");
+        conn.execute(
+            "UPDATE character_snapshot_items SET is_augmented = 0, inscription = 'Newer' WHERE type_id = 21803",
+            [],
+        )
+        .expect("plant newer values");
+        drop(conn);
+        // Re-import the fixture (file says augmented + no inscription key for
+        // this row... actually it carries both) — values must not change.
+        let result = import_inventory_report_internal(&db, FIXTURE).expect("re-import");
+        assert!(result.was_duplicate);
+        let conn = db.get().expect("read conn");
+        let (aug, insc): (Option<bool>, Option<String>) = conn
+            .query_row(
+                "SELECT is_augmented, inscription FROM character_snapshot_items WHERE type_id = 21803",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("row");
+        assert_eq!(aug, Some(false), "stored FALSE must beat incoming TRUE");
+        assert_eq!(insc.as_deref(), Some("Newer"), "stored inscription must beat incoming NULL");
     }
 }

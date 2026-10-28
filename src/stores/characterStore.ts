@@ -77,8 +77,10 @@ export const useCharacterStore = defineStore('character', () => {
       const result = await invoke<ImportResult>('import_character_report', {
         filePath: filePath as string,
       })
+      lastImport.value = result
       // WO presence derives from the latest report — invalidate the cache.
       allCharacterWorkOrdersLoaded.value = false
+
 
       // Refresh character list after import
       await loadCharacters()
@@ -478,6 +480,14 @@ export const useCharacterStore = defineStore('character', () => {
   async function loadAllCharacterWorkOrders(force = false) {
     const settingsStore = useSettingsStore()
     const serverName = settingsStore.settings.activeServerName || undefined
+    // No server selected: never fetch unfiltered (backend treats an omitted
+    // filter as all servers) — clear the cache so tooltips show nothing.
+    if (!serverName) {
+      allCharacterWorkOrders.value = []
+      allCharacterWorkOrdersLoaded.value = false
+      allCharacterWorkOrdersServer.value = undefined
+      return
+    }
     const cacheMatchesServer = allCharacterWorkOrdersServer.value === serverName
     if (allCharacterWorkOrdersLoaded.value && cacheMatchesServer && !force) return
 
@@ -501,6 +511,8 @@ export const useCharacterStore = defineStore('character', () => {
    */
   function workOrderStateFor(questKey: string | null | undefined): { completedBy: string[]; activeBy: string[] } | null {
     if (!questKey) return null
+    // Cache is server-scoped; without a selection there is nothing valid to show.
+    if (!useSettingsStore().settings.activeServerName) return null
     const completedBy: string[] = []
     const activeBy: string[] = []
     for (const row of allCharacterWorkOrders.value) {
