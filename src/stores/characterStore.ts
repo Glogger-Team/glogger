@@ -52,6 +52,10 @@ export const useCharacterStore = defineStore('character', () => {
 
   // Cross-character storage search state (latest snapshot per character)
   const allCharacterItems = ref<CrossCharacterItem[]>([])
+  // Invalidation generation: bumped on every cache clear so an in-flight
+  // load started before the invalidation drops its stale result instead of
+  // committing it (server switch / import / delete mid-await).
+  const allCharacterItemsGeneration = ref(0)
   const allCharacterItemsLoading = ref(false)
   const allCharacterItemsServer = ref<string | undefined>(undefined)
   const allCharacterItemsLoaded = ref(false)
@@ -60,6 +64,8 @@ export const useCharacterStore = defineStore('character', () => {
   const allCharacterWorkOrders = ref<WorkOrderPresence[]>([])
   const allCharacterWorkOrdersLoading = ref(false)
   const allCharacterWorkOrdersServer = ref<string | undefined>(undefined)
+  // Same generation guard as the items cache above.
+  const allCharacterWorkOrdersGeneration = ref(0)
   const allCharacterWorkOrdersLoaded = ref(false)
 
   async function importCharacterReport(): Promise<ImportResult | null> {
@@ -81,6 +87,7 @@ export const useCharacterStore = defineStore('character', () => {
       lastImport.value = result
       // WO presence derives from the latest report — invalidate the cache.
       allCharacterWorkOrdersLoaded.value = false
+      allCharacterWorkOrdersGeneration.value++
 
 
       // Refresh character list after import
@@ -129,6 +136,7 @@ export const useCharacterStore = defineStore('character', () => {
       ])
       // WO presence derives from the latest report — invalidate the cache.
       allCharacterWorkOrdersLoaded.value = false
+      allCharacterWorkOrdersGeneration.value++
     } catch (e) {
       // Non-fatal — the report may not exist on disk
       console.warn('Auto-import latest report:', e)
@@ -263,6 +271,7 @@ export const useCharacterStore = defineStore('character', () => {
         lastImport.value = result
         // WOs come from the latest report — invalidate so tooltips refresh.
         allCharacterWorkOrdersLoaded.value = false
+      allCharacterWorkOrdersGeneration.value++
         // A fresh export re-anchors the council-wallet estimate (delta reset) —
         // pull the new anchor so the dashboard figure reflects it immediately.
         import('./gameStateStore').then(({ useGameStateStore }) => {
@@ -296,6 +305,7 @@ export const useCharacterStore = defineStore('character', () => {
       if (invResult) {
         lastInventoryImport.value = invResult
         allCharacterItemsLoaded.value = false
+      allCharacterItemsGeneration.value++
         await loadInventorySnapshots(characterName, serverName || undefined)
         if (inventorySnapshots.value.length > 0) {
           await selectInventorySnapshot(inventorySnapshots.value[0])
@@ -356,6 +366,7 @@ export const useCharacterStore = defineStore('character', () => {
       // Items come from the latest reports — invalidate the cross-character cache.
       lastInventoryImport.value = result
       allCharacterItemsLoaded.value = false
+      allCharacterItemsGeneration.value++
 
       // Refresh inventory snapshots after import
       if (selectedCharacter.value) {
@@ -424,7 +435,10 @@ export const useCharacterStore = defineStore('character', () => {
     // Try auto-import
     try {
       const invResult = await invoke<InventoryImportResult | null>('import_latest_inventory_for_character', { characterName, serverName: serverName || undefined })
-      if (invResult) allCharacterItemsLoaded.value = false
+      if (invResult) {
+        allCharacterItemsLoaded.value = false
+        allCharacterItemsGeneration.value++
+      }
       // Auto-scan for new brewing discoveries (non-blocking)
       if (invResult && !invResult.was_duplicate) {
         import('./breweryStore').then(({ useBreweryStore }) => {
@@ -458,6 +472,7 @@ export const useCharacterStore = defineStore('character', () => {
     if (!serverName) {
       allCharacterItems.value = []
       allCharacterItemsLoaded.value = false
+      allCharacterItemsGeneration.value++
       allCharacterItemsServer.value = undefined
       return
     }
@@ -468,6 +483,7 @@ export const useCharacterStore = defineStore('character', () => {
     // Clear stale rows before the async fetch/backfill so consumers never
     // render the previous server's rows while the new query is in flight.
     allCharacterItems.value = []
+    const generation = allCharacterItemsGeneration.value
     try {
       // Backfill inventory reports for every character on this server so the
       // search sees characters the user hasn't opened recently. Best-effort —
@@ -478,15 +494,25 @@ export const useCharacterStore = defineStore('character', () => {
         console.warn('Cross-character inventory backfill:', e)
       }
 
-      allCharacterItems.value = await invoke<CrossCharacterItem[]>('get_all_character_items', {
+      const rows = await invoke<CrossCharacterItem[]>('get_all_character_items', {
         serverName,
       })
+      // Drop the result if the server changed or the cache was invalidated
+      // mid-flight — committing it would poison the new scope with old rows.
+      if (
+        generation !== allCharacterItemsGeneration.value ||
+        settingsStore.settings.activeServerName !== serverName
+      ) {
+        return
+      }
+      allCharacterItems.value = rows
       allCharacterItemsLoaded.value = true
       allCharacterItemsServer.value = serverName
     } catch (e) {
       error.value = String(e)
       // Failed fetch must not poison the cache: allow the next call through.
       allCharacterItemsLoaded.value = false
+      allCharacterItemsGeneration.value++
     } finally {
       allCharacterItemsLoading.value = false
     }
@@ -504,6 +530,7 @@ export const useCharacterStore = defineStore('character', () => {
     if (!serverName) {
       allCharacterWorkOrders.value = []
       allCharacterWorkOrdersLoaded.value = false
+      allCharacterWorkOrdersGeneration.value++
       allCharacterWorkOrdersServer.value = undefined
       return
     }
@@ -514,17 +541,28 @@ export const useCharacterStore = defineStore('character', () => {
     // Clear stale rows before the async fetch so tooltips never render the
     // previous server's rows while the new query is in flight.
     allCharacterWorkOrders.value = []
+    const generation = allCharacterWorkOrdersGeneration.value
     try {
-      allCharacterWorkOrders.value = await invoke<WorkOrderPresence[]>('get_all_character_work_orders', {
+      const rows = await invoke<WorkOrderPresence[]>('get_all_character_work_orders', {
         serverName,
       })
+      // Same mid-flight guard as the items cache: server switch or
+      // invalidation during the await drops the stale result.
+      if (
+        generation !== allCharacterWorkOrdersGeneration.value ||
+        settingsStore.settings.activeServerName !== serverName
+      ) {
+        return
+      }
+      allCharacterWorkOrders.value = rows
       allCharacterWorkOrdersLoaded.value = true
       allCharacterWorkOrdersServer.value = serverName
     } catch (e) {
       error.value = String(e)
-      // Failed fetch must not poison a good cache with a blank: allow the
-      // next call through while keeping the previous rows visible.
+      // Failed fetch leaves rows empty (pre-cleared above): allow the next
+      // call through so the retry repopulates. Tooltips show nothing until then.
       allCharacterWorkOrdersLoaded.value = false
+      allCharacterWorkOrdersGeneration.value++
     } finally {
       allCharacterWorkOrdersLoading.value = false
     }
@@ -592,12 +630,14 @@ export const useCharacterStore = defineStore('character', () => {
     // Cross-character storage search
     allCharacterItems,
     allCharacterItemsLoading,
+    allCharacterItemsGeneration,
     allCharacterItemsServer,
     allCharacterItemsLoaded,
     loadAllCharacterItems,
     // Cross-character work-order presence
     allCharacterWorkOrders,
     allCharacterWorkOrdersLoading,
+    allCharacterWorkOrdersGeneration,
     allCharacterWorkOrdersServer,
     allCharacterWorkOrdersLoaded,
     loadAllCharacterWorkOrders,
