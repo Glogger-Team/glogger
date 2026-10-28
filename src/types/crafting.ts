@@ -348,6 +348,18 @@ export interface WorkOrderSnapshotData {
   inventory_item_ids: number[]
 }
 
+/**
+ * Cross-character work-order presence for a single quest key, read from each
+ * character's latest snapshot. `category` is `work_order` or
+ * `completed_work_order`.
+ */
+export interface WorkOrderPresence {
+  character_name: string
+  server_name: string
+  quest_key: string
+  category: string
+}
+
 /** Enriched work order for display */
 export interface EnrichedWorkOrder {
   /** Quest internal name (e.g., "Carpentry_QualityMeleeStaves") */

@@ -2,7 +2,7 @@
 
 ## Overview
 
-A full-featured crafting assistant for Project Gorgon. Helps players plan crafting projects, calculate ingredient requirements, optimize XP leveling paths, track live crafting progress, process work orders, review crafting history, and find cookable uneaten foods for Gourmand progress — all powered by CDN recipe/item/skill data, inventory snapshots, and character exports.
+A full-featured crafting assistant for Project Gorgon. Helps players plan crafting projects, calculate ingredient requirements, optimize XP leveling paths, track live crafting progress, process work orders, review crafting history, and find cookable uneaten foods for Gourmand progress — all powered by CDN recipe/item/skill data, Storage reports, and character exports.
 
 ## Architecture
 

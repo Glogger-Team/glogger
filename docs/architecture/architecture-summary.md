@@ -141,7 +141,7 @@ UNIQUE(timestamp, channel, sender, message)  -- Prevents duplicates
 ```
 
 ### character_snapshots
-Character progression from /outputcharacter.
+Character progression from Export Character as JSON (Settings → VIP).
 ```sql
 id (PK) | character_name | server_name | snapshot_timestamp | raw_json
 UNIQUE(character_name, server_name, snapshot_timestamp)

@@ -813,7 +813,7 @@ function spentToAvailable(spent: number, cap: number): number | null {
 
 /**
  * Newest-wins vendor gold resolution. Live log lines (`last_confirmed_at`)
- * only advance when you talk to that vendor; a zone + /outputcharacter
+ * only advance when you talk to that vendor; a zone change or Export Character as JSON
  * refreshes the snapshot for every NPC at once — so a newer snapshot must
  * beat a stale live figure, and a newer sale must beat a stale snapshot.
  * Returns the winning { available, timerStart } or nulls when neither side

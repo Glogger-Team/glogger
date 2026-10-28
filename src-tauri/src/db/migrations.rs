@@ -437,6 +437,12 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 80)?;
     }
 
+    if current_version < 81 {
+        migration_v81_snapshot_item_details(conn)?;
+        super::record_migration(conn, 81)?;
+    }
+
+
     tx.commit()?;
     Ok(())
 }
@@ -580,6 +586,36 @@ fn migration_v80_currency_anchor_space_format(conn: &Connection) -> Result<()> {
         "UPDATE currency_estimate
             SET anchor_at = replace(anchor_at, 'T', ' ')
           WHERE anchor_at LIKE '%T%';",
+    )?;
+    Ok(())
+}
+
+/// Migration V81: persist dropped Storage-export item detail fields.
+///
+/// The `Export Storage as JSON` report carries `IsAugmented`, `DyeCount`,
+/// `Inscription`, and `Inscriber` per item, but the importer dropped them
+/// (never stored). All nullable: most items omit them, and the importer
+/// passes NULLs through (serde `default` on `Option` fields). No backfill —
+/// re-import the export to populate. `IngredientItemTypeIds` gets no column:
+/// brewing already reads it off `raw_json`.
+fn migration_v81_snapshot_item_details(conn: &Connection) -> Result<()> {
+    // Minimal test fixtures build only the tables they need — skip when
+    // the snapshot-items table is absent (same guard shape as v79/v80).
+    let has_table: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'character_snapshot_items')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_table {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "ALTER TABLE character_snapshot_items ADD COLUMN is_augmented INTEGER;
+         ALTER TABLE character_snapshot_items ADD COLUMN dye_count INTEGER;
+         ALTER TABLE character_snapshot_items ADD COLUMN inscription TEXT;
+         ALTER TABLE character_snapshot_items ADD COLUMN inscriber TEXT;",
     )?;
     Ok(())
 }
@@ -3838,13 +3874,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            80,
+            81,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 80);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 81);
     }
 
     #[test]

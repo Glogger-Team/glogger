@@ -32,7 +32,7 @@ These use browser APIs directly instead of the `useTimestamp.ts` composable, mea
 
 | File | Line | What it does | Severity |
 |---|---|---|---|
-| `src/components/Dashboard/StatusWidget.vue` | 60 | `toLocaleDateString()` for snapshot import dates | Low — these are import metadata, not game event timestamps |
+| `src/components/Dashboard/StatusWidget.vue` | 60 | `toLocaleDateString()` for report import dates | Low — these are import metadata, not game event timestamps |
 | `src/components/Dashboard/widgets/HoplologyWidget.vue` | 104 | `toLocaleDateString()` for study dates | Low — dates only (no time component), so TZ shift rarely matters |
 | `src/components/Dashboard/widgets/GardenAlmanacWidget.vue` | 120 | `toLocaleString()` for almanac event dates | **Medium** — these are game-world event times that should respect display mode |
 | `src/components/Help/ChangelogTab.vue` | 202 | `toLocaleDateString()` for GitHub release dates | None — external metadata, not game timestamps |

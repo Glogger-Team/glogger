@@ -88,9 +88,10 @@
     </div>
   </div>
 
-  <div v-if="(item.max_stack_size && item.max_stack_size > 1) || ownedCount > 0" class="text-text-muted text-[0.7rem] mt-2 pt-2 border-t border-[#2a2a3e] flex justify-between">
+  <div v-if="(item.max_stack_size && item.max_stack_size > 1) || ownedCount > 0 || woState" class="text-text-muted text-[0.7rem] mt-2 pt-2 border-t border-[#2a2a3e] flex justify-between">
     <span v-if="item.max_stack_size && item.max_stack_size > 1">Max Stack: {{ item.max_stack_size }}</span>
     <span v-if="ownedCount > 0" class="text-accent-gold">Owned: {{ ownedCount.toLocaleString() }}</span>
+    <span v-if="woState" class="text-text-secondary"><template v-if="woState.completedBy.length">Done: {{ woState.completedBy.join(', ') }}</template><template v-if="woState.completedBy.length && woState.activeBy.length"> • </template><template v-if="woState.activeBy.length">Active: {{ woState.activeBy.join(', ') }}</template></span>
   </div>
 
   <!-- Set Market Value -->
@@ -141,6 +142,7 @@ import { useGameStateStore } from "../../../stores/gameStateStore";
 import { useMarketStore } from "../../../stores/marketStore";
 import { useStallPriceStore } from "../../../stores/stallPriceStore";
 import { useSettingsStore } from "../../../stores/settingsStore";
+import { useCharacterStore } from "../../../stores/characterStore";
 import { formatStaleness, formatRelative } from "../../../composables/useTimestamp";
 import { findInterestedNpcs } from "../../../composables/useNpcGiftMatching";
 import { getStoreService, maxGoldCap } from "../../../composables/useNpcServices";
@@ -171,7 +173,10 @@ const gameStateStore = useGameStateStore();
 const marketStore = useMarketStore();
 const stallPriceStore = useStallPriceStore();
 const settingsStore = useSettingsStore();
+const characterStore = useCharacterStore();
 const ownedCount = computed(() => gameStateStore.ownedItemCounts[props.item.name] ?? 0);
+const woKey = computed(() => props.item.bestow_quest);
+const woState = computed(() => characterStore.workOrderStateFor(woKey.value));
 
 // NPC gift matching — find NPCs interested in this item's keywords
 const allNpcs = computed<NpcInfo[]>(() => Object.values(gameDataStore.npcsByKey))
@@ -321,5 +326,6 @@ async function loadVendorNpcs() {
 watch(() => props.item, () => {
   resolveEffects();
   loadVendorNpcs();
+  void characterStore.loadAllCharacterWorkOrders();
 }, { immediate: true });
 </script>

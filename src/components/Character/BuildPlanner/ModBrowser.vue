@@ -95,8 +95,8 @@ const compactMode = ref(false)
 const snapshotHasAbilityRows = computed(() => characterStore.snapshotAbilities.length > 0)
 const knownAbilitiesTitle = computed(() =>
   snapshotHasAbilityRows.value
-    ? 'Show only mods for snapshot-known skills'
-    : 'Select a post-import snapshot to enable',
+    ? 'Show only mods for report-known skills'
+    : 'Select an imported report to enable',
 )
 
 const skillFilterOptions = computed(() => {

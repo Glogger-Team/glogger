@@ -1,3 +1,4 @@
+<!-- DARK until LocalPlayer: lines recur (hidden 2026-10-28) -->
 <template>
   <ActivityFeed
     :entries="store.itemsOutgoing"
@@ -16,5 +17,5 @@ import ActivityFeed from '../ActivityFeed.vue'
 
 const store = useGameStateStore()
 
-const ACCURACY_WARNING = 'Right now Glogger is doing the best it can to try to infer and figure out quantities, stack sizes, etc. However, due to limitations in the log files that is not a straightforward task. Do not be surprised if this is wrong! The best way to ensure Glogger has an accurate picture of your inventory is always your VIP Inventory JSON export.'
+const ACCURACY_WARNING = 'Right now Glogger is doing the best it can to try to infer and figure out quantities, stack sizes, etc. However, due to limitations in the log files that is not a straightforward task. Do not be surprised if this is wrong! The best way to ensure Glogger has an accurate picture of your inventory is always Export Storage as JSON in Settings → VIP.'
 </script>

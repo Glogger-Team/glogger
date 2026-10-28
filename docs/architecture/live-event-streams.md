@@ -132,7 +132,7 @@ Structured events parsed from `[Status]` channel messages. The parser is **state
 
 **Source:** Chat Status channel via `chat_status_parser.rs` → coordinator
 
-Emitted when the game writes a character or inventory report to disk (triggered by `/exportcharacter` or `/outputitems`). The coordinator re-emits this as a dedicated `"report-saved"` event (payload: file path string) so the frontend can trigger an immediate report import instead of waiting for the next polling cycle.
+Emitted when the game writes a character or inventory report to disk (triggered by Export Character as JSON or Export Storage as JSON in Settings → VIP). The coordinator re-emits this as a dedicated `"report-saved"` event (payload: file path string) so the frontend can trigger an immediate report import instead of waiting for the next polling cycle.
 
 ### Stream: `"game-state-updated"`
 

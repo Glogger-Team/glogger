@@ -1,6 +1,6 @@
 # Game State System
 
-Centralized, persisted representation of the player's current game state. Merges data from two sources — **character/inventory JSON exports** (complete snapshots, manually triggered) and **Player.log events** (real-time but partial) — into a single source of truth that any feature can query.
+Centralized, persisted representation of the player's current game state. Merges data from two sources — **character/inventory JSON exports** (complete reports, manually triggered) and **Player.log events** (real-time but partial) — into a single source of truth that any feature can query.
 
 ## Design Principles
 
@@ -14,7 +14,7 @@ Every value has a `last_confirmed_at` timestamp. Features can use this to displa
 
 ### Deconfliction: Most Recent Timestamp Wins
 
-When a snapshot import and a log event conflict, the **most recent timestamp wins**. Snapshot imports use `ON CONFLICT DO UPDATE ... WHERE excluded.last_confirmed_at > existing.last_confirmed_at` to avoid overwriting fresher log data.
+When a report import and a log event conflict, the **most recent timestamp wins**. Report imports use `ON CONFLICT DO UPDATE ... WHERE excluded.last_confirmed_at > existing.last_confirmed_at` to avoid overwriting fresher log data.
 
 ### Session Awareness
 
@@ -38,7 +38,7 @@ Player.log → LogWatcher → PlayerEventParser → LogEvent::PlayerEventParsed
                                           gameStateStore
                                        (refreshDomain per domain)
 
-Snapshot Import → seed_game_state_from_snapshot() → same DB tables
+Report Import → seed_game_state_from_snapshot() → same DB tables
 ```
 
 ### Key Files
@@ -48,8 +48,8 @@ Snapshot Import → seed_game_state_from_snapshot() → same DB tables
 | `src-tauri/src/game_state.rs` | `GameStateManager` — processes `PlayerEvent`s into DB writes |
 | `src-tauri/src/db/game_state_commands.rs` | Tauri query commands (one per domain) |
 | `src-tauri/src/db/migrations.rs` | All `game_state_*` table definitions (V1 schema) |
-| `src-tauri/src/db/character_commands.rs` | Snapshot seeding for skills, attributes, recipes, equipment, favor, currencies, storage |
-| `src-tauri/src/db/inventory_commands.rs` | Snapshot seeding for inventory |
+| `src-tauri/src/db/character_commands.rs` | Report seeding for skills, attributes, recipes, equipment, favor, currencies, storage |
+| `src-tauri/src/db/inventory_commands.rs` | Report seeding for inventory |
 | `src-tauri/src/coordinator.rs` | Wires `GameStateManager` into event loop, emits `game-state-updated` |
 | `src/stores/gameStateStore.ts` | Frontend Pinia store — single source of truth for all game state |
 | `src/types/gameState.ts` | TypeScript interfaces matching Rust response structs |
@@ -213,21 +213,21 @@ These are not persisted to DB — they reset on login/session restart.
 
 ### Implemented
 
-| Domain | DB Table | Log Events | Snapshot Seeding |
+| Domain | DB Table | Log Events | Report Seeding |
 |---|---|---|---|
-| Skills | `game_state_skills` | `SkillsLoaded` | character snapshot |
+| Skills | `game_state_skills` | `SkillsLoaded` | Character report |
 | Active Skills | `game_state_active_skills` | `ActiveSkillsChanged` | — |
 | Attributes | `game_state_attributes` | `AttributesChanged` | — |
 | Weather | `game_state_weather` | `WeatherChanged` | — |
 | Combat | `game_state_combat` | `CombatStateChanged` | — |
 | Mount | `game_state_mount` | `MountStateChanged` | — |
-| Inventory | `game_state_inventory` | `ItemAdded`/`Changed`/`Deleted` | inventory snapshot |
-| Recipes | `game_state_recipes` | `RecipeUpdated` | character snapshot |
+| Inventory | `game_state_inventory` | `ItemAdded`/`Changed`/`Deleted` | Storage report |
+| Recipes | `game_state_recipes` | `RecipeUpdated` | Character report |
 | Equipment | `game_state_equipment` | `EquipmentChanged` | — |
-| NPC Favor | `game_state_favor` | `FavorChanged` | character snapshot (tier) |
-| Currencies | `game_state_currencies` | *(none — snapshot only)* | character snapshot |
+| NPC Favor | `game_state_favor` | `FavorChanged` | Character report (tier) |
+| Currencies | `game_state_currencies` | *(none — report only)* | Character report |
 | Effects | `game_state_effects` | `EffectsAdded`/`Removed`/`NameUpdated` | — |
-| Storage | `game_state_storage` | `StorageDeposit`/`Withdrawal` | inventory snapshot (vault items) |
+| Storage | `game_state_storage` | `StorageDeposit`/`Withdrawal` | Storage report (vault items) |
 | Area | `game_state_area` | `AreaTransition` (via coordinator) | — |
 
 ### Not Yet Implemented
@@ -243,11 +243,11 @@ These are not persisted to DB — they reset on login/session restart.
 
 ### NPC Favor
 
-Log events only provide **deltas** (`ProcessDeltaFavor`), not absolute values. `cumulative_delta` tracks the running sum since last snapshot. `favor_tier` comes from snapshots (e.g., `"BestFriends"`). Delta resets to 0 on login.
+Log events only provide **deltas** (`ProcessDeltaFavor`), not absolute values. `cumulative_delta` tracks the running sum since last report. `favor_tier` comes from reports (e.g., `"BestFriends"`). Delta resets to 0 on login.
 
 ### Currencies
 
-Attribute-based currencies (e.g., `CUR_COMBAT_WISDOM`) flow through `game_state_attributes`. Snapshot-only currencies (Gold, Councils) live in `game_state_currencies`. `VendorGoldChanged` events track vendor gold, not player gold.
+Attribute-based currencies (e.g., `CUR_COMBAT_WISDOM`) flow through `game_state_attributes`. Report-only currencies (Gold, Councils) live in `game_state_currencies`. `VendorGoldChanged` events track vendor gold, not player gold.
 
 ### Effects
 
@@ -255,11 +255,11 @@ Attribute-based currencies (e.g., `CUR_COMBAT_WISDOM`) flow through `game_state_
 
 ### Storage
 
-Storage persists across sessions — it is NOT cleared on `CharacterLogin` (unlike inventory). Items are only removed by explicit `StorageWithdrawal` events or full snapshot replacement. Vault keys come from the parser's `current_interaction.npc_name` (e.g., `"NPC_Joe"`), not the game entity ID in the log line. Slot capacity is computed on the frontend by cross-referencing `storagevaults.json` metadata with favor tiers and attributes. See [Storage Tracker](../features/storage-tracker.md) for full details.
+Storage persists across sessions — it is NOT cleared on `CharacterLogin` (unlike inventory). Items are only removed by explicit `StorageWithdrawal` events or full report replacement. Vault keys come from the parser's `current_interaction.npc_name` (e.g., `"NPC_Joe"`), not the game entity ID in the log line. Slot capacity is computed on the frontend by cross-referencing `storagevaults.json` metadata with favor tiers and attributes. See [Storage Tracker](../features/storage-tracker.md) for full details.
 
 ### Stats → Attributes Mapping
 
-Snapshot stat names map to attribute keys: `"MaxHealth"` → `"MAX_HEALTH"`, `"MaxPower"` → `"MAX_POWER"`, `"MaxArmor"` → `"MAX_ARMOR"`.
+Report stat names map to attribute keys: `"MaxHealth"` → `"MAX_HEALTH"`, `"MaxPower"` → `"MAX_POWER"`, `"MaxArmor"` → `"MAX_ARMOR"`.
 
 ## Feature Integrations
 
@@ -267,13 +267,13 @@ Snapshot stat names map to attribute keys: `"MaxHealth"` → `"MAX_HEALTH"`, `"M
 
 `check_material_availability()` in `crafting_commands.rs` queries two sources:
 1. **`game_state_inventory`** — persisted log-driven inventory, aggregated by `item_type_id`
-2. **`character_snapshot_items`** (storage vaults only) — from the latest `/outputitems` export
+2. **`character_snapshot_items`** (storage vaults only) — from the latest Export Storage as JSON (Settings → VIP) export
 
 The frontend's `craftingStore.checkMaterialAvailability()` calls this backend function and builds `MaterialNeed[]` with `inventory_have` + `storage_have` + `vault_breakdown`.
 
 ### Skill Synergy Bonuses
 
-`game_state_skills.bonus_levels` is populated from `SkillsLoaded` events (the `bonus` field in each `SkillSnapshot`). `SkillCard.vue` displays the effective level as `level + bonus_levels` with a breakdown showing both values.
+`game_state_skills.bonus_levels` is populated from `SkillsLoaded` login events (the `bonus` field in each full skill list entry, `SkillSnapshot`). `SkillCard.vue` displays the effective level as `level + bonus_levels` with a breakdown showing both values.
 
 ### Cook's Helper
 

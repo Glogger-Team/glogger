@@ -15,6 +15,9 @@
     <div v-if="quest.raw.Objectives?.length" class="text-text-muted">
       {{ quest.raw.Objectives.length }} objective{{ quest.raw.Objectives.length > 1 ? 's' : '' }}
     </div>
+    <div v-if="woState" class="text-text-secondary">
+      <template v-if="woState.completedBy.length">Done: {{ woState.completedBy.join(', ') }}</template><template v-if="woState.completedBy.length && woState.activeBy.length"> • </template><template v-if="woState.activeBy.length">Active: {{ woState.activeBy.join(', ') }}</template>
+    </div>
     <div v-if="rewardSummary" class="text-accent-green">{{ rewardSummary }}</div>
     <div v-if="quest.raw.FavorNpc" class="text-entity-npc text-xs">
       Favor: {{ quest.raw.FavorNpc }}
@@ -38,12 +41,21 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, onMounted } from "vue";
 import type { QuestInfo } from "../../../types/gameData";
+import { useCharacterStore } from "../../../stores/characterStore";
 
 const props = defineProps<{
   quest: QuestInfo;
 }>();
+
+const characterStore = useCharacterStore();
+const woState = computed(() => characterStore.workOrderStateFor(props.quest.internal_name));
+
+onMounted(() => {
+  void characterStore.loadAllCharacterWorkOrders();
+});
+
 
 const rewardSummary = computed(() => {
   const parts: string[] = [];

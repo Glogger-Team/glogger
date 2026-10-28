@@ -179,6 +179,86 @@ pub fn survey_tracker_end_session(
     Ok(r)
 }
 
+/// Result of recording a hand-framed survey-map use.
+#[derive(Debug, Clone, Serialize)]
+pub struct RecordUseResult {
+    pub use_id: i64,
+    pub session_id: Option<i64>,
+}
+
+/// Record a hand-framed survey-map use (manual "Record use" UI control).
+///
+/// Validates the map name against `survey_types`, resolves the kind from the
+/// explicit `kind` override (or CDN lookup when omitted), and routes through
+/// the aggregator so in-memory caches stay coherent. Returns the new use id
+/// plus the (possibly newly-created) session id.
+#[tauri::command]
+pub fn survey_tracker_record_use(
+    coordinator: State<'_, Arc<Mutex<DataIngestCoordinator>>>,
+    map_internal_name: String,
+    kind: Option<String>,
+) -> Result<RecordUseResult, String> {
+    let map_internal_name = map_internal_name.trim().to_string();
+    if map_internal_name.is_empty() {
+        return Err("no survey map selected".to_string());
+    }
+    let mut coord = coordinator.lock().map_err(|e| e.to_string())?;
+    let (character, server) = coord
+        .active_character_server()
+        .ok_or_else(|| "no active character".to_string())?;
+    // Area from the persisted live-tracked area (coordinator's private
+    // current_area mirrors this table on every AreaTransition).
+    let conn = coord.db_pool().get_write().map_err(|e| e.to_string())?;
+    let live_area: Option<String> = conn
+        .query_row(
+            "SELECT area_name FROM game_state_area WHERE character_name = ?1 AND server_name = ?2",
+            params![character, server],
+            |r| r.get(0),
+        )
+        .ok();
+    // Map must exist in the survey catalog.
+    let known: bool = conn
+        .query_row(
+            "SELECT 1 FROM survey_types WHERE internal_name = ?1",
+            params![map_internal_name],
+            |r| r.get::<_, i64>(0),
+        )
+        .is_ok();
+    if !known {
+        return Err(format!("unknown survey map '{map_internal_name}'"));
+    }
+    // Kind: explicit override wins; otherwise derive from CDN; otherwise the
+    // caller must say which kind it is.
+    let use_kind = match kind.as_deref().map(str::trim) {
+        Some(k) if !k.is_empty() => crate::survey::types::SurveyUseKind::from_str(
+            &k.to_ascii_lowercase(),
+        )
+        .ok_or_else(|| {
+            format!("unknown survey kind '{k}' (expected basic, motherlode, or multihit)")
+        })?,
+        _ => coord
+            .survey_aggregator_mut()
+            .lookup_survey_kind(&map_internal_name)
+            .ok_or_else(|| {
+                format!("unknown survey map '{map_internal_name}': pass kind explicitly")
+            })?,
+    };
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let (use_id, session_id) = coord.survey_aggregator_mut().record_manual_use(
+        &conn,
+        &character,
+        &server,
+        live_area.as_deref(),
+        &map_internal_name,
+        use_kind,
+        &now,
+    )?;
+    Ok(RecordUseResult {
+        use_id,
+        session_id,
+    })
+}
+
 /// Recent completed (or current) sessions for the active character/server,
 /// most-recent first.
 #[tauri::command]

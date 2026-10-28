@@ -51,15 +51,15 @@ The screen merges three data sources into a unified NPC list:
 
 | Source | When Available | What It Provides |
 |--------|---------------|-------------------|
-| `characterStore.npcFavor` (snapshot) | After character report import | All known NPCs with favor tier |
+| `characterStore.npcFavor` (report) | After character report import | All known NPCs with favor tier |
 | `gameStateStore.favorByNpc` (live) | After favor change events in session | Live favor deltas, updated tier |
 | `gameDataStore.npcsByKey` (CDN) | Always (after CDN load) | Name, area, description, services, preferences |
 
 **Merge logic:**
-- Start with all NPCs from the snapshot (these are NPCs the player has met)
-- Add any game-state-only NPCs (discovered this session, not yet in a snapshot)
+- Start with all NPCs from the report (these are NPCs the player has met)
+- Add any game-state-only NPCs (discovered this session, not yet in a report)
 - Enrich each with CDN data from `gameDataStore.npcsByKey`
-- Effective favor tier: prefer game state tier over snapshot tier
+- Effective favor tier: prefer game state tier over report tier
 
 ## Components
 
@@ -87,7 +87,7 @@ Left sidebar (w-80) with the full NPC list.
 **Each row shows:**
 - NPC display name
 - Area (small, truncated)
-- Live data indicator dot (gold) if game state favor differs from snapshot
+- Live data indicator dot (gold) if game state favor differs from the report
 - Colored favor tier badge
 
 Groups are collapsible with sticky headers showing group name and count.
@@ -115,7 +115,7 @@ Visual favor tier ladder showing all tiers from Soul Mates to Despised:
 - Tiers at or below current shown as unlocked (check mark)
 - Tiers above shown as locked (dimmed, with points required to reach)
 - If cumulative favor delta is available, shows a progress bar within the current tier
-- Snapshot vs game state comparison when they differ
+- Report vs game state comparison when they differ
 
 ### NpcServicesSection (`src/components/Character/NpcDetailSections/NpcServicesSection.vue`)
 

@@ -212,7 +212,7 @@
     <!-- No discoveries yet prompt -->
     <div v-else-if="recipe.variable_slots.length > 0"
       class="text-xs text-text-dim italic bg-surface-base border border-surface-elevated rounded px-3 py-2">
-      No discoveries for this recipe yet. Use the form below, scan snapshots, or import a CSV.
+      No discoveries for this recipe yet. Use the form below, scan Storage reports, or import a CSV.
     </div>
 
     <!-- Add Discovery form -->

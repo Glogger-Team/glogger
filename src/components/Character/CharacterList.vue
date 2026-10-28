@@ -11,7 +11,7 @@
       :class="{ 'bg-surface-elevated! border-accent-gold/40!': selected?.character_name === char.character_name && selected?.server_name === char.server_name }"
       @click="emit('select', char)">
       <div class="font-medium text-text-primary">{{ char.character_name }}</div>
-      <div class="text-xs text-text-muted">{{ char.server_name }} · {{ char.snapshot_count }} snapshot{{ char.snapshot_count !== 1 ? 's' : '' }}</div>
+      <div class="text-xs text-text-muted">{{ char.server_name }} · {{ char.snapshot_count }} report{{ char.snapshot_count !== 1 ? 's' : '' }}</div>
     </button>
   </div>
 </template>

@@ -6,8 +6,8 @@ Loads the player's memorized work orders from character export data and optional
 
 ## Data Flow
 
-1. **Active work orders** — extracted from `ActiveWorkOrders` array in character snapshot `raw_json`
-2. **Completed work orders** — from `CompletedWorkOrders` array in the same snapshot
+1. **Active work orders** — extracted from `ActiveWorkOrders` array in the Character report `raw_json`
+2. **Completed work orders** — from `CompletedWorkOrders` array in the same report
 3. **Inventory scrolls** (optional toggle) — queries `character_snapshot_items` for items matching `"Work Order for %"` or `"Scroll_%"` name patterns, then resolves their `BestowQuest` field through CDN items → quest internal name
 
 Each work order is enriched with CDN quest data:

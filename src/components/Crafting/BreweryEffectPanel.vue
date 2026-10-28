@@ -15,7 +15,7 @@
         No effects discovered yet.
       </div>
       <div class="text-text-dim text-xs mt-1">
-        Scan snapshots or import a CSV to populate.
+        Scan Storage reports or import a CSV to populate.
       </div>
     </div>
 

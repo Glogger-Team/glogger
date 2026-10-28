@@ -36,7 +36,7 @@ Maintained by the [Glogger Team](https://github.com/Glogger-Team). Originally [d
 
 Instructions available in short (<2 minutes) video form here. Featuring Cheb! <https://www.youtube.com/watch?v=9BhzbM92rv4>
 
-1. Go to your VIP settings, export your character and storage JSONs. (If you've got alts, it is helpful to do them as well!)
+1. In-game, go to Settings → VIP and run Export Character as JSON and Export Storage as JSON. (If you've got alts, it is helpful to do them as well! Enable Automatically Export on Logout to keep exports fresh — it also re-exports on every zone change.)
 2. Go to GUI, scroll to the bottom, and turn on the chat logging! This will give you a chat history browser and allow you to set watchwords! Also turning on combat logging doesn't do a ton, but does allow you to see death reports on what killed you. (I have no plans to try to make DPS meters or anything.)
 3. Start Glogger! The setup wizard should walk you through the very fast setup with hopefully minimal issues.
 
@@ -48,8 +48,8 @@ Customizable widget grid with drag-to-reorder. Widgets include live skill tracki
 
 ### Character
 
-- **Skills** — Live XP tracking with session gains, progression charts, and CDN-enriched skill details (including snapshot-known abilities imported from character reports)
-- **Stats** — Character report import and snapshot management
+- **Skills** — Live XP tracking with session gains, progression charts, and CDN-enriched skill details (including report-known abilities imported from character reports)
+- **Stats** — Character report import and management
 - **NPCs** — Favor progression, services, and gift preferences
 - **Quests** — Personalized quest reference with requirement eligibility checking
 - **Gourmand** — Food tracking for the Gourmand skill
@@ -60,7 +60,7 @@ Customizable widget grid with drag-to-reorder. Widgets include live skill tracki
 ### Inventory
 
 - **Live Inventory** — Real-time tracking of items as they enter and leave your inventory
-- **Snapshots** — Point-in-time inventory browsing from `/outputitems` exports
+- **Storage Reports** — Point-in-time inventory browsing from Export Storage as JSON (Settings → VIP) exports
 - **Storage Vaults** — Area-grouped vault browser with capacity tracking
 
 ### Crafting

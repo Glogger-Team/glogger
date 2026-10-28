@@ -813,6 +813,17 @@ pub struct WorkOrderData {
     pub inventory_item_ids: Vec<u32>,
 }
 
+/// One character's work-order presence for a single quest key, read from that
+/// character's latest snapshot. `category` is `work_order` or
+/// `completed_work_order` (mirrors `character_active_quests.category`).
+#[derive(Serialize)]
+pub struct WorkOrderPresence {
+    pub character_name: String,
+    pub server_name: String,
+    pub quest_key: String,
+    pub category: String,
+}
+
 /// Extract ActiveWorkOrders, CompletedWorkOrders, and inventory work order scroll items.
 #[tauri::command]
 pub fn get_work_orders_from_snapshot(
@@ -837,7 +848,7 @@ pub fn get_work_orders_from_snapshot(
 
     let (active, completed) = if let Some(raw) = raw_json {
         let parsed: serde_json::Value = serde_json::from_str(&raw)
-            .map_err(|e| format!("Failed to parse snapshot JSON: {e}"))?;
+            .map_err(|e| format!("Failed to parse character report JSON: {e}"))?;
 
         let active = parsed
             .get("ActiveWorkOrders")
@@ -896,6 +907,61 @@ pub fn get_work_orders_from_snapshot(
         completed,
         inventory_item_ids,
     })
+}
+
+/// Core query behind `get_all_character_work_orders`, split out for tests.
+fn query_all_character_work_orders(
+    conn: &impl DbRead,
+    server_name: Option<&str>,
+) -> Result<Vec<WorkOrderPresence>, String> {
+    // `latest` picks, per (character, server), the snapshot with the newest
+    // timestamp (same pattern as `get_all_character_items`).
+    let mut stmt = conn
+        .prepare(
+            "WITH latest AS (
+                SELECT cs.id, cs.character_name, cs.server_name
+                FROM character_snapshots cs
+                WHERE (?1 IS NULL OR cs.server_name = ?1)
+                  AND cs.snapshot_timestamp = (
+                      SELECT MAX(c2.snapshot_timestamp)
+                      FROM character_snapshots c2
+                      WHERE c2.character_name = cs.character_name
+                        AND c2.server_name = cs.server_name
+                  )
+            )
+            SELECT l.character_name, l.server_name, q.quest_key, q.category
+            FROM latest l
+            JOIN character_active_quests q ON q.snapshot_id = l.id
+            WHERE q.category IN ('work_order', 'completed_work_order')
+            ORDER BY q.quest_key, l.character_name",
+        )
+        .map_err(|e| format!("Failed to prepare query: {e}"))?;
+
+    let rows = stmt
+        .query_map(rusqlite::params![server_name], |row| {
+            Ok(WorkOrderPresence {
+                character_name: row.get(0)?,
+                server_name: row.get(1)?,
+                quest_key: row.get(2)?,
+                category: row.get(3)?,
+            })
+        })
+        .map_err(|e| format!("Query failed: {e}"))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read results: {e}"))
+}
+
+/// Cross-character work-order presence from each character's latest snapshot.
+#[tauri::command]
+pub fn get_all_character_work_orders(
+    db: State<'_, DbPool>,
+    server_name: Option<String>,
+) -> Result<Vec<WorkOrderPresence>, String> {
+    let conn = db
+        .get()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    query_all_character_work_orders(&conn, server_name.as_deref())
 }
 
 #[cfg(test)]
@@ -1063,5 +1129,81 @@ mod import_export_tests {
         assert_eq!(expanded, "[]");
         assert_eq!(target, None);
         assert_eq!(slots, "[]");
+    }
+
+    fn wo_setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE character_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_name TEXT NOT NULL,
+                server_name TEXT NOT NULL,
+                snapshot_timestamp TIMESTAMP NOT NULL,
+                raw_json TEXT NOT NULL DEFAULT '{}',
+                UNIQUE(character_name, server_name, snapshot_timestamp)
+            );
+            CREATE TABLE character_active_quests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL,
+                quest_key TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'active'
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn insert_wo_snapshot(conn: &Connection, character: &str, server: &str, ts: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO character_snapshots (character_name, server_name, snapshot_timestamp) VALUES (?1, ?2, ?3)",
+            rusqlite::params![character, server, ts],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn all_character_work_orders_surfaces_only_latest() {
+        let conn = wo_setup();
+        // Alice: stale snapshot has WO_A active; latest snapshot completes it.
+        let old_id = insert_wo_snapshot(&conn, "Alice", "Serbule", "2026-01-01 00:00:00");
+        let new_id = insert_wo_snapshot(&conn, "Alice", "Serbule", "2026-02-01 00:00:00");
+        conn.execute(
+            "INSERT INTO character_active_quests (snapshot_id, quest_key, category) VALUES (?1, 'WO_A', 'work_order')",
+            [old_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO character_active_quests (snapshot_id, quest_key, category) VALUES (?1, 'WO_A', 'completed_work_order')",
+            [new_id],
+        )
+        .unwrap();
+        // Bob: latest snapshot, active work order; non-WO category ignored.
+        let bob_id = insert_wo_snapshot(&conn, "Bob", "Serbule", "2026-02-01 00:00:00");
+        conn.execute(
+            "INSERT INTO character_active_quests (snapshot_id, quest_key, category) VALUES (?1, 'WO_B', 'work_order')",
+            [bob_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO character_active_quests (snapshot_id, quest_key, category) VALUES (?1, 'MainQuest', 'active')",
+            [bob_id],
+        )
+        .unwrap();
+
+        let rows = query_all_character_work_orders(&conn, Some("Serbule")).unwrap();
+        assert_eq!(rows.len(), 2);
+        let alice: Vec<_> = rows.iter().filter(|r| r.character_name == "Alice").collect();
+        assert_eq!(alice.len(), 1);
+        assert_eq!(alice[0].quest_key, "WO_A");
+        assert_eq!(alice[0].category, "completed_work_order");
+        let bob: Vec<_> = rows.iter().filter(|r| r.character_name == "Bob").collect();
+        assert_eq!(bob.len(), 1);
+        assert_eq!(bob[0].quest_key, "WO_B");
+        assert_eq!(bob[0].category, "work_order");
+
+        // Server scoping: unknown server yields nothing.
+        let empty = query_all_character_work_orders(&conn, Some("Other")).unwrap();
+        assert!(empty.is_empty());
     }
 }

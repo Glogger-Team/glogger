@@ -12,10 +12,10 @@
         {{ tierDisplayName(effectiveTier) }}
       </span>
       <span v-if="snapshotTier && gamestateTier && snapshotTier !== gamestateTier" class="text-[10px] text-text-dim">
-        Snapshot: <span :class="favorColor(snapshotTier)">{{ tierDisplayName(snapshotTier) }}</span>
+        Report: <span :class="favorColor(snapshotTier)">{{ tierDisplayName(snapshotTier) }}</span>
       </span>
       <span v-if="snapshotFavorPoints != null" class="text-[10px] text-text-dim">
-        {{ snapshotFavorPoints.toLocaleString() }} favor (snapshot)
+        {{ snapshotFavorPoints.toLocaleString() }} favor (report)
       </span>
       <span v-if="gamestateFavor?.cumulative_delta" class="text-[10px] text-text-dim">
         Session: <span class="text-accent-gold">{{ gamestateFavor.cumulative_delta > 0 ? '+' : '' }}{{ gamestateFavor.cumulative_delta.toFixed(1) }}</span> favor

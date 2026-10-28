@@ -23,6 +23,7 @@ import type {
   InventorySummary,
   CrossCharacterItem,
 } from '../types/database'
+import type { WorkOrderPresence } from '../types/crafting'
 
 export const useCharacterStore = defineStore('character', () => {
   const characters = ref<CharacterInfo[]>([])
@@ -53,6 +54,11 @@ export const useCharacterStore = defineStore('character', () => {
   const allCharacterItems = ref<CrossCharacterItem[]>([])
   const allCharacterItemsLoading = ref(false)
   const allCharacterItemsLoaded = ref(false)
+
+  // Cross-character work-order presence (latest snapshot per character)
+  const allCharacterWorkOrders = ref<WorkOrderPresence[]>([])
+  const allCharacterWorkOrdersLoading = ref(false)
+  const allCharacterWorkOrdersLoaded = ref(false)
 
   async function importCharacterReport(): Promise<ImportResult | null> {
     const settingsStore = useSettingsStore()
@@ -461,6 +467,46 @@ export const useCharacterStore = defineStore('character', () => {
     }
   }
 
+  /**
+   * Load cross-character work-order presence from every character's latest
+   * snapshot on the active server. Caches results; pass `force` to refresh.
+   */
+  async function loadAllCharacterWorkOrders(force = false) {
+    if (allCharacterWorkOrdersLoaded.value && !force) return
+
+    const settingsStore = useSettingsStore()
+    const serverName = settingsStore.settings.activeServerName || undefined
+
+    allCharacterWorkOrdersLoading.value = true
+    try {
+      allCharacterWorkOrders.value = await invoke<WorkOrderPresence[]>('get_all_character_work_orders', {
+        serverName,
+      })
+      allCharacterWorkOrdersLoaded.value = true
+    } catch (e) {
+      error.value = String(e)
+    } finally {
+      allCharacterWorkOrdersLoading.value = false
+    }
+  }
+
+  /**
+   * Cross-character work-order state for a quest key, or null when no data
+   * exists. Callers render the `Done/Active` line only on non-null.
+   */
+  function workOrderStateFor(questKey: string | null | undefined): { completedBy: string[]; activeBy: string[] } | null {
+    if (!questKey) return null
+    const completedBy: string[] = []
+    const activeBy: string[] = []
+    for (const row of allCharacterWorkOrders.value) {
+      if (row.quest_key !== questKey) continue
+      if (row.category === 'completed_work_order') completedBy.push(row.character_name)
+      else if (row.category === 'work_order') activeBy.push(row.character_name)
+    }
+    if (completedBy.length === 0 && activeBy.length === 0) return null
+    return { completedBy, activeBy }
+  }
+
   return {
     characters,
     snapshots,
@@ -502,6 +548,12 @@ export const useCharacterStore = defineStore('character', () => {
     allCharacterItemsLoading,
     allCharacterItemsLoaded,
     loadAllCharacterItems,
+    // Cross-character work-order presence
+    allCharacterWorkOrders,
+    allCharacterWorkOrdersLoading,
+    allCharacterWorkOrdersLoaded,
+    loadAllCharacterWorkOrders,
+    workOrderStateFor,
   }
 })
 

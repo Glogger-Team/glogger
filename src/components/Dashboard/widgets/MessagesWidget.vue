@@ -1,3 +1,4 @@
+<!-- DARK until LocalPlayer: lines recur (hidden 2026-10-28) -->
 <template>
   <div class="flex flex-col gap-3 text-sm">
     <div v-if="messages.length === 0" class="text-xs text-text-dim italic">

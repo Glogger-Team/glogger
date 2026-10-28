@@ -1,7 +1,7 @@
 <template>
   <div class="flex flex-col gap-2">
     <div v-if="diffs.length === 0" class="text-sm text-text-muted p-2">
-      Select two snapshots above and click "Compare Selected" to see skill changes.
+      Select two reports above and click "Compare Selected" to see skill changes.
     </div>
 
     <div v-else class="overflow-auto max-h-[60vh]">

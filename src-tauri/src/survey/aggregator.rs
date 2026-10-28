@@ -330,6 +330,171 @@ impl SurveySessionAggregator {
         Ok(Some(s.id))
     }
 
+    /// Record a hand-framed survey-map use from the manual "Record use" UI.
+    ///
+    /// Same tail as `handle_survey_consumed` but driven by an explicit user
+    /// action instead of a log line: `now_iso` is wall-clock time (not a log
+    /// timestamp), and a session is always created when none is active (an
+    /// explicit action ignores `auto_start_enabled`). Returns
+    /// `(use_id, session_id)`.
+    pub fn record_manual_use(
+        &mut self,
+        conn: &Connection,
+        character: &str,
+        server: &str,
+        area: Option<&str>,
+        map_internal_name: &str,
+        kind: SurveyUseKind,
+        now_iso: &str,
+    ) -> Result<(i64, Option<i64>), String> {
+        // Explicit user action — always create a session when none is active.
+        let session_id = match self.fetch_active_session(conn, character, server) {
+            Some(id) => Some(id),
+            None => {
+                let id = persistence::insert_session(
+                    conn,
+                    character,
+                    server,
+                    now_iso,
+                    SessionStartTrigger::FirstUse,
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+                self.cached_active_session_id = Some(Some(id));
+                Some(id)
+            }
+        };
+
+        // Resolve display name for this map via CDN.
+        let display_name = self
+            .game_data
+            .try_read()
+            .ok()
+            .and_then(|gd| gd.resolve_item(map_internal_name).map(|i| i.name.clone()))
+            .unwrap_or_else(|| map_internal_name.to_string());
+
+        // Resolve area: prefer the live-tracked area, fall back to the
+        // survey_types.zone column (populated from CDN at import time).
+        let resolved_area: Option<String> = area.map(|s| s.to_string()).or_else(|| {
+            conn.query_row(
+                "SELECT zone FROM survey_types WHERE internal_name = ?1",
+                rusqlite::params![map_internal_name],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten()
+        });
+
+        let use_id = match persistence::insert_use(
+            conn,
+            session_id,
+            character,
+            server,
+            now_iso,
+            map_internal_name,
+            &display_name,
+            kind,
+            resolved_area.as_deref(),
+        ) {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("[survey-aggregator] insert_use failed: {e}");
+                // A cached active-session id can point at a session that was
+                // deleted out from under us (e.g. the user deleted it in the
+                // History UI, which operates directly on the DB). Drop the
+                // cache so the next call re-resolves instead of failing
+                // forever.
+                self.cached_active_session_id = None;
+                return Err(format!(
+                    "survey use insert failed (the session may have been deleted; try again): {e}"
+                ));
+            }
+        };
+
+        if let Some(s) = session_id {
+            if let Err(e) = persistence::increment_consumed_count(conn, s) {
+                eprintln!("[survey-aggregator] increment_consumed_count failed: {e}");
+            }
+            // Tighten started_at so the session header reflects the actual
+            // first survey use, not the session-creation moment.
+            let _ = persistence::tighten_started_at(conn, s, now_iso);
+        }
+
+        // Wall-clock ISO is "YYYY-MM-DD HH:MM:SS" — the pending-use queue
+        // needs the time half for secs-of-day ordering.
+        if let Some(now_secs) = now_iso.split(' ').nth(1).and_then(parse_secs_of_day) {
+            self.pending_uses.push_back(PendingUse {
+                survey_use_id: use_id,
+                kind,
+                used_at_secs: now_secs,
+                used_at: parse_utc_datetime(now_iso),
+            });
+
+            // Drain deferred basic gains (same single-loot-authority guard as
+            // the log path: a deferred gain whose chat twin is already in the
+            // ledger is counted by the claim step below, not here).
+            if kind == SurveyUseKind::Basic && !self.deferred_basic_gains.is_empty() {
+                let deferred = std::mem::take(&mut self.deferred_basic_gains);
+                let mut total_deferred_qty = 0u32;
+                for gain in &deferred {
+                    let has_chat_twin = match gain.resolved_at.as_deref() {
+                        Some(at) => persistence::unclaimed_chat_gain_exists(
+                            conn,
+                            character,
+                            server,
+                            gain.qty,
+                            at,
+                            gain.item_name.as_deref(),
+                            CHAT_BASIC_WINDOW_SECS as u32,
+                        ),
+                        None => false,
+                    };
+                    if has_chat_twin {
+                        continue;
+                    }
+                    total_deferred_qty += gain.qty;
+                    if let Some(at) = gain.resolved_at.as_deref() {
+                        update_session_loot_timestamps(conn, use_id, at);
+                    }
+                }
+                if total_deferred_qty > 0 {
+                    let _ = persistence::add_loot_qty(conn, use_id, total_deferred_qty);
+                }
+                retroactively_tag_unlinked_survey_transactions(conn, use_id, character, server);
+            }
+        }
+
+        // Chat-loot gating for Basic surveys: claim rows already in the
+        // ledger within the same-tick window (the chat and player logs are
+        // tailed independently, so either side can win the race).
+        if kind == SurveyUseKind::Basic {
+            if let Some(used_at) = parse_utc_datetime(now_iso) {
+                remember_bounded(&mut self.recent_basic_uses, (use_id, used_at));
+            }
+            match persistence::claim_unlinked_chat_loot_near(
+                conn,
+                use_id,
+                character,
+                server,
+                now_iso,
+                CHAT_BASIC_WINDOW_SECS as u32,
+            ) {
+                Ok(0) => {}
+                Ok(claimed_qty) => {
+                    if let Err(e) = persistence::add_loot_qty(conn, use_id, claimed_qty) {
+                        eprintln!("[survey-aggregator] claimed add_loot_qty failed: {e}");
+                    }
+                    update_session_loot_timestamps(conn, use_id, now_iso);
+                }
+                Err(e) => {
+                    eprintln!("[survey-aggregator] claim_unlinked_chat_loot_near failed: {e}");
+                }
+            }
+        }
+
+        Ok((use_id, session_id))
+    }
+
     /// Attribute a Chat.log `[Status]` "added to inventory" loot gain to the
     /// survey use it was collected from, independent of the Player.log
     /// pipeline.
@@ -1688,7 +1853,7 @@ impl SurveySessionAggregator {
 
     /// Look up the survey kind for an item by internal name. Returns `None`
     /// if the item isn't a survey map (the common case).
-    fn lookup_survey_kind(&self, internal_name: &str) -> Option<SurveyUseKind> {
+    pub(crate) fn lookup_survey_kind(&self, internal_name: &str) -> Option<SurveyUseKind> {
         let gd = self.game_data.try_read().ok()?;
         gd.resolve_item(internal_name)
             .and_then(|info| info.survey_kind())
@@ -3712,5 +3877,79 @@ mod tests {
             )),
             "expected MultihitNodeOpened for the adopted node: {emitted:?}"
         );
+    }
+
+    #[test]
+    fn test_record_manual_use_claims_seeded_chat_loot() {
+        // Manual "Record use" with a Basic map: untagged chat-loot rows
+        // already in the ledger (same tick) attach to the use via
+        // claim_unlinked_chat_loot_near, loot_qty bumps, and a second claim
+        // returns 0 (idempotent single-loot authority).
+        let conn = fresh_db();
+        let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
+        let now = "2026-04-15 12:00:00";
+        // Seed untagged chat-status loot rows inside the basic window.
+        conn.execute(
+            "INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, quantity, context, source, source_kind, source_details)
+             VALUES (?1, 'Zenith', 'Dreva', 'Tungsten', 7, 'loot', 'chat_status', NULL, NULL)",
+            rusqlite::params![now],
+        )
+        .unwrap();
+        let (use_id, session_id) = agg
+            .record_manual_use(
+                &conn,
+                "Zenith",
+                "Dreva",
+                Some("Serbule"),
+                "GeologySurveySerbule1",
+                crate::survey::types::SurveyUseKind::Basic,
+                now,
+            )
+            .expect("record_manual_use must succeed");
+        assert!(session_id.is_some(), "manual use always creates a session");
+        let su = persistence::get_use(&conn, use_id).unwrap().unwrap();
+        assert_eq!(su.map_internal_name, "GeologySurveySerbule1");
+        assert_eq!(su.area.as_deref(), Some("Serbule"));
+        assert_eq!(su.loot_qty, 7, "seeded chat loot must be claimed");
+        let session = persistence::active_session(&conn, "Zenith", "Dreva")
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.id, session_id.unwrap());
+        assert_eq!(session.consumed_count, 1);
+        // Second claim is a no-op (rows already tagged).
+        let again = persistence::claim_unlinked_chat_loot_near(
+            &conn,
+            use_id,
+            "Zenith",
+            "Dreva",
+            now,
+            CHAT_BASIC_WINDOW_SECS as u32,
+        )
+        .unwrap();
+        assert_eq!(again, 0, "re-claim must return 0");
+    }
+
+    #[test]
+    fn test_record_manual_use_ignores_auto_start_flag() {
+        // Explicit user action creates a session even with auto-start off.
+        let conn = fresh_db();
+        let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
+        agg.auto_start_enabled = false;
+        let (use_id, session_id) = agg
+            .record_manual_use(
+                &conn,
+                "Zenith",
+                "Dreva",
+                None,
+                "MiningSurveyKurMountains1X",
+                crate::survey::types::SurveyUseKind::Motherlode,
+                "2026-04-15 12:00:00",
+            )
+            .expect("record_manual_use must succeed");
+        let sid = session_id.expect("session must be created despite flag");
+        assert!(use_id > 0);
+        let su = persistence::get_use(&conn, use_id).unwrap().unwrap();
+        assert_eq!(su.session_id, Some(sid));
+        assert_eq!(su.area, None, "no live area and empty survey_types.zone → NULL");
     }
 }

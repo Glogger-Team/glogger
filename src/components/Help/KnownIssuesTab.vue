@@ -98,7 +98,7 @@ const knownIssues: KnownIssue[] = [
     severity: "bug",
     title: "Item quantities may be inaccurate",
     description:
-      "The Player.log doesn't always provide exact stack sizes. Glogger infers quantities from chat status messages, but this isn't always reliable. Import your VIP Inventory JSON for accurate data.",
+      "The Player.log doesn't always provide exact stack sizes. Glogger infers quantities from chat status messages, but this isn't always reliable. Run Export Storage as JSON in Settings → VIP and import it for accurate data.",
   },
   {
     id: "rez-tracker",
@@ -115,7 +115,7 @@ const limitations: KnownIssue[] = [
     severity: "limitation",
     title: "Item mods/augments not shown in live inventory",
     description:
-      "The Player.log doesn't include TSys mod or augment data for items. This information is only available through the VIP Inventory JSON export. Snapshot imports do include this data.",
+      "The Player.log doesn't include TSys mod or augment data for items. This information is only available through Export Storage as JSON in Settings → VIP. Report imports do include this data.",
   },
   {
     id: "no-equipment-details",
@@ -141,8 +141,8 @@ const limitations: KnownIssue[] = [
 ];
 
 const tips = [
-  "Import your VIP Inventory JSON regularly for the most accurate inventory data.",
-  "Import your Character JSON to populate skills, recipes, and quest data.",
+  "Run Export Storage as JSON in Settings → VIP regularly for the most accurate inventory data.",
+  "Run Export Character as JSON in Settings → VIP to populate skills, recipes, and quest data. Enable Automatically Export on Logout to keep them fresh.",
   "Use Ctrl+K (or Cmd+K) to open quick search — you can search items, NPCs, skills, recipes, and more.",
   "Dashboard widgets can be reordered by dragging. Hide ones you don't need in the settings panel on the right.",
   "The Build Planner lets you plan mod configurations without committing in-game.",

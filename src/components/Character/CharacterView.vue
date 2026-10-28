@@ -47,7 +47,7 @@
       </div>
 
       <div v-if="store.lastImport?.was_duplicate" class="p-3 bg-yellow-900/20 border border-yellow-700/40 rounded text-sm text-yellow-300 shrink-0">
-        Snapshot already imported (duplicate).
+        Report already imported (duplicate).
       </div>
 
       <div v-if="store.error" class="p-3 bg-red-900/20 border border-red-700/40 rounded text-sm text-red-300 shrink-0">
@@ -65,7 +65,7 @@
             <EmptyState v-else-if="!store.selectedCharacter && !store.loading"
               primary="No character data."
               secondary="Import a character report to see combat stats." />
-            <div v-else class="text-xs text-text-dim italic">No snapshot selected.</div>
+            <div v-else class="text-xs text-text-dim italic">No report selected.</div>
           </div>
           <div class="bg-surface-elevated border border-border-default rounded-lg p-3 flex flex-col min-h-0 flex-1 overflow-hidden">
             <PlayerAttributesCard />
@@ -81,7 +81,7 @@
             <EmptyState v-else-if="!store.selectedCharacter && !store.loading"
               primary="No character data."
               secondary="Import a character report to see skills." />
-            <div v-else class="text-xs text-text-dim italic">No snapshot selected.</div>
+            <div v-else class="text-xs text-text-dim italic">No report selected.</div>
           </div>
           <div v-if="store.selectedSnapshot" class="bg-surface-elevated border border-border-default rounded-lg p-3 flex flex-col min-h-0 shrink-0 max-h-[30%] overflow-hidden">
             <CurrencyTable :currencies="store.currencies" />

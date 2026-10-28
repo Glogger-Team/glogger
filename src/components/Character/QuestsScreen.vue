@@ -46,7 +46,7 @@
         v-if="(activeTab === 'completed' || activeTab === 'uncompleted') && completedKeys.length === 0"
         class="text-[0.7rem] text-text-dim italic px-2 py-1 border border-surface-elevated rounded bg-surface-base">
         No completed-quest data in this export. Completed quests are only recorded by newer game
-        clients — re-export this character in-game (<span class="text-text-secondary">/outputcharacter</span>) to populate this.
+        clients — re-export this character in-game (<span class="text-text-secondary">Export Character as JSON in Settings → VIP</span>) to populate this.
       </div>
 
       <!-- Uncompleted work orders backlog (its own layout) -->

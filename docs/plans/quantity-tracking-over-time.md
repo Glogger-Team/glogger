@@ -4,8 +4,8 @@ Time-series tracking of currencies and item quantities with charts and trend ana
 
 ## Data Sources
 
-1. **Character snapshots** (`character_currencies`): 14 currency types, overwritten on each export (no historical backfill from files)
-2. **Inventory snapshots** (`character_snapshot_items`): PG doesn't overwrite — historical backfill possible
+1. **Character reports** (`character_currencies`): 14 currency types, overwritten on each export (no historical backfill from files)
+2. **Storage reports** (`character_snapshot_items`): PG doesn't overwrite — historical backfill possible
 3. **Item transactions** (`item_transactions`): append-only ledger with provenance (items only, not currencies)
 4. **Chat currency events**: `CouncilsChanged`, `CoinsLooted` — parsed but NOT persisted currently (critical gap)
 5. **Game state tables**: current values only, no history
@@ -22,18 +22,18 @@ Columns: timestamp, character, server, item_name, item_type_id, inventory_count,
 
 **Currencies:**
 1. Event-driven: persist CouncilsChanged/CoinsLooted from chat to currency_quantity_history
-2. Snapshot-based: write absolute values on character report import
-3. Periodic: snapshot game_state_currencies every 30 minutes while active
+2. Report-based: write absolute values on Character report import
+3. Periodic: record `game_state_currencies` every 30 minutes while active
 
 Event-driven alone is insufficient — only Councils changes detected from chat, other currencies have no chat events.
 
 **Items:**
-Periodic snapshots of game_state_inventory + game_state_storage aggregated by item_name. Item_transactions provides event-level detail; quantity history adds point-in-time totals.
+Periodic reports of `game_state_inventory` + `game_state_storage` aggregated by item_name. Item_transactions provides event-level detail; quantity history adds point-in-time totals.
 
 ## Backfill
 
 - **Inventory reports**: scan all historical `*_items_*.json` files (not overwritten by PG)
-- **Existing snapshots**: mine character_snapshots + character_currencies already in DB
+- **Existing reports**: mine `character_snapshots` + `character_currencies` already in DB
 - One-time migration backfill on first run
 
 ## Query Patterns
@@ -55,18 +55,18 @@ Charts via `vue-data-ui` (VueUiXy line/area charts). Lives in Economics view:
 - Migration: `currency_quantity_history` table
 - Tauri commands for insert/query
 - Write to history on character report import
-- Backfill from existing character_snapshots
+- Backfill from existing `character_snapshots`
 
 ### Phase 2: Live currency event persistence
 - Coordinator persists CouncilsChanged/CoinsLooted to history
-- Periodic 30-min snapshot of game_state_currencies
+- Periodic 30-min report of `game_state_currencies`
 
 ### Phase 3: Currency trends UI
 - CurrencyTrendsView with VueUiXy chart, currency picker, date range
 
 ### Phase 4: Item quantity history
 - Migration: `item_quantity_history` table
-- Periodic snapshots of inventory+storage
+- Periodic reports of inventory+storage
 - Backfill from historical inventory reports
 
 ### Phase 5: Item trends UI

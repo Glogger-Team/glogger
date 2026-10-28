@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tauri::State;
 
-// ── JSON Deserialization Structs (match game's /outputitems format) ───────────
+// ── JSON Deserialization Structs (match game's Storage export format: Export Storage as JSON in Settings → VIP) ───────────
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -46,6 +46,14 @@ pub struct StorageItem {
     pub uses_remaining: Option<i64>,
     pub transmute_count: Option<i64>,
     pub attuned_to: Option<String>,
+    #[serde(default)]
+    pub is_augmented: Option<bool>,
+    #[serde(default)]
+    pub dye_count: Option<i64>,
+    #[serde(default)]
+    pub inscription: Option<String>,
+    #[serde(default)]
+    pub inscriber: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -99,6 +107,10 @@ pub struct SnapshotItem {
     pub tsys_imbue_power: Option<String>,
     pub tsys_imbue_power_tier: Option<i64>,
     pub pet_husbandry_state: Option<String>,
+    pub is_augmented: Option<bool>,
+    pub dye_count: Option<i64>,
+    pub inscription: Option<String>,
+    pub inscriber: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -178,7 +190,7 @@ pub fn import_inventory_report_internal(
                 report.timestamp,
                 raw_json,
             ],
-        ).map_err(|e| format!("Failed to insert item snapshot: {e}"))?;
+        ).map_err(|e| format!("Failed to store storage report: {e}"))?;
 
         // 6. Check if insert created a new row
         let changes = conn.changes();
@@ -201,8 +213,9 @@ pub fn import_inventory_report_internal(
                 stack_size, value, item_name, rarity, slot, level,
                 is_crafted, crafter, durability, craft_points, uses_remaining,
                 transmute_count, attuned_to, tsys_powers, tsys_imbue_power,
-                tsys_imbue_power_tier, pet_husbandry_state
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)"
+                tsys_imbue_power_tier, pet_husbandry_state,
+                is_augmented, dye_count, inscription, inscriber
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)"
         ).map_err(|e| format!("Failed to prepare item insert: {e}"))?;
 
         let mut items_imported = 0usize;
@@ -239,6 +252,10 @@ pub fn import_inventory_report_internal(
                     item.tsys_imbue_power,
                     item.tsys_imbue_power_tier,
                     item.pet_husbandry_state,
+                    item.is_augmented,
+                    item.dye_count,
+                    item.inscription,
+                    item.inscriber,
                 ])
                 .map_err(|e| format!("Failed to insert item {}: {e}", item.name))?;
         }
@@ -436,7 +453,8 @@ pub fn get_snapshot_items(
             "SELECT id, type_id, storage_vault, is_in_inventory, stack_size, value,
                 item_name, rarity, slot, level, is_crafted, crafter, durability,
                 craft_points, uses_remaining, transmute_count, attuned_to,
-                tsys_powers, tsys_imbue_power, tsys_imbue_power_tier, pet_husbandry_state
+                tsys_powers, tsys_imbue_power, tsys_imbue_power_tier, pet_husbandry_state,
+                is_augmented, dye_count, inscription, inscriber
          FROM character_snapshot_items
          WHERE item_snapshot_id = ?1
          ORDER BY item_name",
@@ -467,6 +485,10 @@ pub fn get_snapshot_items(
                 tsys_imbue_power: row.get(18)?,
                 tsys_imbue_power_tier: row.get(19)?,
                 pet_husbandry_state: row.get(20)?,
+                is_augmented: row.get(21)?,
+                dye_count: row.get(22)?,
+                inscription: row.get(23)?,
+                inscriber: row.get(24)?,
             })
         })
         .map_err(|e| format!("Query failed: {e}"))?;
@@ -611,4 +633,157 @@ pub fn get_all_character_items(
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to read results: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::migrations::run_migrations;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// Migrated in-memory DB wrapped in the app's pool type. Shared-cache
+    /// memory URI so `reads` and `writes` hit the same DB. Unique name per
+    /// call keeps tests isolated.
+    fn pool() -> DbPool {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let mk = |query_only: bool| {
+            r2d2_sqlite::SqliteConnectionManager::file(format!(
+                "file:inventory_details_test_{n}?mode=memory&cache=shared"
+            ))
+            .with_init(move |conn| {
+                if query_only {
+                    conn.execute_batch(
+                        "PRAGMA journal_mode=WAL;
+                         PRAGMA busy_timeout=5000;
+                         PRAGMA synchronous=NORMAL;
+                         PRAGMA foreign_keys=ON;
+                         PRAGMA query_only=ON;",
+                    )
+                } else {
+                    conn.execute_batch(
+                        "PRAGMA journal_mode=WAL;
+                         PRAGMA busy_timeout=5000;
+                         PRAGMA synchronous=NORMAL;
+                         PRAGMA foreign_keys=ON;",
+                    )
+                }
+            })
+        };
+        let writes = r2d2::Pool::builder()
+            .max_size(1)
+            .build(mk(false))
+            .expect("writes pool");
+        let reads = r2d2::Pool::builder()
+            .max_size(2)
+            .build(mk(true))
+            .expect("reads pool");
+        let conn = writes.get().expect("conn");
+        run_migrations(&conn, None).expect("migrations");
+        drop(conn);
+        DbPool::from_pools(reads, writes)
+    }
+
+    const FIXTURE: &str =
+        "../test_data/inventory/completeState/TestPlayer_Dreva_items_2026-04-14-15-57-59Z.json";
+
+    #[test]
+    fn import_persists_dropped_storage_fields_from_fixture() {
+        let db = pool();
+        let result = import_inventory_report_internal(&db, FIXTURE).expect("import fixture");
+        assert!(!result.was_duplicate);
+
+        let conn = db.get_write().expect("write conn");
+        // Fixture counts: IsAugmented 8, DyeCount 4, Inscription 1, Inscriber 1.
+        let (aug, dye, insc, inscr): (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*) FILTER (WHERE is_augmented IS NOT NULL),
+                        COUNT(*) FILTER (WHERE dye_count IS NOT NULL),
+                        COUNT(*) FILTER (WHERE inscription IS NOT NULL),
+                        COUNT(*) FILTER (WHERE inscriber IS NOT NULL)
+                 FROM character_snapshot_items",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("field counts");
+        assert_eq!((aug, dye, insc, inscr), (8, 4, 1, 1), "dropped fields populated");
+
+        // Spot-check values on a known augmented row.
+        let (name, aug_flag): (String, Option<bool>) = conn
+            .query_row(
+                "SELECT item_name, is_augmented FROM character_snapshot_items WHERE type_id = 21803",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("augmented row");
+        assert_eq!(aug_flag, Some(true), "IsAugmented round-trips on {name}");
+
+        let (inscription, inscriber): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT inscription, inscriber FROM character_snapshot_items WHERE type_id = 56109",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("inscribed row");
+        assert_eq!(inscription.as_deref(), Some("Limited 3/11"));
+        assert_eq!(inscriber.as_deref(), Some("Deradon"));
+
+        drop(conn);
+
+        // DyeCount spot-check via a second read connection (drops the write guard).
+        let conn = db.get().expect("read conn");
+        let dye: Option<i64> = conn
+            .query_row(
+                "SELECT dye_count FROM character_snapshot_items WHERE type_id = 41344",
+                [],
+                |row| row.get(0),
+            )
+            .expect("dye row");
+        assert_eq!(dye, Some(1));
+    }
+
+    #[test]
+    fn manual_use_style_json_round_trips_new_fields() {
+        let db = pool();
+        let dir = std::env::temp_dir().join(format!(
+            "inv_details_{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let path = dir.join("TestChar_Dreva_items_2026-01-01-00-00-00Z.json");
+        std::fs::write(
+            &path,
+            r#"{"Character":"TestChar","ServerName":"Dreva","Timestamp":"2026-01-01 00:00:00","Report":"Storage","ReportVersion":1,"Items":[
+                {"TypeID":1,"StorageVault":"Vault","StackSize":1,"Value":10,"Name":"Plain Sword","IsAugmented":true,"DyeCount":2,"Inscription":"Hi","Inscriber":"Bob"},
+                {"TypeID":2,"StorageVault":"","StackSize":5,"Value":1,"Name":"Plain Dagger"}
+            ]}"#,
+        )
+        .expect("write report");
+        let result =
+            import_inventory_report_internal(&db, path.to_str().expect("path")).expect("import");
+        assert_eq!(result.items_imported, 2);
+
+        let conn = db.get().expect("read conn");
+        let (aug, dye, insc, inscr): (Option<bool>, Option<i64>, Option<String>, Option<String>) =
+            conn.query_row(
+                "SELECT is_augmented, dye_count, inscription, inscriber FROM character_snapshot_items WHERE type_id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("new fields");
+        assert_eq!((aug, dye), (Some(true), Some(2)));
+        assert_eq!(insc.as_deref(), Some("Hi"));
+        assert_eq!(inscr.as_deref(), Some("Bob"));
+        // Omitted fields stay NULL.
+        let (aug2, dye2): (Option<bool>, Option<i64>) = conn
+            .query_row(
+                "SELECT is_augmented, dye_count FROM character_snapshot_items WHERE type_id = 2",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("null fields");
+        assert_eq!((aug2, dye2), (None, None));
+    }
 }

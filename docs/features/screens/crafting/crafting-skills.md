@@ -52,7 +52,7 @@ Side-by-side donut chart panels (~60% of center pane width):
 
 ## Data Sources
 
-- **Skill levels** — `craftingStore.getSkillLevel()` (game state from player log / character snapshot)
+- **Skill levels** — `craftingStore.getSkillLevel()` (game state from player log / Character report)
 - **Recipe completions** — `gameStateStore.recipeCompletions` (from `ProcessUpdateRecipe` events)
 - **Per-skill stats** — `craftingStore.getSkillCraftingStats()` (aggregated from CDN recipes + player completions)
 - **Recipe data** — `gameDataStore.getRecipesForSkill()` (CDN)

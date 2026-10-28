@@ -1,3 +1,4 @@
+<!-- DARK until LocalPlayer: lines recur (hidden 2026-10-28) -->
 <template>
   <ActivityFeed
     :entries="store.favorChanges"

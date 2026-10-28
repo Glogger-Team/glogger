@@ -194,7 +194,7 @@ const filtered = computed(() => {
 const emptyText = computed(() =>
   filterText.value || filterVault.value || filterRarity.value || filterSlot.value
     ? 'No items match the current filters.'
-    : 'No items in this snapshot.')
+    : 'No items in this report.')
 
 function toggleSort(key: SortKey) {
   if (sortKey.value === key) {

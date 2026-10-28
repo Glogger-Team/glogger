@@ -7,7 +7,7 @@ Given a skill and target level, computes a crafting plan considering XP rewards,
 ## Inputs
 
 - **Skill** — any crafting skill (auto-populated list from CDN)
-- **Current level** — auto-filled from latest character snapshot
+- **Current level** — auto-filled from latest Character report
 - **Target level** — desired level
 - **Strategy** — Combined, First-Time Rush, or Cost-Efficient
 - **Include unlearned recipes** — toggle to show recipes not yet known

@@ -2,7 +2,7 @@
 
 ## Overview
 
-A CDN-driven database of ALL storage vault locations in the game (~92 vaults), showing what the player has stored, vault capacity, and unlock progress. Combines CDN vault metadata with player-specific storage, favor, and attribute data. Tracks vault contents live via Player.log events and seeds from inventory snapshots.
+A CDN-driven database of ALL storage vault locations in the game (~92 vaults), showing what the player has stored, vault capacity, and unlock progress. Combines CDN vault metadata with player-specific storage, favor, and attribute data. Tracks vault contents live via Player.log events and seeds from Storage reports.
 
 ## Architecture
 
@@ -99,17 +99,17 @@ Player.log → LogWatcher → PlayerEventParser (adds vault_key)
                     VaultDatabaseTab (reactive update)
 ```
 
-### Snapshot Seeding
+### Report Seeding
 
 ```
-/outputitems → character_snapshot_items (DB)
+Export Storage as JSON → character_snapshot_items (DB)
                         ↓
             seed_game_state_from_snapshot()
                         ↓
-            DELETE all storage for character → INSERT from snapshot
+            DELETE all storage for character → INSERT from Storage report
 ```
 
-Live log events gradually replace snapshot data with real instance IDs as the player interacts with storage.
+Live log events gradually replace report data with real instance IDs as the player interacts with storage.
 
 ## Database Schema
 
@@ -130,12 +130,12 @@ CREATE TABLE game_state_storage (
 ```
 
 - **`vault_key`** — maps to `storagevaults.json` keys (e.g., `"NPC_Joe"`)
-- **`source`** — `'log'` (from live events) or `'snapshot'` (from `/outputitems`)
-- **`instance_id`** — real IDs from log events; synthetic negative IDs (`-(i+1)`) from snapshots
+- **`source`** — `'log'` (from live events) or `'snapshot'` (from a Storage export)
+- **`instance_id`** — real IDs from log events; synthetic negative IDs (`-(i+1)`) from reports
 
 ## Storage Persistence
 
-Unlike inventory (which clears on login), storage persists across sessions. The `GameStateManager` does NOT clear storage on `CharacterLogin`. Items are only removed by explicit `StorageWithdrawal` events or full snapshot replacement.
+Unlike inventory (which clears on login), storage persists across sessions. The `GameStateManager` does NOT clear storage on `CharacterLogin`. Items are only removed by explicit `StorageWithdrawal` events or full report replacement.
 
 ## Event Handling
 

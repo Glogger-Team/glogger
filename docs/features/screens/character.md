@@ -16,7 +16,7 @@ The character screen is a 9-tab hub for all character-specific data: skill progr
 - Stats, Gourmand, Build Planner, and Account tabs are rendered inline in CharacterView
 
 **Stores:**
-- `characterStore` — character report import, snapshot management, recipe/NPC data
+- `characterStore` — character report import, report management, recipe/NPC data
 - `gameStateStore` — persisted skills, favor, active skills, session tracking
 - `gameDataStore` — CDN enrichment (skill details, NPC data, quest data)
 
@@ -29,8 +29,8 @@ CharacterView.vue                   — 9-tab container
 │   │   └── TrackedSkillCard.vue    — individual tracked skill
 │   ├── SkillListPanel.vue          — filterable/sortable skill list (left)
 │   └── SkillDetailPanel.vue        — selected skill detail (right)
-├── Stats tab (inline)              — character report snapshots
-│   ├── SnapshotComparison.vue      — compare two snapshots
+├── Stats tab (inline)              — character reports
+│   ├── SnapshotComparison.vue      — compare two reports
 │   ├── SkillTable.vue              — skill levels from report
 │   ├── StatsTable.vue              — combat/attribute stats
 │   ├── CurrencyTable.vue           — currency holdings
@@ -66,7 +66,7 @@ CharacterView.vue                   — 9-tab container
 ## Per-Tab Documentation
 
 - [character-skills.md](character/character-skills.md) — Skills: two-panel layout, tracked skills, XP progression, CDN enrichment
-- [character-stats.md](character/character-stats.md) — Stats: character report import, snapshot management
+- [character-stats.md](character/character-stats.md) — Stats: character report import, report management
 - [character-npcs.md](character/character-npcs.md) — NPCs: favor progression, services, gift preferences
 - [character-quests.md](character/character-quests.md) — Quests: personalized quest reference with requirement eligibility
 - [character-deaths.md](character/character-deaths.md) — Deaths: death tracking, killer analysis, damage sources

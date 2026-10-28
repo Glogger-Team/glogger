@@ -226,7 +226,7 @@ the same item at the same price) would otherwise collapse into a single row.
 | `get_stall_events(params)` | Paginated list of events with filters, sort, limit/offset. Returns `{ rows, total_count }`. Empty when `owner` missing. |
 | `get_stall_stats(filters)` | Aggregate stats (total sales, revenue, unique buyers/items) for the Sales header. Always scoped to `bought` + non-ignored. |
 | `get_stall_revenue(params)` | Daily/weekly/monthly pivot. Returns pre-computed `periods`, `items`, `cells`, row/col totals, grand total. |
-| `get_stall_inventory(params)` | Inventory tier-stack snapshot with per-item quantity, price tiers, period sales, and last sold. |
+| `get_stall_inventory(params)` | Inventory tier-stack report with per-item quantity, price tiers, period sales, and last sold. |
 | `get_stall_filter_options(owner)` | Distinct buyers, players, items, dates, actions for filter dropdowns. |
 | `toggle_stall_event_ignored(id, ignored)` | Soft-mute or unmute a single event. |
 | `clear_stall_events(owner)` | Delete every row for a specific character. Requires `owner`. Holds `StallOpsLock`. |

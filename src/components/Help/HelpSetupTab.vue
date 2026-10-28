@@ -22,10 +22,10 @@
           This lets Glogger read chat messages for item linking, watchwords, and other chat-driven features.
         </SetupStep>
         <SetupStep number="3" title="Import your Character JSON (optional)">
-          Go to Settings -> VIP in Project Gorgon to export. This populates your skills, recipes, and quest data.
+          Go to Settings -> VIP in Project Gorgon and run Export Character as JSON. This populates your skills, recipes, and quest data. Enable Automatically Export on Logout in the same screen to keep exports fresh (it also re-exports on every zone change).
         </SetupStep>
         <SetupStep number="4" title="Import your VIP Inventory JSON (optional, requires VIP)">
-          Go to Settings -> VIP in Project Gorgon to export. This gives accurate item quantities and mod data.
+          Go to Settings -> VIP in Project Gorgon and run Export Storage as JSON. This gives accurate item quantities and mod data.
         </SetupStep>
       </div>
     </section>
