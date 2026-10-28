@@ -492,27 +492,16 @@ export const useCharacterStore = defineStore('character', () => {
       // Backfill inventory reports for every character on this server so the
       // search sees characters the user hasn't opened recently. Best-effort —
       // a missing Reports folder or file just yields fewer results.
+      // Not repeated on retry (fetchAllCharacterItems below re-reads only):
+      // re-scanning report files there could restore a character deleted
+      // mid-flight (delete clears DB rows only; report files stay on disk).
       try {
         await invoke<number>('import_all_inventory_for_server', { serverName })
       } catch (e) {
         console.warn('Cross-character inventory backfill:', e)
       }
 
-      const rows = await invoke<CrossCharacterItem[]>('get_all_character_items', {
-        serverName,
-      })
-      // Drop the result if the server changed or the cache was invalidated
-      // mid-flight — committing it would poison the new scope with old rows.
-      if (settingsStore.settings.activeServerName !== serverName) return
-      if (generation !== allCharacterItemsGeneration.value) {
-        // Same server, invalidated mid-flight (e.g. an import landed during
-        // backfill): reload instead of leaving the cache empty. Converges —
-        // each retry re-resolves generation; imports are user-action-bounded.
-        return loadAllCharacterItems(true)
-      }
-      allCharacterItems.value = rows
-      allCharacterItemsLoaded.value = true
-      allCharacterItemsServer.value = serverName
+      await fetchAllCharacterItems(serverName, generation)
     } catch (e) {
       error.value = String(e)
       // Failed fetch must not poison the cache: allow the next call through.
@@ -521,6 +510,31 @@ export const useCharacterStore = defineStore('character', () => {
     } finally {
       allCharacterItemsLoading.value = false
     }
+  }
+
+  /**
+   * Read-only half of the cross-character load: query + guard, no backfill.
+   * Split out so the invalidation retry re-reads without re-scanning report
+   * files (see the delete-restores-files note above).
+   */
+  async function fetchAllCharacterItems(serverName: string, generation: number) {
+    const settingsStore = useSettingsStore()
+    const rows = await invoke<CrossCharacterItem[]>('get_all_character_items', {
+      serverName,
+    })
+    // Drop the result if the server changed or the cache was invalidated
+    // mid-flight — committing it would poison the new scope with old rows.
+    if (settingsStore.settings.activeServerName !== serverName) return
+    if (generation !== allCharacterItemsGeneration.value) {
+      // Same server, invalidated mid-flight: re-read without backfill.
+      // Converges — each retry re-resolves generation; imports are bounded.
+      // Awaited so the caller's finally holds the loading flag.
+      await fetchAllCharacterItems(serverName, allCharacterItemsGeneration.value)
+      return
+    }
+    allCharacterItems.value = rows
+    allCharacterItemsLoaded.value = true
+    allCharacterItemsServer.value = serverName
   }
 
   /**
