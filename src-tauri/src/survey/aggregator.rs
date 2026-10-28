@@ -384,9 +384,18 @@ impl SurveySessionAggregator {
             .ok()
             .flatten()
         });
+        // Single write transaction: a failed count update rolls back the use
+        // row instead of returning success with a stale session count.
+        // No outer transaction is open here (fresh pool checkout in the
+        // command), so new_unchecked is safe.
+        let tx = rusqlite::Transaction::new_unchecked(
+            conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .map_err(|e| e.to_string())?;
 
         let use_id = match persistence::insert_use(
-            conn,
+            &tx,
             session_id,
             character,
             server,
@@ -412,9 +421,13 @@ impl SurveySessionAggregator {
         };
 
         if let Some(s) = session_id {
-            if let Err(e) = persistence::increment_consumed_count(conn, s) {
-                eprintln!("[survey-aggregator] increment_consumed_count failed: {e}");
-            }
+            persistence::increment_consumed_count(&tx, s)
+                .map_err(|e| format!("survey count update failed: {e}"))?;
+        }
+        tx.commit()
+            .map_err(|e| format!("survey use transaction failed: {e}"))?;
+
+        if let Some(s) = session_id {
             // Tighten started_at so the session header reflects the actual
             // first survey use, not the session-creation moment.
             let _ = persistence::tighten_started_at(conn, s, now_iso);
