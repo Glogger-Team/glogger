@@ -782,10 +782,12 @@ mod tests {
         drop(conn);
 
         // DyeCount spot-check via a second read connection (drops the write guard).
+        // Type 41344 has two rows (valued in NPC_Kib + valueless without vault);
+        // scope to the vault or query_row returns whichever SQLite yields first.
         let conn = db.get().expect("read conn");
         let dye: Option<i64> = conn
             .query_row(
-                "SELECT dye_count FROM character_snapshot_items WHERE type_id = 41344",
+                "SELECT dye_count FROM character_snapshot_items WHERE type_id = 41344 AND storage_vault = 'NPC_Kib'",
                 [],
                 |row| row.get(0),
             )

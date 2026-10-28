@@ -651,6 +651,13 @@ fn migration_v81_snapshot_item_details(conn: &Connection) -> Result<()> {
                 Some(id) => id,
                 None => continue,
             };
+            // Increment for EVERY entry (even all-NULL ones) so ordinals agree
+            // entry-for-entry with the duplicate-import path, which executes
+            // (harmless no-op) UPDATEs for valueless entries too.
+            let key = (type_id, vault.to_string());
+            let ordinal = ordinals.entry(key).or_insert(0);
+            let offset = *ordinal;
+            *ordinal += 1;
             let is_augmented = item.get("IsAugmented").and_then(|v| v.as_bool());
             let dye_count = item.get("DyeCount").and_then(|v| v.as_i64());
             let inscription = item.get("Inscription").and_then(|v| v.as_str());
@@ -662,10 +669,6 @@ fn migration_v81_snapshot_item_details(conn: &Connection) -> Result<()> {
             {
                 continue;
             }
-            let key = (type_id, vault.to_string());
-            let ordinal = ordinals.entry(key).or_insert(0);
-            let offset = *ordinal;
-            *ordinal += 1;
             let _ = conn.execute(
                 "UPDATE character_snapshot_items
                  SET is_augmented = COALESCE(is_augmented, ?1),
@@ -4029,5 +4032,47 @@ mod tests {
             )
             .unwrap();
         assert_eq!((aug, dye), (Some(true), Some(2)), "v81 must replay raw_json keys into new columns");
+    }
+    #[test]
+    fn v81_ordinal_survives_valueless_middle_entry() {
+        // Valued, valueless, valued entries in one vault group: the third
+        // entry's ordinal must be 2 (not 1) to match the duplicate-import
+        // path, which consumes an ordinal for every file entry.
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE character_item_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_name TEXT NOT NULL,
+                server_name TEXT NOT NULL,
+                snapshot_timestamp TIMESTAMP NOT NULL,
+                raw_json TEXT
+            );
+            CREATE TABLE character_snapshot_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_snapshot_id INTEGER NOT NULL,
+                type_id INTEGER NOT NULL,
+                storage_vault TEXT NOT NULL DEFAULT '',
+                is_in_inventory BOOLEAN NOT NULL DEFAULT 0,
+                stack_size INTEGER NOT NULL,
+                value INTEGER,
+                item_name TEXT NOT NULL
+            );
+            INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
+            VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[{\"TypeID\":1,\"StorageVault\":\"V\",\"StackSize\":1,\"Value\":1,\"Name\":\"A\",\"IsAugmented\":true},{\"TypeID\":1,\"StorageVault\":\"V\",\"StackSize\":1,\"Value\":1,\"Name\":\"B\"},{\"TypeID\":1,\"StorageVault\":\"V\",\"StackSize\":1,\"Value\":1,\"Name\":\"C\",\"DyeCount\":7}]}');
+            INSERT INTO character_snapshot_items (item_snapshot_id, type_id, storage_vault, is_in_inventory, stack_size, value, item_name)
+            VALUES (1, 1, 'V', 0, 1, 1, 'A'), (1, 1, 'V', 0, 1, 1, 'B'), (1, 1, 'V', 0, 1, 1, 'C');",
+        )
+        .unwrap();
+        migration_v81_snapshot_item_details(&c).unwrap();
+        let rows: Vec<(Option<bool>, Option<i64>)> = {
+            let mut stmt = c
+                .prepare("SELECT is_augmented, dye_count FROM character_snapshot_items ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        assert_eq!(rows, vec![(Some(true), None), (None, None), (None, Some(7))], "Nth entry fills Nth row across valueless gaps");
     }
 }

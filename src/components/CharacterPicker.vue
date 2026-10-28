@@ -192,6 +192,10 @@ async function doDelete() {
   }
 
   deleteTarget.value = null
+  // Deleted character's rows are gone from both report tables — clear both
+  // cross-character caches so tooltips/search don't show a ghost.
+  characterStore.allCharacterItemsLoaded = false
+  characterStore.allCharacterWorkOrdersLoaded = false
   // Reopen the picker
   await loadCharacters()
   open.value = true

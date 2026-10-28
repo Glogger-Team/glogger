@@ -72,6 +72,7 @@
                 Record use
               </button>
             </div>
+            <div v-if="surveyTypesError" class="text-[11px] text-accent-red px-1">{{ surveyTypesError }}</div>
             <div v-if="store.recordError" class="text-[11px] text-accent-red px-1">{{ store.recordError }}</div>
           </div>
 
@@ -400,13 +401,17 @@ const surveyTypeNames = computed(() =>
   surveyTypes.value.map((t) => `${t.name}${t.zone ? ` — ${t.zone}` : ''}`).sort(),
 )
 
+const surveyTypesError = ref<string | null>(null)
+
 async function loadSurveyTypes() {
   try {
     const rows = await invoke<SurveyTypeEntry[]>('get_all_survey_types')
     surveyTypes.value = rows
+    surveyTypesError.value = rows.length === 0 ? 'No survey maps in the catalog — the game data may still be loading. Try again shortly.' : null
   } catch (err) {
     console.error('[SurveyTrackerView] get_all_survey_types failed:', err)
     surveyTypes.value = []
+    surveyTypesError.value = 'Could not load the survey catalog. Recording is unavailable until game data loads.'
   }
 }
 

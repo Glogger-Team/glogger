@@ -190,7 +190,7 @@ Small tasks and notes that don't belong in a dedicated plan.
 
 ## Blocked — waiting on LocalPlayer: restoration (added 2026-10-28; no work until lines recur)
 
-Missing event in every entry: a `LocalPlayer:` line (fast-path gate `player_event_parser.rs:1257-1262` — the current client emits zero such lines, so the whole `PlayerEvent` stream is dark). Un-block condition for every entry: `LocalPlayer:` lines recur in Player.log. Moved here verbatim from their actionable sections above; the parents keep a `Blocked portion:` sub-line.
+Missing event in most entries: a `LocalPlayer:` line (fast-path gate `player_event_parser.rs:1257-1262` — the current client emits zero such lines, so the whole `PlayerEvent` stream is dark). Default un-block condition: `LocalPlayer:` lines recur in Player.log. Two entries need more: Angling Perfect Catches needs a never-yet-seen angling signal, and per-attacker damage needs an other-players'-damage source never logged — lines recurring is necessary but not sufficient there. Moved here verbatim from their actionable sections above; the parents keep a `Blocked portion:` sub-line.
 
 - [ ] Gardening helper Phase 1 (plot tracker) — see `docs/plans/gardening-helper.md:52-56`. Parser events exist (`EntityDescriptionUpdated`), plan written, garden almanac (Phase 0) complete. Missing Phase 1+ code: no `EntityDescriptionUpdated` arm, no `garden_plots` table, no `get_garden_plots` command.
 - [ ] Current gear display — no source flags what's worn (log path is nameless appearance keys, Character report path can't distinguish worn from carried; appearance-only view built and reverted). Unblocks when: a log event carrying item identity per slot, or a report/VIP flag for equipped items.

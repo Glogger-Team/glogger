@@ -459,7 +459,7 @@ export const useSurveyTrackerStore = defineStore("surveyTracker", () => {
         mapInternalName,
         kind: kind ?? null,
       });
-      await Promise.all([refreshStatus(), refreshRecentSessions(), refreshHistorical()]);
+      await Promise.all([refreshStatus(), refreshRecentSessions(), refreshHistorical(), analytics.value !== null ? refreshAnalytics() : Promise.resolve()]);
       // If the recorded use landed in the open detail's session, refresh it
       // so the new use shows up (mirrors endSession).
       if (

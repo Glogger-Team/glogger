@@ -53,6 +53,7 @@ export const useCharacterStore = defineStore('character', () => {
   // Cross-character storage search state (latest snapshot per character)
   const allCharacterItems = ref<CrossCharacterItem[]>([])
   const allCharacterItemsLoading = ref(false)
+  const allCharacterItemsServer = ref<string | undefined>(undefined)
   const allCharacterItemsLoaded = ref(false)
 
   // Cross-character work-order presence (latest snapshot per character)
@@ -294,6 +295,7 @@ export const useCharacterStore = defineStore('character', () => {
 
       if (invResult) {
         lastInventoryImport.value = invResult
+        allCharacterItemsLoaded.value = false
         await loadInventorySnapshots(characterName, serverName || undefined)
         if (inventorySnapshots.value.length > 0) {
           await selectInventorySnapshot(inventorySnapshots.value[0])
@@ -351,7 +353,9 @@ export const useCharacterStore = defineStore('character', () => {
       const result = await invoke<InventoryImportResult>('import_inventory_report', {
         filePath: filePath as string,
       })
+      // Items come from the latest reports — invalidate the cross-character cache.
       lastInventoryImport.value = result
+      allCharacterItemsLoaded.value = false
 
       // Refresh inventory snapshots after import
       if (selectedCharacter.value) {
@@ -420,6 +424,7 @@ export const useCharacterStore = defineStore('character', () => {
     // Try auto-import
     try {
       const invResult = await invoke<InventoryImportResult | null>('import_latest_inventory_for_character', { characterName, serverName: serverName || undefined })
+      if (invResult) allCharacterItemsLoaded.value = false
       // Auto-scan for new brewing discoveries (non-blocking)
       if (invResult && !invResult.was_duplicate) {
         import('./breweryStore').then(({ useBreweryStore }) => {
@@ -446,30 +451,42 @@ export const useCharacterStore = defineStore('character', () => {
    * the aggregated item set. Caches results; pass `force` to refresh.
    */
   async function loadAllCharacterItems(force = false) {
-    if (allCharacterItemsLoaded.value && !force) return
-
     const settingsStore = useSettingsStore()
     const serverName = settingsStore.settings.activeServerName || undefined
+    // No server selected: never fetch unfiltered — clear the cache so the
+    // search shows nothing instead of all servers' rows.
+    if (!serverName) {
+      allCharacterItems.value = []
+      allCharacterItemsLoaded.value = false
+      allCharacterItemsServer.value = undefined
+      return
+    }
+    const cacheMatchesServer = allCharacterItemsServer.value === serverName
+    if (allCharacterItemsLoaded.value && cacheMatchesServer && !force) return
 
     allCharacterItemsLoading.value = true
+    // Clear stale rows before the async fetch/backfill so consumers never
+    // render the previous server's rows while the new query is in flight.
+    allCharacterItems.value = []
     try {
       // Backfill inventory reports for every character on this server so the
       // search sees characters the user hasn't opened recently. Best-effort —
       // a missing Reports folder or file just yields fewer results.
-      if (serverName) {
-        try {
-          await invoke<number>('import_all_inventory_for_server', { serverName })
-        } catch (e) {
-          console.warn('Cross-character inventory backfill:', e)
-        }
+      try {
+        await invoke<number>('import_all_inventory_for_server', { serverName })
+      } catch (e) {
+        console.warn('Cross-character inventory backfill:', e)
       }
 
       allCharacterItems.value = await invoke<CrossCharacterItem[]>('get_all_character_items', {
         serverName,
       })
       allCharacterItemsLoaded.value = true
+      allCharacterItemsServer.value = serverName
     } catch (e) {
       error.value = String(e)
+      // Failed fetch must not poison the cache: allow the next call through.
+      allCharacterItemsLoaded.value = false
     } finally {
       allCharacterItemsLoading.value = false
     }
@@ -505,6 +522,9 @@ export const useCharacterStore = defineStore('character', () => {
       allCharacterWorkOrdersServer.value = serverName
     } catch (e) {
       error.value = String(e)
+      // Failed fetch must not poison a good cache with a blank: allow the
+      // next call through while keeping the previous rows visible.
+      allCharacterWorkOrdersLoaded.value = false
     } finally {
       allCharacterWorkOrdersLoading.value = false
     }
@@ -572,6 +592,7 @@ export const useCharacterStore = defineStore('character', () => {
     // Cross-character storage search
     allCharacterItems,
     allCharacterItemsLoading,
+    allCharacterItemsServer,
     allCharacterItemsLoaded,
     loadAllCharacterItems,
     // Cross-character work-order presence
