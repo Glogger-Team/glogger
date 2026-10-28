@@ -81,6 +81,7 @@
                 Retry
               </button>
             </div>
+            <div v-if="store.recordError" class="text-[11px] text-accent-red px-1">{{ store.recordError }}</div>
           </div>
 
           <div class="border-t border-border-default pt-2">
