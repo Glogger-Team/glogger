@@ -72,8 +72,15 @@
                 Record use
               </button>
             </div>
-            <div v-if="surveyTypesError" class="text-[11px] text-accent-red px-1">{{ surveyTypesError }}</div>
-            <div v-if="store.recordError" class="text-[11px] text-accent-red px-1">{{ store.recordError }}</div>
+            <div v-if="surveyTypesError" class="text-[11px] text-accent-red px-1 flex items-center gap-1.5">
+              <span class="flex-1">{{ surveyTypesError }}</span>
+              <button
+                class="shrink-0 text-[11px] px-1.5 py-0.5 rounded border border-border-default text-text-secondary hover:bg-surface-elevated transition-colors"
+                @click="loadSurveyTypes"
+              >
+                Retry
+              </button>
+            </div>
           </div>
 
           <div class="border-t border-border-default pt-2">
