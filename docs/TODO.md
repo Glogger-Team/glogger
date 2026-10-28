@@ -158,7 +158,23 @@ Small tasks and notes that don't belong in a dedicated plan.
   - **Audit: verified open — but the candidate list is now identifiable.** Largest TS logic: `craftingStore.ts` (1746 lines — recursive ingredient tree + material aggregation with per-node IPC and hand-rolled caches), `gameStateStore.ts` (1301), `buildPlannerStore.ts` (951), `useStorageConsolidation.ts` (944 — cross-alt vault math), `useRecipeCost.ts` (per-ingredient recursion + IPC). The target pattern already exists in-tree: `aggregateStore.ts` (thin IPC shim) and `useAbilityBuildStats.ts` ("the math lives in the Rust `compute_ability_build_stats` command").
   - **Effort: Large (research) | Impact: Medium (performance/architecture)**
 
-## Small fixes (verified open)
+## Review backlog (from PR #54 frozen-review + CodeRabbit rounds; tracked, not punted)
+
+- [ ] `loadAllCharacterItems` unkeyed cache — same stale-server shape the WO cache had (`characterStore.ts:444-473`: `loaded` flag, no server key, no invalidation on import/switch). Fix like the WO cache: server key + reset on imports + null-server guard. Left alone in #54 as "exceeds proportionate rigor" — do not copy the shape for new caches.
+  - **Effort: Small | Impact: Low-Medium (wrong-server storage search)**
+- [ ] Ordinal-order divergence guard — ordinal backfill assumes file order == stored `id` order (true today: importer writes one row per entry in order). Nothing enforces it. Add a debug assertion or a test with shuffled stored ids proving mismatch is detected, not silently misattributed.
+  - **Effort: Small | Impact: Low (latent misattribution)**
+- [ ] Multihit manual-use coverage — `record_manual_use` has no Multihit-specific test (only Basic claim + Motherlode area-None). Add a happy-path Multihit test exercising the non-Basic pending-use + mining-adopt path.
+  - **Effort: Small | Impact: Low (untested path)**
+- [ ] Stale-FK transparent retry — manual `record_use` errors "try again" when the session was deleted mid-flight; the log path re-resolves silently. Add one transparent retry (drop cache, re-resolve, re-insert once) instead of surfacing the retry to the user.
+  - **Effort: Small | Impact: Low (UX papercut)**
+- [ ] `startSession`/`endSession` error surfacing — predate the `recordError` pattern; failures log to console with `null` return and no UI. Adopt `recordError`-style refs if these paths gain user-visible failure modes.
+  - **Effort: Small | Impact: Low**
+- [ ] Debug-capture + login-skill-list `snapshot` wording — kept deliberately (different sense from export reports). Revisit only if users confuse the terms; no action owed.
+  - **Effort: Trivial | Impact: Nil (decision record)**
+- [ ] Tier-2 identifier rename (`SnapshotItem`, `get_snapshot_items`, `source='snapshot'`, table names) — explicitly out of scope for the tier-1 pass. A breaking IPC/DB migration; needs its own plan if ever wanted.
+  - **Effort: Large | Impact: Low (cosmetic, high blast radius)**
+
 
 - [x] ~~Roulette number CHECK~~ — **FIXED 2026-10-26: migration v77 (table rebuild per v38 precedent, out-of-range rows purged, `CHECK (number BETWEEN 0 AND 36)`); `record_roulette_result` rejects >36, backfill skips bad rows.**
 - [x] ~~NpcResolve case-insensitive match~~ — **FIXED 2026-10-26: `COLLATE NOCASE` + trim at both sites; mixed-case test.**
