@@ -33,6 +33,16 @@ run = [
   "pwsh -NoProfile -File scripts/check-glogger-constraints.ps1",
 ]
 
+[tasks.review-local]
+description = "Pre-push local review prep: fact rows + frozen diff stat for the local-review skill"
+run = [
+  "npm run build",
+  "npm run check:grids",
+  "git rev-parse --short HEAD",
+  "git status --porcelain",
+  "git diff -w --stat HEAD",
+]
+
 [tasks."lint:all"]
 description = "lint plus advisory checks (rustfmt, clippy, markdown)"
 depends = ["lint"]
