@@ -175,6 +175,8 @@ Small tasks and notes that don't belong in a dedicated plan.
 - [ ] Tier-2 identifier rename (`SnapshotItem`, `get_snapshot_items`, `source='snapshot'`, table names) — explicitly out of scope for the tier-1 pass. A breaking IPC/DB migration; needs its own plan if ever wanted.
   - **Effort: Large | Impact: Low (cosmetic, high blast radius)**
 
+- [ ] Backfill restores deleted characters — DECIDED 2026-10-28: no tombstones. Delete clears DB rows only; report files survive on disk, so any backfill (`import_all_inventory_for_server`, `import_reports_for_server`) reimports a deleted character's reports. The invalidation retry avoids it (re-reads only, `characterStore.ts:520-538`), but every other backfill caller still restores. Accepted as pre-existing behavior; revisit only if users report ghost restores.
+  - **Effort: Medium (tombstone table + delete-path + backfill filter) | Impact: Low (narrow race window) — declined**
 ## Small fixes (verified open)
 - [x] ~~Roulette number CHECK~~ — **FIXED 2026-10-26: migration v77 (table rebuild per v38 precedent, out-of-range rows purged, `CHECK (number BETWEEN 0 AND 36)`); `record_roulette_result` rejects >36, backfill skips bad rows.**
 - [x] ~~NpcResolve case-insensitive match~~ — **FIXED 2026-10-26: `COLLATE NOCASE` + trim at both sites; mixed-case test.**
