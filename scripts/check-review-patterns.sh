@@ -8,10 +8,15 @@ fail=0
 
 # No discarded write/row-read results in migration bodies. The
 # single-transaction run turns a silent skip into a recorded version lie
-# (v81: `let _ = execute` + `filter_map(|r| r.ok())` swallowed I/O
-# failures, then recorded v81). Test module excluded (line 3495+).
-if head -n 3494 src-tauri/src/db/migrations.rs | grep -n -E 'let _ = .*execute|filter_map\(\|r\| r\.ok\(\)\)'; then
-  echo "review-patterns: discarded write/row-read in migrations.rs body — propagate with ? (v81 lesson)"
+# (v81: discarded `execute` + `filter_map(|r| r.ok())` swallowed I/O
+# failures, then recorded v81). Test module excluded (split at `mod tests`).
+body() { awk '/^mod tests \{/{exit} {print}' src-tauri/src/db/migrations.rs; }
+if body | grep -n -Pzo 'filter_map\(\s*\|\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\|\s*\1\.ok\(\)' | tr '\0' '\n' | grep -q .; then
+  echo "review-patterns: filter_map(|x| x.ok()) row-read discard in migrations.rs body — collect::<Result<..>>()? instead"
+  fail=1
+fi
+if body | grep -n -Pzo 'let _\s*=\s*\n?\s*(conn|tx|stmt)\.(execute|execute_batch|query_row|query_map)' | tr '\0' '\n' | grep -q .; then
+  echo "review-patterns: discarded migration write/row-read (let _ = ...) — propagate with ? (v81 lesson)"
   fail=1
 fi
 
