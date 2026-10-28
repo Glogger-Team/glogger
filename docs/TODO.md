@@ -175,7 +175,7 @@ Small tasks and notes that don't belong in a dedicated plan.
 - [ ] Tier-2 identifier rename (`SnapshotItem`, `get_snapshot_items`, `source='snapshot'`, table names) — explicitly out of scope for the tier-1 pass. A breaking IPC/DB migration; needs its own plan if ever wanted.
   - **Effort: Large | Impact: Low (cosmetic, high blast radius)**
 
-
+## Small fixes (verified open)
 - [x] ~~Roulette number CHECK~~ — **FIXED 2026-10-26: migration v77 (table rebuild per v38 precedent, out-of-range rows purged, `CHECK (number BETWEEN 0 AND 36)`); `record_roulette_result` rejects >36, backfill skips bad rows.**
 - [x] ~~NpcResolve case-insensitive match~~ — **FIXED 2026-10-26: `COLLATE NOCASE` + trim at both sites; mixed-case test.**
 - [x] ~~Trip-router nits~~ — **FIXED 2026-10-26: case-insensitive `casino_portal`, unresolved-name `eprintln`, `AreaDesert2` friendly name, `AreaCaves1`→Eltibule-dungeon relabel, score-`1`/monster-skip docs, `trip-routing.md` refresh.**
