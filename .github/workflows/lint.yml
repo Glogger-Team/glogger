@@ -191,7 +191,7 @@ jobs:
 
       - name: Review-patterns gate (decided defect shapes)
         shell: bash
-        run: ./scripts/check-review-patterns.sh
+        run: bash ./scripts/check-review-patterns.sh
 
   rust-tests:
     name: Rust tests
