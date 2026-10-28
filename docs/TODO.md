@@ -173,6 +173,8 @@ Small tasks and notes that don't belong in a dedicated plan.
   - **Effort: Trivial | Impact: Nil (decision record)**
 - [ ] Tier-2 identifier rename (`SnapshotItem`, `get_snapshot_items`, `source='snapshot'`, table names) — explicitly out of scope for the tier-1 pass. A breaking IPC/DB migration; needs its own plan if ever wanted.
   - **Effort: Large | Impact: Low (cosmetic, high blast radius)**
+- [ ] Scoped Rust discard lint for migrations — CodeRabbit caught `let _ = conn.execute(...)` + `filter_map(|r| r.ok())` in v81 swallowing backfill I/O failures then recording v81 (fixed 697d004 by propagating `?`; whole-run transaction retries next launch). No gated Rust lint exists (`lint.yml:1-6` leaves clippy/rustfmt advisory, 167 pre-existing) and default rustc is silent on `let _ =`. Scope a deny (`clippy::let_underscore_untyped` or grep gate) to `db/migrations.rs`, where a silent skip inside the single-transaction run always records a version lie. Deferred: one instance in 81 migrations doesn't prove a pattern — revisit on second swallowed-error finding.
+  - **Effort: Small | Impact: Low (prevents silent version-record lies)**
 
 - [ ] Backfill restores deleted characters — DECIDED 2026-10-28: no tombstones. Delete clears DB rows only; report files survive on disk, so any backfill (`import_all_inventory_for_server`, `import_reports_for_server`) reimports a deleted character's reports. The invalidation retry avoids it (re-reads only, `characterStore.ts:520-538`), but every other backfill caller still restores. Accepted as pre-existing behavior; revisit only if users report ghost restores.
   - **Effort: Medium (tombstone table + delete-path + backfill filter) | Impact: Low (narrow race window) — declined**
