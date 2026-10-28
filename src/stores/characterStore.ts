@@ -562,20 +562,7 @@ export const useCharacterStore = defineStore('character', () => {
     allCharacterWorkOrders.value = []
     const generation = allCharacterWorkOrdersGeneration.value
     try {
-      const rows = await invoke<WorkOrderPresence[]>('get_all_character_work_orders', {
-        serverName,
-      })
-      // Same mid-flight guard as the items cache: server switch or
-      // invalidation during the await drops the stale result.
-      if (
-        generation !== allCharacterWorkOrdersGeneration.value ||
-        settingsStore.settings.activeServerName !== serverName
-      ) {
-        return
-      }
-      allCharacterWorkOrders.value = rows
-      allCharacterWorkOrdersLoaded.value = true
-      allCharacterWorkOrdersServer.value = serverName
+      await fetchAllCharacterWorkOrders(serverName, generation)
     } catch (e) {
       error.value = String(e)
       // Failed fetch leaves rows empty (pre-cleared above): allow the next
@@ -585,6 +572,31 @@ export const useCharacterStore = defineStore('character', () => {
     } finally {
       allCharacterWorkOrdersLoading.value = false
     }
+  }
+
+  /**
+   * Read-only half of the cross-character work-order load: query + guard.
+   * Split out so a same-server mid-flight invalidation retries the read
+   * without leaving the cache empty (mirrors fetchAllCharacterItems).
+   */
+  async function fetchAllCharacterWorkOrders(serverName: string, generation: number) {
+    const settingsStore = useSettingsStore()
+    const rows = await invoke<WorkOrderPresence[]>('get_all_character_work_orders', {
+      serverName,
+    })
+    // Drop the result if the server changed during the await — committing it
+    // would poison the new scope with old rows.
+    if (settingsStore.settings.activeServerName !== serverName) return
+    if (generation !== allCharacterWorkOrdersGeneration.value) {
+      // Same server, invalidated mid-flight: re-read without backfill.
+      // Converges — each retry re-resolves generation; imports are bounded.
+      // Awaited so the caller's finally holds the loading flag.
+      await fetchAllCharacterWorkOrders(serverName, allCharacterWorkOrdersGeneration.value)
+      return
+    }
+    allCharacterWorkOrders.value = rows
+    allCharacterWorkOrdersLoaded.value = true
+    allCharacterWorkOrdersServer.value = serverName
   }
 
   /**

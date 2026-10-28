@@ -36,8 +36,8 @@ server switch and after any import that changes the underlying rows
 - reset `loaded = false` after every import path that writes the source
   tables (manual import + `initForActiveCharacter` auto-import at minimum).
 
-Mirror: `loadAllCharacterItems` has the same unkeyed shape — fixing one without
-the other exceeds proportionate rigor, but do not copy the shape for new caches.
+Mirror: `loadAllCharacterItems` had the same unkeyed shape and now follows the
+pattern above (server key + generation guard + reset on import/switch) — do not copy the old unkeyed shape for new caches.
 
 ## 3. Fallible commands surface errors to the UI
 
