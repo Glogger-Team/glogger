@@ -18,7 +18,7 @@ CDN quest data is already loaded (`get_all_quests`, `resolve_quest` exist). Ques
 
 ### Quest State from Character Export
 
-`character_snapshot_json` already stores Character reports which contain `ActiveWorkOrders` and `CompletedWorkOrders` arrays. Work orders screen loads these today.
+`character_snapshots.raw_json` already stores Character reports which contain `ActiveWorkOrders` and `CompletedWorkOrders` arrays. Work orders screen loads these today.
 
 ## Feature Areas
 

@@ -446,11 +446,14 @@ export const useSurveyTrackerStore = defineStore("surveyTracker", () => {
     }
   }
 
+  const recordError = ref<string | null>(null);
+
   async function recordUse(
     mapInternalName: string,
     kind?: SurveyUseKind | null
   ): Promise<RecordUseResult | null> {
     isBusy.value = true;
+    recordError.value = null;
     try {
       const res = await invoke<RecordUseResult>("survey_tracker_record_use", {
         mapInternalName,
@@ -468,6 +471,7 @@ export const useSurveyTrackerStore = defineStore("surveyTracker", () => {
       return res;
     } catch (err) {
       console.error("[surveyTracker] record_use failed:", err);
+      recordError.value = String(err);
       return null;
     } finally {
       isBusy.value = false;
@@ -568,6 +572,7 @@ export const useSurveyTrackerStore = defineStore("surveyTracker", () => {
     clearOpenDetail,
     startSession,
     endSession,
+    recordError,
     recordUse,
     updateSessionNotes,
     updateSessionName,

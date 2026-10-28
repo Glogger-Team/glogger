@@ -105,7 +105,7 @@ Currencies are **not** inventory items. They live in a dedicated `Currencies` ob
 14 currency types total. These do **not** appear in Storage export item files — those only contain actual items (~1,078 items across ~34 storage vaults in the sample). Character exports are overwritten on each export, so they can't be used for historical backfill.
 
 This means currency tracking and item quantity tracking are two separate data paths:
-- **Currencies:** Must come from character export imports or from parsing chat/log events (if currency change messages exist).
+- **Currencies:** Must come from character export imports (report-seeded `character_currencies`) or from parsing chat/log events (if currency change messages exist).
 - **Items:** Come from the existing inventory pipeline (`game_state_inventory` + `game_state_storage`) and can be backfilled from old Storage export (`*_items_*.json`) reports.
 
 ## Storage Size Estimate

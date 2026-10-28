@@ -192,14 +192,50 @@ pub fn import_inventory_report_internal(
             ],
         ).map_err(|e| format!("Failed to store storage report: {e}"))?;
 
-        // 6. Check if insert created a new row
+        // 6. Check if insert created a new row. Duplicates still refresh the
+        // four v81 detail columns: already-imported reports predate them, so
+        // their rows exist with NULLs. Re-import is the backfill path — update
+        // existing rows when the file carries values (per-item overwrite, so
+        // re-importing an older export after a newer one can only fill NULLs
+        // when the older file omits the keys via serde default).
         let changes = conn.changes();
         if changes == 0 {
+            let snapshot_id: i64 = conn
+                .query_row(
+                    "SELECT id FROM character_item_snapshots WHERE character_name = ?1 AND server_name = ?2 AND snapshot_timestamp = ?3",
+                    rusqlite::params![report.character, report.server_name, report.timestamp],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("Failed to locate existing storage report: {e}"))?;
+            let mut backfill_stmt = conn
+                .prepare(
+                    "UPDATE character_snapshot_items
+                     SET is_augmented = COALESCE(?1, is_augmented),
+                         dye_count = COALESCE(?2, dye_count),
+                         inscription = COALESCE(?3, inscription),
+                         inscriber = COALESCE(?4, inscriber)
+                     WHERE item_snapshot_id = ?5 AND type_id = ?6 AND storage_vault = ?7",
+                )
+                .map_err(|e| format!("Failed to prepare detail backfill: {e}"))?;
+            let mut items_imported = 0usize;
+            for item in &report.items {
+                items_imported += backfill_stmt
+                    .execute(rusqlite::params![
+                        item.is_augmented,
+                        item.dye_count,
+                        item.inscription,
+                        item.inscriber,
+                        snapshot_id,
+                        item.type_id,
+                        item.storage_vault,
+                    ])
+                    .map_err(|e| format!("Failed to backfill item {}: {e}", item.name))?;
+            }
             return Ok(InventoryImportResult {
                 character_name: report.character.clone(),
                 server_name: report.server_name.clone(),
                 snapshot_timestamp: report.timestamp.clone(),
-                items_imported: 0,
+                items_imported,
                 was_duplicate: true,
             });
         }
@@ -785,5 +821,87 @@ mod tests {
             )
             .expect("null fields");
         assert_eq!((aug2, dye2), (None, None));
+    }
+    #[test]
+    fn duplicate_import_backfills_v81_detail_columns() {
+        // Major-1 regression: v81 adds nullable columns to rows that already
+        // exist (imported before the migration). Re-importing the same file
+        // hits ON CONFLICT DO NOTHING; the duplicate path must still refresh
+        // the four columns (fill-only) so the backfill is reachable.
+        let db = pool();
+        let result = import_inventory_report_internal(&db, FIXTURE).expect("import");
+        assert!(!result.was_duplicate);
+        // Simulate a pre-v81 row: NULL out the columns on one known item.
+        let conn = db.get_write().expect("write conn");
+        conn.execute(
+            "UPDATE character_snapshot_items SET is_augmented = NULL, dye_count = NULL, inscription = NULL, inscriber = NULL WHERE type_id = 21803",
+            [],
+        )
+        .expect("null out row");
+        drop(conn);
+        // Re-import the same file: duplicate path runs the backfill.
+        let result = import_inventory_report_internal(&db, FIXTURE).expect("re-import");
+        assert!(result.was_duplicate);
+        let conn = db.get().expect("read conn");
+        let aug: Option<bool> = conn
+            .query_row(
+                "SELECT is_augmented FROM character_snapshot_items WHERE type_id = 21803",
+                [],
+                |row| row.get(0),
+            )
+            .expect("aug row");
+        assert_eq!(aug, Some(true), "duplicate re-import must restore is_augmented");
+    }
+
+    #[test]
+    fn duplicate_import_backfill_never_clobbers_newer_values() {
+        // Fill-only semantics: re-importing an OLDER export after a newer one
+        // populated the columns must not overwrite with NULLs or stale values.
+        // The backfill UPDATE uses COALESCE per column, so NULLs in the file
+        // (serde default for omitted keys) leave existing values alone.
+        let db = pool();
+        let result = import_inventory_report_internal(&db, FIXTURE).expect("import");
+        assert!(!result.was_duplicate);
+        // Stale file: same timestamp would be needed for the duplicate path,
+        // so write a variant report with the same timestamp but the detail
+        // keys omitted (simulates an older export that never carried them).
+        let dir = std::env::temp_dir().join(format!(
+            "inv_stale_{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let raw: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(FIXTURE).expect("read fixture"),
+        )
+        .expect("parse fixture");
+        let mut stripped = raw.clone();
+        if let Some(items) = stripped.get_mut("Items").and_then(|v| v.as_array_mut()) {
+            for item in items.iter_mut() {
+                if let Some(obj) = item.as_object_mut() {
+                    obj.remove("IsAugmented");
+                    obj.remove("DyeCount");
+                    obj.remove("Inscription");
+                    obj.remove("Inscriber");
+                }
+            }
+        }
+        // Same character/server/timestamp → duplicate path.
+        let path = dir.join("TestPlayer_Dreva_items_2026-04-14-15-57-59Z.json");
+        std::fs::write(&path, serde_json::to_string(&stripped).expect("serialize"))
+            .expect("write stripped");
+        let result =
+            import_inventory_report_internal(&db, path.to_str().expect("path")).expect("re-import");
+        assert!(result.was_duplicate);
+        // The known augmented row must survive the stripped re-import.
+        let conn = db.get().expect("read conn");
+        let aug: Option<bool> = conn
+            .query_row(
+                "SELECT is_augmented FROM character_snapshot_items WHERE type_id = 21803",
+                [],
+                |row| row.get(0),
+            )
+            .expect("aug row");
+        assert_eq!(aug, Some(true), "stale re-import must not clobber is_augmented");
     }
 }

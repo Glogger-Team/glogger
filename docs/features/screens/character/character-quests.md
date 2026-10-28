@@ -50,8 +50,8 @@ The screen works purely from CDN quest data enriched with player state:
 | Source | When Available | What It Provides |
 |--------|---------------|-------------------|
 | `gameDataStore.getAllQuests()` (CDN) | After CDN load | All quests with objectives, rewards, requirements, keywords |
-| `gameStateStore.skillsByName` (live) | After login/full skill list | Player skill levels for requirement checking |
-| `gameStateStore.favorByNpc` (live) | After login/full skill list | NPC favor tiers for requirement checking |
+| `gameStateStore.skillsByName` (live/report) | After login/full skill list or Character report import | Player skill levels for requirement checking |
+| `gameStateStore.favorByNpc` (live/report) | After login/favor events or Character report import (seeds `game_state_favor` with `source='snapshot'`) | NPC favor tiers for requirement checking |
 | `gameDataStore.getQuestSources()` (CDN) | On quest selection | Items that bestow the selected quest |
 
 **Requirement evaluation:**

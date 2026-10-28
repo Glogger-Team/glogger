@@ -58,6 +58,7 @@ export const useCharacterStore = defineStore('character', () => {
   // Cross-character work-order presence (latest snapshot per character)
   const allCharacterWorkOrders = ref<WorkOrderPresence[]>([])
   const allCharacterWorkOrdersLoading = ref(false)
+  const allCharacterWorkOrdersServer = ref<string | undefined>(undefined)
   const allCharacterWorkOrdersLoaded = ref(false)
 
   async function importCharacterReport(): Promise<ImportResult | null> {
@@ -76,7 +77,8 @@ export const useCharacterStore = defineStore('character', () => {
       const result = await invoke<ImportResult>('import_character_report', {
         filePath: filePath as string,
       })
-      lastImport.value = result
+      // WO presence derives from the latest report — invalidate the cache.
+      allCharacterWorkOrdersLoaded.value = false
 
       // Refresh character list after import
       await loadCharacters()
@@ -122,6 +124,8 @@ export const useCharacterStore = defineStore('character', () => {
         gameState.refreshDomain('favor'),
         gameState.refreshDomain('storage'),
       ])
+      // WO presence derives from the latest report — invalidate the cache.
+      allCharacterWorkOrdersLoaded.value = false
     } catch (e) {
       // Non-fatal — the report may not exist on disk
       console.warn('Auto-import latest report:', e)
@@ -472,10 +476,10 @@ export const useCharacterStore = defineStore('character', () => {
    * snapshot on the active server. Caches results; pass `force` to refresh.
    */
   async function loadAllCharacterWorkOrders(force = false) {
-    if (allCharacterWorkOrdersLoaded.value && !force) return
-
     const settingsStore = useSettingsStore()
     const serverName = settingsStore.settings.activeServerName || undefined
+    const cacheMatchesServer = allCharacterWorkOrdersServer.value === serverName
+    if (allCharacterWorkOrdersLoaded.value && cacheMatchesServer && !force) return
 
     allCharacterWorkOrdersLoading.value = true
     try {
@@ -483,6 +487,7 @@ export const useCharacterStore = defineStore('character', () => {
         serverName,
       })
       allCharacterWorkOrdersLoaded.value = true
+      allCharacterWorkOrdersServer.value = serverName
     } catch (e) {
       error.value = String(e)
     } finally {
@@ -551,6 +556,7 @@ export const useCharacterStore = defineStore('character', () => {
     // Cross-character work-order presence
     allCharacterWorkOrders,
     allCharacterWorkOrdersLoading,
+    allCharacterWorkOrdersServer,
     allCharacterWorkOrdersLoaded,
     loadAllCharacterWorkOrders,
     workOrderStateFor,
