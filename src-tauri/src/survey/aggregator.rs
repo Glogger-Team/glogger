@@ -109,10 +109,14 @@ struct DeferredBasicGain {
     /// multi-item loot shares qty/time (two qty-1 gains); the name keeps a
     /// chat twin of A from suppressing the bump for B.
     item_name: Option<String>,
+    /// Display name of the survey map this gain was attributed to
+    /// (`SurveyMapUse.survey_map_internal_name`). The manual path drains
+    /// only gains matching its own map; a manual use for a different map
+    /// must not consume another map's buffered gain.
+    map_display_name: Option<String>,
     /// The gain line's own UTC stamp, resolved **in order** when the line was
     /// seen (`event_iso`) — never re-resolved at drain time, which would resolve
     /// an earlier time of day after the consuming map's and roll the session date
-    /// a day forward for every following event.
     resolved_at: Option<String>,
 }
 
@@ -443,13 +447,30 @@ impl SurveySessionAggregator {
                 used_at: parse_utc_datetime(now_iso),
             });
 
-            // Drain deferred basic gains (same single-loot-authority guard as
-            // the log path: a deferred gain whose chat twin is already in the
-            // ledger is counted by the claim step below, not here).
+            // Drain deferred basic gains for THIS map only (same
+            // single-loot-authority guard as the log path: a deferred gain
+            // whose chat twin is already in the ledger is counted by the
+            // claim step below, not here). Gains buffered for a different
+            // map stay buffered for their own delete — draining them here
+            // would misattribute another map's loot to this use.
             if kind == SurveyUseKind::Basic && !self.deferred_basic_gains.is_empty() {
                 let deferred = std::mem::take(&mut self.deferred_basic_gains);
+                let mut kept = Vec::with_capacity(deferred.len());
                 let mut total_deferred_qty = 0u32;
-                for gain in &deferred {
+                let mut saw_matching_gain = false;
+                for gain in deferred {
+                    // Match by display name or raw internal name: when the
+                    // CDN can't resolve the map, display_name falls back to
+                    // the internal spelling while the gain carries the log's
+                    // display string. A gain with no map at all stays
+                    // buffered (conservative — its delete drains blind).
+                    let matches_map = gain.map_display_name.as_deref() == Some(display_name.as_str())
+                        || gain.map_display_name.as_deref() == Some(map_internal_name);
+                    if !matches_map {
+                        kept.push(gain);
+                        continue;
+                    }
+                    saw_matching_gain = true;
                     let has_chat_twin = match gain.resolved_at.as_deref() {
                         Some(at) => persistence::unclaimed_chat_gain_exists(
                             conn,
@@ -470,10 +491,20 @@ impl SurveySessionAggregator {
                         update_session_loot_timestamps(conn, use_id, at);
                     }
                 }
+                self.deferred_basic_gains = kept;
+                // A matching gain with a chat twin skips the bump above but
+                // its player.log row still needs the use_id linkage — the
+                // claim step below only tags chat_status rows. Tag once when
+                // any matching gain existed, twinned or not.
+                if saw_matching_gain {
+                    retroactively_tag_unlinked_survey_transactions(
+                        conn, use_id, character, server, Some(display_name.as_str()),
+                    );
+                }
                 if total_deferred_qty > 0 {
                     let _ = persistence::add_loot_qty(conn, use_id, total_deferred_qty);
+                    let _ = persistence::set_use_status(conn, use_id, SurveyUseStatus::Completed);
                 }
-                retroactively_tag_unlinked_survey_transactions(conn, use_id, character, server);
             }
         }
 
@@ -496,6 +527,9 @@ impl SurveySessionAggregator {
                 Ok(claimed_qty) => {
                     if let Err(e) = persistence::add_loot_qty(conn, use_id, claimed_qty) {
                         eprintln!("[survey-aggregator] claimed add_loot_qty failed: {e}");
+                    } else {
+                        let _ =
+                            persistence::set_use_status(conn, use_id, SurveyUseStatus::Completed);
                     }
                     update_session_loot_timestamps(conn, use_id, now_iso);
                 }
@@ -1142,7 +1176,7 @@ impl SurveySessionAggregator {
                 // 'survey_map_use' but no survey_use_id. These are the
                 // deferred gains whose provenance couldn't carry the
                 // use_id at write time.
-                retroactively_tag_unlinked_survey_transactions(conn, use_id, character, server);
+                retroactively_tag_unlinked_survey_transactions(conn, use_id, character, server, None);
                 // Don't mark completed yet — more gains (speed bonus) may
                 // arrive in the same tick. The next call to
                 // attribute_basic_gain (for the bonus item) or the
@@ -1405,7 +1439,8 @@ impl SurveySessionAggregator {
         // call after all DB writes have completed. This keeps the borrow
         // checker happy without requiring extra clones of the provenance
         // value (which is meaningfully sized — has source, candidates, etc.).
-        let (qty, item_name_owned, mining_node_id_opt, is_basic_survey_gain) = match event {
+        let (qty, item_name_owned, mining_node_id_opt, is_basic_survey_gain, gain_map_name) =
+            match event {
             PlayerEvent::ItemAdded {
                 provenance,
                 initial_quantity,
@@ -1418,6 +1453,7 @@ impl SurveySessionAggregator {
                     Some(item_name.clone()),
                     kind_info.0,
                     kind_info.1,
+                    kind_info.2,
                 )
             }
             PlayerEvent::ItemStackChanged {
@@ -1427,7 +1463,7 @@ impl SurveySessionAggregator {
                 ..
             } if *delta > 0 => {
                 let kind_info = read_provenance_kind(provenance);
-                (*delta as u32, item_name.clone(), kind_info.0, kind_info.1)
+                (*delta as u32, item_name.clone(), kind_info.0, kind_info.1, kind_info.2)
             }
             _ => return,
         };
@@ -1438,7 +1474,7 @@ impl SurveySessionAggregator {
 
         // Basic survey direct-loot case (no Mining intermediary).
         if is_basic_survey_gain {
-            self.attribute_basic_gain(event, conn, qty);
+            self.attribute_basic_gain(event, conn, qty, gain_map_name);
             return;
         }
 
@@ -1620,7 +1656,13 @@ impl SurveySessionAggregator {
     /// When no pending Basic use exists yet, the gain is buffered in
     /// `deferred_basic_gains` and replayed when `handle_survey_consumed`
     /// creates the pending use.
-    fn attribute_basic_gain(&mut self, event: &mut PlayerEvent, conn: &Connection, qty: u32) {
+    fn attribute_basic_gain(
+        &mut self,
+        event: &mut PlayerEvent,
+        conn: &Connection,
+        qty: u32,
+        map_display_name: Option<String>,
+    ) {
         // Resolve this gain's own stamp while it *is* the newest line seen; the
         // deferred drain then never has to re-resolve an earlier time of day.
         let resolved_at = event_hms_timestamp(event).map(|hms| self.to_utc(hms));
@@ -1650,6 +1692,7 @@ impl SurveySessionAggregator {
             self.deferred_basic_gains.push(DeferredBasicGain {
                 qty,
                 item_name,
+                map_display_name,
                 resolved_at,
             });
             return;
@@ -2056,17 +2099,23 @@ fn inject_survey_use_id_into(provenance: &mut ItemProvenance, use_id: i64) {
 /// their `source_details`. Used for deferred basic survey gains where the
 /// transaction was written before the pending use existed (the game emits
 /// primary loot before the map deletion).
-///
-/// This is a bulk patch: it tags every unlinked survey_map_use row for
-/// this character/server with the new use_id. In practice only 1-2 rows
-/// are unlinked at any time (the primary loot from the current survey),
-/// so this is safe and avoids fragile timestamp-format matching.
+/// This is a bulk patch: without a map filter it tags every unlinked
+/// survey_map_use row for this character/server with the new use_id. In
+/// practice only 1-2 rows are unlinked at any time (the primary loot from
+/// the current survey), so the blind tag is safe for the log path (the
+/// DeleteItem IS the matching event). The manual path passes its own map
+/// to avoid stamping another map's kept rows in a mixed buffer.
 fn retroactively_tag_unlinked_survey_transactions(
     conn: &Connection,
     survey_use_id: i64,
     character: &str,
     server: &str,
+    map_display_name: Option<&str>,
 ) {
+    // Optional map scope: the manual path passes its own map so a mixed
+    // buffer can't stamp another map's kept rows with this use_id. The
+    // log path passes None (its DeleteItem IS the matching event, so the
+    // blind tag is correct there).
     let result = conn.execute(
         "UPDATE item_transactions
          SET source_details = CASE
@@ -2079,8 +2128,10 @@ fn retroactively_tag_unlinked_survey_transactions(
            AND source_kind = 'survey_map_use'
            AND quantity > 0
            AND (source_details IS NULL
-                OR json_extract(source_details, '$.survey_use_id') IS NULL)",
-        rusqlite::params![survey_use_id, character, server],
+                OR json_extract(source_details, '$.survey_use_id') IS NULL)
+           AND (?4 IS NULL
+                OR json_extract(source_details, '$.survey_map_internal_name') = ?4)",
+        rusqlite::params![survey_use_id, character, server, map_display_name],
     );
     if let Err(e) = result {
         eprintln!(
@@ -2089,26 +2140,32 @@ fn retroactively_tag_unlinked_survey_transactions(
         );
     }
 }
-
-/// Inspect a provenance for the two pieces of read-only info the aggregator
+/// Inspect a provenance for the read-only info the aggregator
 /// needs before it can take a mutable borrow:
 /// - `Some(node_entity_id)` if this is a Mining-attributed gain (the inner
 ///   `node_entity_id` may itself be `None` for nameless nodes — passed
 ///   through as-is so the caller can decide what to do).
 /// - `is_basic_survey_gain` true if this is a `SurveyMapUse`-attributed gain.
+/// - the survey map's display name for `SurveyMapUse` gains (`None` otherwise),
+///   used to correlate deferred gains with the manual use's map.
 ///
-/// Both `false`/`None` for other provenance variants.
-fn read_provenance_kind(provenance: &ItemProvenance) -> (Option<u32>, bool) {
+/// `(None, false, None)` for other provenance variants.
+fn read_provenance_kind(
+    provenance: &ItemProvenance,
+) -> (Option<u32>, bool, Option<String>) {
     match provenance {
         ItemProvenance::Attributed {
             source: ActivitySource::Mining { node_entity_id, .. },
             ..
-        } => (*node_entity_id, false),
+        } => (*node_entity_id, false, None),
         ItemProvenance::Attributed {
-            source: ActivitySource::SurveyMapUse { .. },
+            source:
+                ActivitySource::SurveyMapUse {
+                    survey_map_internal_name,
+                },
             ..
-        } => (None, true),
-        _ => (None, false),
+        } => (None, true, survey_map_internal_name.clone()),
+        _ => (None, false, None),
     }
 }
 
@@ -3320,6 +3377,217 @@ mod tests {
             uses[0].loot_qty, 2,
             "chat-twin gain claimed (1) + untwinned gain bumped (1)"
         );
+    }
+
+    #[test]
+    fn test_manual_use_drains_only_matching_map_gains() {
+        // Major regression: a manual Basic use must not consume deferred
+        // gains buffered for a different map. Buffer a Serbule gain (no
+        // delete yet), record a manual use for an Ilmari map, and assert
+        // the Serbule gain stays buffered while the manual use gets none.
+        let conn = fresh_db();
+        let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
+        agg.set_base_date(test_base_date());
+
+        // 1. Serbule primary loot arrives before its DeleteItem → buffered.
+        let mut gain = PlayerEvent::ItemAdded {
+            timestamp: "12:00:00".to_string(),
+            item_name: "Fluorite".to_string(),
+            instance_id: 999,
+            slot_index: -1,
+            is_new: true,
+            initial_quantity: 1,
+            provenance: ItemProvenance::Attributed {
+                source: ActivitySource::SurveyMapUse {
+                    survey_map_internal_name: Some("Serbule Blue Mineral Survey".to_string()),
+                },
+                confidence: crate::player_event_parser::AttributionConfidence::Confident,
+                survey_use_id: None,
+            },
+        };
+        agg.process_event(&mut gain, &conn, "Zenith", "Dreva", Some("Serbule"));
+        assert_eq!(agg.deferred_basic_gains.len(), 1);
+
+        // 2. Manual use for a DIFFERENT map — must not drain the buffer.
+        let (use_id, _) = agg
+            .record_manual_use(
+                &conn,
+                "Zenith",
+                "Dreva",
+                Some("Ilmari"),
+                "GeologySurveyIlmari1",
+                crate::survey::types::SurveyUseKind::Basic,
+                "2026-04-15 12:00:05",
+            )
+            .expect("manual use records");
+        assert_eq!(
+            agg.deferred_basic_gains.len(),
+            1,
+            "other-map gain stays buffered for its own delete"
+        );
+        let uses = persistence::uses_for_session(
+            &conn,
+            persistence::active_session(&conn, "Zenith", "Dreva")
+                .unwrap()
+                .unwrap()
+                .id,
+        )
+        .unwrap();
+        let manual_use = uses.iter().find(|u| u.id == use_id).unwrap();
+        assert_eq!(manual_use.loot_qty, 0, "manual use gets no other-map loot");
+        assert_eq!(manual_use.status, SurveyUseStatus::PendingLoot);
+
+        // 3. Serbule's own DeleteItem still drains its gain onto the
+        // Serbule use — and leaves the Ilmari manual use untouched.
+        let mut delete = PlayerEvent::ItemDeleted {
+            timestamp: "12:00:06".to_string(),
+            instance_id: 1,
+            item_name: Some("GeologySurveySerbule1".to_string()),
+            context: crate::player_event_parser::DeleteContext::Consumed,
+        };
+        agg.process_event(&mut delete, &conn, "Zenith", "Dreva", Some("Serbule"));
+        assert_eq!(agg.deferred_basic_gains.len(), 0);
+        let session_id = persistence::active_session(&conn, "Zenith", "Dreva")
+            .unwrap()
+            .unwrap()
+            .id;
+        let uses = persistence::uses_for_session(&conn, session_id).unwrap();
+        assert_eq!(uses.len(), 2);
+        let serbule_use = uses.iter().find(|u| u.id != use_id).unwrap();
+        assert_eq!(serbule_use.loot_qty, 1, "Serbule gain lands on Serbule use");
+        let manual_after = uses.iter().find(|u| u.id == use_id).unwrap();
+        assert_eq!(manual_after.loot_qty, 0, "Ilmari manual still has none");
+        assert_eq!(manual_after.status, SurveyUseStatus::PendingLoot);
+    }
+
+    #[test]
+    fn test_manual_use_drains_matching_gain_untwinned() {
+        // Same-map manual use with a buffered player.log-only gain: the
+        // drain must flush qty to the use and mark it Completed (the
+        // deferred buffer exists exactly for this log-ordering case).
+        let conn = fresh_db();
+        let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
+        agg.set_base_date(test_base_date());
+
+        let mut gain = PlayerEvent::ItemAdded {
+            timestamp: "12:00:00".to_string(),
+            item_name: "Fluorite".to_string(),
+            instance_id: 999,
+            slot_index: -1,
+            is_new: true,
+            initial_quantity: 1,
+            provenance: ItemProvenance::Attributed {
+                source: ActivitySource::SurveyMapUse {
+                    survey_map_internal_name: Some("Serbule Blue Mineral Survey".to_string()),
+                },
+                confidence: crate::player_event_parser::AttributionConfidence::Confident,
+                survey_use_id: None,
+            },
+        };
+        agg.process_event(&mut gain, &conn, "Zenith", "Dreva", Some("Serbule"));
+        assert_eq!(agg.deferred_basic_gains.len(), 1);
+
+        let (use_id, _) = agg
+            .record_manual_use(
+                &conn,
+                "Zenith",
+                "Dreva",
+                Some("Serbule"),
+                "GeologySurveySerbule1",
+                crate::survey::types::SurveyUseKind::Basic,
+                "2026-04-15 12:00:05",
+            )
+            .expect("manual use records");
+        assert_eq!(agg.deferred_basic_gains.len(), 0, "matching gain drained");
+        let uses = persistence::uses_for_session(
+            &conn,
+            persistence::active_session(&conn, "Zenith", "Dreva")
+                .unwrap()
+                .unwrap()
+                .id,
+        )
+        .unwrap();
+        let manual_use = uses.iter().find(|u| u.id == use_id).unwrap();
+        assert_eq!(manual_use.loot_qty, 1, "buffered gain flushed to manual use");
+        assert_eq!(manual_use.status, SurveyUseStatus::Completed);
+    }
+
+    #[test]
+    fn test_manual_use_matching_gain_with_chat_twin_links_player_row() {
+        // Same-map manual use where the buffered gain has an unclaimed chat
+        // twin: qty comes via the claim step, and the player.log row must
+        // still be tagged with this use_id (map-scoped retro-tag).
+        let conn = fresh_db();
+        let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
+        agg.set_base_date(test_base_date());
+
+        // Seed the untagged chat twin the drain checks for, plus the
+        // player.log row GameStateManager would have written for the gain.
+        conn.execute(
+            "INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, quantity, context, source, source_kind, source_details)
+             VALUES ('2026-04-15 12:00:00','Zenith','Dreva','Fluorite',1,'loot','chat_status','survey_chat',NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, quantity, context, source, source_kind, source_details)
+             VALUES ('2026-04-15 12:00:00','Zenith','Dreva','Fluorite',1,'loot','player_log','survey_map_use',
+                     json_object('survey_map_internal_name', 'Serbule Blue Mineral Survey'))",
+            [],
+        )
+        .unwrap();
+        let mut gain = PlayerEvent::ItemAdded {
+            timestamp: "12:00:00".to_string(),
+            item_name: "Fluorite".to_string(),
+            instance_id: 999,
+            slot_index: -1,
+            is_new: true,
+            initial_quantity: 1,
+            provenance: ItemProvenance::Attributed {
+                source: ActivitySource::SurveyMapUse {
+                    survey_map_internal_name: Some("Serbule Blue Mineral Survey".to_string()),
+                },
+                confidence: crate::player_event_parser::AttributionConfidence::Confident,
+                survey_use_id: None,
+            },
+        };
+        agg.process_event(&mut gain, &conn, "Zenith", "Dreva", Some("Serbule"));
+        assert_eq!(agg.deferred_basic_gains.len(), 1);
+
+        let (use_id, _) = agg
+            .record_manual_use(
+                &conn,
+                "Zenith",
+                "Dreva",
+                Some("Serbule"),
+                "GeologySurveySerbule1",
+                crate::survey::types::SurveyUseKind::Basic,
+                "2026-04-15 12:00:05",
+            )
+            .expect("manual use records");
+        assert_eq!(agg.deferred_basic_gains.len(), 0, "twinned gain consumed");
+        let uses = persistence::uses_for_session(
+            &conn,
+            persistence::active_session(&conn, "Zenith", "Dreva")
+                .unwrap()
+                .unwrap()
+                .id,
+        )
+        .unwrap();
+        let manual_use = uses.iter().find(|u| u.id == use_id).unwrap();
+        assert_eq!(manual_use.loot_qty, 1, "twinned gain counted via claim");
+        assert_eq!(manual_use.status, SurveyUseStatus::Completed);
+        // The player.log row was tagged by the map-scoped retro-tag even
+        // though its qty came via the chat claim.
+        let player_row_use: Option<i64> = conn
+            .query_row(
+                "SELECT json_extract(source_details, '$.survey_use_id') FROM item_transactions
+                 WHERE source = 'player_log' AND source_kind = 'survey_map_use'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(player_row_use, Some(use_id), "player.log row linked to manual use");
     }
 
     #[test]

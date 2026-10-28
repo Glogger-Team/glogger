@@ -610,6 +610,8 @@ export const useCharacterStore = defineStore('character', () => {
     // cache from another server can never render under this one.
     const serverName = useSettingsStore().settings.activeServerName
     if (!serverName) return null
+    if (!allCharacterWorkOrdersLoaded.value || allCharacterWorkOrdersServer.value !== serverName)
+      return null
     const completedBy: string[] = []
     const activeBy: string[] = []
     for (const row of allCharacterWorkOrders.value) {
