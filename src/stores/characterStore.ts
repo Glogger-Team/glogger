@@ -492,6 +492,9 @@ export const useCharacterStore = defineStore('character', () => {
     if (allCharacterWorkOrdersLoaded.value && cacheMatchesServer && !force) return
 
     allCharacterWorkOrdersLoading.value = true
+    // Clear stale rows before the async fetch so tooltips never render the
+    // previous server's rows while the new query is in flight.
+    allCharacterWorkOrders.value = []
     try {
       allCharacterWorkOrders.value = await invoke<WorkOrderPresence[]>('get_all_character_work_orders', {
         serverName,
@@ -512,11 +515,15 @@ export const useCharacterStore = defineStore('character', () => {
   function workOrderStateFor(questKey: string | null | undefined): { completedBy: string[]; activeBy: string[] } | null {
     if (!questKey) return null
     // Cache is server-scoped; without a selection there is nothing valid to show.
-    if (!useSettingsStore().settings.activeServerName) return null
+    // Rows carry their own server; skip any that do not match, so a stale
+    // cache from another server can never render under this one.
+    const serverName = useSettingsStore().settings.activeServerName
+    if (!serverName) return null
     const completedBy: string[] = []
     const activeBy: string[] = []
     for (const row of allCharacterWorkOrders.value) {
       if (row.quest_key !== questKey) continue
+      if (row.server_name !== serverName) continue
       if (row.category === 'completed_work_order') completedBy.push(row.character_name)
       else if (row.category === 'work_order') activeBy.push(row.character_name)
     }

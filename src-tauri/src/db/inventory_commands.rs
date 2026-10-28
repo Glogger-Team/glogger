@@ -912,27 +912,40 @@ mod tests {
         let db = pool();
         let result = import_inventory_report_internal(&db, FIXTURE).expect("import");
         assert!(!result.was_duplicate);
-        // Newer truth lands first: mark row 21803 unaugmented + inscribed.
+        // Newer truth lands first: row 21803 (IsAugmented=true in fixture)
+        // marked unaugmented; row 56109 (Inscription "Limited 3/11" in
+        // fixture) marked with a newer inscription.
         let conn = db.get_write().expect("write conn");
         conn.execute(
-            "UPDATE character_snapshot_items SET is_augmented = 0, inscription = 'Newer' WHERE type_id = 21803",
+            "UPDATE character_snapshot_items SET is_augmented = 0 WHERE type_id = 21803",
             [],
         )
-        .expect("plant newer values");
+        .expect("plant newer aug");
+        conn.execute(
+            "UPDATE character_snapshot_items SET inscription = 'Newer' WHERE type_id = 56109",
+            [],
+        )
+        .expect("plant newer inscription");
         drop(conn);
-        // Re-import the fixture (file says augmented + no inscription key for
-        // this row... actually it carries both) — values must not change.
+        // Re-import: stored values must win over conflicting file values.
         let result = import_inventory_report_internal(&db, FIXTURE).expect("re-import");
         assert!(result.was_duplicate);
         let conn = db.get().expect("read conn");
-        let (aug, insc): (Option<bool>, Option<String>) = conn
+        let aug: Option<bool> = conn
             .query_row(
-                "SELECT is_augmented, inscription FROM character_snapshot_items WHERE type_id = 21803",
+                "SELECT is_augmented FROM character_snapshot_items WHERE type_id = 21803",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )
-            .expect("row");
+            .expect("aug row");
         assert_eq!(aug, Some(false), "stored FALSE must beat incoming TRUE");
-        assert_eq!(insc.as_deref(), Some("Newer"), "stored inscription must beat incoming NULL");
+        let insc: Option<String> = conn
+            .query_row(
+                "SELECT inscription FROM character_snapshot_items WHERE type_id = 56109",
+                [],
+                |row| row.get(0),
+            )
+            .expect("inscription row");
+        assert_eq!(insc.as_deref(), Some("Newer"), "stored inscription must beat incoming 'Limited 3/11'");
     }
 }
