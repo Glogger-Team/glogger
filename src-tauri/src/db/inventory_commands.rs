@@ -198,6 +198,9 @@ pub fn import_inventory_report_internal(
         // existing rows when the file carries values (per-item overwrite, so
         // re-importing an older export after a newer one can only fill NULLs
         // when the older file omits the keys via serde default).
+        // Ordinal matching: (type_id, vault) is not unique — a vault can hold
+        // several identical stacks. Match the Nth file entry to the Nth stored
+        // row (ordered by id), so differing details land on their own rows.
         let changes = conn.changes();
         if changes == 0 {
             let snapshot_id: i64 = conn
@@ -214,11 +217,21 @@ pub fn import_inventory_report_internal(
                          dye_count = COALESCE(dye_count, ?2),
                          inscription = COALESCE(inscription, ?3),
                          inscriber = COALESCE(inscriber, ?4)
-                     WHERE item_snapshot_id = ?5 AND type_id = ?6 AND storage_vault = ?7",
+                     WHERE id = (
+                         SELECT id FROM character_snapshot_items
+                         WHERE item_snapshot_id = ?5 AND type_id = ?6 AND storage_vault = ?7
+                         ORDER BY id LIMIT 1 OFFSET ?8
+                     )",
                 )
                 .map_err(|e| format!("Failed to prepare detail backfill: {e}"))?;
+            let mut ordinals: std::collections::HashMap<(i64, String), i64> =
+                std::collections::HashMap::new();
             let mut items_imported = 0usize;
             for item in &report.items {
+                let key = (item.type_id, item.storage_vault.clone());
+                let ordinal = ordinals.entry(key).or_insert(0);
+                let offset = *ordinal;
+                *ordinal += 1;
                 items_imported += backfill_stmt
                     .execute(rusqlite::params![
                         item.is_augmented,
@@ -228,6 +241,7 @@ pub fn import_inventory_report_internal(
                         snapshot_id,
                         item.type_id,
                         item.storage_vault,
+                        offset,
                     ])
                     .map_err(|e| format!("Failed to backfill item {}: {e}", item.name))?;
             }
@@ -947,5 +961,46 @@ mod tests {
             )
             .expect("inscription row");
         assert_eq!(insc.as_deref(), Some("Newer"), "stored inscription must beat incoming 'Limited 3/11'");
+    }
+    #[test]
+    fn duplicate_import_backfill_matches_ordinals_within_vault() {
+        // Two identical stacks in one vault must each receive their own
+        // entry's details — not both receive the first entry's values.
+        let db = pool();
+        let dir = std::env::temp_dir().join(format!(
+            "inv_dupes_{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let path = dir.join("T_Dreva_items_2026-01-01-00-00-00Z.json");
+        std::fs::write(
+            &path,
+            r#"{"Character":"T","ServerName":"Dreva","Timestamp":"2026-01-01 00:00:00","Report":"Storage","ReportVersion":1,"Items":[
+                {"TypeID":9,"StorageVault":"V","StackSize":1,"Value":1,"Name":"Twin","IsAugmented":true},
+                {"TypeID":9,"StorageVault":"V","StackSize":1,"Value":1,"Name":"Twin","IsAugmented":false}
+            ]}"#,
+        )
+        .expect("write report");
+        let r = import_inventory_report_internal(&db, path.to_str().expect("path")).expect("import");
+        assert_eq!(r.items_imported, 2, "one row per entry, in order");
+        // Simulate pre-v81 rows: NULL the columns, re-import to backfill.
+        let conn = db.get_write().expect("write conn");
+        conn.execute("UPDATE character_snapshot_items SET is_augmented = NULL", [])
+            .expect("null out");
+        drop(conn);
+        let r = import_inventory_report_internal(&db, path.to_str().expect("path")).expect("re-import");
+        assert!(r.was_duplicate);
+        let conn = db.get().expect("read conn");
+        let vals: Vec<Option<bool>> = {
+            let mut stmt = conn
+                .prepare("SELECT is_augmented FROM character_snapshot_items ORDER BY id")
+                .expect("stmt");
+            stmt.query_map([], |row| row.get(0))
+                .expect("rows")
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        assert_eq!(vals, vec![Some(true), Some(false)], "Nth entry fills Nth row");
     }
 }

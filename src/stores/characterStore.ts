@@ -260,6 +260,8 @@ export const useCharacterStore = defineStore('character', () => {
       if (result) {
         // New report was imported — refresh snapshot list and auto-select newest
         lastImport.value = result
+        // WOs come from the latest report — invalidate so tooltips refresh.
+        allCharacterWorkOrdersLoaded.value = false
         // A fresh export re-anchors the council-wallet estimate (delta reset) —
         // pull the new anchor so the dashboard figure reflects it immediately.
         import('./gameStateStore').then(({ useGameStateStore }) => {

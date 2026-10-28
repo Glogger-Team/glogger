@@ -472,6 +472,9 @@ export const useSurveyTrackerStore = defineStore("surveyTracker", () => {
     } catch (err) {
       console.error("[surveyTracker] record_use failed:", err);
       recordError.value = String(err);
+      // record_manual_use may have persisted a session before insert_use
+      // failed — refresh so status/recent don't hide the orphaned session.
+      await Promise.all([refreshStatus(), refreshRecentSessions(), refreshHistorical()]);
       return null;
     } finally {
       isBusy.value = false;

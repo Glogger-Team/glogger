@@ -639,6 +639,11 @@ fn migration_v81_snapshot_item_details(conn: &Connection) -> Result<()> {
             Some(items) => items,
             None => continue,
         };
+        // Same ordinal matching as the duplicate-import path: (type_id,
+        // vault) repeats within a report, so the Nth entry targets the Nth
+        // stored row ordered by id.
+        let mut ordinals: std::collections::HashMap<(i64, String), i64> =
+            std::collections::HashMap::new();
         for item in items {
             let type_id = item.get("TypeID").and_then(|v| v.as_i64());
             let vault = item.get("StorageVault").and_then(|v| v.as_str()).unwrap_or("");
@@ -657,13 +662,21 @@ fn migration_v81_snapshot_item_details(conn: &Connection) -> Result<()> {
             {
                 continue;
             }
+            let key = (type_id, vault.to_string());
+            let ordinal = ordinals.entry(key).or_insert(0);
+            let offset = *ordinal;
+            *ordinal += 1;
             let _ = conn.execute(
                 "UPDATE character_snapshot_items
                  SET is_augmented = COALESCE(is_augmented, ?1),
                      dye_count = COALESCE(dye_count, ?2),
                      inscription = COALESCE(inscription, ?3),
                      inscriber = COALESCE(inscriber, ?4)
-                 WHERE item_snapshot_id = ?5 AND type_id = ?6 AND storage_vault = ?7",
+                 WHERE id = (
+                     SELECT id FROM character_snapshot_items
+                     WHERE item_snapshot_id = ?5 AND type_id = ?6 AND storage_vault = ?7
+                     ORDER BY id LIMIT 1 OFFSET ?8
+                 )",
                 rusqlite::params![
                     is_augmented,
                     dye_count,
@@ -671,7 +684,8 @@ fn migration_v81_snapshot_item_details(conn: &Connection) -> Result<()> {
                     inscriber,
                     snapshot_id,
                     type_id,
-                    vault
+                    vault,
+                    offset
                 ],
             );
         }
