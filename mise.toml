@@ -31,6 +31,7 @@ run = [
   "pinact run --check",
   "python scripts/cargo-audit-gate.py",
   "pwsh -NoProfile -File scripts/check-glogger-constraints.ps1",
+  "bash scripts/check-review-patterns.sh",
 ]
 
 [tasks.review-local]

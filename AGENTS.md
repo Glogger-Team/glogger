@@ -78,6 +78,16 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 - **One fix batch, then gates only — and the pass closes when the range is clean.** Re-run the gates on the batch's tree and stop: pointing a reviewer back at its own fix re-files decided steps. A pass closes the review when it returns 0 critical, 0 high and 0 fix-now mediums in the changed code; everything else is backlog, i.e. ordinary work rather than another pass, and at most one further verification-only pass is allowed (verify the fixes, no new scope). If a batch does need eyes, review the *delta* range, never the series.
 - **Scale the round to the delta, and tier the fan-out by risk class.** A high `agentCount` is the tool's heuristic over changed lines, not a risk assessment — 8 reviewers is what a 2 800-line series earns by arithmetic, and that is also the most a round here should run. Tier by what can go wrong, not by directory: changed behaviour (which may *run* the thing — the live smoke found what reading could not), wiring/docs, and the gates/CI themselves; one runner, the parent.
 
+## Pre-commit self-review (move findings left)
+
+Frozen-review + CodeRabbit rounds on the `todo-burndown` series (22 commits, ~half fix-loops) showed ~70% of findings were author-catchable in one pass — they were found because a reviewer ran, not because the fix was hard. Each loop costs a full review round (4–9 min wall time). Run this checklist against your own diff before every commit; a finding caught here never costs a round:
+
+- **Swallowed errors.** `grep -n "let _ ="` on touched Rust files: every discard needs a one-line justification (best-effort delete/emit) or `?`. Inside `db/migrations.rs` no discard is ever legitimate — the single-transaction run turns a silent skip into a recorded version lie (`scripts/check-review-patterns.sh` gates this).
+- **Cache reads.** Every `workOrderStateFor`-shaped reader (rows + `loaded` + server key) must check `loaded && server matches` before serving rows; every invalidation must either clear rows or bump the generation the reader guards on.
+- **Bulk UPDATEs.** Any `UPDATE ... WHERE` without a scoping predicate on identity (map/use/character) mistags kept rows in a mixed set — scope it or prove the set can't be mixed.
+- **Doc claims.** If the diff changes behaviour, `grep` the docs for the old claim (`unkeyed`, `5 keys`, `never`, `always`) and update or close the entry in the same commit.
+- **Surgical edits.** One edit per hunk; `cargo check --lib` after each Rust edit before the next; never batch two edits to the same file in one turn. The round-2/3 churn (dropped flush, mangled docs, duplicated tails) came from big PUT ranges eating neighboring lines — tight ranges + immediate compile check prevent the whole class.
+
 ## Code Conventions & Common Patterns
 
 - **Commands**: snake_case, verb-first (`get_*`, `save_*`, `scan_*`, `backfill_*`). Adding one: define `#[tauri::command]` fn + **register in `lib.rs`'s `generate_handler!`** (single giant list, easy to forget).
@@ -142,6 +152,7 @@ Before committing, lint every file type you changed and fix what the linter repo
 | TS/Vue/JS (`.ts`, `.vue`, `.mjs`, `.cjs`) | vue-tsc (gated today); eslint (pending `npm i -D`) | `lint` → `npm run build` |
 | Grids | grid standards census (gated) | `lint` → `npm run check:grids` |
 | TOS/CoC | game-interaction limits gate (gated, pre-push hook) | `lint` → `scripts/check-glogger-constraints.ps1` |
+| Review patterns | decided defect shapes from review rounds (gated) | `lint` → `bash scripts/check-review-patterns.sh` (migration discard check today; cache-guard + UPDATE-scope stay on the pre-commit checklist — need multi-line context grep can't do) |
 | Python (`.py`) | ruff check + format --check (gated in CI) | `lint` → `ruff check scripts/`, `ruff format --check scripts/` |
 | Shell (`.sh`, `.githooks/*`) | shellcheck (warning+; info notes don't fail) | `lint` → `python -c` wrapper that globs `scripts/*.sh` plus the two hooks into `shellcheck -S warning` (globbing in-process: portable, since mise array entries run under `cmd.exe`, which passes `*.sh` through literally) |
 | YAML / Workflows (`.yml`) | yamllint + zizmor medium+ (config `.github/zizmor.yml`) + pinact (SHA pins + version comments) | `lint` → `yamllint .github/`, `zizmor --no-online-audits --config .github/zizmor.yml --min-severity medium .github/workflows/`, `pinact run --check` (CI runs yamllint + zizmor only — `pinact-action` is uninstallable on stock runners (aqua bootstrap `command is not found`, v3.0.1, 2026-10-25), so the pin check is local-only via mise; use `jactionlint` ad-hoc wherever actionlint would be called — never actionlint; its cache-poisoning rule can't ignore accepted drift) |
