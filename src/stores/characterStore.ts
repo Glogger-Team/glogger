@@ -173,6 +173,10 @@ export const useCharacterStore = defineStore('character', () => {
       parallelTasks.push(
         invoke<number>('import_reports_for_server', { serverName }).then(async (count) => {
           if (count > 0) {
+            // Imported reports are the WO source data — invalidate so
+            // workOrderStateFor recomputes instead of serving stale lists.
+            allCharacterWorkOrdersLoaded.value = false
+            allCharacterWorkOrdersGeneration.value++
             await loadCharacters()
           }
         }).catch((e) => {
@@ -499,11 +503,12 @@ export const useCharacterStore = defineStore('character', () => {
       })
       // Drop the result if the server changed or the cache was invalidated
       // mid-flight — committing it would poison the new scope with old rows.
-      if (
-        generation !== allCharacterItemsGeneration.value ||
-        settingsStore.settings.activeServerName !== serverName
-      ) {
-        return
+      if (settingsStore.settings.activeServerName !== serverName) return
+      if (generation !== allCharacterItemsGeneration.value) {
+        // Same server, invalidated mid-flight (e.g. an import landed during
+        // backfill): reload instead of leaving the cache empty. Converges —
+        // each retry re-resolves generation; imports are user-action-bounded.
+        return loadAllCharacterItems(true)
       }
       allCharacterItems.value = rows
       allCharacterItemsLoaded.value = true
