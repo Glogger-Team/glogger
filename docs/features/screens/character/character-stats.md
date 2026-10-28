@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Stats tab manages character report imports (Export Character as JSON in Settings → VIP) and provides browsable, comparable Character reports of a character's skills, stats, currencies, and recipe completions at various points in time.
+The Stats tab manages character report imports (Export Character as JSON in Settings → VIP) and provides browsable, comparable Character reports of a character's skills, stats, currencies, and recipe completions at various points in time. (UI term: each imported `CharacterSheet` snapshot is called a "report"; storage and command identifiers stay snapshots — `character_snapshots`, `snapshot_id`, `get_snapshot_*`.)
 
 ## Architecture
 

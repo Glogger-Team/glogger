@@ -621,14 +621,16 @@ fn migration_v81_snapshot_item_details(conn: &Connection) -> Result<()> {
          ALTER TABLE character_snapshot_items ADD COLUMN inscription TEXT;
          ALTER TABLE character_snapshot_items ADD COLUMN inscriber TEXT;",
     )?;
-    // Backfill existing rows from each stored report. Best-effort per item:
-    // a malformed entry skips that update, never the migration.
+    // Backfill existing rows from each stored report. A malformed JSON entry
+    // or missing key skips that item's update, never the migration; SQLite
+    // execution failures propagate so the run retries instead of recording
+    // v81 with rows left unprocessed.
     let snapshots: Vec<(i64, String)> = {
         let mut stmt = conn.prepare(
             "SELECT id, raw_json FROM character_item_snapshots WHERE raw_json IS NOT NULL",
         )?;
         let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
-        rows.filter_map(|r| r.ok()).collect()
+        rows.collect::<Result<Vec<_>, _>>()?
     };
     for (snapshot_id, raw_json) in snapshots {
         let parsed: serde_json::Value = match serde_json::from_str(&raw_json) {
@@ -669,7 +671,7 @@ fn migration_v81_snapshot_item_details(conn: &Connection) -> Result<()> {
             {
                 continue;
             }
-            let _ = conn.execute(
+            conn.execute(
                 "UPDATE character_snapshot_items
                  SET is_augmented = COALESCE(is_augmented, ?1),
                      dye_count = COALESCE(dye_count, ?2),
@@ -690,7 +692,7 @@ fn migration_v81_snapshot_item_details(conn: &Connection) -> Result<()> {
                     vault,
                     offset
                 ],
-            );
+            )?;
         }
     }
     Ok(())
