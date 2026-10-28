@@ -254,6 +254,7 @@
 import { ref, reactive, computed, onMounted, watch, type Component } from 'vue'
 import { useCharacterStore } from '../../stores/characterStore'
 import { useGameDataStore } from '../../stores/gameDataStore'
+import { useSettingsStore } from '../../stores/settingsStore'
 import { useGameStateStore } from '../../stores/gameStateStore'
 import { useViewPrefs } from '../../composables/useViewPrefs'
 import { formatDateTimeFull } from '../../composables/useTimestamp'
@@ -309,6 +310,15 @@ watch([viewMode, groupMode, sortMode, searchQuery, searchAllChars], () => {
 watch(searchAllChars, (on) => {
   if (on) store.loadAllCharacterItems()
 }, { immediate: true })
+// Server switches don't remount this view and don't touch the toggle, so
+// without this the previous server's rows stay visible until the next load.
+// The loader's generation guard drops the stale in-flight result for free.
+watch(
+  () => useSettingsStore().settings.activeServerName,
+  () => {
+    if (searchAllChars.value) store.loadAllCharacterItems()
+  },
+)
 
 interface CrossCharEntry {
   character: string
