@@ -86,7 +86,7 @@ Four stages, always in this order — each is cheaper than the next, and skippin
 - **B. Frozen review (free, deep).** `/skill:frozen-review` on the pushed range. One fix batch, gates on the batch tree, then stop. At most one delta-only verification pass. B closes *every* fix batch, including fixes from C and D — never point a reviewer back at its own fix.
 - **C. CodeRabbit local (paid in credits/time).** `coderabbit review --agent`, wait for `complete`, triage by severity. After fixing, go back to B (frozen delta pass), not straight to C — re-running the reviewer on its own fix re-files decided steps.
 - **D. PR review (async, free).** Push to the PR; the bot reviews in ~5 min. Don't trigger a local C on the same push — the bot covers it. Fix bot threads via `skill://autofix` (unresolved + bot-authored + not outdated, per-fix approval, one consolidated commit), then back to B.
-- **Stop rule.** Repeat C↔B (or D↔B) until `review --agent --gate major` passes (exit 0) — i.e. 0 critical, 0 high, 0 fix-now mediums — then backlog the rest. Cap at two paid rounds per batch; beyond that the batch is too big, split it. `coderabbit review findings --clear` after each fix batch so stale stored findings never read as fresh signal.
+
 ## Pre-commit self-review (move findings left)
 
 Frozen-review + CodeRabbit rounds on the `todo-burndown` series (22 commits, ~half fix-loops) showed ~70% of findings were author-catchable in one pass — they were found because a reviewer ran, not because the fix was hard. Each loop costs a full review round (4–9 min wall time). Run this checklist against your own diff before every commit; a finding caught here never costs a round:
