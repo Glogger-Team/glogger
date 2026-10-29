@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # Print the newest v<semver> tag that has a published (non-draft,
-# non-prerelease) GitHub Release. Used by scripts/release.sh and the release
-# workflow's validate job so release notes cover everything since the last
-# release users actually received — not just the previous tag. A tag whose
+# non-prerelease) GitHub Release. Used by the release workflow's validate job
+# so release notes cover everything since the last release users actually
+# received — not just the previous tag. A tag whose
 # Release run failed (v1.3.8: the tag exists but no GitHub Release was ever
 # created) would otherwise orphan its commits from the next release's notes.
 #

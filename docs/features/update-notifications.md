@@ -34,7 +34,7 @@ The user can dismiss the indicator via the X button. It resurfaces after 5 hours
 
 ### Signing
 
-- Release builds are signed with a keypair. The public key is in `tauri.conf.json` under `plugins.updater.pubkey`. The private key is a GitHub Actions secret (`TAURI_SIGNING_PRIVATE_KEY`). `tauri-apps/tauri-action` produces the `.sig` files; the release workflow's *Generate latest.json updater manifest* step builds `latest.json` (version, per-platform URL + signature, `pub_date`) and its `notes` field is the release's `RELEASE_NOTES.md`.
+- Release builds are signed with a keypair. The public key is in `tauri.conf.json` under `plugins.updater.pubkey`. The private key is a GitHub Actions secret (`TAURI_SIGNING_PRIVATE_KEY`). `tauri-apps/tauri-action` produces the `.sig` files; the release workflow's single-writer channel job builds `latest.json` once from all three platforms' `.sig` files (version, per-platform URL + signature, `pub_date`) and its `notes` field is the CI-generated release notes.
 
 ## CDN Game Data Monitoring
 
@@ -70,4 +70,4 @@ The modal is intentionally blocking (no backdrop-click-to-dismiss) to ensure use
 | Rust | `src-tauri/src/cdn_commands.rs` | `check_cdn_version` command |
 | UI | `src/App.vue` | Bottom bar update indicator, CDN modal wiring |
 | UI | `src/components/Shared/CdnUpdateModal.vue` | Blocking CDN update modal |
-| CI | `.github/workflows/release.yml` | Build + sign + publish; generates `latest.json` (notes from the tagged `RELEASE_NOTES.md`) and refreshes the `updater-latest` channel |
+| CI | `.github/workflows/release.yml` | Build + sign + publish; generates `latest.json` (notes generated in CI since the last published release) and refreshes the `updater-latest` channel |

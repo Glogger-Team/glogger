@@ -1,21 +1,22 @@
 name: Release
 
-# Tag push v<semver> from main -> test gate, signed Windows / macOS / Linux
-# builds, GitHub Release on this fork, then refresh latest.json on the
-# `updater-latest` pointer release (that tag URL is the updater endpoint
-# compiled into the app, so it stays stable while the asset behind it is
-# replaced on every release).
+# Tag push v<semver> from main -> test gate, tauri-action direct-mode builds
+# (the matrix creates a *draft* GitHub Release and uploads the bundles), then
+# a single-writer channel job verifies every asset, publishes the Release,
+# attaches latest.json, and refreshes the `updater-latest` pointer release
+# (that tag URL is the updater endpoint compiled into the app, so it stays
+# stable while the asset behind it is replaced on every release).
 #
 # The validate job also runs the game-interaction hard-line scanner
 # (scripts/check-glogger-constraints.ps1, the same gate as the local pre-push
 # hook — see docs/research/glogger-game-interaction-limits.md), so a skipped or
 # uninstalled local hook cannot let a TOS/CoC violation reach a release.
 #
-# Release notes come from RELEASE_NOTES.md, committed by scripts/release.sh
-# (generated from the commits since the previous release tag, or hand-written
-# via `--notes <file>`): the validate job fails a tag push whose notes are
-# missing or cover the wrong range, and the publish job puts them in the
-# GitHub Release body and in latest.json's `notes`.
+# release (scripts/generate-changelog.sh, based via
+# scripts/last-published-tag.sh). No committed RELEASE_NOTES.md, no version
+# commits — the pushed tag is the version record. The build job composes the
+# notes into the GitHub Release body and the channel job embeds them in
+# latest.json's `notes`.
 #
 # workflow_dispatch rebuilds the identical matrix for an existing ref with
 # `publish` left false, so the pipeline can be smoke-tested (all three
@@ -64,8 +65,8 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.ref || github.ref }}
-          # full history + tags: the release-notes check needs the previous
-          # release tag to know which range RELEASE_NOTES.md must cover.
+          # full history + tags: notes are generated from the commits since
+          # the last published release tag.
           fetch-depth: 0
 
       - name: Setup Node
@@ -80,69 +81,75 @@ jobs:
       - name: Frontend type-check and build
         run: npm run build
 
-      - name: Resolve version (must match the pushed tag)
+      - name: Resolve version (from the pushed tag)
         id: version
         shell: bash
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REF_VALUE: ${{ inputs.ref || github.ref }}
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
+          PUBLISH: ${{ inputs.publish }}
+          INPUT_REF: ${{ inputs.ref }}
         run: |
-          VERSION=$(awk -F'"' '/"version"/ {print $4; exit}' src-tauri/tauri.conf.json)
-          if [ -z "$VERSION" ]; then
-            echo "ERROR: could not read the version from src-tauri/tauri.conf.json"
-            exit 1
+          # The pushed tag is the version record: CI syncs the version files
+          # in-workspace (build job) instead of requiring a bump commit.
+          # INPUT_REF arrives via env (not inline expansion) so a dispatch ref
+          # can never inject into this script.
+          if [ "$EVENT_NAME" = "push" ]; then
+            TAG="$REF_NAME"
+          elif [ "$PUBLISH" = "true" ]; then
+            TAG="$INPUT_REF"
+            # A dispatch publish creates the Release for this tag; require the
+            # real tag to exist first.
+            gh api "repos/$REPO/git/ref/tags/$TAG" --silent || {
+              echo "ERROR: tag $TAG does not exist on origin — cut it with 'npm run release vX.Y.Z'"; exit 1; }
+          else
+            TAG="$INPUT_REF"
+            VERSION=$(awk -F'"' '/"version"/ {print $4; exit}' src-tauri/tauri.conf.json)
+            if [ -z "$VERSION" ]; then
+              echo "ERROR: could not read the version from src-tauri/tauri.conf.json"
+              exit 1
+            fi
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "smoke-building $TAG as v$VERSION from $REF_VALUE"
+            exit 0
           fi
-          # A tag-triggered release must match the committed version: the asset
-          # names, release tag and latest.json all derive from it.
-          if [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" != "v${VERSION}" ]; then
-            echo "ERROR: tag $REF_NAME != tauri.conf.json version v${VERSION} — was the bump committed before tagging?"
-            exit 1
+          if ! printf '%s' "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: tag $TAG is not v<semver> — cut releases with 'npm run release vX.Y.Z'"; exit 1
           fi
+          VERSION="${TAG#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
-          echo "building v$VERSION from $REF_VALUE"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "building $TAG from $REF_VALUE"
 
       - name: Game-interaction hard lines (TOS/CoC)
         shell: pwsh
         run: ./scripts/check-glogger-constraints.ps1
 
-      - name: Verify release notes
+      - name: Generate release notes
         shell: bash
         env:
-          TAG: ${{ steps.version.outputs.tag }}
-          EVENT_NAME: ${{ github.event_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # RELEASE_NOTES.md is generated and committed by scripts/release.sh,
-          # so a tag push always carries notes for its own range. This is a
-          # tripwire for tags cut some other way — a warning (not an error) on
-          # workflow_dispatch, where historical tags are smoke-tested.
-          #
-          # The base is the last *published* GitHub Release, not the nearest
-          # tag: a tag whose Release run failed never reached users, so the
-          # next release's notes must still cover its commits (v1.3.8 -> v1.3.9
-          # shipped notes that omitted everything the failed 1.3.8 contained).
-          PREV_TAG=$(bash scripts/last-published-tag.sh "$REPO" 2>/dev/null || git describe --tags --abbrev=0 --match 'v[0-9]*' "${TAG}^" 2>/dev/null || echo "")
-          PROBLEM=""
-          if [ ! -s RELEASE_NOTES.md ]; then
-            PROBLEM="RELEASE_NOTES.md is missing or empty"
-          elif ! grep -q "What's Changed since" RELEASE_NOTES.md; then
-            PROBLEM="RELEASE_NOTES.md has no 'What's Changed since …' section"
-          elif [ -n "$PREV_TAG" ] && ! grep -qE "since ${PREV_TAG}([^0-9]|$)" RELEASE_NOTES.md; then
-            PROBLEM="RELEASE_NOTES.md does not cover the changes since ${PREV_TAG}"
-          fi
+          # Notes come from the commit-prefix convention (feat:/impv:/fix:)
+          # since the last *published* GitHub Release, not the nearest tag: a
+          # tag whose Release run failed never reached users, so the next
+          # release's notes must still cover its commits. Checked out at the
+          # new tag, so probe HEAD^ first — plain HEAD would resolve the new
+          # tag itself as its own base.
+          PREV_TAG=$(bash scripts/last-published-tag.sh "$REPO" 2>/dev/null || git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ 2>/dev/null || git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || echo "")
+          echo "notes base: ${PREV_TAG:-the initial release}"
+          mkdir -p release-notes
+          bash scripts/generate-changelog.sh "$PREV_TAG" HEAD > release-notes/NOTES.md
+          cat release-notes/NOTES.md
 
-          if [ -z "$PROBLEM" ]; then
-            echo "release notes OK (since ${PREV_TAG:-the initial release})"
-            cat RELEASE_NOTES.md
-            exit 0
-          fi
-          if [ "$EVENT_NAME" = "push" ]; then
-            echo "ERROR: $PROBLEM."
-            echo "Cut releases with 'npm run release <patch|minor|major|x.y.z>', which generates RELEASE_NOTES.md and commits it with the bump."
-            exit 1
-          fi
-          echo "::warning title=Release notes::$PROBLEM (a tag push would fail here)"
+      - name: Upload release notes
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-notes
+          path: release-notes/NOTES.md
 
   # ── Test once on Linux; the platform matrix below builds untested code
   # nowhere. The test *logic* is platform-independent (pure parsers, no
@@ -190,6 +197,8 @@ jobs:
     needs: [validate, test]
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 45
+    permissions:
+      contents: write # tauri-action direct mode creates the Release + uploads bundles
     strategy:
       fail-fast: false
       matrix:
@@ -281,6 +290,18 @@ jobs:
           # the cache releases read. No pull_request trigger exists, so no
           # untrusted run can poison it; this narrows the writers to releases.
           save-if: ${{ github.event_name == 'push' }}
+      - name: Sync version files to the release tag
+        # CI is the version sync: the tag is the version record, so the
+        # build workspaces get the tag version before compiling. Runs after
+        # Setup Rust so bump-version.sh's `cargo update -p glogger
+        # --precise` can refresh Cargo.lock for the locked check below.
+        if: github.event_name == 'push' || inputs.publish == true
+        shell: bash
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          bash scripts/bump-version.sh "$VERSION"
+          grep -q "\"version\": \"$VERSION\"" src-tauri/tauri.conf.json
 
       - name: Compile-check tests per platform
         # The single Linux `test` job above runs the suite; this cheap check
@@ -293,7 +314,66 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build release installer
+      - name: Download release notes
+        if: github.event_name == 'push' || inputs.publish == true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: release-notes/
+
+      - name: Compose release body
+        if: github.event_name == 'push' || inputs.publish == true
+        id: body
+        shell: bash
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          {
+            echo "Installed builds auto-update from the \`updater-latest\` channel."
+            echo
+            echo "---"
+            echo
+            cat release-notes/NOTES.md
+            echo
+            echo "---"
+            echo
+            echo "**Linux (Flatpak):** the Flatpak bundle is attached by a follow-up job shortly after publish; not self-updating."
+            echo
+            echo "Original app by Daniel Auchenpaugh ([danielout/glogger](https://github.com/danielout/glogger)). Features, fixes and the release pipeline inherited from the [oddio fork](https://github.com/crisp-oddio/glogger-oddio) by oddio — now maintained at [Glogger-Team/glogger](https://github.com/Glogger-Team/glogger)."
+            echo
+            echo "---"
+            echo
+            # Static per-platform footnote: kept at the bottom so the notes stay
+            # at the top of the release page.
+            echo "<sub>**macOS:** the \`.dmg\` is unsigned (no Apple Developer certificate) — on first launch use right-click → Open, or clear the quarantine flag with \`xattr -d com.apple.quarantine /Applications/glogger.app\`.</sub>"
+          } > FULL_RELEASE_NOTES.md
+          BODY=$(cat FULL_RELEASE_NOTES.md)
+          {
+            echo "body<<BODY_EOF"
+            echo "$BODY"
+            echo "BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build + publish release installer
+        if: github.event_name == 'push' || inputs.publish == true
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: ${{ needs.validate.outputs.tag }}
+          releaseName: glogger ${{ needs.validate.outputs.tag }}
+          releaseBody: ${{ steps.body.outputs.body }}
+          releaseDraft: true
+          prerelease: false
+          uploadUpdaterJson: false
+          tauriScript: npx tauri
+          args: ${{ matrix.args }} --config src-tauri/tauri.release.conf.json
+          updaterJsonPreferNsis: true
+
+      - name: Build installer (smoke test, no release)
+        if: ${{ !(github.event_name == 'push' || inputs.publish == true) }}
         uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -304,103 +384,62 @@ jobs:
           args: ${{ matrix.args }} --config src-tauri/tauri.release.conf.json
           updaterJsonPreferNsis: true
 
-      - name: Collect installer
-        shell: bash
-        env:
-          VERSION: ${{ needs.validate.outputs.version }}
-          LABEL: ${{ matrix.label }}
-        run: |
-          mkdir -p release-artifacts
-          # macOS cross-compiles into target/<triple>/release/bundle, native
-          # builds land in target/release/bundle. `-print -quit` avoids piping
-          # find into head, which SIGPIPEs under the runner's `set -o pipefail`.
-          BUNDLE_DIR=$(find src-tauri/target -path "*/release/bundle" -type d -print -quit)
-          if [ -z "$BUNDLE_DIR" ]; then
-            echo "ERROR: no bundle dir"
-            find src-tauri/target -name bundle -type d
-            exit 1
-          fi
-          echo "bundle dir: $BUNDLE_DIR"
-          find "$BUNDLE_DIR" -maxdepth 2 -type f | head -40 || true
-
-          case "$LABEL" in
-            windows)
-              REQUIRED=("glogger-${VERSION}-windows-setup.exe" "glogger-${VERSION}-windows-setup.exe.sig")
-              cp "$BUNDLE_DIR"/nsis/*.exe "release-artifacts/glogger-${VERSION}-windows-setup.exe"
-              cp "$BUNDLE_DIR"/nsis/*.exe.sig "release-artifacts/glogger-${VERSION}-windows-setup.exe.sig"
-              ;;
-            macos)
-              # tauri-action v1 names the updater bundle with the version
-              # (glogger-<version>-macos... like every other artifact); the
-              # glob absorbs the exact infix so a future rename fails open
-              # at the REQUIRED check below instead of silently.
-              REQUIRED=("glogger-${VERSION}-macos.dmg" "glogger-${VERSION}-macos.app.tar.gz" "glogger-${VERSION}-macos.app.tar.gz.sig")
-              cp "$BUNDLE_DIR"/dmg/*.dmg "release-artifacts/glogger-${VERSION}-macos.dmg"
-              cp "$BUNDLE_DIR"/macos/*.tar.gz "release-artifacts/glogger-${VERSION}-macos.app.tar.gz"
-              cp "$BUNDLE_DIR"/macos/*.tar.gz.sig "release-artifacts/glogger-${VERSION}-macos.app.tar.gz.sig"
-              ;;
-            linux)
-              REQUIRED=("glogger-${VERSION}-linux.deb" "glogger-${VERSION}-linux.AppImage" "glogger-${VERSION}-linux.AppImage.sig")
-              cp "$BUNDLE_DIR"/deb/*.deb "release-artifacts/glogger-${VERSION}-linux.deb"
-              cp "$BUNDLE_DIR"/appimage/*.AppImage "release-artifacts/glogger-${VERSION}-linux.AppImage"
-              cp "$BUNDLE_DIR"/appimage/*.AppImage.sig "release-artifacts/glogger-${VERSION}-linux.AppImage.sig"
-              ;;
-          esac
-
-          # Missing .sig means the build was not signed (TAURI_SIGNING_PRIVATE_KEY
-          # secret absent) — never publish an artifact users cannot verify.
-          MISSING=0
-          for f in "${REQUIRED[@]}"; do
-            if [ ! -f "release-artifacts/$f" ]; then
-              echo "ERROR: missing $f"
-              MISSING=1
-            fi
-          done
-          [ "$MISSING" = 0 ] || exit 1
-          ls -la release-artifacts/
-
-      - name: Upload platform artifacts
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: artifacts-${{ matrix.label }}
-          path: release-artifacts/*
-
-  # ── Publish the release + refresh the update channel ──
-  publish:
-    name: Publish release and update channel
+  # ── Publish the draft + assemble latest.json + refresh the channel ──
+  # Single writer. The matrix legs created the draft via get-or-create: a
+  # near-simultaneous create/create pair 422s and fails the run fail-closed
+  # (legs finish minutes apart in practice, so no pre-create job).
+  channel:
+    name: Update release channel
     needs: [validate, build]
     if: github.event_name == 'push' || inputs.publish == true
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
-      contents: write # creates the Release, uploads assets, moves the channel pointer
+      contents: write # downloads assets, attaches latest.json, moves the channel pointer
     env:
       VERSION: ${{ needs.validate.outputs.version }}
       TAG: ${{ needs.validate.outputs.tag }}
     steps:
-      - name: Verify the release tag exists
-        if: github.event_name == 'workflow_dispatch'
+      - name: Download release notes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-notes
+          path: release-notes/
+
+      - name: Download release assets
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Creating the release for a dispatch run would tag the default
-          # branch HEAD; require the real tag to exist first.
-          gh api "repos/$REPO/git/ref/tags/$TAG" --silent || {
-            echo "ERROR: tag $TAG does not exist on origin — cut it with npm run release"; exit 1; }
-
-      - name: Checkout (at the release tag, for RELEASE_NOTES.md)
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.validate.outputs.tag }}
-          persist-credentials: false
-
-      - name: Download artifact
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: artifacts-*
-          path: all-artifacts
-          merge-multiple: true
+          # The matrix created the Release as a draft; wait for all three
+          # platforms' binaries plus their .sig companions to land before
+          # assembling the channel manifest (binaries and signatures upload
+          # sequentially, so a binary-only poll would hard-fail the
+          # manifest step). `gh release download` reads drafts fine with
+          # GH_TOKEN, so the draft stays invisible until channel publishes it.
+          FOUND=0
+          for i in $(seq 1 10); do
+            rm -rf all-artifacts && mkdir -p all-artifacts
+          if gh release download "$TAG" --repo "$REPO" --dir all-artifacts >/dev/null 2>&1 \
+            && [ "$(ls all-artifacts/*setup.exe 2>/dev/null | wc -l)" -ge 1 ] \
+            && [ "$(ls all-artifacts/*.app.tar.gz 2>/dev/null | grep -v '\.sig$' | wc -l)" -ge 1 ] \
+            && [ "$(ls all-artifacts/*.AppImage 2>/dev/null | grep -v '\.sig$' | wc -l)" -ge 1 ] \
+            && [ "$(ls all-artifacts/*setup.exe.sig 2>/dev/null | wc -l)" -ge 1 ] \
+            && [ "$(ls all-artifacts/*.app.tar.gz.sig 2>/dev/null | wc -l)" -ge 1 ] \
+            && [ "$(ls all-artifacts/*.AppImage.sig 2>/dev/null | wc -l)" -ge 1 ]; then
+              echo "All platform assets present."
+              FOUND=1
+              break
+            fi
+            echo "  attempt $i/10 — assets incomplete, retrying in 30s"
+            sleep 30
+          done
+          if [ "$FOUND" != 1 ]; then
+            echo "ERROR: release $TAG assets never completed"
+            ls -la all-artifacts/ || true
+            exit 1
+          fi
+          ls -la all-artifacts/
 
       - name: Generate latest.json updater manifest
         shell: bash
@@ -411,22 +450,21 @@ jobs:
           ls -la all-artifacts/
           mkdir -p channel
 
-          WIN_ASSET="glogger-${VERSION}-windows-setup.exe"
-          MAC_ASSET="glogger-${VERSION}-macos.app.tar.gz"
-          LINUX_ASSET="glogger-${VERSION}-linux.AppImage"
+          WIN_ASSET=$(ls all-artifacts/*setup.exe | grep -v '\.sig$' | head -1 | xargs basename)
+          MAC_ASSET=$(ls all-artifacts/*.app.tar.gz | grep -v '\.sig$' | head -1 | xargs basename)
+          LINUX_ASSET=$(ls all-artifacts/*.AppImage | grep -v '\.sig$' | head -1 | xargs basename)
+          [ "$(ls all-artifacts/*setup.exe | grep -v '\.sig$' | wc -l)" = 1 ] || { echo "ERROR: expected exactly one *setup.exe"; ls all-artifacts/; exit 1; }
+          [ "$(ls all-artifacts/*.app.tar.gz | grep -v '\.sig$' | wc -l)" = 1 ] || { echo "ERROR: expected exactly one *.app.tar.gz"; ls all-artifacts/; exit 1; }
+          [ "$(ls all-artifacts/*.AppImage | grep -v '\.sig$' | wc -l)" = 1 ] || { echo "ERROR: expected exactly one *.AppImage"; ls all-artifacts/; exit 1; }
           MISSING=0
           for f in "all-artifacts/$WIN_ASSET.sig" "all-artifacts/$MAC_ASSET.sig" "all-artifacts/$LINUX_ASSET.sig"; do
             [ -f "$f" ] || { echo "ERROR: missing signature $f"; MISSING=1; }
           done
           [ "$MISSING" = 0 ] || exit 1
 
-          # The updater manifest carries the same notes the GitHub Release
-          # shows; RELEASE_NOTES.md is checked out at the release tag.
-          if [ -s RELEASE_NOTES.md ]; then
-            cp RELEASE_NOTES.md updater-notes.md
-          else
-            printf 'glogger v%s\n' "$VERSION" > updater-notes.md
-          fi
+          # The updater manifest carries the same CI-generated notes the
+          # GitHub Release shows.
+          cp release-notes/NOTES.md updater-notes.md
 
           jq -n \
             --arg version "$VERSION" \
@@ -449,52 +487,28 @@ jobs:
           python3 -m json.tool channel/latest.json
           echo "verified: latest.json parses"
 
-      - name: Create release
+      - name: Attach latest.json to the draft release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          BASE_URL="https://github.com/$REPO/releases/download/$TAG"
-          WIN="glogger-${VERSION}-windows-setup.exe"
-          MAC="glogger-${VERSION}-macos.dmg"
-          DEB="glogger-${VERSION}-linux.deb"
-          APPIMAGE="glogger-${VERSION}-linux.AppImage"
-          {
-            echo "## Downloads"
-            echo
-            echo "| Platform | Installer |"
-            echo "|----------|-----------|"
-            echo "| **Windows** | [$WIN]($BASE_URL/$WIN) |"
-            echo "| **macOS** (Apple silicon) | [$MAC]($BASE_URL/$MAC) |"
-            echo "| **Linux** (Debian/Ubuntu) | [$DEB]($BASE_URL/$DEB) |"
-            echo "| **Linux** (AppImage) | [$APPIMAGE]($BASE_URL/$APPIMAGE) |"
-            echo "| **Linux** (Flatpak) | [glogger.flatpak]($BASE_URL/glogger.flatpak) — attached by a follow-up job; not self-updating |"
-            echo
-            echo "---"
-            echo
-            # RELEASE_NOTES.md is checked out at the release tag (generated and
-            # committed by scripts/release.sh) — it opens with
-            # "## What's Changed since v<previous>".
-            if [ -s RELEASE_NOTES.md ]; then
-              cat RELEASE_NOTES.md
-            else
-              echo "_No release notes were recorded for this release._"
-            fi
-            echo
-            echo "---"
-            echo
-            echo "Installed builds auto-update from the \`$CHANNEL_TAG\` channel."
-            echo
-            echo "Original app by Daniel Auchenpaugh ([danielout/glogger](https://github.com/danielout/glogger)). Features, fixes and the release pipeline inherited from the [oddio fork](https://github.com/crisp-oddio/glogger-oddio) by oddio — now maintained at [Glogger-Team/glogger](https://github.com/Glogger-Team/glogger)."
-            echo
-            echo "---"
-            echo
-            # Static per-platform footnote: kept at the bottom so the notes stay
-            # at the top of the release page.
-            echo "<sub>**macOS:** the \`.dmg\` is unsigned (no Apple Developer certificate) — on first launch use right-click → Open, or clear the quarantine flag with \`xattr -d com.apple.quarantine /Applications/glogger.app\`.</sub>"
-          } > FULL_RELEASE_NOTES.md
-          gh release create "$TAG" --repo "$REPO" --title "glogger $TAG" --notes-file FULL_RELEASE_NOTES.md --latest
-          gh release upload "$TAG" all-artifacts/* --repo "$REPO"
+          # Attached while still a draft: if the upload fails, nothing is
+          # public yet. A failed platform build leaves a draft (never a
+          # partial public Release); the retry rule is a new version tag,
+          # never retagging.
+          gh release upload "$TAG" channel/latest.json --repo "$REPO" --clobber
+          echo "attached: https://github.com/$REPO/releases/download/$TAG/latest.json"
+
+      - name: Publish the release (all platform assets verified)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # The matrix created the Release as a draft, so nothing public exists
+          # until every platform's binary + .sig and latest.json are verified
+          # and attached above.
+          gh release edit "$TAG" --repo "$REPO" --draft=false
+          echo "published: https://github.com/$REPO/releases/tag/$TAG"
 
       - name: Update the update-channel pointer release
         shell: bash
@@ -510,7 +524,7 @@ jobs:
 
   # ── Flatpak bundle, built from the published tag (Linux extra, upstream parity) ──
   flatpak:
-    needs: [validate, publish]
+    needs: [validate, channel]
     if: ${{ github.event_name == 'push' || inputs.publish == true }}
     # Local-path syntax (./...): same-repo callee, resolved by GitHub —
     # not subject to checkout filesystem state, and counts as pinned under a

@@ -4,10 +4,10 @@ name: Flatpak
 # release. Ported from the oddio fork's flatpak.yml (same GNOME builder image +
 # offline-source generators); the app id is this fork's.
 #
-# This fork's `npm run release` pushes the tag from the dev machine, so a
-# `push: tags` trigger would race the Release workflow's own call. Instead the
-# Release workflow invokes this as `workflow_call` once the release is published,
-# and `workflow_dispatch` builds a bundle on its own for smoke-testing.
+# Invoked by the Release workflow as `workflow_call` once the channel job has
+# assembled the release (single-writer latest.json + channel refresh), and via
+# `workflow_dispatch` for smoke tests. No `push: tags` trigger, so cutting a
+# tag never double-runs it.
 
 on:
   workflow_dispatch:
@@ -75,14 +75,27 @@ jobs:
           PUBLISH: ${{ inputs.publish }}
         run: |
           if [ "$PUBLISH" = "true" ]; then
-            case "$TARGET_TAG" in
-              v[0-9]*.[0-9]*.[0-9]*) ;;
-              *) echo "ERROR: '${TARGET_TAG}' is not a v<semver> release tag"; exit 1 ;;
-            esac
+            if ! printf '%s' "$TARGET_TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "ERROR: '${TARGET_TAG}' is not a v<semver> release tag"; exit 1
+            fi
           fi
           echo "building Flatpak from ${TARGET_TAG} (publish=$PUBLISH)"
 
-      # ── Generate offline source manifests ───────────────────────────────
+      # The release workflow checks out the tag as pushed, whose committed
+      # version files still carry the previous version (CI syncs them
+      # in-workspace in the installer matrix). Sync here too so the Flatpak
+      # bundle reports the tag version — smoke runs skip this (publish=false),
+      # matching the installer matrix, which only syncs when publishing.
+      - name: Sync version files to the release tag
+        if: ${{ inputs.publish == true }}
+        shell: bash
+        env:
+          TARGET_TAG: ${{ env.TARGET_TAG }}
+        run: |
+          VERSION="${TARGET_TAG#v}"
+          bash scripts/bump-version.sh "$VERSION"
+          grep -q "\"version\": \"$VERSION\"" src-tauri/tauri.conf.json
+
       # Flatpak build environments have no internet access, so all Cargo and npm
       # dependencies must be pre-fetched into source lists flatpak-builder can
       # cache-populate before the build runs.
