@@ -76,7 +76,7 @@ pub enum ChatStatusEvent {
     },
 
     /// "Saved report to C:/.../Reports/Character_Foo.json"
-    /// Fired when the player runs /exportcharacter or /outputitems.
+    /// Fired when the player runs Export Character as JSON or Export Storage as JSON (Settings → VIP).
     ReportSaved {
         timestamp: String,
         file_path: String,

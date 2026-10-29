@@ -2,40 +2,40 @@
 
 ## Overview
 
-The Stats tab manages character report imports (`/outputcharacter`) and provides browsable, comparable snapshots of a character's skills, stats, currencies, and recipe completions at various points in time.
+The Stats tab manages character report imports (Export Character as JSON in Settings → VIP) and provides browsable, comparable Character reports of a character's skills, stats, currencies, and recipe completions at various points in time. (UI term: each imported `CharacterSheet` snapshot is called a "report"; storage and command identifiers stay snapshots — `character_snapshots`, `snapshot_id`, `get_snapshot_*`.)
 
 ## Architecture
 
 ### Files
 
 **Backend (Rust):**
-- `src-tauri/src/db/character_commands.rs` — import, snapshot queries, comparison
+- `src-tauri/src/db/character_commands.rs` — import, report queries, comparison
 
 **Frontend (Vue/TS):**
 - Inline in `src/components/Character/CharacterView.vue` (stats tab section)
-- `src/components/Character/SnapshotList.vue` — snapshot selector
-- `src/components/Character/SnapshotComparison.vue` — diff two snapshots
+- `src/components/Character/SnapshotList.vue` — report selector
+- `src/components/Character/SnapshotComparison.vue` — diff two reports
 - `src/components/Character/SkillTable.vue` — skill levels from report
 - `src/components/Character/StatsTable.vue` — combat/attribute stats
 - `src/components/Character/CurrencyTable.vue` — currency holdings
 - `src/components/Character/RecipeTable.vue` — known recipe completions
-- `src/stores/characterStore.ts` — snapshot management, import
+- `src/stores/characterStore.ts` — Character report management, import
 
 ## How It Works
 
 ### Import Flow
 
-1. Player runs `/outputcharacter` in-game, producing `Character_{Name}_{Server}.json`
+1. Player runs Export Character as JSON in-game (Settings → VIP), producing `Character_{Name}_{Server}.json`
 2. User clicks "Import Report" (or auto-import detects the file)
-3. Rust parses JSON, validates `Report == "CharacterSheet"`, inserts snapshot + all child data in a transaction
+3. Rust parses JSON, validates `Report == "CharacterSheet"`, inserts report + all child data in a transaction
 4. Deduplication: `ON CONFLICT DO NOTHING` on `(character_name, server_name, snapshot_timestamp)`
 5. Import also seeds `game_state_skills`, `game_state_favor`, and other game state tables
 
-### Snapshot Browsing
+### Report Browsing
 
-- Dropdown to select from all imported snapshots for the active character
-- Each snapshot shows: skill levels/XP, combat stats, currencies, recipe completions
-- Snapshot comparison: select two snapshots to see skill diffs (level changes, XP changes)
+- Dropdown to select from all imported Character reports for the active character
+- Each report shows: skill levels/XP, combat stats, currencies, recipe completions
+- Report comparison: select two reports to see skill diffs (level changes, XP changes)
 
 ## Character Report Format
 
@@ -58,17 +58,17 @@ The Stats tab manages character report imports (`/outputcharacter`) and provides
 ## Database Tables
 
 - **`character_snapshots`** — one row per import (character_name, server_name, timestamp, race, raw_json). Unique on (character_name, server_name, snapshot_timestamp).
-- **`character_skill_levels`** — per skill per snapshot (level, bonus_levels, xp_toward_next, xp_needed_for_next)
-- **`character_npc_favor`** — per NPC per snapshot (npc_key, favor_level)
-- **`character_recipe_completions`** — per recipe per snapshot (recipe_key, completions)
-- **`character_stats`** — per stat per snapshot (stat_key, value as REAL)
-- **`character_currencies`** — per currency per snapshot (currency_key, amount)
+- **`character_skill_levels`** — per skill per report (level, bonus_levels, xp_toward_next, xp_needed_for_next)
+- **`character_npc_favor`** — per NPC per report (npc_key, favor_level)
+- **`character_recipe_completions`** — per recipe per report (recipe_key, completions)
+- **`character_stats`** — per stat per report (stat_key, value as REAL)
+- **`character_currencies`** — per currency per report (currency_key, amount)
 
 ## Tauri Commands
 
 | Command | Purpose |
 |---------|---------|
-| `import_character_report` | Parse JSON file, insert snapshot + all child data |
+| `import_character_report` | Parse JSON file, insert report + all child data |
 | `get_character_snapshots` | List snapshots for a character (ordered by timestamp DESC) |
 | `get_snapshot_skills` | All skill levels for a snapshot |
 | `get_snapshot_npc_favor` | All NPC favor for a snapshot |
@@ -80,7 +80,7 @@ The Stats tab manages character report imports (`/outputcharacter`) and provides
 
 ## Report Stats (Live)
 
-In addition to snapshot-based stats from `/outputcharacter`, the Stats tab displays **live report stats** parsed from in-game reports. When a player opens their behavior report or age report in-game, the content flows through `ProcessBook` → coordinator → `report_stats::parse_*` → `character_report_stats` table automatically.
+In addition to report-based stats from character exports, the Stats tab displays **live report stats** parsed from in-game reports. When a player opens their behavior report or age report in-game, the content flows through `ProcessBook` → coordinator → `report_stats::parse_*` → `character_report_stats` table automatically.
 
 ### Data Sources
 
@@ -106,7 +106,7 @@ Upserts on `(character_name, server_name, category, stat_name)` — opening the 
 
 ### UI
 
-`ReportStatsSection.vue` displays below the snapshot tables on the Stats tab:
+`ReportStatsSection.vue` displays below the report tables on the Stats tab:
 - Groups stats by category with section headers
 - Filterable search across names, categories, and values
 - Numbers formatted with locale separators, badges shown as checkmarks

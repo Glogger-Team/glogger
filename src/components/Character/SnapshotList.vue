@@ -1,7 +1,7 @@
 <template>
   <div class="flex flex-col gap-2">
     <div class="flex items-center justify-between">
-      <h3 class="text-sm font-medium text-text-secondary">Snapshots</h3>
+      <h3 class="text-sm font-medium text-text-secondary">Character Reports</h3>
       <button
         v-if="snapshots.length >= 2"
         class="px-3 py-1 bg-transparent border border-border-default text-text-secondary rounded cursor-pointer text-xs transition-all hover:bg-surface-elevated hover:text-text-primary"

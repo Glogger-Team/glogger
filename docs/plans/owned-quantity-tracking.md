@@ -24,7 +24,7 @@ Three core item events are already emitted:
 
 ### Database Tables
 
-- **`game_state_inventory`** — Current inventory snapshot per character/server. Columns: instance_id, item_name, item_type_id, stack_size, slot_index, last_confirmed_at, source.
+- **`game_state_inventory`** — Current inventory state per character/server. Columns: instance_id, item_name, item_type_id, stack_size, slot_index, last_confirmed_at, source.
 - **`game_state_storage`** — Same structure but per vault. Keyed by (character, server, vault_key, instance_id).
 - **`item_transactions`** (v15 migration) — Append-only audit trail of every item gain/loss. Columns: timestamp, character_name, server_name, item_name, internal_name, item_type_id, quantity (signed), context (loot/vendor_sell/storage_deposit/etc.), source (player_log/chat_status), instance_id, vault_key.
 
@@ -42,9 +42,9 @@ Three core item events are already emitted:
 - **`heldItemCounts`** — items on the player (inventory + saddlebag when tracked).
 - **`ownedItemCounts`** — total owned across inventory + storage.
 
-### Snapshot Import (`src-tauri/src/db/inventory_commands.rs`)
+### Storage Report Import (`src-tauri/src/db/inventory_commands.rs`)
 
-- `/outputitems` JSON import seeds `game_state_inventory` and `game_state_storage`.
+- Export Storage as JSON (Settings → VIP) import seeds `game_state_inventory` and `game_state_storage`.
 - Uses `character_item_snapshots` and `character_snapshot_items` tables.
 - PG doesn't overwrite old inventory reports in the reports folder — historical backfill source.
 
@@ -52,9 +52,9 @@ Three core item events are already emitted:
 
 ### No Time-Series Storage
 
-Current tables track **current state** only. `item_transactions` has the raw events but no pre-aggregated "total owned at time T" series. Answering "how many councils did I have last Tuesday?" requires replaying all transactions from a known baseline — expensive and fragile without a starting snapshot.
+Current tables track **current state** only. `item_transactions` has the raw events but no pre-aggregated "total owned at time T" series. Answering "how many councils did I have last Tuesday?" requires replaying all transactions from a known baseline — expensive and fragile without a starting Character/Storage report.
 
-### No Historical Quantity Snapshots
+### No Historical Quantity Reports
 
 There's no mechanism to periodically record "at this moment, you own X of item Y across inventory + storage." The `game_state_*` tables are overwritten as state changes, so historical values are lost.
 
@@ -102,20 +102,20 @@ Currencies are **not** inventory items. They live in a dedicated `Currencies` ob
 }
 ```
 
-14 currency types total. These do **not** appear in `/outputitems` item exports — those only contain actual items (~1,078 items across ~34 storage vaults in the sample). Character exports are overwritten on each export, so they can't be used for historical backfill.
+14 currency types total. These do **not** appear in Storage export item files — those only contain actual items (~1,078 items across ~34 storage vaults in the sample). Character exports are overwritten on each export, so they can't be used for historical backfill.
 
 This means currency tracking and item quantity tracking are two separate data paths:
-- **Currencies:** Must come from character export imports or from parsing chat/log events (if currency change messages exist).
-- **Items:** Come from the existing inventory pipeline (`game_state_inventory` + `game_state_storage`) and can be backfilled from old `/outputitems` reports.
+- **Currencies:** Must come from character export imports (report-seeded `character_currencies`) or from parsing chat/log events (if currency change messages exist).
+- **Items:** Come from the existing inventory pipeline (`game_state_inventory` + `game_state_storage`) and can be backfilled from old Storage export (`*_items_*.json`) reports.
 
 ## Storage Size Estimate
 
 A flat `(timestamp, item_name, count)` table is simple and plenty efficient:
 
-- ~1,078 items in a typical export. A snapshot row is ~100 bytes.
-- 4 hours/day play, snapshots every 30 min = 8 snapshots/day = ~8,600 rows/day.
+- ~1,078 items in a typical export. A report row is ~100 bytes.
+- 4 hours/day play, reports every 30 min = 8 reports/day = ~8,600 rows/day.
 - **1 year ≈ 3.1M rows ≈ 300 MB. 10 years ≈ 3 GB.**
-- SQLite handles this without issue. No need for a two-table snapshot/entries split — a single flat table is simpler and the data volume doesn't justify the complexity.
+- SQLite handles this without issue. No need for a two-table report/entries split — a single flat table is simpler and the data volume doesn't justify the complexity.
 
 ## Key Design Questions
 
@@ -125,19 +125,19 @@ Does "owned" mean inventory only, or inventory + storage? Storage is persistent 
 
 **Recommendation:** Start with inventory + storage. It's what we have data for.
 
-### 2. Snapshot-based vs. transaction-replay?
+### 2. Report-based vs. transaction-replay?
 
-**Option A: Periodic snapshots** — Record total owned counts at regular intervals (every N minutes while active, on session start/end). Simple to query ("what was my count at time T?"), but misses granularity between snapshots.
+**Option A: Periodic reports** — Record total owned counts at regular intervals (every N minutes while active, on session start/end). Simple to query ("what was my count at time T?"), but misses granularity between reports.
 
 **Option B: Transaction replay from baseline** — Use `item_transactions` to reconstruct state at any point from a known baseline. Precise, but expensive for large histories and requires a reliable baseline.
 
-**Option C: Hybrid** — Take periodic snapshots AND keep the transaction log. Query snapshots for rough trends, replay transactions for precise windows.
+**Option C: Hybrid** — Take periodic reports AND keep the transaction log. Query reports for rough trends, replay transactions for precise windows.
 
-**Recommendation:** Option C (hybrid). Periodic snapshots (e.g., every 30 minutes while active + on session boundaries) give cheap trend queries. Transaction log fills in detail when needed.
+**Recommendation:** Option C (hybrid). Periodic reports (e.g., every 30 minutes while active + on session boundaries) give cheap trend queries. Transaction log fills in detail when needed.
 
-### 3. Snapshot granularity
+### 3. Report granularity
 
-Snapshot everything — storage is cheap (see estimate above), and deciding what to track retroactively is painful. Display is the filtering layer.
+Report everything — storage is cheap (see estimate above), and deciding what to track retroactively is painful. Display is the filtering layer.
 
 ## Potential Schema
 
@@ -174,10 +174,10 @@ currency_quantity_history (
 
 ## Potential Implementation Phases
 
-### Phase 1: Item Quantity Snapshots
+### Phase 1: Item Quantity Reports
 - New migration for `item_quantity_history` table
-- Backend logic to snapshot current owned quantities from `game_state_inventory` + `game_state_storage`
-- Trigger snapshots on session start, session end, and periodic timer
+- Backend logic to record current owned quantities from `game_state_inventory` + `game_state_storage`
+- Trigger reports on session start, session end, and periodic timer
 - Backend query commands for retrieval
 
 ### Phase 2: Currency Tracking
@@ -186,13 +186,13 @@ currency_quantity_history (
 - Investigate whether chat/log events exist for currency changes (e.g., "You received 500 councils")
 
 ### Phase 3: Historical Backfill
-- Import old `/outputitems` reports as historical item snapshots
-- Import old character exports for historical currency snapshots (if any exist un-overwritten)
+- Import old Storage export (`*_items_*.json`) reports as historical item reports
+- Import old character exports for historical currency reports (if any exist un-overwritten)
 
 ### Phase 4: Trend UI
 - Simple trend view — table or basic chart showing quantity over time
 - Filterable by item/currency
-- Rate-of-change calculations from snapshot deltas
+- Rate-of-change calculations from report deltas
 
 ### Phase 5: Dashboard Integration
 - Dashboard card for critical resource trends
@@ -201,5 +201,5 @@ currency_quantity_history (
 ## Remaining Open Questions
 
 1. **Are there chat/log messages for currency changes?** (e.g., "You received 500 councils") — would provide event-level currency tracking between character exports.
-2. **Session boundary detection** — Is there a reliable session start/end event to trigger snapshots? The parser may already have this.
-3. **Character export frequency** — How often do users run `/exportcharacter`? If rare, currency tracking between exports will have big gaps unless we find chat/log events for currency changes.
+2. **Session boundary detection** — Is there a reliable session start/end event to trigger reports? The parser may already have this.
+3. **Character export frequency** — How often do users run Export Character as JSON? If rare, currency tracking between exports will have big gaps unless we find chat/log events for currency changes. Enable Automatically Export on Logout (Settings → VIP) to keep exports fresh — it also re-exports on every zone change.

@@ -1,3 +1,4 @@
+<!-- DARK until LocalPlayer: lines recur (hidden 2026-10-28) -->
 <template>
   <div class="flex flex-col gap-2 text-sm">
     <div v-if="loading" class="text-xs text-text-dim italic">Loading...</div>

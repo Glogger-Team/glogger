@@ -55,7 +55,7 @@
         </span>
       </span>
       <span v-else-if="snapshotFavor?.councils_spent_at_vendor != null" class="text-text-dim">
-        spent {{ snapshotFavor.councils_spent_at_vendor.toLocaleString() }} (snapshot)
+        spent {{ snapshotFavor.councils_spent_at_vendor.toLocaleString() }} (report)
       </span>
       <span v-else class="text-text-dim">unknown</span>
       <span v-if="timerRemaining" class="text-text-dim text-[10px]">

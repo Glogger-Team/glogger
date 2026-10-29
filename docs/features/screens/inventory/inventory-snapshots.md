@@ -1,8 +1,8 @@
-# Inventory — Snapshots
+# Inventory — Storage Reports
 
 ## Overview
 
-Browse and analyze point-in-time inventory snapshots created from the `/outputitems` in-game command. Each snapshot captures every item the character owns across all storage locations.
+Browse and analyze point-in-time Storage reports created from the Export Storage as JSON button (Settings → VIP). Each report captures every item the character owns across all storage locations.
 
 ## Architecture
 
@@ -13,27 +13,27 @@ Browse and analyze point-in-time inventory snapshots created from the `/outputit
 - `src-tauri/src/cdn_commands.rs` — `resolve_effect_descs`, `get_tsys_power_info` for CDN enrichment
 
 **Frontend (Vue/TS):**
-- `src/components/Character/InventoryView.vue` — snapshot selector, import, summary stats
+- `src/components/Character/InventoryView.vue` — report selector, import, summary stats
 - `src/components/Character/InventoryTable.vue` — filterable/sortable item table
 - `src/components/Character/InventorySmallGrid.vue` — compact icon grid
 - `src/components/Character/InventoryLargeGrid.vue` — large icon grid
 - `src/components/Character/InventoryItemPanel.vue` — card view
 - `src/components/Character/ItemPowerList.vue` — TSys power display
 - `src/components/Character/ModPowerInline.vue` — individual TSys mod tooltip
-- `src/stores/characterStore.ts` — snapshot management, import
+- `src/stores/characterStore.ts` — report management, import
 
 ## Data Flow
 
 ```
-Game /outputitems → JSON file in Reports/ → Rust parser → SQLite → Vue frontend
+Export Storage as JSON → JSON file in Reports/ → Rust parser → SQLite → Vue frontend
                                                  ↓
                                           CDN enrichment
                                     (items, attributes, TSys)
 ```
 
-1. Player runs `/outputitems` in-game, producing `{CharName}_items_{timestamp}.json` in `Reports/`
+1. Player runs Export Storage as JSON in-game (Settings → VIP), producing `{CharName}_items_{timestamp}.json` in `Reports/`
 2. Rust reads JSON, validates `Report == "Storage"`, inserts into `character_item_snapshots` + `character_snapshot_items`
-3. Frontend queries snapshots and items, enriching display with CDN data on hover
+3. Frontend queries reports and items, enriching display with CDN data on hover
 4. Import also seeds `game_state_storage` (vault items) and `game_state_inventory` (inventory items)
 
 ## Auto-Import & Polling
@@ -45,7 +45,7 @@ Game /outputitems → JSON file in Reports/ → Rust parser → SQLite → Vue f
 ## How It Works
 
 - **Import:** File picker dialog or auto-import from Reports folder. Duplicate detection warns if already imported.
-- **Snapshot selector:** Dropdown to browse all imported snapshots for the active character.
+- **Report selector:** Dropdown to browse all imported Storage reports for the active character.
 - **Summary stats:** Total items, stacks, unique items, total estimated value, and location count.
 
 ## View Modes
@@ -105,9 +105,9 @@ The game JSON uses non-standard casing:
 
 | Command | Purpose |
 |---------|---------|
-| `import_inventory_report` | Parse JSON file and insert snapshot + items |
-| `get_inventory_snapshots` | List all snapshots for a character |
-| `get_snapshot_items` | Return all items for a given snapshot |
+| `import_inventory_report` | Parse JSON file and insert report + items |
+| `get_inventory_snapshots` | List all Storage reports for a character |
+| `get_snapshot_items` | Return all items for a given report |
 | `get_inventory_summary` | Aggregate stats: total items, value, breakdowns by vault/rarity |
 | `import_latest_inventory_for_character` | Scan Reports folder, find latest, import |
 | `resolve_effect_descs` | Convert effect placeholders to readable text |

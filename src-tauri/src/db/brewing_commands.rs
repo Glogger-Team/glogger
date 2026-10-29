@@ -400,7 +400,7 @@ fn read_snapshot_row<C: DbRead + ?Sized>(
         params![snapshot_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )
-    .map_err(|e| format!("Snapshot not found: {e}"))
+    .map_err(|e| format!("Storage report not found: {e}"))
 }
 
 /// Pure parse + resolve: turn a snapshot's raw JSON into the brewing items it

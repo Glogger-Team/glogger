@@ -39,6 +39,51 @@
             Auto-start sessions
           </label>
 
+          <div class="border-t border-border-default pt-2 flex flex-col gap-1.5">
+            <div
+              class="text-[10px] uppercase tracking-wider text-text-secondary font-semibold px-1"
+              title="Automatic detection needs Player.log survey events, which the current game client no longer writes. Record each map you use by hand."
+            >
+              Record survey use
+            </div>
+            <SearchableSelect
+              :model-value="recordMapLabel"
+              :options="surveyTypeNames"
+              all-label="Select a survey map…"
+              :full-width="true"
+              @update:model-value="recordMapLabel = $event"
+            />
+            <div class="flex items-center gap-1.5">
+              <select
+                v-model="recordKindOverride"
+                class="flex-1 min-w-0 bg-surface-elevated border border-border-default rounded px-1.5 py-1 text-xs text-text-primary"
+                title="Auto derives the kind from CDN data; override when the map is unknown to the CDN."
+              >
+                <option value="auto">Kind: Auto</option>
+                <option value="basic">Kind: Basic</option>
+                <option value="motherlode">Kind: Motherlode</option>
+                <option value="multihit">Kind: Multihit</option>
+              </select>
+              <button
+                class="flex-1 text-xs px-2 py-1 rounded border border-accent-gold/60 text-accent-gold hover:bg-accent-gold/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                :disabled="store.isBusy || recordMapInternalName === null"
+                @click="onRecordUse"
+              >
+                Record use
+              </button>
+            </div>
+            <div v-if="surveyTypesError" class="text-[11px] text-accent-red px-1 flex items-center gap-1.5">
+              <span class="flex-1">{{ surveyTypesError }}</span>
+              <button
+                class="shrink-0 text-[11px] px-1.5 py-0.5 rounded border border-border-default text-text-secondary hover:bg-surface-elevated transition-colors"
+                @click="loadSurveyTypes"
+              >
+                Retry
+              </button>
+            </div>
+            <div v-if="store.recordError" class="text-[11px] text-accent-red px-1">{{ store.recordError }}</div>
+          </div>
+
           <div class="border-t border-border-default pt-2">
             <GstLauncher />
           </div>
@@ -112,8 +157,9 @@
           <p class="italic">No sessions yet.</p>
           <p>Start a session manually to begin tracking — the current game client
             writes no survey events to Player.log, so automatic use detection is
-            unavailable. Chat-loot attribution also needs a manually-entered
-            survey use (still pending), so no loot attributes yet.</p>
+            unavailable. Chat-loot attribution needs a survey use recorded with
+            the "Record use" control above, so no loot attributes until you
+            record one.</p>
         </template>
         <template v-else>
           <p class="italic">Select a session from the list to view its detail.</p>
@@ -340,6 +386,54 @@ import { liveEnrichedRows, liveRevenue, liveProfit as computeLiveProfit } from '
 const store = useSurveyTrackerStore()
 const settingsStore = useSettingsStore()
 
+interface SurveyTypeEntry {
+  internal_name: string
+  name: string
+  zone: string | null
+}
+
+// ── Manual "Record use" control ──────────────────────────────────────
+// Map picker options come from the get_all_survey_types catalog query
+// (value = internal_name for the invoke, label = name + zone for display).
+const surveyTypes = ref<SurveyTypeEntry[]>([])
+const recordMapLabel = ref<string | null>(null)
+const recordKindOverride = ref<'auto' | 'basic' | 'motherlode' | 'multihit'>('auto')
+const recordMapInternalName = computed<string | null>(() => {
+  if (recordMapLabel.value === null) return null
+  const hit = surveyTypes.value.find(
+    (t) => `${t.name}${t.zone ? ` — ${t.zone}` : ''}` === recordMapLabel.value,
+  )
+  return hit ? hit.internal_name : null
+})
+const surveyTypeNames = computed(() =>
+  surveyTypes.value.map((t) => `${t.name}${t.zone ? ` — ${t.zone}` : ''}`).sort(),
+)
+
+const surveyTypesError = ref<string | null>(null)
+
+async function loadSurveyTypes() {
+  try {
+    const rows = await invoke<SurveyTypeEntry[]>('get_all_survey_types')
+    surveyTypes.value = rows
+    surveyTypesError.value = rows.length === 0 ? 'No survey maps in the catalog — the game data may still be loading. Try again shortly.' : null
+  } catch (err) {
+    console.error('[SurveyTrackerView] get_all_survey_types failed:', err)
+    surveyTypes.value = []
+    surveyTypesError.value = 'Could not load the survey catalog. Recording is unavailable until game data loads.'
+  }
+}
+
+async function onRecordUse() {
+  const internalName = recordMapInternalName.value
+  if (internalName === null) return
+  const kind = recordKindOverride.value === 'auto' ? null : recordKindOverride.value
+  const res = await store.recordUse(internalName, kind)
+  if (res !== null && res.session_id !== null) {
+    selectedSessionId.value = res.session_id
+    await selectSession(res.session_id)
+  }
+}
+
 // ── View prefs (filter/sort, persisted) ─────────────────────────────
 const { prefs, update } = useViewPrefs('survey-session-list', {
   filterZone: null as string | null,
@@ -502,7 +596,7 @@ function liveRowProfit(row: HistoricalSessionRow): number {
 
 // ── Actions ─────────────────────────────────────────────────────────
 onMounted(async () => {
-  await store.init()
+  await Promise.all([store.init(), loadSurveyTypes()])
 })
 
 async function onStart() {

@@ -84,7 +84,7 @@ const filtered = computed(() => {
 // Only blame the filter when one is set: an empty snapshot must not claim the
 // filters are to blame (same rule as InventoryTable).
 const emptyText = computed(() =>
-  filter.value ? 'No skills match the current filter.' : 'No skills in this snapshot.')
+  filter.value ? 'No skills match the current filter.' : 'No skills in this report.')
 
 function toggleSort(key: 'skill_name' | 'level') {
   if (sortKey.value === key) {

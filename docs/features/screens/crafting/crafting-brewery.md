@@ -166,6 +166,6 @@ The brewery store exposes `onInventoryImported(character)` which is called from 
 
 Remaining phases from the brewing plan (`docs/plans/brewing-helper.md`):
 
-- **Aging tracker** (Phase 5) — track wine use-count aging and liquor aged/un-aged transitions across inventory snapshots over time
+- **Aging tracker** (Phase 5) — track wine use-count aging and liquor aged/un-aged transitions across Storage reports over time
 - **Live brew tracking** (Phase 6) — detect active brewing sessions from Player.log events (XP gains, recipe completions)
 - **Brew session summary** (Phase 7) — session view showing brews completed, XP earned, new discoveries during a session

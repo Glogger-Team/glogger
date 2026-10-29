@@ -1,8 +1,8 @@
 <template>
   <div class="flex flex-col gap-4 h-full">
-    <!-- Snapshot selector + import -->
+    <!-- Storage report selector + import -->
     <div class="flex items-center gap-4">
-      <label class="text-sm text-text-secondary">Inventory Snapshot</label>
+      <label class="text-sm text-text-secondary">Storage Reports</label>
       <select
         v-if="store.inventorySnapshots.length"
         class="bg-surface-elevated border border-border-default rounded px-3 py-1.5 text-sm text-text-primary cursor-pointer min-w-70"
@@ -13,7 +13,7 @@
         </option>
       </select>
       <span v-if="store.inventorySnapshots.length > 1" class="text-xs text-text-muted">
-        {{ store.inventorySnapshots.length }} snapshots
+        {{ store.inventorySnapshots.length }} reports
       </span>
       <button
         class="px-4 py-2 bg-accent-gold/20 border border-accent-gold/40 text-accent-gold rounded cursor-pointer text-sm font-medium transition-all hover:bg-accent-gold/30"
@@ -43,7 +43,7 @@
     </div>
     <div v-if="store.lastInventoryImport?.was_duplicate"
       class="p-3 bg-yellow-900/20 border border-yellow-700/40 rounded text-sm text-yellow-300">
-      Inventory snapshot already imported (duplicate).
+      Storage report already imported (duplicate).
     </div>
 
     <!-- Summary bar -->
@@ -151,7 +151,7 @@
       v-if="!searchAllChars && !store.inventorySnapshots.length && !store.loading"
       variant="panel"
       primary="No inventory data found"
-      secondary="In-game, go to Settings → VIP and export a storage report, then import it here." />
+      secondary="In-game, go to Settings → VIP and run Export Storage as JSON, then import it here." />
 
     <!-- All-characters storage search -->
     <div v-if="searchAllChars" class="overflow-auto flex-1 min-h-0">
@@ -163,7 +163,7 @@
         v-else-if="!store.allCharacterItems.length"
         variant="panel"
         primary="No inventory data for any character"
-        secondary="In-game, go to Settings → VIP and export a storage report on each character, then import their reports." />
+        secondary="In-game, go to Settings → VIP and run Export Storage as JSON on each character, then import their reports." />
       <EmptyState
         v-else-if="crossCharFiltered.length === 0"
         variant="compact"
@@ -211,7 +211,7 @@
           :row-key="(row, i) => (row.kind === 'item' ? String(row.name) : `${row.name}-${row.locationLabel}-${i}`)"
           :sort-key="totalSort"
           :sort-dir="totalSortAsc ? 'asc' : 'desc'"
-          empty-text="No items in this snapshot."
+          empty-text="No items in this report."
           :hoverable="false"
           :row-class="totalRowClass"
           @sort="handleTotalSort"
@@ -254,6 +254,7 @@
 import { ref, reactive, computed, onMounted, watch, type Component } from 'vue'
 import { useCharacterStore } from '../../stores/characterStore'
 import { useGameDataStore } from '../../stores/gameDataStore'
+import { useSettingsStore } from '../../stores/settingsStore'
 import { useGameStateStore } from '../../stores/gameStateStore'
 import { useViewPrefs } from '../../composables/useViewPrefs'
 import { formatDateTimeFull } from '../../composables/useTimestamp'
@@ -309,6 +310,15 @@ watch([viewMode, groupMode, sortMode, searchQuery, searchAllChars], () => {
 watch(searchAllChars, (on) => {
   if (on) store.loadAllCharacterItems()
 }, { immediate: true })
+// Server switches don't remount this view and don't touch the toggle, so
+// without this the previous server's rows stay visible until the next load.
+// The loader's generation guard drops the stale in-flight result for free.
+watch(
+  () => useSettingsStore().settings.activeServerName,
+  () => {
+    if (searchAllChars.value) store.loadAllCharacterItems()
+  },
+)
 
 interface CrossCharEntry {
   character: string

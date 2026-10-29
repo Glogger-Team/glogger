@@ -15,4 +15,4 @@ Real-time inventory tracking that shows what the player currently has, updated a
 
 ## Data Source
 
-All data is session-based and in-memory via `gameStateStore.liveItems`. Not persisted to database — resets on character switch or app restart. For persisted inventory data, see the Snapshots tab.
+All data is session-based and in-memory via `gameStateStore.liveItems`. Not persisted to database — resets on character switch or app restart. For persisted inventory data, see the Storage tab.

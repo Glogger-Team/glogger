@@ -8,9 +8,7 @@ import XpRateWidget from "./widgets/XpRateWidget.vue";
 import ProdigyTrackerWidget from "./widgets/ProdigyTrackerWidget.vue";
 import CombatWisdomWidget from "./widgets/CombatWisdomWidget.vue";
 import ItemsIncomingWidget from "./widgets/ItemsIncomingWidget.vue";
-import ItemsOutgoingWidget from "./widgets/ItemsOutgoingWidget.vue";
 import CouncilsWidget from "./widgets/CouncilsWidget.vue";
-import FavorChangesWidget from "./widgets/FavorChangesWidget.vue";
 import CriticalResourcesWidget from "./widgets/CriticalResourcesWidget.vue";
 import WatchwordDetectionsWidget from "./widgets/WatchwordDetectionsWidget.vue";
 import DeathTrackerWidget from "./widgets/DeathTrackerWidget.vue";
@@ -20,15 +18,11 @@ import GiftWatcherWidget from "./widgets/GiftWatcherWidget.vue";
 import TeleportCodesWidget from "./widgets/TeleportCodesWidget.vue";
 import MilkingTimersWidget from "./widgets/MilkingTimersWidget.vue";
 import MushroomFarmingWidget from "./widgets/MushroomFarmingWidget.vue";
-import StatTrackerWidget from "./widgets/StatTrackerWidget.vue";
-import StatTrackerConfig from "./widgets/StatTrackerConfig.vue";
 import WordsOfPowerWidget from "./widgets/WordsOfPowerWidget.vue";
 import TimerWidget from "./widgets/TimerWidget.vue";
 import TripPlannerWidget from "./widgets/TripPlannerWidget.vue";
 import TripPlannerWidgetConfig from "./widgets/TripPlannerWidgetConfig.vue";
-import GardenAlmanacWidget from "./widgets/GardenAlmanacWidget.vue";
 import HarvestAlmanacWidget from "./widgets/HarvestAlmanacWidget.vue";
-import MessagesWidget from "./widgets/MessagesWidget.vue";
 import HoplologyWidget from "./widgets/HoplologyWidget.vue";
 import VendorCouncilWidget from "./widgets/VendorCouncilWidget.vue";
 import RouletteWidget from "./widgets/RouletteWidget.vue";
@@ -105,12 +99,6 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     defaultSize: "medium",
   },
   {
-    id: "items-outgoing",
-    name: "Items Outgoing",
-    component: ItemsOutgoingWidget,
-    defaultSize: "medium",
-  },
-  {
     id: "councils",
     name: "Councils",
     component: CouncilsWidget,
@@ -123,12 +111,6 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     defaultSize: "medium",
   },
 
-  {
-    id: "favor-changes",
-    name: "Favor Changes",
-    component: FavorChangesWidget,
-    defaultSize: "medium",
-  },
   {
     id: "player-notes",
     name: "Notes",
@@ -194,13 +176,6 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     defaultSize: "large",
   },
   {
-    id: "stat-tracker",
-    name: "Stat Tracker",
-    component: StatTrackerWidget,
-    configComponent: StatTrackerConfig,
-    defaultSize: "small",
-  },
-  {
     id: "words-of-power",
     name: "Words of Power",
     component: WordsOfPowerWidget,
@@ -220,22 +195,10 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     defaultSize: "medium",
   },
   {
-    id: "gardening",
-    name: "Gardening",
-    component: GardenAlmanacWidget,
-    defaultSize: "small",
-  },
-  {
     id: "harvest-almanac",
     name: "Almanac of Corruption",
     component: HarvestAlmanacWidget,
     defaultSize: "small",
-  },
-  {
-    id: "messages",
-    name: "Messages",
-    component: MessagesWidget,
-    defaultSize: "medium",
   },
   {
     id: "hoplology",

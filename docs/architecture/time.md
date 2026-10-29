@@ -132,7 +132,7 @@ formatStaleness("2026-01-15T10:00:00Z")  // "2 months ago"
 
 ## Deconfliction
 
-When a snapshot import and a log event conflict on the same row, **the most recent `last_confirmed_at` wins**. See [game-state.md](game-state.md) for details.
+When a report import and a log event conflict on the same row, **the most recent `last_confirmed_at` wins**. See [game-state.md](game-state.md) for details.
 
 ## What NOT to Do
 

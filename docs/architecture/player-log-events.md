@@ -807,7 +807,7 @@ provenance join).
 [HH:MM:SS] LocalPlayer: ProcessToolCommandResponse(commandId, success, "message", System.Collections.Generic.Dictionary`2[System.String,System.String])
 ```
 
-**When it fires:** Response to a tool command (e.g., `/outputcharacter`).
+**When it fires:** Response to a tool command (e.g., a VIP export button).
 
 **NOT YET PARSED.**
 

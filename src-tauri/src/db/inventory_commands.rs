@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tauri::State;
 
-// ── JSON Deserialization Structs (match game's /outputitems format) ───────────
+// ── JSON Deserialization Structs (match game's Storage export format: Export Storage as JSON in Settings → VIP) ───────────
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -46,6 +46,14 @@ pub struct StorageItem {
     pub uses_remaining: Option<i64>,
     pub transmute_count: Option<i64>,
     pub attuned_to: Option<String>,
+    #[serde(default)]
+    pub is_augmented: Option<bool>,
+    #[serde(default)]
+    pub dye_count: Option<i64>,
+    #[serde(default)]
+    pub inscription: Option<String>,
+    #[serde(default)]
+    pub inscriber: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -99,6 +107,10 @@ pub struct SnapshotItem {
     pub tsys_imbue_power: Option<String>,
     pub tsys_imbue_power_tier: Option<i64>,
     pub pet_husbandry_state: Option<String>,
+    pub is_augmented: Option<bool>,
+    pub dye_count: Option<i64>,
+    pub inscription: Option<String>,
+    pub inscriber: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -178,16 +190,66 @@ pub fn import_inventory_report_internal(
                 report.timestamp,
                 raw_json,
             ],
-        ).map_err(|e| format!("Failed to insert item snapshot: {e}"))?;
+        ).map_err(|e| format!("Failed to store storage report: {e}"))?;
 
-        // 6. Check if insert created a new row
+        // 6. Check if insert created a new row. Duplicates still refresh the
+        // four v81 detail columns: already-imported reports predate them, so
+        // their rows exist with NULLs. Re-import is the backfill path — update
+        // existing rows when the file carries values (per-item overwrite, so
+        // re-importing an older export after a newer one can only fill NULLs
+        // when the older file omits the keys via serde default).
+        // Ordinal matching: (type_id, vault) is not unique — a vault can hold
+        // several identical stacks. Match the Nth file entry to the Nth stored
+        // row (ordered by id), so differing details land on their own rows.
         let changes = conn.changes();
         if changes == 0 {
+            let snapshot_id: i64 = conn
+                .query_row(
+                    "SELECT id FROM character_item_snapshots WHERE character_name = ?1 AND server_name = ?2 AND snapshot_timestamp = ?3",
+                    rusqlite::params![report.character, report.server_name, report.timestamp],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("Failed to locate existing storage report: {e}"))?;
+            let mut backfill_stmt = conn
+                .prepare(
+                    "UPDATE character_snapshot_items
+                     SET is_augmented = COALESCE(is_augmented, ?1),
+                         dye_count = COALESCE(dye_count, ?2),
+                         inscription = COALESCE(inscription, ?3),
+                         inscriber = COALESCE(inscriber, ?4)
+                     WHERE id = (
+                         SELECT id FROM character_snapshot_items
+                         WHERE item_snapshot_id = ?5 AND type_id = ?6 AND storage_vault = ?7
+                         ORDER BY id LIMIT 1 OFFSET ?8
+                     )",
+                )
+                .map_err(|e| format!("Failed to prepare detail backfill: {e}"))?;
+            let mut ordinals: std::collections::HashMap<(i64, String), i64> =
+                std::collections::HashMap::new();
+            let mut items_imported = 0usize;
+            for item in &report.items {
+                let key = (item.type_id, item.storage_vault.clone());
+                let ordinal = ordinals.entry(key).or_insert(0);
+                let offset = *ordinal;
+                *ordinal += 1;
+                items_imported += backfill_stmt
+                    .execute(rusqlite::params![
+                        item.is_augmented,
+                        item.dye_count,
+                        item.inscription,
+                        item.inscriber,
+                        snapshot_id,
+                        item.type_id,
+                        item.storage_vault,
+                        offset,
+                    ])
+                    .map_err(|e| format!("Failed to backfill item {}: {e}", item.name))?;
+            }
             return Ok(InventoryImportResult {
                 character_name: report.character.clone(),
                 server_name: report.server_name.clone(),
                 snapshot_timestamp: report.timestamp.clone(),
-                items_imported: 0,
+                items_imported,
                 was_duplicate: true,
             });
         }
@@ -201,8 +263,9 @@ pub fn import_inventory_report_internal(
                 stack_size, value, item_name, rarity, slot, level,
                 is_crafted, crafter, durability, craft_points, uses_remaining,
                 transmute_count, attuned_to, tsys_powers, tsys_imbue_power,
-                tsys_imbue_power_tier, pet_husbandry_state
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)"
+                tsys_imbue_power_tier, pet_husbandry_state,
+                is_augmented, dye_count, inscription, inscriber
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)"
         ).map_err(|e| format!("Failed to prepare item insert: {e}"))?;
 
         let mut items_imported = 0usize;
@@ -239,6 +302,10 @@ pub fn import_inventory_report_internal(
                     item.tsys_imbue_power,
                     item.tsys_imbue_power_tier,
                     item.pet_husbandry_state,
+                    item.is_augmented,
+                    item.dye_count,
+                    item.inscription,
+                    item.inscriber,
                 ])
                 .map_err(|e| format!("Failed to insert item {}: {e}", item.name))?;
         }
@@ -436,7 +503,8 @@ pub fn get_snapshot_items(
             "SELECT id, type_id, storage_vault, is_in_inventory, stack_size, value,
                 item_name, rarity, slot, level, is_crafted, crafter, durability,
                 craft_points, uses_remaining, transmute_count, attuned_to,
-                tsys_powers, tsys_imbue_power, tsys_imbue_power_tier, pet_husbandry_state
+                tsys_powers, tsys_imbue_power, tsys_imbue_power_tier, pet_husbandry_state,
+                is_augmented, dye_count, inscription, inscriber
          FROM character_snapshot_items
          WHERE item_snapshot_id = ?1
          ORDER BY item_name",
@@ -467,6 +535,10 @@ pub fn get_snapshot_items(
                 tsys_imbue_power: row.get(18)?,
                 tsys_imbue_power_tier: row.get(19)?,
                 pet_husbandry_state: row.get(20)?,
+                is_augmented: row.get(21)?,
+                dye_count: row.get(22)?,
+                inscription: row.get(23)?,
+                inscriber: row.get(24)?,
             })
         })
         .map_err(|e| format!("Query failed: {e}"))?;
@@ -611,4 +683,326 @@ pub fn get_all_character_items(
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to read results: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::migrations::run_migrations;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// Migrated in-memory DB wrapped in the app's pool type. Shared-cache
+    /// memory URI so `reads` and `writes` hit the same DB. Unique name per
+    /// call keeps tests isolated.
+    fn pool() -> DbPool {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let mk = |query_only: bool| {
+            r2d2_sqlite::SqliteConnectionManager::file(format!(
+                "file:inventory_details_test_{n}?mode=memory&cache=shared"
+            ))
+            .with_init(move |conn| {
+                if query_only {
+                    conn.execute_batch(
+                        "PRAGMA journal_mode=WAL;
+                         PRAGMA busy_timeout=5000;
+                         PRAGMA synchronous=NORMAL;
+                         PRAGMA foreign_keys=ON;
+                         PRAGMA query_only=ON;",
+                    )
+                } else {
+                    conn.execute_batch(
+                        "PRAGMA journal_mode=WAL;
+                         PRAGMA busy_timeout=5000;
+                         PRAGMA synchronous=NORMAL;
+                         PRAGMA foreign_keys=ON;",
+                    )
+                }
+            })
+        };
+        let writes = r2d2::Pool::builder()
+            .max_size(1)
+            .build(mk(false))
+            .expect("writes pool");
+        let reads = r2d2::Pool::builder()
+            .max_size(2)
+            .build(mk(true))
+            .expect("reads pool");
+        let conn = writes.get().expect("conn");
+        run_migrations(&conn, None).expect("migrations");
+        drop(conn);
+        DbPool::from_pools(reads, writes)
+    }
+
+    const FIXTURE: &str =
+        "../test_data/inventory/completeState/TestPlayer_Dreva_items_2026-04-14-15-57-59Z.json";
+
+    #[test]
+    fn import_persists_dropped_storage_fields_from_fixture() {
+        let db = pool();
+        let result = import_inventory_report_internal(&db, FIXTURE).expect("import fixture");
+        assert!(!result.was_duplicate);
+
+        let conn = db.get_write().expect("write conn");
+        // Fixture counts: IsAugmented 8, DyeCount 4, Inscription 1, Inscriber 1.
+        let (aug, dye, insc, inscr): (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*) FILTER (WHERE is_augmented IS NOT NULL),
+                        COUNT(*) FILTER (WHERE dye_count IS NOT NULL),
+                        COUNT(*) FILTER (WHERE inscription IS NOT NULL),
+                        COUNT(*) FILTER (WHERE inscriber IS NOT NULL)
+                 FROM character_snapshot_items",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("field counts");
+        assert_eq!((aug, dye, insc, inscr), (8, 4, 1, 1), "dropped fields populated");
+
+        // Spot-check values on a known augmented row.
+        let (name, aug_flag): (String, Option<bool>) = conn
+            .query_row(
+                "SELECT item_name, is_augmented FROM character_snapshot_items WHERE type_id = 21803",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("augmented row");
+        assert_eq!(aug_flag, Some(true), "IsAugmented round-trips on {name}");
+
+        let (inscription, inscriber): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT inscription, inscriber FROM character_snapshot_items WHERE type_id = 56109",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("inscribed row");
+        assert_eq!(inscription.as_deref(), Some("Limited 3/11"));
+        assert_eq!(inscriber.as_deref(), Some("Deradon"));
+
+        drop(conn);
+
+        // DyeCount spot-check via a second read connection (drops the write guard).
+        // Type 41344 has two rows (valued in NPC_Kib + valueless without vault);
+        // scope to the vault or query_row returns whichever SQLite yields first.
+        let conn = db.get().expect("read conn");
+        let dye: Option<i64> = conn
+            .query_row(
+                "SELECT dye_count FROM character_snapshot_items WHERE type_id = 41344 AND storage_vault = 'NPC_Kib'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("dye row");
+        assert_eq!(dye, Some(1));
+    }
+
+    #[test]
+    fn manual_use_style_json_round_trips_new_fields() {
+        let db = pool();
+        let dir = std::env::temp_dir().join(format!(
+            "inv_details_{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let path = dir.join("TestChar_Dreva_items_2026-01-01-00-00-00Z.json");
+        std::fs::write(
+            &path,
+            r#"{"Character":"TestChar","ServerName":"Dreva","Timestamp":"2026-01-01 00:00:00","Report":"Storage","ReportVersion":1,"Items":[
+                {"TypeID":1,"StorageVault":"Vault","StackSize":1,"Value":10,"Name":"Plain Sword","IsAugmented":true,"DyeCount":2,"Inscription":"Hi","Inscriber":"Bob"},
+                {"TypeID":2,"StorageVault":"","StackSize":5,"Value":1,"Name":"Plain Dagger"}
+            ]}"#,
+        )
+        .expect("write report");
+        let result =
+            import_inventory_report_internal(&db, path.to_str().expect("path")).expect("import");
+        assert_eq!(result.items_imported, 2);
+
+        let conn = db.get().expect("read conn");
+        let (aug, dye, insc, inscr): (Option<bool>, Option<i64>, Option<String>, Option<String>) =
+            conn.query_row(
+                "SELECT is_augmented, dye_count, inscription, inscriber FROM character_snapshot_items WHERE type_id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("new fields");
+        assert_eq!((aug, dye), (Some(true), Some(2)));
+        assert_eq!(insc.as_deref(), Some("Hi"));
+        assert_eq!(inscr.as_deref(), Some("Bob"));
+        // Omitted fields stay NULL.
+        let (aug2, dye2): (Option<bool>, Option<i64>) = conn
+            .query_row(
+                "SELECT is_augmented, dye_count FROM character_snapshot_items WHERE type_id = 2",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("null fields");
+        assert_eq!((aug2, dye2), (None, None));
+    }
+    #[test]
+    fn duplicate_import_backfills_v81_detail_columns() {
+        // Major-1 regression: v81 adds nullable columns to rows that already
+        // exist (imported before the migration). Re-importing the same file
+        // hits ON CONFLICT DO NOTHING; the duplicate path must still refresh
+        // the four columns (fill-only) so the backfill is reachable.
+        let db = pool();
+        let result = import_inventory_report_internal(&db, FIXTURE).expect("import");
+        assert!(!result.was_duplicate);
+        // Simulate a pre-v81 row: NULL out the columns on one known item.
+        let conn = db.get_write().expect("write conn");
+        conn.execute(
+            "UPDATE character_snapshot_items SET is_augmented = NULL, dye_count = NULL, inscription = NULL, inscriber = NULL WHERE type_id = 21803",
+            [],
+        )
+        .expect("null out row");
+        drop(conn);
+        // Re-import the same file: duplicate path runs the backfill.
+        let result = import_inventory_report_internal(&db, FIXTURE).expect("re-import");
+        assert!(result.was_duplicate);
+        let conn = db.get().expect("read conn");
+        let aug: Option<bool> = conn
+            .query_row(
+                "SELECT is_augmented FROM character_snapshot_items WHERE type_id = 21803",
+                [],
+                |row| row.get(0),
+            )
+            .expect("aug row");
+        assert_eq!(aug, Some(true), "duplicate re-import must restore is_augmented");
+    }
+
+    #[test]
+    fn duplicate_import_backfill_never_clobbers_newer_values() {
+        // Fill-only semantics: re-importing an OLDER export after a newer one
+        // populated the columns must not overwrite with NULLs or stale values.
+        // The backfill UPDATE uses COALESCE per column, so NULLs in the file
+        // (serde default for omitted keys) leave existing values alone.
+        let db = pool();
+        let result = import_inventory_report_internal(&db, FIXTURE).expect("import");
+        assert!(!result.was_duplicate);
+        // Stale file: same timestamp would be needed for the duplicate path,
+        // so write a variant report with the same timestamp but the detail
+        // keys omitted (simulates an older export that never carried them).
+        let dir = std::env::temp_dir().join(format!(
+            "inv_stale_{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let raw: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(FIXTURE).expect("read fixture"),
+        )
+        .expect("parse fixture");
+        let mut stripped = raw.clone();
+        if let Some(items) = stripped.get_mut("Items").and_then(|v| v.as_array_mut()) {
+            for item in items.iter_mut() {
+                if let Some(obj) = item.as_object_mut() {
+                    obj.remove("IsAugmented");
+                    obj.remove("DyeCount");
+                    obj.remove("Inscription");
+                    obj.remove("Inscriber");
+                }
+            }
+        }
+        // Same character/server/timestamp → duplicate path.
+        let path = dir.join("TestPlayer_Dreva_items_2026-04-14-15-57-59Z.json");
+        std::fs::write(&path, serde_json::to_string(&stripped).expect("serialize"))
+            .expect("write stripped");
+        let result =
+            import_inventory_report_internal(&db, path.to_str().expect("path")).expect("re-import");
+        assert!(result.was_duplicate);
+        // The known augmented row must survive the stripped re-import.
+        let conn = db.get().expect("read conn");
+        let aug: Option<bool> = conn
+            .query_row(
+                "SELECT is_augmented FROM character_snapshot_items WHERE type_id = 21803",
+                [],
+                |row| row.get(0),
+            )
+            .expect("aug row");
+        assert_eq!(aug, Some(true), "stale re-import must not clobber is_augmented");
+    }
+    #[test]
+    fn duplicate_import_backfill_preserves_newer_non_null_values() {
+        // Fill-only both directions: a re-imported file with CONFLICTING
+        // non-NULL values must not overwrite the stored (newer) values.
+        // The UPDATE uses COALESCE(existing, incoming) per column.
+        let db = pool();
+        let result = import_inventory_report_internal(&db, FIXTURE).expect("import");
+        assert!(!result.was_duplicate);
+        // Newer truth lands first: row 21803 (IsAugmented=true in fixture)
+        // marked unaugmented; row 56109 (Inscription "Limited 3/11" in
+        // fixture) marked with a newer inscription.
+        let conn = db.get_write().expect("write conn");
+        conn.execute(
+            "UPDATE character_snapshot_items SET is_augmented = 0 WHERE type_id = 21803",
+            [],
+        )
+        .expect("plant newer aug");
+        conn.execute(
+            "UPDATE character_snapshot_items SET inscription = 'Newer' WHERE type_id = 56109",
+            [],
+        )
+        .expect("plant newer inscription");
+        drop(conn);
+        // Re-import: stored values must win over conflicting file values.
+        let result = import_inventory_report_internal(&db, FIXTURE).expect("re-import");
+        assert!(result.was_duplicate);
+        let conn = db.get().expect("read conn");
+        let aug: Option<bool> = conn
+            .query_row(
+                "SELECT is_augmented FROM character_snapshot_items WHERE type_id = 21803",
+                [],
+                |row| row.get(0),
+            )
+            .expect("aug row");
+        assert_eq!(aug, Some(false), "stored FALSE must beat incoming TRUE");
+        let insc: Option<String> = conn
+            .query_row(
+                "SELECT inscription FROM character_snapshot_items WHERE type_id = 56109",
+                [],
+                |row| row.get(0),
+            )
+            .expect("inscription row");
+        assert_eq!(insc.as_deref(), Some("Newer"), "stored inscription must beat incoming 'Limited 3/11'");
+    }
+    #[test]
+    fn duplicate_import_backfill_matches_ordinals_within_vault() {
+        // Two identical stacks in one vault must each receive their own
+        // entry's details — not both receive the first entry's values.
+        let db = pool();
+        let dir = std::env::temp_dir().join(format!(
+            "inv_dupes_{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let path = dir.join("T_Dreva_items_2026-01-01-00-00-00Z.json");
+        std::fs::write(
+            &path,
+            r#"{"Character":"T","ServerName":"Dreva","Timestamp":"2026-01-01 00:00:00","Report":"Storage","ReportVersion":1,"Items":[
+                {"TypeID":9,"StorageVault":"V","StackSize":1,"Value":1,"Name":"Twin","IsAugmented":true},
+                {"TypeID":9,"StorageVault":"V","StackSize":1,"Value":1,"Name":"Twin","IsAugmented":false}
+            ]}"#,
+        )
+        .expect("write report");
+        let r = import_inventory_report_internal(&db, path.to_str().expect("path")).expect("import");
+        assert_eq!(r.items_imported, 2, "one row per entry, in order");
+        // Simulate pre-v81 rows: NULL the columns, re-import to backfill.
+        let conn = db.get_write().expect("write conn");
+        conn.execute("UPDATE character_snapshot_items SET is_augmented = NULL", [])
+            .expect("null out");
+        drop(conn);
+        let r = import_inventory_report_internal(&db, path.to_str().expect("path")).expect("re-import");
+        assert!(r.was_duplicate);
+        let conn = db.get().expect("read conn");
+        let vals: Vec<Option<bool>> = {
+            let mut stmt = conn
+                .prepare("SELECT is_augmented FROM character_snapshot_items ORDER BY id")
+                .expect("stmt");
+            stmt.query_map([], |row| row.get(0))
+                .expect("rows")
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        assert_eq!(vals, vec![Some(true), Some(false)], "Nth entry fills Nth row");
+    }
 }

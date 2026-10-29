@@ -124,14 +124,14 @@
       <div class="flex flex-col gap-4" style="grid-area: abilities;">
         <div v-if="knownAbilityKeys.length" class="flex flex-col gap-1.5">
           <div class="text-[0.65rem] uppercase tracking-widest text-text-dim border-b border-surface-card pb-0.5">
-            Known Abilities — Snapshot ({{ knownAbilityKeys.length }})
+            Known Abilities — Report ({{ knownAbilityKeys.length }})
           </div>
           <div class="flex flex-wrap gap-1">
             <span
               v-for="key in knownAbilityKeys"
               :key="key"
               class="text-[0.72rem] px-1.5 py-0.5 bg-surface-card border border-border-subtle text-entity-ability"
-              :title="`Known in snapshot: ${key}`">{{ key }}</span>
+              :title="`Known in report: ${key}`">{{ key }}</span>
           </div>
         </div>
         <div v-if="abilities.length" class="flex flex-col gap-1.5">

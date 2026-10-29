@@ -90,7 +90,7 @@
               class="text-xs px-1.5 py-0.5 rounded border border-border-light text-text-muted hover:text-accent-gold hover:border-accent-gold/40 cursor-pointer transition-colors bg-transparent"
               :disabled="store.scanning"
               @click="handleScan"
-              title="Scan all inventory snapshots for brewing discoveries">
+              title="Scan all Storage reports for brewing discoveries">
               {{ store.scanning ? 'Scanning...' : 'Scan' }}
             </button>
             <button
@@ -242,7 +242,7 @@ async function handleScan() {
     } else if (result.total_brewing_items > 0) {
       toast.info(`Scanned ${result.total_brewing_items} brewed items — no new discoveries.`);
     } else {
-      toast.info("No brewed items found in inventory snapshots.");
+      toast.info("No brewed items found in Storage reports.");
     }
   }
 }

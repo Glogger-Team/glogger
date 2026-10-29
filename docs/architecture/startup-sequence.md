@@ -40,7 +40,7 @@ T+0.070s  Loading phase: runStartupTasks() — BLOCKS until all complete
           │   ├── Auto-import latest character report
           │   ├── Auto-import latest inventory report
           │   ├── Seed game state (skills, favor, recipes, currencies, storage)
-          │   └── Load character snapshots
+          │   └── Load character reports
           └── Task 4: Load full game state from DB .............. ~0.1s
               ├── loadAll() — all 11 game state domains
               ├── Load storage vault CDN metadata
@@ -135,7 +135,7 @@ Shows `StartupProgress` with a 4-task checklist. Each task must complete before 
 - Calls `characterStore.initForActiveCharacter()` which:
   - Auto-imports the latest character report from the Reports folder
   - Seeds game state from the report (skills, favor, recipes, currencies)
-  - Loads character list and snapshots, auto-selects most recent
+  - Loads character list and reports, auto-selects most recent
   - Auto-imports latest inventory report (seeds storage)
   - Background-imports reports for all other characters on the server (for aggregate views)
 - Now uses the **correct** active character resolved by the catch-up in Task 2
@@ -186,11 +186,11 @@ After the app is interactive:
 **Backend initialization:**
 - `src-tauri/src/lib.rs` — Rust `run()` function, setup handler, CDN background task
 - `src-tauri/src/coordinator.rs` — DataIngestCoordinator, log watcher management
-- `src-tauri/src/game_state.rs` — GameStateManager, event processing, snapshot seeding
+- `src-tauri/src/game_state.rs` — GameStateManager, event processing, report seeding
 
 **Data stores populated during startup:**
 - `src/stores/gameDataStore.ts` — CDN data (items, skills, recipes, NPCs, effects)
 - `src/stores/gameStateStore.ts` — Character game state (11 domains), startupComplete flag
-- `src/stores/characterStore.ts` — Character snapshots, report imports
+- `src/stores/characterStore.ts` — Character reports, report imports
 - `src/stores/coordinatorStore.ts` — Log watcher status, polling
 - `src/stores/marketStore.ts` — Market values

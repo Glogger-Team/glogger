@@ -218,6 +218,11 @@ interface UseRecordedPayload {
   kind: SurveyUseKind;
 }
 
+export interface RecordUseResult {
+  use_id: number;
+  session_id: number | null;
+}
+
 interface MultihitNodePayload {
   use_id: number;
   node_entity_id: number;
@@ -441,6 +446,41 @@ export const useSurveyTrackerStore = defineStore("surveyTracker", () => {
     }
   }
 
+  const recordError = ref<string | null>(null);
+
+  async function recordUse(
+    mapInternalName: string,
+    kind?: SurveyUseKind | null
+  ): Promise<RecordUseResult | null> {
+    isBusy.value = true;
+    recordError.value = null;
+    try {
+      const res = await invoke<RecordUseResult>("survey_tracker_record_use", {
+        mapInternalName,
+        kind: kind ?? null,
+      });
+      await Promise.all([refreshStatus(), refreshRecentSessions(), refreshHistorical(), analytics.value !== null ? refreshAnalytics() : Promise.resolve()]);
+      // If the recorded use landed in the open detail's session, refresh it
+      // so the new use shows up (mirrors endSession).
+      if (
+        openDetailSessionId.value !== null &&
+        res.session_id === openDetailSessionId.value
+      ) {
+        await loadSessionDetail(openDetailSessionId.value);
+      }
+      return res;
+    } catch (err) {
+      console.error("[surveyTracker] record_use failed:", err);
+      recordError.value = String(err);
+      // record_manual_use may have persisted a session before insert_use
+      // failed — refresh so status/recent don't hide the orphaned session.
+      await Promise.all([refreshStatus(), refreshRecentSessions(), refreshHistorical()]);
+      return null;
+    } finally {
+      isBusy.value = false;
+    }
+  }
+
   // ── Event handlers ────────────────────────────────────────────────────
   // Wired into startupStore alongside other Tauri event listeners. Each
   // handler refreshes only what could have changed — cheap queries, easy
@@ -535,6 +575,8 @@ export const useSurveyTrackerStore = defineStore("surveyTracker", () => {
     clearOpenDetail,
     startSession,
     endSession,
+    recordError,
+    recordUse,
     updateSessionNotes,
     updateSessionName,
     updateSessionTimes,

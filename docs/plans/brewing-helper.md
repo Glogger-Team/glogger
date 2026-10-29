@@ -75,7 +75,7 @@ for the raw investigation data that informed this plan.
 - **No brewing automation** — we track and display, we don't tell the player
   what to brew. The discovery matrix shows what's untried, not what's optimal.
 - **No cross-player data sharing** — each player's journal is their own.
-- **No real-time aging simulation** — we observe aging from JSON snapshots, we
+- **No real-time aging simulation** — we observe aging from JSON reports, we
   don't guess rates or predict completion times (at least not in v1).
 
 ---
@@ -367,7 +367,7 @@ tier of the recipe being brewed.
 ## 9. Phase 5 — Aging tracker
 
 **Goal:** Track wine aging (uses gained) and liquor aging (un-aged→aged
-transitions) across item JSON snapshots.
+transitions) across item JSON reports.
 
 ### Wine aging
 
@@ -407,7 +407,7 @@ CREATE TABLE brewing_aging_snapshots (
 - Item identity across exports is tricky — items don't have stable instance IDs
   in the JSON. We may need to match on TypeID + vault + position, or accept
   some ambiguity.
-- Wine aging rate calculation needs at least 2 snapshots with the same wine.
+- Wine aging rate calculation needs at least 2 reports with the same wine.
   Show "insufficient data" until then.
 
 ---
@@ -492,7 +492,7 @@ All of these typically fire at the same timestamp.
 
 These are not in scope for the initial build but are worth considering:
 
-- **Aging rate estimation** — after enough snapshots, calculate uses-per-hour
+- **Aging rate estimation** — after enough reports, calculate uses-per-hour
   for each wine type and show predicted maturity dates.
 - **Brew planner** — "I want to make 10 Dwarven Stout Kegs targeting
   BrewingDanceAppreciation. Here's the shopping list." Integrates with the

@@ -58,7 +58,7 @@ const filtered = computed(() => {
 // Only blame the filter when one is set: an empty snapshot must not claim the
 // filters are to blame (same rule as InventoryTable).
 const emptyText = computed(() =>
-  filter.value ? 'No stats match the current filter.' : 'No stats in this snapshot.')
+  filter.value ? 'No stats match the current filter.' : 'No stats in this report.')
 
 function formatStatKey(key: string): string {
   return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())

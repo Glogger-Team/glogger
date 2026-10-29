@@ -23,6 +23,7 @@ import type {
   InventorySummary,
   CrossCharacterItem,
 } from '../types/database'
+import type { WorkOrderPresence } from '../types/crafting'
 
 export const useCharacterStore = defineStore('character', () => {
   const characters = ref<CharacterInfo[]>([])
@@ -51,8 +52,21 @@ export const useCharacterStore = defineStore('character', () => {
 
   // Cross-character storage search state (latest snapshot per character)
   const allCharacterItems = ref<CrossCharacterItem[]>([])
+  // Invalidation generation: bumped on every cache clear so an in-flight
+  // load started before the invalidation drops its stale result instead of
+  // committing it (server switch / import / delete mid-await).
+  const allCharacterItemsGeneration = ref(0)
   const allCharacterItemsLoading = ref(false)
+  const allCharacterItemsServer = ref<string | undefined>(undefined)
   const allCharacterItemsLoaded = ref(false)
+
+  // Cross-character work-order presence (latest snapshot per character)
+  const allCharacterWorkOrders = ref<WorkOrderPresence[]>([])
+  const allCharacterWorkOrdersLoading = ref(false)
+  const allCharacterWorkOrdersServer = ref<string | undefined>(undefined)
+  // Same generation guard as the items cache above.
+  const allCharacterWorkOrdersGeneration = ref(0)
+  const allCharacterWorkOrdersLoaded = ref(false)
 
   async function importCharacterReport(): Promise<ImportResult | null> {
     const settingsStore = useSettingsStore()
@@ -71,6 +85,10 @@ export const useCharacterStore = defineStore('character', () => {
         filePath: filePath as string,
       })
       lastImport.value = result
+      // WO presence derives from the latest report — invalidate the cache.
+      allCharacterWorkOrdersLoaded.value = false
+      allCharacterWorkOrdersGeneration.value++
+
 
       // Refresh character list after import
       await loadCharacters()
@@ -116,6 +134,9 @@ export const useCharacterStore = defineStore('character', () => {
         gameState.refreshDomain('favor'),
         gameState.refreshDomain('storage'),
       ])
+      // WO presence derives from the latest report — invalidate the cache.
+      allCharacterWorkOrdersLoaded.value = false
+      allCharacterWorkOrdersGeneration.value++
     } catch (e) {
       // Non-fatal — the report may not exist on disk
       console.warn('Auto-import latest report:', e)
@@ -152,6 +173,10 @@ export const useCharacterStore = defineStore('character', () => {
       parallelTasks.push(
         invoke<number>('import_reports_for_server', { serverName }).then(async (count) => {
           if (count > 0) {
+            // Imported reports are the WO source data — invalidate so
+            // workOrderStateFor recomputes instead of serving stale lists.
+            allCharacterWorkOrdersLoaded.value = false
+            allCharacterWorkOrdersGeneration.value++
             await loadCharacters()
           }
         }).catch((e) => {
@@ -248,6 +273,9 @@ export const useCharacterStore = defineStore('character', () => {
       if (result) {
         // New report was imported — refresh snapshot list and auto-select newest
         lastImport.value = result
+        // WOs come from the latest report — invalidate so tooltips refresh.
+        allCharacterWorkOrdersLoaded.value = false
+      allCharacterWorkOrdersGeneration.value++
         // A fresh export re-anchors the council-wallet estimate (delta reset) —
         // pull the new anchor so the dashboard figure reflects it immediately.
         import('./gameStateStore').then(({ useGameStateStore }) => {
@@ -280,6 +308,8 @@ export const useCharacterStore = defineStore('character', () => {
 
       if (invResult) {
         lastInventoryImport.value = invResult
+        allCharacterItemsLoaded.value = false
+      allCharacterItemsGeneration.value++
         await loadInventorySnapshots(characterName, serverName || undefined)
         if (inventorySnapshots.value.length > 0) {
           await selectInventorySnapshot(inventorySnapshots.value[0])
@@ -337,7 +367,10 @@ export const useCharacterStore = defineStore('character', () => {
       const result = await invoke<InventoryImportResult>('import_inventory_report', {
         filePath: filePath as string,
       })
+      // Items come from the latest reports — invalidate the cross-character cache.
       lastInventoryImport.value = result
+      allCharacterItemsLoaded.value = false
+      allCharacterItemsGeneration.value++
 
       // Refresh inventory snapshots after import
       if (selectedCharacter.value) {
@@ -406,6 +439,10 @@ export const useCharacterStore = defineStore('character', () => {
     // Try auto-import
     try {
       const invResult = await invoke<InventoryImportResult | null>('import_latest_inventory_for_character', { characterName, serverName: serverName || undefined })
+      if (invResult) {
+        allCharacterItemsLoaded.value = false
+        allCharacterItemsGeneration.value++
+      }
       // Auto-scan for new brewing discoveries (non-blocking)
       if (invResult && !invResult.was_duplicate) {
         import('./breweryStore').then(({ useBreweryStore }) => {
@@ -432,33 +469,161 @@ export const useCharacterStore = defineStore('character', () => {
    * the aggregated item set. Caches results; pass `force` to refresh.
    */
   async function loadAllCharacterItems(force = false) {
-    if (allCharacterItemsLoaded.value && !force) return
-
     const settingsStore = useSettingsStore()
     const serverName = settingsStore.settings.activeServerName || undefined
+    // No server selected: never fetch unfiltered — clear the cache so the
+    // search shows nothing instead of all servers' rows.
+    if (!serverName) {
+      allCharacterItems.value = []
+      allCharacterItemsLoaded.value = false
+      allCharacterItemsGeneration.value++
+      allCharacterItemsServer.value = undefined
+      return
+    }
+    const cacheMatchesServer = allCharacterItemsServer.value === serverName
+    if (allCharacterItemsLoaded.value && cacheMatchesServer && !force) return
 
     allCharacterItemsLoading.value = true
+    // Clear stale rows before the async fetch/backfill so consumers never
+    // render the previous server's rows while the new query is in flight.
+    allCharacterItems.value = []
+    const generation = allCharacterItemsGeneration.value
     try {
       // Backfill inventory reports for every character on this server so the
       // search sees characters the user hasn't opened recently. Best-effort —
       // a missing Reports folder or file just yields fewer results.
-      if (serverName) {
-        try {
-          await invoke<number>('import_all_inventory_for_server', { serverName })
-        } catch (e) {
-          console.warn('Cross-character inventory backfill:', e)
-        }
+      // Not repeated on retry (fetchAllCharacterItems below re-reads only):
+      // re-scanning report files there could restore a character deleted
+      // mid-flight (delete clears DB rows only; report files stay on disk).
+      try {
+        await invoke<number>('import_all_inventory_for_server', { serverName })
+      } catch (e) {
+        console.warn('Cross-character inventory backfill:', e)
       }
 
-      allCharacterItems.value = await invoke<CrossCharacterItem[]>('get_all_character_items', {
-        serverName,
-      })
-      allCharacterItemsLoaded.value = true
+      await fetchAllCharacterItems(serverName, generation)
     } catch (e) {
       error.value = String(e)
+      // Failed fetch must not poison the cache: allow the next call through.
+      allCharacterItemsLoaded.value = false
+      allCharacterItemsGeneration.value++
     } finally {
       allCharacterItemsLoading.value = false
     }
+  }
+
+  /**
+   * Read-only half of the cross-character load: query + guard, no backfill.
+   * Split out so the invalidation retry re-reads without re-scanning report
+   * files (see the delete-restores-files note above).
+   */
+  async function fetchAllCharacterItems(serverName: string, generation: number) {
+    const settingsStore = useSettingsStore()
+    const rows = await invoke<CrossCharacterItem[]>('get_all_character_items', {
+      serverName,
+    })
+    // Drop the result if the server changed or the cache was invalidated
+    // mid-flight — committing it would poison the new scope with old rows.
+    if (settingsStore.settings.activeServerName !== serverName) return
+    if (generation !== allCharacterItemsGeneration.value) {
+      // Same server, invalidated mid-flight: re-read without backfill.
+      // Converges — each retry re-resolves generation; imports are bounded.
+      // Awaited so the caller's finally holds the loading flag.
+      await fetchAllCharacterItems(serverName, allCharacterItemsGeneration.value)
+      return
+    }
+    allCharacterItems.value = rows
+    allCharacterItemsLoaded.value = true
+    allCharacterItemsServer.value = serverName
+  }
+
+  /**
+   * Load cross-character work-order presence from every character's latest
+   * snapshot on the active server. Caches results; pass `force` to refresh.
+   */
+  async function loadAllCharacterWorkOrders(force = false) {
+    const settingsStore = useSettingsStore()
+    const serverName = settingsStore.settings.activeServerName || undefined
+    // No server selected: never fetch unfiltered (backend treats an omitted
+    // filter as all servers) — clear the cache so tooltips show nothing.
+    if (!serverName) {
+      allCharacterWorkOrders.value = []
+      allCharacterWorkOrdersLoaded.value = false
+      allCharacterWorkOrdersGeneration.value++
+      allCharacterWorkOrdersServer.value = undefined
+      return
+    }
+    const cacheMatchesServer = allCharacterWorkOrdersServer.value === serverName
+    if (allCharacterWorkOrdersLoaded.value && cacheMatchesServer && !force) return
+
+    allCharacterWorkOrdersLoading.value = true
+    // Clear stale rows before the async fetch so tooltips never render the
+    // previous server's rows while the new query is in flight.
+    allCharacterWorkOrders.value = []
+    const generation = allCharacterWorkOrdersGeneration.value
+    try {
+      await fetchAllCharacterWorkOrders(serverName, generation)
+    } catch (e) {
+      // Background tooltip data — never surface through the shared error
+      // ref (CharacterView renders it as a character error). Retry state
+      // below still lets the next tooltip repopulate.
+      console.warn('Cross-character work-order load:', e)
+      // Failed fetch leaves rows empty (pre-cleared above): allow the next
+      // call through so the retry repopulates. Tooltips show nothing until then.
+      allCharacterWorkOrdersLoaded.value = false
+      allCharacterWorkOrdersGeneration.value++
+    } finally {
+      allCharacterWorkOrdersLoading.value = false
+    }
+  }
+  /**
+   * Read-only half of the cross-character work-order load: query + guard.
+   * Split out so a same-server mid-flight invalidation retries the read
+   * without leaving the cache empty (mirrors fetchAllCharacterItems).
+   */
+  async function fetchAllCharacterWorkOrders(serverName: string, generation: number) {
+    const settingsStore = useSettingsStore()
+    const rows = await invoke<WorkOrderPresence[]>('get_all_character_work_orders', {
+      serverName,
+    })
+    // Drop the result if the server changed during the await — committing it
+    // would poison the new scope with old rows.
+    if (settingsStore.settings.activeServerName !== serverName) return
+    if (generation !== allCharacterWorkOrdersGeneration.value) {
+      // Same server, invalidated mid-flight: re-read without backfill.
+      // Converges — each retry re-resolves generation; imports are bounded.
+      // Awaited so the caller's finally holds the loading flag.
+      await fetchAllCharacterWorkOrders(serverName, allCharacterWorkOrdersGeneration.value)
+      return
+    }
+    allCharacterWorkOrders.value = rows
+    allCharacterWorkOrdersLoaded.value = true
+    allCharacterWorkOrdersServer.value = serverName
+  }
+
+  /**
+   * Cross-character work-order state for a quest key, or null when no data
+   * exists. Callers render the `Done/Active` line only on non-null.
+   */
+  function workOrderStateFor(questKey: string | null | undefined): { completedBy: string[]; activeBy: string[] } | null {
+    if (!questKey) return null
+    // Cache is server-scoped; without a selection there is nothing valid to show.
+    // Rows carry their own server; skip any that do not match, so a stale
+    // cache from another server can never render under this one.
+    const serverName = useSettingsStore().settings.activeServerName
+    if (!serverName) return null
+    if (!allCharacterWorkOrdersLoaded.value || allCharacterWorkOrdersServer.value !== serverName)
+      return null
+    const completedBy: string[] = []
+    const activeBy: string[] = []
+    for (const row of allCharacterWorkOrders.value) {
+      if (row.quest_key !== questKey) continue
+      if (row.server_name !== serverName) continue
+      if (row.category === 'completed_work_order') completedBy.push(row.character_name)
+      else if (row.category === 'work_order') activeBy.push(row.character_name)
+    }
+    if (completedBy.length === 0 && activeBy.length === 0) return null
+    return { completedBy, activeBy }
   }
 
   return {
@@ -500,8 +665,18 @@ export const useCharacterStore = defineStore('character', () => {
     // Cross-character storage search
     allCharacterItems,
     allCharacterItemsLoading,
+    allCharacterItemsGeneration,
+    allCharacterItemsServer,
     allCharacterItemsLoaded,
     loadAllCharacterItems,
+    // Cross-character work-order presence
+    allCharacterWorkOrders,
+    allCharacterWorkOrdersLoading,
+    allCharacterWorkOrdersGeneration,
+    allCharacterWorkOrdersServer,
+    allCharacterWorkOrdersLoaded,
+    loadAllCharacterWorkOrders,
+    workOrderStateFor,
   }
 })
 

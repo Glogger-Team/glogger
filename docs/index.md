@@ -79,7 +79,7 @@ Per-screen documentation organized by view.
 ### Character
 - [character.md](features/screens/character.md) — Character screen: architecture, component hierarchy, data sources.
   - [character-skills.md](features/screens/character/character-skills.md) — Skills tab: two-panel layout, tracked skills, XP progression, CDN enrichment.
-  - [character-stats.md](features/screens/character/character-stats.md) — Stats tab: character report import, snapshot management.
+  - [character-stats.md](features/screens/character/character-stats.md) — Stats tab: character report import, report management.
   - [character-npcs.md](features/screens/character/character-npcs.md) — NPCs tab: favor progression, services, gift preferences.
   - [character-quests.md](features/screens/character/character-quests.md) — Quests tab: personalized quest reference with requirement eligibility.
   - [character-gourmand.md](features/screens/character/character-gourmand.md) — Gourmand tab.
@@ -90,7 +90,7 @@ Per-screen documentation organized by view.
 ### Inventory
 - [inventory.md](features/screens/inventory.md) — Inventory screen: architecture, component hierarchy, vault capacity models.
   - [inventory-live.md](features/screens/inventory/inventory-live.md) — Live Inventory tab: real-time tracking from player log.
-  - [inventory-snapshots.md](features/screens/inventory/inventory-snapshots.md) — Snapshots tab: point-in-time browsing from /outputitems.
+  - [inventory-snapshots.md](features/screens/inventory/inventory-snapshots.md) — Storage reports tab: point-in-time browsing from Export Storage as JSON (Settings → VIP).
   - [inventory-vaults.md](features/screens/inventory/inventory-vaults.md) — Storage Vault Database tab: area-grouped vault browser with capacity tracking.
 
 ### Crafting
@@ -168,7 +168,7 @@ Completed plans are moved to `archive/plans/` for reference. These features are 
 
 Utility scripts in `scripts/`.
 
-- `analyze_capture.py` — Analyze a debug capture JSON file: ProcessXxx type inventory, noise classification, combat summary, chat extraction, state snapshot diff. Run `python scripts/analyze_capture.py --help` for options.
+- `analyze_capture.py` — Analyze a debug capture JSON file: ProcessXxx type inventory, noise classification, combat summary, chat extraction, state diff. Run `python scripts/analyze_capture.py --help` for options.
 - `extract_cdn_schemas.py` — Extract field schemas from CDN JSON files.
 - `bump-version.sh` — Bump app version across Cargo.toml, tauri.conf.json, tauri.experimental.conf.json, and package.json.
 - `minimize-player-log.sh` — Strip noise lines from a raw Player.log for smaller test fixtures.
@@ -177,7 +177,7 @@ Utility scripts in `scripts/`.
 
 Sample data files for development and testing (gitignored).
 
-- `samples/CDN-full-examples/` — Complete CDN JSON snapshots.
+- `samples/CDN-full-examples/` — Complete CDN JSON samples.
 - `samples/character-export-samples/` — Character export JSON examples.
 - `samples/player-log-samples/` — Player.log excerpts for parser testing.
 - `samples/devtolsCaptures/` — Debug capture JSON files for analysis and feature discovery.

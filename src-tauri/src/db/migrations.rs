@@ -437,6 +437,12 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 80)?;
     }
 
+    if current_version < 81 {
+        migration_v81_snapshot_item_details(conn)?;
+        super::record_migration(conn, 81)?;
+    }
+
+
     tx.commit()?;
     Ok(())
 }
@@ -581,6 +587,114 @@ fn migration_v80_currency_anchor_space_format(conn: &Connection) -> Result<()> {
             SET anchor_at = replace(anchor_at, 'T', ' ')
           WHERE anchor_at LIKE '%T%';",
     )?;
+    Ok(())
+}
+
+/// Migration V81: persist dropped Storage-export item detail fields.
+///
+/// The `Export Storage as JSON` report carries `IsAugmented`, `DyeCount`,
+/// `Inscription`, and `Inscriber` per item, but the importer dropped them
+/// (never stored). All nullable: most items omit them, and the importer
+/// passes NULLs through (serde `default` on `Option` fields).
+/// Backfill: already-imported snapshots keep their `raw_json`, and the
+/// duplicate-import path skips re-insert, so this migration replays each
+/// stored report's `Items` array into the four columns (fill-only: only
+/// NULL columns are touched, and serde defaults keep absent keys NULL).
+/// `IngredientItemTypeIds` gets no column: brewing already reads it off
+/// `raw_json`.
+fn migration_v81_snapshot_item_details(conn: &Connection) -> Result<()> {
+    // Minimal test fixtures build only the tables they need — skip when
+    // the snapshot-items table is absent (same guard shape as v79/v80).
+    let has_table: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'character_snapshot_items')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_table {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "ALTER TABLE character_snapshot_items ADD COLUMN is_augmented INTEGER;
+         ALTER TABLE character_snapshot_items ADD COLUMN dye_count INTEGER;
+         ALTER TABLE character_snapshot_items ADD COLUMN inscription TEXT;
+         ALTER TABLE character_snapshot_items ADD COLUMN inscriber TEXT;",
+    )?;
+    // Backfill existing rows from each stored report. A malformed JSON entry
+    // or missing key skips that item's update, never the migration; SQLite
+    // execution failures propagate so the run retries instead of recording
+    // v81 with rows left unprocessed.
+    let snapshots: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, raw_json FROM character_item_snapshots WHERE raw_json IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for (snapshot_id, raw_json) in snapshots {
+        let parsed: serde_json::Value = match serde_json::from_str(&raw_json) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let items = match parsed.get("Items").and_then(|v| v.as_array()) {
+            Some(items) => items,
+            None => continue,
+        };
+        // Same ordinal matching as the duplicate-import path: (type_id,
+        // vault) repeats within a report, so the Nth entry targets the Nth
+        // stored row ordered by id.
+        let mut ordinals: std::collections::HashMap<(i64, String), i64> =
+            std::collections::HashMap::new();
+        for item in items {
+            let type_id = item.get("TypeID").and_then(|v| v.as_i64());
+            let vault = item.get("StorageVault").and_then(|v| v.as_str()).unwrap_or("");
+            let type_id = match type_id {
+                Some(id) => id,
+                None => continue,
+            };
+            // Increment for EVERY entry (even all-NULL ones) so ordinals agree
+            // entry-for-entry with the duplicate-import path, which executes
+            // (harmless no-op) UPDATEs for valueless entries too.
+            let key = (type_id, vault.to_string());
+            let ordinal = ordinals.entry(key).or_insert(0);
+            let offset = *ordinal;
+            *ordinal += 1;
+            let is_augmented = item.get("IsAugmented").and_then(|v| v.as_bool());
+            let dye_count = item.get("DyeCount").and_then(|v| v.as_i64());
+            let inscription = item.get("Inscription").and_then(|v| v.as_str());
+            let inscriber = item.get("Inscriber").and_then(|v| v.as_str());
+            if is_augmented.is_none()
+                && dye_count.is_none()
+                && inscription.is_none()
+                && inscriber.is_none()
+            {
+                continue;
+            }
+            conn.execute(
+                "UPDATE character_snapshot_items
+                 SET is_augmented = COALESCE(is_augmented, ?1),
+                     dye_count = COALESCE(dye_count, ?2),
+                     inscription = COALESCE(inscription, ?3),
+                     inscriber = COALESCE(inscriber, ?4)
+                 WHERE id = (
+                     SELECT id FROM character_snapshot_items
+                     WHERE item_snapshot_id = ?5 AND type_id = ?6 AND storage_vault = ?7
+                     ORDER BY id LIMIT 1 OFFSET ?8
+                 )",
+                rusqlite::params![
+                    is_augmented,
+                    dye_count,
+                    inscription,
+                    inscriber,
+                    snapshot_id,
+                    type_id,
+                    vault,
+                    offset
+                ],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -3838,13 +3952,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            80,
+            81,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 80);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 81);
     }
 
     #[test]
@@ -3879,5 +3993,88 @@ mod tests {
             )
             .unwrap();
         assert_eq!(anchor2, "2026-10-26 12:00:00");
+    }
+    #[test]
+    fn v81_backfills_detail_columns_from_stored_raw_json() {
+        // Pre-v81 upgrade shape: snapshot rows exist WITHOUT the v81 columns
+        // while raw_json still carries the keys. Build that state by hand
+        // (v1 schema minus v81 columns), run the migration, and assert the
+        // backfill replays raw_json into the new columns (fill-only).
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE character_item_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_name TEXT NOT NULL,
+                server_name TEXT NOT NULL,
+                snapshot_timestamp TIMESTAMP NOT NULL,
+                raw_json TEXT
+            );
+            CREATE TABLE character_snapshot_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_snapshot_id INTEGER NOT NULL,
+                type_id INTEGER NOT NULL,
+                storage_vault TEXT NOT NULL DEFAULT '',
+                is_in_inventory BOOLEAN NOT NULL DEFAULT 0,
+                stack_size INTEGER NOT NULL,
+                value INTEGER,
+                item_name TEXT NOT NULL
+            );
+            INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
+            VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[{\"TypeID\":1,\"StorageVault\":\"V\",\"StackSize\":1,\"Value\":1,\"Name\":\"W\",\"IsAugmented\":true,\"DyeCount\":2}]}');
+            INSERT INTO character_snapshot_items (item_snapshot_id, type_id, storage_vault, is_in_inventory, stack_size, value, item_name)
+            VALUES (1, 1, 'V', 0, 1, 1, 'W');",
+        )
+        .unwrap();
+        migration_v81_snapshot_item_details(&c).unwrap();
+        let (aug, dye): (Option<bool>, Option<i64>) = c
+            .query_row(
+                "SELECT is_augmented, dye_count FROM character_snapshot_items WHERE type_id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((aug, dye), (Some(true), Some(2)), "v81 must replay raw_json keys into new columns");
+    }
+    #[test]
+    fn v81_ordinal_survives_valueless_middle_entry() {
+        // Valued, valueless, valued entries in one vault group: the third
+        // entry's ordinal must be 2 (not 1) to match the duplicate-import
+        // path, which consumes an ordinal for every file entry.
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE character_item_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_name TEXT NOT NULL,
+                server_name TEXT NOT NULL,
+                snapshot_timestamp TIMESTAMP NOT NULL,
+                raw_json TEXT
+            );
+            CREATE TABLE character_snapshot_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_snapshot_id INTEGER NOT NULL,
+                type_id INTEGER NOT NULL,
+                storage_vault TEXT NOT NULL DEFAULT '',
+                is_in_inventory BOOLEAN NOT NULL DEFAULT 0,
+                stack_size INTEGER NOT NULL,
+                value INTEGER,
+                item_name TEXT NOT NULL
+            );
+            INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
+            VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[{\"TypeID\":1,\"StorageVault\":\"V\",\"StackSize\":1,\"Value\":1,\"Name\":\"A\",\"IsAugmented\":true},{\"TypeID\":1,\"StorageVault\":\"V\",\"StackSize\":1,\"Value\":1,\"Name\":\"B\"},{\"TypeID\":1,\"StorageVault\":\"V\",\"StackSize\":1,\"Value\":1,\"Name\":\"C\",\"DyeCount\":7}]}');
+            INSERT INTO character_snapshot_items (item_snapshot_id, type_id, storage_vault, is_in_inventory, stack_size, value, item_name)
+            VALUES (1, 1, 'V', 0, 1, 1, 'A'), (1, 1, 'V', 0, 1, 1, 'B'), (1, 1, 'V', 0, 1, 1, 'C');",
+        )
+        .unwrap();
+        migration_v81_snapshot_item_details(&c).unwrap();
+        let rows: Vec<(Option<bool>, Option<i64>)> = {
+            let mut stmt = c
+                .prepare("SELECT is_augmented, dye_count FROM character_snapshot_items ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        assert_eq!(rows, vec![(Some(true), None), (None, None), (None, Some(7))], "Nth entry fills Nth row across valueless gaps");
     }
 }

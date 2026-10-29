@@ -48,33 +48,33 @@ game behavior — tuning requires a capture of actual paired lines.
 
 ---
 
-## 2. Brewing bulk scan — memory vs. snapshot volume
+## 2. Brewing bulk scan — memory vs. report volume
 
 **Where:** `src-tauri/src/db/brewing_commands.rs` — Phase 1 of
-`scan_all_snapshots_for_brewing` materializes every snapshot's full
+`scan_all_snapshots_for_brewing` materializes every report's full
 `raw_json` + all parsed `BrewingItem` vecs simultaneously (previously
-one snapshot at a time). The all-or-nothing Phase 3 transaction is an
+one report at a time). The all-or-nothing Phase 3 transaction is an
 improvement and should be kept regardless.
 
-**Why deferred:** Memory scales with total snapshot JSON size. Whether
-that matters depends on real snapshot counts/sizes on the user's
+**Why deferred:** Memory scales with total report JSON size. Whether
+that matters depends on real report counts/sizes on the user's
 machine — pure tuning, no correctness bug.
 
 **Concrete open items:**
 - [x] **Measured 2026-10-13 — leave as-is.** On the real dev DB
-      (`%APPDATA%/glogger.Dev/glogger.db`, 149 MB): **12 snapshot rows,
+      (`%APPDATA%/glogger.Dev/glogger.db`, 149 MB): **12 report rows,
       158 KB average `raw_json`, 1.79 MB total** — an order of magnitude
       under the "low tens of MB" threshold, so Phase 1's all-at-once
       materialization stays. Re-measure with
       `SELECT COUNT(*), AVG(LENGTH(raw_json)), SUM(LENGTH(raw_json))/1048576.0
-      FROM character_item_snapshots` if snapshot volume grows.
+      FROM character_item_snapshots` if report volume grows.
 - [ ] If it grows past that: batch the scan (transaction per ~50
-      snapshots, parsing inside each batch window). Keep the
+      reports, parsing inside each batch window). Keep the
       error-all-or-nothing semantics per batch, and keep Phase 1's
       read-connection scoping (read conns dropped before any `await`
       — that pattern was verified safe; don't regress it).
 - [x] TOCTOU between read/write phases is nominal (values captured
-      once, snapshot rows are write-once) — no action needed, noted
+      once, report rows are write-once) — no action needed, noted
       here so nobody "fixes" it into a re-read later.
 
 ---

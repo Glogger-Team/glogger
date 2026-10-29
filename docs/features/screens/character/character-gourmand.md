@@ -50,7 +50,7 @@ Foods Consumed:
 
 - Lines after `"Foods Consumed:"` are parsed as food entries
 - `strip_food_tags()` removes parenthesized tags like `(HAS MEAT)`, `(HAS DAIRY)`
-- On import, `gourmand_eaten_foods` is cleared and repopulated (snapshot model)
+- On import, `gourmand_eaten_foods` is cleared and repopulated (report model)
 
 ## Source Classification
 
@@ -86,7 +86,7 @@ through to `other` rather than being guessed at.
 The store resolves the player's Gourmand level with a priority chain:
 1. **Manual override** — user-entered value via header input
 2. **Live session** — from skill store if a Gourmand XP event has been seen
-3. **Character snapshot** — from character store imported data
+3. **Character report** — from character store imported data
 
 This level determines which foods the player can currently eat (foods with `gourmand_req > level` are marked unusable).
 
@@ -139,7 +139,7 @@ Uses `PaneLayout` (screen-key `char-gourmand`) with left + conditional right pan
 > the two new columns stay at their `[]` default. The UI treats an empty
 > `source_kinds` as "unknown" and simply omits the badge.
 
-**`gourmand_eaten_foods`** — last-imported report snapshot:
+**`gourmand_eaten_foods`** — last-imported report:
 
 | Column | Type | Description |
 |--------|------|-------------|

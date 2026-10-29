@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tauri::State;
 
-// ── JSON Deserialization Structs (match game's /outputcharacter format) ───────
+// ── JSON Deserialization Structs (match game's Character export format: Export Character as JSON in Settings → VIP) ───────
 
 #[derive(Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -235,7 +235,7 @@ pub fn import_character_report_internal(
                 report.race,
                 raw_json,
             ],
-        ).map_err(|e| format!("Failed to insert snapshot: {e}"))?;
+        ).map_err(|e| format!("Failed to store character report: {e}"))?;
 
         // 6. Check if insert created a new row
         let changes = conn.changes();

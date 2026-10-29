@@ -13,8 +13,8 @@ All persistent data falls into one of three scopes:
 Data belonging to a specific character on a specific server:
 
 - **Game state** — skills, inventory, equipment, recipes, favor, currencies, attributes, effects, active skills, combat, mount (all `game_state_*` tables)
-- **Character snapshots** — `/outputcharacter` exports
-- **Inventory snapshots** — point-in-time inventory records
+- **Character reports** — Export Character as JSON (Settings → VIP) exports
+- **Storage reports** — point-in-time inventory records
 - **Session tracking** — XP rates, skill deltas, live inventory (in-memory, resets on login)
 - **Crafting projects** — work orders, ingredient tracking
 - **Gourmand progress** — food tracking per character

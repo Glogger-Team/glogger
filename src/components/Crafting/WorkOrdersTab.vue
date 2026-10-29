@@ -52,7 +52,7 @@
         <SkeletonLoader variant="text" :lines="6" />
       </div>
 
-      <EmptyState v-else-if="workOrders.length === 0" variant="panel" primary="No work orders found" secondary="Import a character snapshot first." />
+      <EmptyState v-else-if="workOrders.length === 0" variant="panel" primary="No work orders found" secondary="Import a Character report first." />
 
       <div v-else class="flex flex-col gap-1.5">
         <!-- Select all for project creation -->

@@ -189,6 +189,10 @@ jobs:
         shell: pwsh
         run: ./scripts/check-glogger-constraints.ps1
 
+      - name: Review-patterns gate (decided defect shapes)
+        shell: bash
+        run: bash ./scripts/check-review-patterns.sh
+
   rust-tests:
     name: Rust tests
     runs-on: ubuntu-latest

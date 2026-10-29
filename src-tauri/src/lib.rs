@@ -177,9 +177,9 @@ use db::character_commands::{
 use db::crafting_commands::{
     add_project_entry, batch_update_entry_expansions, check_material_availability,
     create_crafting_project, delete_crafting_project, duplicate_crafting_project,
-    export_crafting_project, get_crafting_project, get_crafting_projects,
-    get_work_orders_from_snapshot, import_crafting_project, remove_project_entry,
-    reorder_project_entries, update_crafting_project, update_project_entry,
+    export_crafting_project, get_all_character_work_orders, get_crafting_project,
+    get_crafting_projects, get_work_orders_from_snapshot, import_crafting_project,
+    remove_project_entry, reorder_project_entries, update_crafting_project, update_project_entry,
 };
 use db::death_commands::{get_character_deaths, get_death_damage_sources};
 use db::farming_commands::{
@@ -219,6 +219,7 @@ use db::player_commands::{
     add_market_price, add_sale, get_market_prices_for_item, get_recent_events, get_recent_sales,
     log_event,
 };
+use db::survey_commands::get_all_survey_types;
 use db::resuscitate_commands::get_character_resuscitations;
 use db::timer_commands::{delete_user_timer, get_user_timers, save_user_timer};
 use debug_capture::replay_capture_file;
@@ -910,6 +911,8 @@ pub fn run() {
             survey::commands::survey_tracker_status,
             survey::commands::survey_tracker_start_session,
             survey::commands::survey_tracker_end_session,
+            survey::commands::survey_tracker_record_use,
+            get_all_survey_types,
             survey::commands::survey_tracker_recent_sessions,
             survey::commands::survey_tracker_session_detail,
             survey::commands::survey_tracker_historical_sessions,
@@ -981,6 +984,7 @@ pub fn run() {
             export_crafting_project,
             import_crafting_project,
             check_material_availability,
+            get_all_character_work_orders,
             get_work_orders_from_snapshot,
             // CDN - XP tables
             get_xp_table_for_skill,
