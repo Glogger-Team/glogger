@@ -87,7 +87,10 @@ Frozen-review + CodeRabbit rounds on the `todo-burndown` series (22 commits, ~ha
 - **Bulk UPDATEs.** Any `UPDATE ... WHERE` without a scoping predicate on identity (map/use/character) mistags kept rows in a mixed set — scope it or prove the set can't be mixed.
 - **Doc claims.** If the diff changes behaviour, `grep` the docs for the old claim (`unkeyed`, `5 keys`, `never`, `always`) and update or close the entry in the same commit.
 - **New scripts need the exec bit.** Files created via tooling land mode 644 — CI invokes `./scripts/...` directly, so run `git update-index --chmod=+x` on any new script (and prefer `bash ./scripts/...` invocation in CI as backup). A lost bit fails the job with exit 126, as the review-patterns gate proved on its first run.
+- **Fix the class, not the instance.** When fixing a defect of class X in function F, grep F for every other X before calling it done — the round-5 major (map-filtered drain, unfiltered `pending_uses` push two inches above it) was the same misattribution through a sibling path. `grep -n` the function for the shape, not just the reported line.
+- **Re-read the function after applying a suggested fix.** Reviewer diffs land as hunks; the dropped-flush bug shipped because nobody re-read the enclosing function afterward. Read the whole function top to bottom, then `cargo check`.
 - **Surgical edits.** One edit per hunk; `cargo check --lib` after each Rust edit before the next; never batch two edits to the same file in one turn. The round-2/3 churn (dropped flush, mangled docs, duplicated tails) came from big PUT ranges eating neighboring lines — tight ranges + immediate compile check prevent the whole class.
+- **Test orderings, not just the reported ordering.** When the defect is a race between paths (buffered-gain × manual-use × log-delete), the test should enumerate the orderings — the isolation test proved the drain but never walked the queue path, and the reviewer did.
 
 ## Code Conventions & Common Patterns
 
