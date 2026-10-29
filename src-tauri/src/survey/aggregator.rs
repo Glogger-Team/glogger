@@ -442,12 +442,19 @@ impl SurveySessionAggregator {
         // Wall-clock ISO is "YYYY-MM-DD HH:MM:SS" — the pending-use queue
         // needs the time half for secs-of-day ordering.
         if let Some(now_secs) = now_iso.split(' ').nth(1).and_then(parse_secs_of_day) {
-            self.pending_uses.push_back(PendingUse {
-                survey_use_id: use_id,
-                kind,
-                used_at_secs: now_secs,
-                used_at: parse_utc_datetime(now_iso),
-            });
+            // Basic uses need no Mining adoption or log-path attribution:
+            // the deferred drain above runs inline and the chat path uses
+            // recent_basic_uses. Queuing them would let attribute_basic_gain
+            // hand another map's pre-delete loot to this manual use
+            // (rposition takes the newest Basic pending use with no map check).
+            if kind != SurveyUseKind::Basic {
+                self.pending_uses.push_back(PendingUse {
+                    survey_use_id: use_id,
+                    kind,
+                    used_at_secs: now_secs,
+                    used_at: parse_utc_datetime(now_iso),
+                });
+            }
 
             // Drain deferred basic gains for THIS map only (same
             // single-loot-authority guard as the log path: a deferred gain
@@ -459,20 +466,27 @@ impl SurveySessionAggregator {
                 let deferred = std::mem::take(&mut self.deferred_basic_gains);
                 let mut kept = Vec::with_capacity(deferred.len());
                 let mut total_deferred_qty = 0u32;
-                let mut saw_matching_gain = false;
+                // Stored spellings that matched this use (usually one — the
+                // log's display string). The retro-tag matches rows on this
+                // spelling, not the resolved display_name, so a stored
+                // variant the CDN resolves differently still tags.
+                let mut matched_map_names: Vec<String> = Vec::new();
                 for gain in deferred {
-                    // Match by display name or raw internal name: when the
-                    // CDN can't resolve the map, display_name falls back to
-                    // the internal spelling while the gain carries the log's
-                    // display string. A gain with no map at all stays
-                    // buffered (conservative — its delete drains blind).
+                    // Match the stored map spelling against the selected
+                    // map's resolved display name or raw internal name.
+                    // A gain with no map at all stays buffered
+                    // (conservative — its delete drains blind).
                     let matches_map = gain.map_display_name.as_deref() == Some(display_name.as_str())
                         || gain.map_display_name.as_deref() == Some(map_internal_name);
                     if !matches_map {
                         kept.push(gain);
                         continue;
                     }
-                    saw_matching_gain = true;
+                    if let Some(map_name) = gain.map_display_name.as_ref() {
+                        if !matched_map_names.iter().any(|name| name == map_name) {
+                            matched_map_names.push(map_name.clone());
+                        }
+                    }
                     let has_chat_twin = match gain.resolved_at.as_deref() {
                         Some(at) => persistence::unclaimed_chat_gain_exists(
                             conn,
@@ -496,11 +510,12 @@ impl SurveySessionAggregator {
                 self.deferred_basic_gains = kept;
                 // A matching gain with a chat twin skips the bump above but
                 // its player.log row still needs the use_id linkage — the
-                // claim step below only tags chat_status rows. Tag once when
-                // any matching gain existed, twinned or not.
-                if saw_matching_gain {
+                // claim step below only tags chat_status rows. Tag each
+                // distinct stored spelling (usually one), since rows carry
+                // the stored spelling, not the resolved display name.
+                for map_name in &matched_map_names {
                     retroactively_tag_unlinked_survey_transactions(
-                        conn, use_id, character, server, Some(display_name.as_str()),
+                        conn, use_id, character, server, Some(map_name.as_str()),
                     );
                 }
                 if total_deferred_qty > 0 {
@@ -539,9 +554,11 @@ impl SurveySessionAggregator {
                 Ok(claimed_qty) => {
                     if let Err(e) = persistence::add_loot_qty(conn, use_id, claimed_qty) {
                         eprintln!("[survey-aggregator] claimed add_loot_qty failed: {e}");
-                    } else {
-                        let _ =
-                            persistence::set_use_status(conn, use_id, SurveyUseStatus::Completed);
+                    }
+                    if let Err(e) =
+                        persistence::set_use_status(conn, use_id, SurveyUseStatus::Completed)
+                    {
+                        eprintln!("[survey-aggregator] claimed set_use_status failed: {e}");
                     }
                     update_session_loot_timestamps(conn, use_id, now_iso);
                 }
@@ -3470,6 +3487,74 @@ mod tests {
         let manual_after = uses.iter().find(|u| u.id == use_id).unwrap();
         assert_eq!(manual_after.loot_qty, 0, "Ilmari manual still has none");
         assert_eq!(manual_after.status, SurveyUseStatus::PendingLoot);
+    }
+
+    #[test]
+    fn test_manual_basic_use_not_queued_for_log_attribution() {
+        // Major regression: a manual Basic use must not sit in pending_uses
+        // where attribute_basic_gain (rposition, no map check) would hand
+        // it the next map's pre-delete loot. Manual Ilmari Basic use, then
+        // Serbule gain + Serbule delete: the Serbule loot must land on its
+        // own log-path use, never on the Ilmari manual.
+        let conn = fresh_db();
+        let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
+        agg.set_base_date(test_base_date());
+
+        // 1. Manual Basic use for Ilmari — must not enter pending_uses.
+        let (use_id, _) = agg
+            .record_manual_use(
+                &conn,
+                "Zenith",
+                "Dreva",
+                Some("Ilmari"),
+                "GeologySurveyIlmari1",
+                crate::survey::types::SurveyUseKind::Basic,
+                "2026-04-15 12:00:05",
+            )
+            .expect("manual use records");
+        assert!(
+            !agg.pending_uses.iter().any(|p| p.survey_use_id == use_id),
+            "manual Basic use stays out of the pending queue"
+        );
+
+        // 2. Serbule gain arrives before its delete — no Basic pending use
+        // exists, so it buffers instead of attributing to the manual.
+        let mut gain = PlayerEvent::ItemAdded {
+            timestamp: "12:00:06".to_string(),
+            item_name: "Fluorite".to_string(),
+            instance_id: 999,
+            slot_index: -1,
+            is_new: true,
+            initial_quantity: 1,
+            provenance: ItemProvenance::Attributed {
+                source: ActivitySource::SurveyMapUse {
+                    survey_map_internal_name: Some("Serbule Blue Mineral Survey".to_string()),
+                },
+                confidence: crate::player_event_parser::AttributionConfidence::Confident,
+                survey_use_id: None,
+            },
+        };
+        agg.process_event(&mut gain, &conn, "Zenith", "Dreva", Some("Serbule"));
+
+        // 3. Serbule delete creates its own log-path use and drains.
+        let mut delete = PlayerEvent::ItemDeleted {
+            timestamp: "12:00:07".to_string(),
+            instance_id: 1,
+            item_name: Some("GeologySurveySerbule1".to_string()),
+            context: crate::player_event_parser::DeleteContext::Consumed,
+        };
+        agg.process_event(&mut delete, &conn, "Zenith", "Dreva", Some("Serbule"));
+
+        let session_id = persistence::active_session(&conn, "Zenith", "Dreva")
+            .unwrap()
+            .unwrap()
+            .id;
+        let uses = persistence::uses_for_session(&conn, session_id).unwrap();
+        assert_eq!(uses.len(), 2);
+        let manual_after = uses.iter().find(|u| u.id == use_id).unwrap();
+        assert_eq!(manual_after.loot_qty, 0, "Ilmari manual gets no Serbule loot");
+        let serbule_use = uses.iter().find(|u| u.id != use_id).unwrap();
+        assert_eq!(serbule_use.loot_qty, 1, "Serbule loot lands on Serbule use");
     }
 
     #[test]
