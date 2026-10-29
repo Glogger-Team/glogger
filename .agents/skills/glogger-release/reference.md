@@ -74,10 +74,15 @@ notes from the commits since the last *published* release
 `scripts/last-published-tag.sh`), builds the **signed** `glogger.Release`
 bundles on three runners via tauri-action direct mode — creating the GitHub
 Release under default tauri-action asset names (Windows NSIS, macOS aarch64,
-Linux) — then the single-writer channel
-job assembles `latest.json` from all three platforms' `.sig` files, attaches
-it to the release, and refreshes the update channel (next section). The
-release body opens with the channel line, then the generated notes, then a
+Linux) — then the single-writer channel job waits for all three platforms'
+binaries plus their `.sig` files, assembles `latest.json` from them, attaches
+it to the release, and refreshes the update channel (next section). Until
+that channel job succeeds the published Release is missing `latest.json`
+(and the Flatpak, which the follow-up job builds from the tag's committed
+files with its own sync). A failed platform build leaves a visibly partial
+Release under the tag; the next attempt is a new version tag — the previous
+tag is left behind, never retagged. The release body opens with the channel
+line, then the generated notes, then a
 Flatpak follow-up sentence, the attribution paragraph, and the macOS unsigned
 footnote; the same notes go into `latest.json.notes`. The `.githooks/commit-msg`
 prefix list drives the notes — put anything a user should read about in a
@@ -106,8 +111,10 @@ push a tag fix directly:
 - **Build failed before publish:** fix on a branch, merge to `main`, then cut
   the next version tag (`npm run release vX.Y.(Z+1)`). Leave the broken tag
   behind.
-- **Wrong tag pushed (release not yet published):** delete it locally and on
-  origin (`git tag -d <tag> && git push origin :refs/tags/<tag>`), then retag
+- **Wrong tag pushed (release not yet published):** cancel the running workflow
+  first (it keeps publishing with `cancel-in-progress: false`), confirm no
+  Release exists for the tag, then delete it locally and on origin
+  (`git tag -d <tag> && git push origin :refs/tags/<tag>`) and retag
   correctly. Safe only while the release was never published.
 - **Published tag must never move.** If a published release is bad, fix
   forward with a new version tag.
