@@ -3,8 +3,8 @@
 # Generate release notes from git commits since a base tag (normally the last
 # *published* release — see scripts/last-published-tag.sh; basing notes on
 # the nearest tag orphans the commits of any tag whose Release run failed).
-# Outputs markdown to stdout (scripts/release.sh writes it to RELEASE_NOTES.md,
-# which the release workflow publishes on the GitHub Release and in latest.json).
+# Outputs markdown to stdout (the release workflow generates it in CI and
+# publishes it on the GitHub Release and in latest.json).
 #
 # Usage:
 #   ./scripts/generate-changelog.sh                 # since the nearest v* tag, to HEAD

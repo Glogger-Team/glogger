@@ -63,68 +63,64 @@ npm run build
 ## Routine: publish a release
 
 ```bash
-npm run release <patch|minor|major|x.y.z>
+npm run release vX.Y.Z
 ```
 
-Must be run on `main` with a clean tree. It runs `scripts/bump-version.sh`
-(sets the version in `tauri.conf.json`, `package.json`, `Cargo.toml`, and the
-release/experimental window titles), writes `RELEASE_NOTES.md` from the
-commits since the previous release tag (`scripts/generate-changelog.sh`;
-`--notes <file>` uses hand-written notes instead — the script prompts if the
-generated notes list no changes), commits `release: v<version>` (bump + notes),
-tags it, and pushes both the branch and the tag to `origin`. CI
-(`.github/workflows/release.yml`) then builds the **signed** `glogger.Release`
-bundles on three runners — Windows NSIS, macOS aarch64 (`dmg` + `app.tar.gz`),
-Linux (`deb` + `AppImage`) — and publishes them to
-`https://github.com/Glogger-Team/glogger/releases/tag/v<version>`
-as `glogger-<version>-{windows-setup.exe,macos.dmg,macos.app.tar.gz,linux.deb,linux.AppImage}`
-(each updater artifact with a `.sig`), then refreshes the update channel (next
-section). The release body is the download table + the tagged `RELEASE_NOTES.md`
-+ the boilerplate, and the same notes go into `latest.json.notes`. A dry run of
-the same matrix without publishing:
+Run it on `main` with a clean, up-to-date tree. It creates and pushes one
+annotated tag — nothing is committed. CI (`.github/workflows/release.yml`)
+does the rest: syncs the tag version into the build workspaces, generates the
+notes from the commits since the last *published* release
+(`scripts/generate-changelog.sh`, based via
+`scripts/last-published-tag.sh`), builds the **signed** `glogger.Release`
+bundles on three runners via tauri-action direct mode — creating the GitHub
+Release under default tauri-action asset names (Windows NSIS, macOS aarch64,
+Linux) — then the single-writer channel
+job assembles `latest.json` from all three platforms' `.sig` files, attaches
+it to the release, and refreshes the update channel (next section). The
+release body opens with the channel line, then the generated notes, then a
+Flatpak follow-up sentence, the attribution paragraph, and the macOS unsigned
+footnote; the same notes go into `latest.json.notes`. The `.githooks/commit-msg`
+prefix list drives the notes — put anything a user should read about in a
+prefix the notes include. A dry run of the same matrix without publishing:
 
 ```bash
 gh workflow run release.yml --repo Glogger-Team/glogger \
-  -f ref=v<version> -f publish=false
+  -f ref=<branch> -f publish=false
 ```
 
-The pipeline refuses to publish when the tag != the committed
-`tauri.conf.json` version, when any platform's `.sig` is missing, or (for a
-dispatched publish) when the tag doesn't exist on `origin`. The `validate` job
-also runs the game-interaction hard-line scanner
+The pipeline refuses to publish a tag that is not `v<semver>`, or any release
+whose per-platform `.sig` is missing (dispatch publishes additionally require
+the tag to exist on `origin`). The `validate` job also runs the
+game-interaction hard-line scanner
 (`scripts/check-glogger-constraints.ps1`, `pwsh` — TOS prose lives in
 `docs/research/glogger-game-interaction-limits.md`), so a TOS/CoC violation fails
 the release — the same scanner runs from `.githooks/pre-push`, which is
 opt-in per clone (install: `scripts/setup-hooks.sh`; it blocks a violating
-push, `GLOGGER_SKIP_CONSTRAINTS=1` bypasses it loudly, CI re-checks anyway). A tag push also
-fails `validate` when `RELEASE_NOTES.md` is missing or doesn't cover the range
-since the previous tag (a warning only on `workflow_dispatch`, where historical
-tags are smoke-tested). The `.githooks/commit-msg` prefix list drives the notes — put anything a
-user should read about in a prefix the notes include.
+push, `GLOGGER_SKIP_CONSTRAINTS=1` bypasses it loudly, CI re-checks anyway).
 
-### When a tag's build fails
+### When a release fails
 
-CI cannot rebuild a tag in place: a tag-triggered run executes the workflow file
-*at that tag*, and the `validate` job only compares the tag name against
-`tauri.conf.json` — so a failed build leaves the tag pointing at a tree that may
-itself be broken. Two options, both needing a deliberate call:
+Cut releases from `main`, but never move or reuse a published tag, and never
+push a tag fix directly:
 
-- **Re-point the tag** at a fixed commit (what v1.1.0 needed):
-  `git tag -d v<ver> && git tag v<ver> && git push origin :refs/tags/v<ver> && git push origin refs/tags/v<ver>`.
-  Keep the version unchanged so the `validate` gate still passes; the old failed
-  run stays in history against the stale commit.
-- **Bump** (`npm run release patch`) and leave the broken tag behind.
+- **Build failed before publish:** fix on a branch, merge to `main`, then cut
+  the next version tag (`npm run release vX.Y.(Z+1)`). Leave the broken tag
+  behind.
+- **Wrong tag pushed (release not yet published):** delete it locally and on
+  origin (`git tag -d <tag> && git push origin :refs/tags/<tag>`), then retag
+  correctly. Safe only while the release was never published.
+- **Published tag must never move.** If a published release is bad, fix
+  forward with a new version tag.
 
-Whichever you pick, dry-run the matrix first (command above), and prefer a
-version whose `tauri.conf.json` matches the tag you are about to push.
+Whichever you pick, dry-run the matrix first (command above).
 
 ### Platform coverage
 
 | Platform | Shipped artifact | Notes |
 |---|---|---|
-| Windows x86_64 | `windows-setup.exe` (NSIS) | the daily driver; updater key `windows-x86_64` |
-| macOS aarch64 | `macos.dmg` + `macos.app.tar.gz` | unsigned (no Apple cert) → right-click → Open; updater key `darwin-aarch64`; Intel Macs unsupported (upstream parity) |
-| Linux x86_64 | `linux.deb` + `linux.AppImage` | AppImage is the self-updating one; updater key `linux-x86_64`; needs WebKitGTK 4.1 + `WEBKIT_DISABLE_DMABUF_RENDERER` (set automatically, see `lib.rs`) |
+| Windows x86_64 | NSIS setup (default tauri-action name) | the daily driver; updater key `windows-x86_64` |
+| macOS aarch64 | `.dmg` + updater `.app.tar.gz` (default tauri-action names) | unsigned (no Apple cert) → right-click → Open; updater key `darwin-aarch64`; Intel Macs unsupported (upstream parity) |
+| Linux x86_64 | `.deb` + `.AppImage` (default tauri-action names) | AppImage is the self-updating one; updater key `linux-x86_64`; needs WebKitGTK 4.1 + `WEBKIT_DISABLE_DMABUF_RENDERER` (set automatically, see `lib.rs`) |
 | Linux Flatpak | `glogger.flatpak` | built by `.github/workflows/flatpak.yml` (gnome-50 builder image) and attached by the same release run; no updater entry |
 | Windows ARM64 / other arches | — | not built |
 
