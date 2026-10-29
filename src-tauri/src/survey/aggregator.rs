@@ -443,7 +443,7 @@ impl SurveySessionAggregator {
         // needs the time half for secs-of-day ordering.
         if let Some(now_secs) = now_iso.split(' ').nth(1).and_then(parse_secs_of_day) {
             // Basic uses need no Mining adoption or log-path attribution:
-            // the deferred drain above runs inline and the chat path uses
+            // the deferred drain below runs inline and the chat path uses
             // recent_basic_uses. Queuing them would let attribute_basic_gain
             // hand another map's pre-delete loot to this manual use
             // (rposition takes the newest Basic pending use with no map check).
@@ -761,7 +761,10 @@ impl SurveySessionAggregator {
         }
         update_session_loot_timestamps(conn, use_id, timestamp);
         if mark_completed {
-            let _ = persistence::set_use_status(conn, use_id, SurveyUseStatus::Completed);
+            // Post-attribution cosmetic mark: log, never propagate.
+            if let Err(e) = persistence::set_use_status(conn, use_id, SurveyUseStatus::Completed) {
+                eprintln!("[survey-aggregator] chat set_use_status failed: {e}");
+            }
         }
         Some(use_id)
     }
@@ -1035,9 +1038,16 @@ impl SurveySessionAggregator {
         // Track craft timestamps on the session and tighten started_at so
         // the session header reflects the actual first activity, not the
         // wall-clock (or trigger-event) moment the session was created.
-        let _ = persistence::update_first_craft_at(conn, active, &now_iso);
-        let _ = persistence::update_last_craft_at(conn, active, &now_iso);
-        let _ = persistence::tighten_started_at(conn, active, &now_iso);
+        // Session-header cosmetics (post-commit): log, never propagate.
+        if let Err(e) = persistence::update_first_craft_at(conn, active, &now_iso) {
+            eprintln!("[survey-aggregator] update_first_craft_at failed: {e}");
+        }
+        if let Err(e) = persistence::update_last_craft_at(conn, active, &now_iso) {
+            eprintln!("[survey-aggregator] update_last_craft_at failed: {e}");
+        }
+        if let Err(e) = persistence::tighten_started_at(conn, active, &now_iso) {
+            eprintln!("[survey-aggregator] craft tighten_started_at failed: {e}");
+        }
     }
 
     /// Called when a survey map is consumed (deleted). Inserts a
@@ -1143,13 +1153,19 @@ impl SurveySessionAggregator {
             }
             // Tighten started_at so the session header reflects the actual
             // first survey use, not the session-creation moment.
-            let _ = persistence::tighten_started_at(conn, s, &now_iso);
+            // Best-effort cosmetic bump (post-commit): log, never propagate.
+            if let Err(e) = persistence::tighten_started_at(conn, s, &now_iso) {
+                eprintln!("[survey-aggregator] log tighten_started_at failed: {e}");
+            }
         }
 
         // For Basic surveys the loot drops in the same tick — no Mining
         // context follows. The use can immediately move to the pending-use
         // queue (so any same-tick gains attribute) and the aggregator will
         // close it via the regular sweep once its window passes.
+        // Unlike the manual path, this queueing is safe without a map
+        // check: the DeleteItem that created this use IS the matching map
+        // event, so any gain attributing here belongs to this use's map.
         // For Motherlode/Multihit, the entry sits in pending_uses waiting
         // for the next Mining context to open within 60s.
         if let Some(now_secs) = parse_secs_of_day(timestamp) {
@@ -1197,7 +1213,11 @@ impl SurveySessionAggregator {
                     }
                 }
                 if total_deferred_qty > 0 {
-                    let _ = persistence::add_loot_qty(conn, use_id, total_deferred_qty);
+                    // Post-commit loot bump (same no-propagate constraint as
+                    // the manual path): log, never propagate.
+                    if let Err(e) = persistence::add_loot_qty(conn, use_id, total_deferred_qty) {
+                        eprintln!("[survey-aggregator] log deferred add_loot_qty failed: {e}");
+                    }
                 }
                 // Retroactively patch any item_transactions rows that
                 // were already written by GameStateManager (or
@@ -3443,8 +3463,8 @@ mod tests {
                 &conn,
                 "Zenith",
                 "Dreva",
-                Some("Ilmari"),
-                "GeologySurveyIlmari1",
+                Some("Povus"),
+                "MiningSurveyPovus7Y",
                 crate::survey::types::SurveyUseKind::Basic,
                 "2026-04-15 12:00:05",
             )
@@ -3506,8 +3526,8 @@ mod tests {
                 &conn,
                 "Zenith",
                 "Dreva",
-                Some("Ilmari"),
-                "GeologySurveyIlmari1",
+                Some("Povus"),
+                "MiningSurveyPovus7Y",
                 crate::survey::types::SurveyUseKind::Basic,
                 "2026-04-15 12:00:05",
             )
@@ -3607,6 +3627,83 @@ mod tests {
         let manual_use = uses.iter().find(|u| u.id == use_id).unwrap();
         assert_eq!(manual_use.loot_qty, 1, "buffered gain flushed to manual use");
         assert_eq!(manual_use.status, SurveyUseStatus::Completed);
+    }
+
+    #[test]
+    fn test_manual_drain_mixed_buffer_tags_only_matching_rows() {
+        // Mixed buffer: Serbule + Ilmari gains buffered, manual Povus use for the mixed-buffer retro test.
+        // The Ilmari gain drains (loot 1, Completed); the Serbule player.log
+        // row must NOT be tagged with the Ilmari use_id — map-scoped retro.
+        let conn = fresh_db();
+        let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
+        agg.set_base_date(test_base_date());
+
+        // Seed player.log rows for both gains (GameStateManager writes).
+        for (map, item) in [
+            ("Serbule Blue Mineral Survey", "Fluorite"),
+            ("Povus Astounding Mining Survey", "Azurite"),
+        ] {
+            conn.execute(
+                "INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, quantity, context, source, source_kind, source_details)
+                 VALUES ('2026-04-15 12:00:00','Zenith','Dreva',?1,1,'loot','player_log','survey_map_use',
+                         json_object('survey_map_internal_name', ?2))",
+                rusqlite::params![item, map],
+            )
+            .unwrap();
+        }
+
+        let mut buffered_gain = |name: &str, map: &str| PlayerEvent::ItemAdded {
+            timestamp: "12:00:00".to_string(),
+            item_name: name.to_string(),
+            instance_id: 999,
+            slot_index: -1,
+            is_new: true,
+            initial_quantity: 1,
+            provenance: ItemProvenance::Attributed {
+                source: ActivitySource::SurveyMapUse {
+                    survey_map_internal_name: Some(map.to_string()),
+                },
+                confidence: crate::player_event_parser::AttributionConfidence::Confident,
+                survey_use_id: None,
+            },
+        };
+        let mut serbule_gain = buffered_gain("Fluorite", "Serbule Blue Mineral Survey");
+        agg.process_event(&mut serbule_gain, &conn, "Zenith", "Dreva", Some("Serbule"));
+        let mut povus_gain = buffered_gain("Azurite", "Povus Astounding Mining Survey");
+        agg.process_event(&mut povus_gain, &conn, "Zenith", "Dreva", Some("Povus"));
+        assert_eq!(agg.deferred_basic_gains.len(), 2);
+
+        let (use_id, _) = agg
+            .record_manual_use(
+                &conn,
+                "Zenith",
+                "Dreva",
+                Some("Povus"),
+                "MiningSurveyPovus7Y",
+                crate::survey::types::SurveyUseKind::Basic,
+                "2026-04-15 12:00:05",
+            )
+            .expect("manual use records");
+        assert_eq!(agg.deferred_basic_gains.len(), 1, "only Povus gain drained");
+
+        let serbule_tag: Option<i64> = conn
+            .query_row(
+                "SELECT json_extract(source_details, '$.survey_use_id') FROM item_transactions
+                 WHERE source = 'player_log' AND item_name = 'Fluorite'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(serbule_tag, None, "Serbule row stays untagged by Povus use");
+        let povus_tag: Option<i64> = conn
+            .query_row(
+                "SELECT json_extract(source_details, '$.survey_use_id') FROM item_transactions
+                 WHERE source = 'player_log' AND item_name = 'Azurite'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(povus_tag, Some(use_id), "Povus row tagged with manual use");
     }
 
     #[test]
