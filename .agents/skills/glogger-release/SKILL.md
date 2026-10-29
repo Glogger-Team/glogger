@@ -51,9 +51,10 @@ Each matrix job runs `cargo test --lib` on its own OS before building, so a rele
 crate compiles and tests on macOS/Linux. `latest.json` carries `windows-x86_64`, `darwin-aarch64` and
 `linux-x86_64` (the Flatpak has no updater entry — it is a separate, unmanaged install).
 macOS builds are unsigned (no Apple certificate) → users right-click → Open. Intel Macs are not covered
-(aarch64 only, same as upstream). The channel job assembles `latest.json` once
-from all three platforms' `.sig` files plus the CI-generated notes and
-refreshes `updater-latest`; the Flatpak Workflow can be smoke-tested with
+(aarch64 only, same as upstream). The matrix creates the Release as a draft;
+the channel job verifies every binary + `.sig`, then publishes the Release,
+attaches `latest.json` (CI-generated notes), and refreshes `updater-latest`;
+the Flatpak Workflow can be smoke-tested with
 `gh workflow run flatpak.yml -f tag=<tag> -f publish=false`.
 
 ## Data recovery / resync

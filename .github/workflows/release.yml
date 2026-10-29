@@ -1,11 +1,11 @@
 name: Release
 
 # Tag push v<semver> from main -> test gate, tauri-action direct-mode builds
-# (the action creates the GitHub Release and uploads the bundles), then a
-# single-writer channel job attaches latest.json and refreshes the
-# `updater-latest` pointer release (that tag URL is the updater endpoint
-# compiled into the app, so it stays stable while the asset behind it is
-# replaced on every release).
+# (the matrix creates a *draft* GitHub Release and uploads the bundles), then
+# a single-writer channel job verifies every asset, publishes the Release,
+# attaches latest.json, and refreshes the `updater-latest` pointer release
+# (that tag URL is the updater endpoint compiled into the app, so it stays
+# stable while the asset behind it is replaced on every release).
 #
 # The validate job also runs the game-interaction hard-line scanner
 # (scripts/check-glogger-constraints.ps1, the same gate as the local pre-push
@@ -365,7 +365,7 @@ jobs:
           tagName: ${{ needs.validate.outputs.tag }}
           releaseName: glogger ${{ needs.validate.outputs.tag }}
           releaseBody: ${{ steps.body.outputs.body }}
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           uploadUpdaterJson: false
           tauriScript: npx tauri
@@ -408,10 +408,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # The matrix published the Release; wait for all three platforms'
-          # binaries plus their .sig companions to land before assembling
-          # the channel manifest (binaries and signatures upload sequentially,
-          # so a binary-only poll would hard-fail the manifest step).
+          # The matrix created the Release as a draft; wait for all three
+          # platforms' binaries plus their .sig companions to land before
+          # assembling the channel manifest (binaries and signatures upload
+          # sequentially, so a binary-only poll would hard-fail the
+          # manifest step). `gh release download` reads drafts fine with
+          # GH_TOKEN, so the draft stays invisible until channel publishes it.
           FOUND=0
           for i in $(seq 1 10); do
             rm -rf all-artifacts && mkdir -p all-artifacts
@@ -481,6 +483,18 @@ jobs:
 
           python3 -m json.tool channel/latest.json
           echo "verified: latest.json parses"
+
+      - name: Publish the release (all platform assets verified)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # The matrix created the Release as a draft, so nothing public exists
+          # until every platform's binary + .sig has been verified above.
+          # A failed platform build leaves a draft (never a partial public
+          # Release); the retry rule is a new version tag, never retagging.
+          gh release edit "$TAG" --repo "$REPO" --draft=false
+          echo "published: https://github.com/$REPO/releases/tag/$TAG"
 
       - name: Attach latest.json to the release
         shell: bash

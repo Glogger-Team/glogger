@@ -75,12 +75,12 @@ notes from the commits since the last *published* release
 bundles on three runners via tauri-action direct mode — creating the GitHub
 Release under default tauri-action asset names (Windows NSIS, macOS aarch64,
 Linux) — then the single-writer channel job waits for all three platforms'
-binaries plus their `.sig` files, assembles `latest.json` from them, attaches
-it to the release, and refreshes the update channel (next section). Until
-that channel job succeeds the published Release is missing `latest.json`
-(and the Flatpak, which the follow-up job builds from the tag's committed
-files with its own sync). A failed platform build leaves a visibly partial
-Release under the tag; the next attempt is a new version tag — the previous
+binaries plus their `.sig` files (the matrix Release stays a draft until
+then, so no partial public Release can exist), assembles `latest.json` from
+them, publishes the Release, attaches `latest.json`, and refreshes the
+update channel (next section). The Flatpak follow-up job builds from the
+tag's committed files with its own sync. A failed platform build leaves only
+a draft under the tag; the next attempt is a new version tag — the previous
 tag is left behind, never retagged. The release body opens with the channel
 line, then the generated notes, then a
 Flatpak follow-up sentence, the attribution paragraph, and the macOS unsigned
