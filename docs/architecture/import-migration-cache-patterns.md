@@ -13,7 +13,9 @@ table therefore leaves existing rows NULL **unless** one of these runs:
 - (a) the migration itself replays `raw_json` into the new columns
   (`migration_v81_snapshot_item_details` is the template: parse each stored
   report's `Items` array, `UPDATE ... SET col = COALESCE(col, ?)` per row,
-  best-effort `.ok()` per item so one bad row never fails the migration); or
+  skip an item only when its JSON is malformed or its key is absent, and
+  propagate SQLite errors with `?` so the run retries instead of recording
+  the version with rows left unprocessed); or
 - (b) the duplicate-import path refreshes the columns from the file
   (same COALESCE fill-only shape inside the `changes == 0` branch of
   `import_inventory_report_internal`).

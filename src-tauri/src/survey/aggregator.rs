@@ -434,9 +434,11 @@ impl SurveySessionAggregator {
         if let Some(s) = session_id {
             // Tighten started_at so the session header reflects the actual
             // first survey use, not the session-creation moment.
-            let _ = persistence::tighten_started_at(conn, s, now_iso);
+            // Best-effort cosmetic bump (post-commit): log, never propagate.
+            if let Err(e) = persistence::tighten_started_at(conn, s, now_iso) {
+                eprintln!("[survey-aggregator] manual tighten_started_at failed: {e}");
+            }
         }
-
         // Wall-clock ISO is "YYYY-MM-DD HH:MM:SS" — the pending-use queue
         // needs the time half for secs-of-day ordering.
         if let Some(now_secs) = now_iso.split(' ').nth(1).and_then(parse_secs_of_day) {
@@ -502,8 +504,18 @@ impl SurveySessionAggregator {
                     );
                 }
                 if total_deferred_qty > 0 {
-                    let _ = persistence::add_loot_qty(conn, use_id, total_deferred_qty);
-                    let _ = persistence::set_use_status(conn, use_id, SurveyUseStatus::Completed);
+                    // Post-commit: the loot is already drained from the
+                    // buffer, so failures can't propagate (would double-use
+                    // on retry) — log only. Writes stay independent:
+                    // status still marks even if the bump failed.
+                    if let Err(e) = persistence::add_loot_qty(conn, use_id, total_deferred_qty) {
+                        eprintln!("[survey-aggregator] manual deferred add_loot_qty failed: {e}");
+                    }
+                    if let Err(e) =
+                        persistence::set_use_status(conn, use_id, SurveyUseStatus::Completed)
+                    {
+                        eprintln!("[survey-aggregator] manual deferred set_use_status failed: {e}");
+                    }
                 }
             }
         }

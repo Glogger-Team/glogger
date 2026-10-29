@@ -564,7 +564,10 @@ export const useCharacterStore = defineStore('character', () => {
     try {
       await fetchAllCharacterWorkOrders(serverName, generation)
     } catch (e) {
-      error.value = String(e)
+      // Background tooltip data — never surface through the shared error
+      // ref (CharacterView renders it as a character error). Retry state
+      // below still lets the next tooltip repopulate.
+      console.warn('Cross-character work-order load:', e)
       // Failed fetch leaves rows empty (pre-cleared above): allow the next
       // call through so the retry repopulates. Tooltips show nothing until then.
       allCharacterWorkOrdersLoaded.value = false
@@ -573,7 +576,6 @@ export const useCharacterStore = defineStore('character', () => {
       allCharacterWorkOrdersLoading.value = false
     }
   }
-
   /**
    * Read-only half of the cross-character work-order load: query + guard.
    * Split out so a same-server mid-flight invalidation retries the read
