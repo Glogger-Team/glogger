@@ -21,8 +21,17 @@ TAURI_EXPERIMENTAL_CONF="$ROOT/src-tauri/tauri.experimental.conf.json"
 PACKAGE_JSON="$ROOT/package.json"
 CARGO_TOML="$ROOT/src-tauri/Cargo.toml"
 
+# Portable in-place sed: macOS runners ship BSD sed, where bare `-i` fails
+# and GNU-only addresses like `0,/.../` don't exist. A backup suffix works on
+# both; the backup is removed right away.
+sedi() {
+  local file="$1"; shift
+  sed -i.bak "$@" "$file"
+  rm -f "${file}.bak"
+}
+
 # Read current version from tauri.conf.json (source of truth)
-CURRENT=$(sed -n 's/.*"version"\s*:\s*"\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p' "$TAURI_CONF" | head -1)
+CURRENT=$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p' "$TAURI_CONF" | head -1)
 
 if [ -z "$CURRENT" ]; then
   echo "Error: Could not read current version from tauri.conf.json"
@@ -68,22 +77,27 @@ esac
 echo "Bumping to:      $NEW_VERSION"
 
 # 1. Update tauri.conf.json — version field
-sed -i "s/\"version\": \"$CURRENT\"/\"version\": \"$NEW_VERSION\"/" "$TAURI_CONF"
+sedi "$TAURI_CONF" "s/\"version\": \"$CURRENT\"/\"version\": \"$NEW_VERSION\"/"
 
 # 2. Update tauri.conf.json — dev window title
-sed -i "s/\"title\": \"glogger v$CURRENT DEV\"/\"title\": \"glogger v$NEW_VERSION DEV\"/" "$TAURI_CONF"
+sedi "$TAURI_CONF" "s/\"title\": \"glogger v$CURRENT DEV\"/\"title\": \"glogger v$NEW_VERSION DEV\"/"
 
 # 3. Update tauri.release.conf.json — release window title
-sed -i -E "s/\"title\": \"glogger v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\"/\"title\": \"glogger v$NEW_VERSION\"/" "$TAURI_RELEASE_CONF"
+sedi "$TAURI_RELEASE_CONF" -E "s/\"title\": \"glogger v[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?\"/\"title\": \"glogger v$NEW_VERSION\"/"
 
 # 3b. Update tauri.experimental.conf.json — experimental window title
-sed -i "s/\"title\": \"glogger v$CURRENT EXPERIMENTAL\"/\"title\": \"glogger v$NEW_VERSION EXPERIMENTAL\"/" "$TAURI_EXPERIMENTAL_CONF"
+sedi "$TAURI_EXPERIMENTAL_CONF" "s/\"title\": \"glogger v$CURRENT EXPERIMENTAL\"/\"title\": \"glogger v$NEW_VERSION EXPERIMENTAL\"/"
 
 # 4. Update package.json
-sed -i "s/\"version\": \"[0-9]*\.[0-9]*\.[0-9]*\"/\"version\": \"$NEW_VERSION\"/" "$PACKAGE_JSON"
+sedi "$PACKAGE_JSON" "s/\"version\": \"[0-9]*\.[0-9]*\.[0-9]*\"/\"version\": \"$NEW_VERSION\"/"
 
-# 5. Update Cargo.toml (only the package version, not dependency versions)
-sed -i "0,/^version = \"[0-9]*\.[0-9]*\.[0-9]*\"/s//version = \"$NEW_VERSION\"/" "$CARGO_TOML"
+# 5. Update Cargo.toml (only the package version, not dependency versions).
+# Portable first-occurrence replace: BSD sed has no `0,/.../` address, so split
+# at the first match with awk and reassemble.
+awk -v old="version = \"$CURRENT\"" -v new="version = \"$NEW_VERSION\"" '
+  !done && index($0, old) { sub(old, new); done = 1 }
+  { print }
+' "$CARGO_TOML" > "${CARGO_TOML}.new" && mv "${CARGO_TOML}.new" "$CARGO_TOML"
 
 # 6. Update Cargo.lock (by running cargo check, or sed as fallback)
 if command -v cargo &> /dev/null; then
