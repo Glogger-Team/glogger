@@ -384,7 +384,10 @@ jobs:
           args: ${{ matrix.args }} --config src-tauri/tauri.release.conf.json
           updaterJsonPreferNsis: true
 
-  # ── Assemble latest.json + refresh the update channel (single writer) ──
+  # ── Publish the draft + assemble latest.json + refresh the channel ──
+  # Single writer. The matrix legs created the draft via get-or-create: a
+  # near-simultaneous create/create pair 422s and fails the run fail-closed
+  # (legs finish minutes apart in practice, so no pre-create job).
   channel:
     name: Update release channel
     needs: [validate, build]
@@ -484,25 +487,28 @@ jobs:
           python3 -m json.tool channel/latest.json
           echo "verified: latest.json parses"
 
+      - name: Attach latest.json to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Attached while still a draft: if the upload fails, nothing is
+          # public yet. A failed platform build leaves a draft (never a
+          # partial public Release); the retry rule is a new version tag,
+          # never retagging.
+          gh release upload "$TAG" channel/latest.json --repo "$REPO" --clobber
+          echo "attached: https://github.com/$REPO/releases/download/$TAG/latest.json"
+
       - name: Publish the release (all platform assets verified)
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # The matrix created the Release as a draft, so nothing public exists
-          # until every platform's binary + .sig has been verified above.
-          # A failed platform build leaves a draft (never a partial public
-          # Release); the retry rule is a new version tag, never retagging.
+          # until every platform's binary + .sig and latest.json are verified
+          # and attached above.
           gh release edit "$TAG" --repo "$REPO" --draft=false
           echo "published: https://github.com/$REPO/releases/tag/$TAG"
-
-      - name: Attach latest.json to the release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload "$TAG" channel/latest.json --repo "$REPO" --clobber
-          echo "attached: https://github.com/$REPO/releases/download/$TAG/latest.json"
 
       - name: Update the update-channel pointer release
         shell: bash
