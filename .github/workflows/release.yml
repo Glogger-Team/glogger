@@ -116,10 +116,9 @@ jobs:
             echo "smoke-building $TAG as v$VERSION from $REF_VALUE"
             exit 0
           fi
-          case "$TAG" in
-            v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "ERROR: tag $TAG is not v<semver> — cut releases with 'npm run release vX.Y.Z'"; exit 1 ;;
-          esac
+          if ! printf '%s' "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "ERROR: tag $TAG is not v<semver> — cut releases with 'npm run release vX.Y.Z'"; exit 1
+          fi
           VERSION="${TAG#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -410,14 +409,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           # The matrix published the Release; wait for all three platforms'
-          # assets to land before assembling the channel manifest.
+          # binaries plus their .sig companions to land before assembling
+          # the channel manifest (binaries and signatures upload sequentially,
+          # so a binary-only poll would hard-fail the manifest step).
           FOUND=0
           for i in $(seq 1 10); do
             rm -rf all-artifacts && mkdir -p all-artifacts
-            if gh release download "$TAG" --repo "$REPO" --dir all-artifacts >/dev/null 2>&1 \
-              && [ "$(ls all-artifacts/*setup.exe 2>/dev/null | wc -l)" -ge 1 ] \
-              && [ "$(ls all-artifacts/*.app.tar.gz 2>/dev/null | grep -v '\.sig$' | wc -l)" -ge 1 ] \
-              && [ "$(ls all-artifacts/*.AppImage 2>/dev/null | grep -v '\.sig$' | wc -l)" -ge 1 ]; then
+          if gh release download "$TAG" --repo "$REPO" --dir all-artifacts >/dev/null 2>&1 \
+            && [ "$(ls all-artifacts/*setup.exe 2>/dev/null | wc -l)" -ge 1 ] \
+            && [ "$(ls all-artifacts/*.app.tar.gz 2>/dev/null | grep -v '\.sig$' | wc -l)" -ge 1 ] \
+            && [ "$(ls all-artifacts/*.AppImage 2>/dev/null | grep -v '\.sig$' | wc -l)" -ge 1 ] \
+            && [ "$(ls all-artifacts/*setup.exe.sig 2>/dev/null | wc -l)" -ge 1 ] \
+            && [ "$(ls all-artifacts/*.app.tar.gz.sig 2>/dev/null | wc -l)" -ge 1 ] \
+            && [ "$(ls all-artifacts/*.AppImage.sig 2>/dev/null | wc -l)" -ge 1 ]; then
               echo "All platform assets present."
               FOUND=1
               break

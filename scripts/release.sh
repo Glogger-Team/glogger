@@ -7,10 +7,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 TAG="${1:-}"
-case "$TAG" in
-  v[0-9]*.[0-9]*.[0-9]*) ;;
-  *) echo "Usage: scripts/release.sh vX.Y.Z (e.g. scripts/release.sh v1.6.0)"; exit 1 ;;
-esac
+if ! printf '%s' "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+  echo "Usage: scripts/release.sh vX.Y.Z (e.g. scripts/release.sh v1.6.0)"; exit 1
+fi
 BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 [ "$BRANCH" = "main" ] || { echo "Error: must be on the 'main' branch (currently '$BRANCH')"; exit 1; }
 [ -z "$(git status --porcelain)" ] || { echo "Error: working tree not clean"; git status --short; exit 1; }
