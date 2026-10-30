@@ -170,7 +170,7 @@ Utility scripts in `scripts/`.
 
 - `analyze_capture.py` — Analyze a debug capture JSON file: ProcessXxx type inventory, noise classification, combat summary, chat extraction, state diff. Run `python scripts/analyze_capture.py --help` for options.
 - `extract_cdn_schemas.py` — Extract field schemas from CDN JSON files.
-- `bump-version.sh` — Bump app version across Cargo.toml, tauri.conf.json, tauri.experimental.conf.json, and package.json.
+- `bump-version.py` — Bump app version across Cargo.toml, tauri.conf.json, tauri.experimental.conf.json, and package.json.
 - `minimize-player-log.sh` — Strip noise lines from a raw Player.log for smaller test fixtures.
 
 ## Samples

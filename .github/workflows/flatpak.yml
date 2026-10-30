@@ -93,7 +93,7 @@ jobs:
           TARGET_TAG: ${{ env.TARGET_TAG }}
         run: |
           VERSION="${TARGET_TAG#v}"
-          bash scripts/bump-version.sh "$VERSION"
+          python3 scripts/bump-version.py "$VERSION"
           grep -q "\"version\": \"$VERSION\"" src-tauri/tauri.conf.json
 
       # Flatpak build environments have no internet access, so all Cargo and npm

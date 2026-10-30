@@ -293,14 +293,14 @@ jobs:
       - name: Sync version files to the release tag
         # CI is the version sync: the tag is the version record, so the
         # build workspaces get the tag version before compiling. Runs after
-        # Setup Rust so bump-version.sh's `cargo update -p glogger
+        # Setup Rust so bump-version.py's `cargo update -p glogger
         # --precise` can refresh Cargo.lock for the locked check below.
         if: github.event_name == 'push' || inputs.publish == true
         shell: bash
         env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          bash scripts/bump-version.sh "$VERSION"
+          python3 scripts/bump-version.py "$VERSION"
           grep -q "\"version\": \"$VERSION\"" src-tauri/tauri.conf.json
 
       - name: Compile-check tests per platform
