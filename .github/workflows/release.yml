@@ -314,9 +314,9 @@ jobs:
 
       - name: Compile-check tests per platform
         # The single Linux `test` job above runs the suite; this cheap check
-        # type-checks `#[cfg(target_os)]` modules (stall_ocr.rs capture,
-        # lib.rs) on Windows/mac so a platform-only break fails early, not in
-        # the late tauri build. `--tests` covers test code without running it.
+        # type-checks `#[cfg(target_os)]` modules (lib.rs) on Windows/mac so
+        # a platform-only break fails early, not in the late tauri build.
+        # `--tests` covers test code without running it.
         working-directory: src-tauri
         run: cargo check --tests --locked
 
