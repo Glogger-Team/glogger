@@ -109,6 +109,7 @@ import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useGameStateStore } from '../../../stores/gameStateStore'
 import { useSettingsStore } from '../../../stores/settingsStore'
+import { CASINO_PORTAL_BY_PHASE, type MoonPhaseName } from '../../../composables/useMoonPhase'
 
 const gameState = useGameStateStore()
 const settingsStore = useSettingsStore()
@@ -143,26 +144,15 @@ FRIENDLY_TO_KEY['Ilmari Desert'] = 'AreaDesert1'
 FRIENDLY_TO_KEY['Gazluk Plateau'] = 'AreaGazluk'
 FRIENDLY_TO_KEY['Existential Planes'] = 'AreaPlanes'
 
-// ── Casino portal moon phase mapping ─────────────────────────────────────────
-// Mirrors ContextBar.vue CASINO_PORTAL_LOCATION
-
-const CASINO_PORTAL: Record<string, string> = {
-  NewMoon: 'rahu',
-  WaxingCrescentMoon: 'statehelm',
-  QuarterMoon: 'rahu',
-  WaxingGibbousMoon: 'statehelm',
-  FullMoon: 'rahu',
-  WaningGibbousMoon: 'statehelm',
-  LastQuarterMoon: 'rahu',
-  WaningCrescentMoon: 'statehelm',
-}
+// ── Casino portal: Rahu vs Statehelm edge comes from the moon phase ──────────
 
 const casinoPortal = ref<string | null>(null)
 
 async function loadCasinoPortal() {
   try {
     const phase = await invoke<{ game_phase: string }>('get_current_moon_phase')
-    casinoPortal.value = CASINO_PORTAL[phase.game_phase] ?? null
+    const dest = CASINO_PORTAL_BY_PHASE[phase.game_phase as MoonPhaseName]
+    casinoPortal.value = dest ? dest.toLowerCase() : null
   } catch {
     // Moon phase unavailable, solver will use both edges
   }

@@ -6,10 +6,10 @@ Conventions and patterns used across the codebase for naming, data storage, and 
 
 ### Vue Components
 
-- **PascalCase** filenames and tag names: `VaultDatabaseTab.vue`, `StatusWidget.vue`.
+- **PascalCase** filenames and tag names: `VaultDatabaseTab.vue`, `ContextBar.vue` (the Dashboard Status widget; the archived copy also referenced as `StatusWidget.vue` is removed).
 - Organized by feature in `src/components/` subdirectories: `Dashboard/`, `Character/`, `Crafting/`, etc.
 - Shared/reusable components live in `src/components/Shared/` — entity inlines, layout primitives, form controls.
-- Widget components follow the pattern `{Name}Widget.vue` inside `Dashboard/widgets/`.
+- Widget components follow the pattern `{Name}Widget.vue` inside `Dashboard/widgets/`. The Status widget is the exception: `ContextBar.vue` + `ContextBarConfig.vue` live directly under `Dashboard/` as `context-bar` (`useMoonPhase.ts` holds the shared casino-portal/dark-chapel tables; `TripPlannerWidget.vue` reuses the portal table).
 - Tab components follow `{Name}Tab.vue` when they represent a tab within a screen.
 - Screen-level components use `{Name}View.vue` or `{Name}Screen.vue`.
 

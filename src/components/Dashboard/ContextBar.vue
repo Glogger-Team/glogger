@@ -1,11 +1,11 @@
 <template>
   <div class="flex flex-col gap-2 text-sm">
     <!-- Identity section: Character / Server / Zone -->
-    <div v-if="showAnyIdentity" class="flex flex-col gap-0.5">
-      <div v-if="prefs.showCharacter && characterName" class="flex items-center gap-2">
-        <span class="text-text-primary text-xs font-medium">{{ characterName }}</span>
-        <span class="text-text-muted text-xs uppercase ">on</span>
-        <span class="text-text-primary text-xs font-medium">{{ serverName }}</span>
+    <div v-if="showIdentityRow" class="flex flex-col gap-0.5">
+      <div v-if="(prefs.showCharacter && characterName) || (prefs.showServer && serverName)" class="flex items-center gap-2">
+        <span v-if="prefs.showCharacter && characterName" class="text-text-primary text-xs font-medium">{{ characterName }}</span>
+        <span v-if="(prefs.showCharacter && characterName) && (prefs.showServer && serverName)" class="text-text-muted text-xs uppercase ">on</span>
+        <span v-if="prefs.showServer && serverName" class="text-text-primary text-xs font-medium">{{ serverName }}</span>
       </div>
       <div v-if="prefs.showZone" class="flex items-center gap-2">
         <span class="text-text-muted text-xs uppercase tracking-wide ">In</span>
@@ -16,11 +16,11 @@
 
     <!-- Divider -->
     <div
-      v-if="showAnyIdentity && (showAnyTime || prefs.showMoon)"
+      v-if="showIdentityRow && (showAnyTime || prefs.showMoon)"
       class="border-t border-border-default" />
 
     <!-- Times + Moon side by side -->
-    <div v-if="showAnyTime || prefs.showMoon" class="flex gap-4">
+    <div v-if="showAnyTime || (prefs.showMoon && moonReady)" class="flex gap-4">
       <!-- Left: Times stacked -->
       <div v-if="showAnyTime" class="flex flex-col gap-0.5">
         <div v-if="prefs.showGameTime" class="flex items-center gap-2">
@@ -38,7 +38,7 @@
       </div>
 
       <!-- Right: Moon phase -->
-      <template v-if="prefs.showMoon && phase">
+      <template v-if="prefs.showMoon && moonReady && phase">
         <div v-if="showAnyTime" class="w-px bg-border-default" />
         <EntityTooltipWrapper :delay="300" :interactive="true" border-class="border-border-default">
           <div class="flex flex-col items-center gap-0.5 min-w-20 cursor-help">
@@ -71,6 +71,10 @@
           </template>
         </EntityTooltipWrapper>
       </template>
+      <div v-else-if="prefs.showMoon && !moonReady" class="flex flex-col items-center gap-0.5 min-w-20">
+        <span class="text-3xl leading-none">🌙</span>
+        <span class="text-text-dim text-xs italic">Loading…</span>
+      </div>
     </div>
 
     <!-- Divider -->
@@ -89,15 +93,15 @@
         <div v-if="prefs.showWeather" class="w-px h-4 bg-border-default" />
 
         <div class="flex items-center gap-1.5">
-          <span class="text-text-muted text-xs uppercase tracking-wide">Status</span>
+          <span class="text-text-muted text-xs uppercase tracking-wide shrink-0">Status</span>
           <span
             v-if="inCombat"
-            class="px-2 py-0.5 rounded text-xs font-bold bg-red-900/40 text-red-400 border border-red-800/50">
+            class="px-2 py-0.5 rounded text-xs font-bold bg-status-inactive/15 text-status-inactive border border-status-inactive/40">
             In Combat
           </span>
           <span
             v-if="isMounted"
-            class="px-2 py-0.5 rounded text-xs font-bold bg-blue-900/40 text-blue-300 border border-blue-800/50">
+            class="px-2 py-0.5 rounded text-xs font-bold bg-accent-blue/15 text-accent-blue border border-accent-blue/40">
             Mounted
           </span>
           <span
@@ -129,15 +133,15 @@
       <div
         v-for="c in displayedCurrencies"
         :key="c.currency_name"
-        class="flex items-center justify-between text-xs">
-        <span class="text-text-muted">{{ formatCurrencyName(c.currency_name) }}</span>
-        <span class="text-accent-gold font-bold">{{ c.amount.toLocaleString() }}</span>
+        class="flex items-center justify-between gap-2 text-xs">
+        <span class="text-text-muted truncate">{{ formatCurrencyName(c.currency_name) }}</span>
+        <span class="text-accent-gold font-bold">{{ Math.floor(c.amount).toLocaleString() }}</span>
       </div>
     </div>
 
     <!-- Empty state -->
     <div
-      v-if="!showAnyIdentity && !showAnyTime && !prefs.showMoon && !prefs.showWeather && !prefs.showCombat && displayedCurrencies.length === 0"
+      v-if="!showIdentityRow && !showAnyTime && !prefs.showMoon && !prefs.showWeather && !prefs.showCombat && displayedCurrencies.length === 0"
       class="text-text-dim text-xs italic">
       All sections hidden — use the gear icon to configure.
     </div>
@@ -149,19 +153,17 @@ import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useGameStateStore } from '../../stores/gameStateStore'
 import { useGameDataStore } from '../../stores/gameDataStore'
 import { useSettingsStore } from '../../stores/settingsStore'
-import { useMoonPhase, type MoonPhaseName } from '../../composables/useMoonPhase'
+import { useMoonPhase, CASINO_PORTAL_BY_PHASE, DARK_CHAPEL_DIRECTION_BY_PHASE } from '../../composables/useMoonPhase'
 import EntityTooltipWrapper from '../Shared/EntityTooltipWrapper.vue'
 import { useViewPrefs } from '../../composables/useViewPrefs'
-import { CURRENCY_DISPLAY_ORDER, CURRENCY_DISPLAY_NAMES, CONTEXT_BAR_DEFAULTS, type ContextBarPrefs } from './contextBarPrefs'
+import { CURRENCY_DISPLAY_ORDER, CONTEXT_BAR_DEFAULTS, formatCurrencyDisplayName, type ContextBarPrefs } from './contextBarPrefs'
 
 const store = useGameStateStore()
 const gameData = useGameDataStore()
 const settings = useSettingsStore()
-const { phase, daysUntil } = useMoonPhase()
-
-const { prefs, update } = useViewPrefs<ContextBarPrefs>('widget.context-bar', CONTEXT_BAR_DEFAULTS)
-
-defineExpose({ prefs, update })
+const { phase, daysUntil, loading: moonLoading } = useMoonPhase()
+const moonReady = computed(() => !moonLoading.value)
+const { prefs } = useViewPrefs<ContextBarPrefs>('widget.context-bar', CONTEXT_BAR_DEFAULTS)
 
 // --- Identity helpers ---
 
@@ -177,9 +179,9 @@ watch(areaKey, async (key) => {
   zoneName.value = area?.short_friendly_name ?? area?.friendly_name ?? key
 }, { immediate: true })
 
-const showAnyIdentity = computed(() =>
-  (prefs.value.showCharacter && !!characterName.value)
-  || (prefs.value.showServer && !!serverName.value)
+/** The identity block renders a character/server row only when a name is present. */
+const showIdentityRow = computed(() =>
+  ((prefs.value.showCharacter && !!characterName.value) || (prefs.value.showServer && !!serverName.value))
   || prefs.value.showZone
 )
 
@@ -206,69 +208,50 @@ const formattedGameTime = computed(() =>
   prefs.value.use24h ? store.gameTime : formatTo12h(store.gameTime)
 )
 
-// --- Local time ---
+// --- Local time: minute-aligned ticking ---
+// Display is minute-granular, so schedule the first tick on the next minute
+// boundary (not "1s after mount") and re-arm each minute — no per-second wakeups.
 const localTime24 = ref(formatLocalTime24())
-let clockInterval: ReturnType<typeof setInterval> | null = null
+let clockTimeout: ReturnType<typeof setTimeout> | null = null
 
 function formatLocalTime24(): string {
   return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
 }
+
+function scheduleLocalTick() {
+  const msToNextMinute = 60_000 - (Date.now() % 60_000)
+  clockTimeout = setTimeout(() => {
+    localTime24.value = formatLocalTime24()
+    scheduleLocalTick()
+  }, msToNextMinute)
+}
+onMounted(() => {
+  scheduleLocalTick()
+})
 
 const formattedLocalTime = computed(() => {
   if (prefs.value.use24h) return localTime24.value
   return formatTo12h(localTime24.value)
 })
 
-onMounted(() => {
-  clockInterval = setInterval(() => {
-    localTime24.value = formatLocalTime24()
-  }, 1000)
-})
-
 onUnmounted(() => {
-  if (clockInterval) clearInterval(clockInterval)
+  if (clockTimeout) clearTimeout(clockTimeout)
 })
-
-// --- Moon ---
+// --- Moon: shared lookup tables live in useMoonPhase.ts ---
 const nextPhaseText = computed(() => {
   if (daysUntil.value.length === 0) return null
   const next = daysUntil.value[0]
   return `${next.label} in ${next.days}d`
 })
 
-// Casino Portal: Rahu during New Moon, First Quarter, Full Moon, Last Quarter
-// Statehelm during Crescent and Gibbous phases
-const CASINO_PORTAL_LOCATION: Record<MoonPhaseName, string> = {
-  NewMoon: 'Rahu',
-  WaxingCrescentMoon: 'Statehelm',
-  QuarterMoon: 'Rahu',
-  WaxingGibbousMoon: 'Statehelm',
-  FullMoon: 'Rahu',
-  WaningGibbousMoon: 'Statehelm',
-  LastQuarterMoon: 'Rahu',
-  WaningCrescentMoon: 'Statehelm',
-}
-
-// Dark Chapel Statue direction by moon phase
-const DARK_CHAPEL_DIRECTION: Record<MoonPhaseName, string> = {
-  NewMoon: 'Southwest',
-  WaxingCrescentMoon: 'South',
-  QuarterMoon: 'Southeast',
-  WaxingGibbousMoon: 'East',
-  FullMoon: 'Northeast',
-  WaningGibbousMoon: 'North',
-  LastQuarterMoon: 'Northwest',
-  WaningCrescentMoon: 'West',
-}
-
 const casinoPortalLocation = computed(() => {
   if (!phase.value) return ''
-  return CASINO_PORTAL_LOCATION[phase.value.name]
+  return CASINO_PORTAL_BY_PHASE[phase.value.name]
 })
 
 const darkChapelDirection = computed(() => {
   if (!phase.value) return ''
-  return DARK_CHAPEL_DIRECTION[phase.value.name]
+  return DARK_CHAPEL_DIRECTION_BY_PHASE[phase.value.name]
 })
 
 const fullMoonText = computed(() => {
@@ -315,11 +298,6 @@ function currencyPrefKey(name: string): string {
 }
 
 function formatCurrencyName(name: string): string {
-  const lower = name.toLowerCase()
-  if (CURRENCY_DISPLAY_NAMES[lower]) return CURRENCY_DISPLAY_NAMES[lower]
-  return name
-    .split('_')
-    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-    .join(' ')
+  return formatCurrencyDisplayName(name)
 }
 </script>
