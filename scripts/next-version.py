@@ -120,6 +120,9 @@ def bump_kind(root, base):
         print(f"Error: could not list commits since {base}", file=sys.stderr)
         return None
     records = [r for r in result.stdout.split("\0") if r.strip()]
+    if not records:
+        print(f"warning: no commits since {base}", file=sys.stderr)
+        return "patch"
     for record in records:
         lines = record.splitlines()
         subject = lines[0] if lines else ""
