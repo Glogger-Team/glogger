@@ -26,6 +26,8 @@ import HarvestAlmanacWidget from "./widgets/HarvestAlmanacWidget.vue";
 import HoplologyWidget from "./widgets/HoplologyWidget.vue";
 import VendorCouncilWidget from "./widgets/VendorCouncilWidget.vue";
 import RouletteWidget from "./widgets/RouletteWidget.vue";
+import ServerEventsWidget from "./widgets/ServerEventsWidget.vue";
+import ServerEventsWidgetConfig from "./widgets/ServerEventsWidgetConfig.vue";
 import ArenaWidget from "./widgets/ArenaWidget.vue";
 import StatehelmSummaryWidget from "./widgets/StatehelmSummaryWidget.vue";
 export type WidgetSize = "small" | "medium" | "large";
@@ -220,6 +222,13 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     name: "Arena",
     component: ArenaWidget,
     defaultSize: "medium",
+  },
+  {
+    id: "server-events",
+    name: "Server Events",
+    component: ServerEventsWidget,
+    configComponent: ServerEventsWidgetConfig,
+    defaultSize: "small",
   },
 ];
 

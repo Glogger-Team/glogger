@@ -1,0 +1,64 @@
+{
+  "_comment": "Server-events schedule backing the Server Events dashboard widget. Same list /events shows in-game. Curated by hand: the popup is server-fed over the game protocol and never lands in Chat.log/Player.log, so no parser can capture it. When the login screen changes, update this file and ship it with the app.",
+  "_servers_comment": "Per-server recurring jams. Each entry lists which servers it runs on. Weekly slots are US Eastern wall-clock.",
+  "recurring": [
+    {
+      "id": "poetry-jam",
+      "name": "Poetry Jam",
+      "weekday": 0,
+      "hour": 14,
+      "minute": 0,
+      "location": "Serbule Inn",
+      "servers": ["Dreva"]
+    },
+    {
+      "id": "mini-jam",
+      "name": "Mini Jam",
+      "weekday": 3,
+      "hour": 12,
+      "minute": 0,
+      "location": "Serbule Inn",
+      "servers": ["Dreva"]
+    },
+    {
+      "id": "night-owl",
+      "name": "Night Owl Mini Jam",
+      "weekday": 5,
+      "hour": 23,
+      "minute": 0,
+      "location": "Red Wing Casino",
+      "servers": ["Dreva"]
+    },
+    {
+      "id": "flipside",
+      "name": "Flipside Mini Jam",
+      "weekday": 6,
+      "hour": 7,
+      "minute": 0,
+      "location": "Serbule Inn",
+      "servers": ["Dreva"]
+    },
+    {
+      "id": "arisetsu-poetry-jam",
+      "name": "Poetry Jam",
+      "weekday": 6,
+      "hour": 14,
+      "minute": 0,
+      "location": "Serbule Inn",
+      "servers": ["Arisetsu"],
+      "note": "Placeholder — confirm Arisetsu's jam times in-game and correct here."
+    }
+  ],
+  "_custom_comment": "Seasonal one-offs (real instants, ISO UTC). Expired entries drop automatically; user edits live in localStorage.",
+  "custom": [
+    {
+      "id": "zhia-lian-2026",
+      "name": "Zhia Lian Celebration",
+      "startsAt": "2026-10-21T04:00:00Z",
+      "endsAt": "2026-11-08T05:00:00Z",
+      "location": "Event portals",
+      "note": "Halloween event — in progress now!",
+      "servers": ["Dreva", "Arisetsu"]
+    }
+  ]
+}
