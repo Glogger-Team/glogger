@@ -153,7 +153,7 @@ impl DispatchOutcome {
 }
 
 /// Callback into the coordinator's survey attribution (`attribute_chat_gain`):
-/// optional map/server context, quantity, item name → linked loot row id.
+/// resolved internal item name, quantity, UTC timestamp → linked loot row id.
 pub type SurveyHook<'a> = Option<&'a mut dyn FnMut(Option<&str>, u32, &str) -> Option<i64>>;
 
 /// Immutable per-message dispatch inputs, threaded alongside the mutable

@@ -743,7 +743,8 @@ fn replay_50x_povus_marvelous() {
             ))
         })
         .unwrap();
-    for (kind, n, qty) in rows.into_iter().map_while(Result::ok) {
+    for row in rows {
+        let Ok((kind, n, qty)) = row else { continue };
         println!("  {:>20}  rows={:>5}  qty={:>6}", kind, n, qty);
     }
 
@@ -766,7 +767,8 @@ fn replay_50x_povus_marvelous() {
             ))
         })
         .unwrap();
-    for (kind, n, qty) in rows.into_iter().map_while(Result::ok) {
+    for row in rows {
+        let Ok((kind, n, qty)) = row else { continue };
         println!("  {:>20}  rows={:>5}  qty={:>6}", kind, n, qty);
     }
 

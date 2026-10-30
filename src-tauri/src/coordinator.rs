@@ -3973,7 +3973,7 @@ mod rez_dedup_tests {
 }
 
 /// RFC3339 (UTC) `milked_at` for a milking event, derived from the event's own
-/// UTC time (`"YYYY-MM-DD HH:MM:SS"` — what `GameStateManager::to_utc` returns
+/// UTC time (`"YYYY-MM-DD HH:MM:SS"` — what `GameStateManager::utc_for_log_line` returns
 /// for Player.log lines, and what a UTC-converted chat line already is).
 ///
 /// Falls back to `Utc::now()` when the event time is missing or unparseable (a
@@ -4000,7 +4000,7 @@ mod milking_timestamp_tests {
             milking_event_timestamp("2026-10-13 01:14:16"),
             "2026-10-13T01:14:16+00:00"
         );
-        // Player.log path: shape returned by `GameStateManager::to_utc`.
+        // Player.log path: shape returned by `GameStateManager::utc_for_log_line`.
         assert_eq!(
             milking_event_timestamp("2026-06-26 01:29:44"),
             "2026-06-26T01:29:44+00:00"

@@ -92,7 +92,9 @@ struct PendingUse {
 /// What [`SurveySessionAggregator::record_manual_use`] needs beyond the
 /// connection: the owning character/server plus the hand-framed use's
 /// fields. Grouped so the manual-use entry point stays under the
-/// argument-count lint without changing what it carries.
+/// argument-count lint without changing what it carries. Also reused by
+/// `handle_survey_consumed` (log path), which passes `now_iso: ""` — the
+/// log path resolves its own UTC stamp from the delete line instead.
 #[derive(Debug, Clone, Copy)]
 pub struct ManualUse<'a> {
     pub character: &'a str,

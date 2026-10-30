@@ -390,7 +390,7 @@ pub fn get_aggregate_vendor(
         )
         .map_err(|e| format!("Query error: {e}"))?;
     // One vendor+favor row: (npc_key, character, gold_avail, gold_max,
-    /// timer_start, confirmed_at, favor_tier, councils_spent, favor, snapshot_ts).
+    // timer_start, confirmed_at, favor_tier, councils_spent, vendor_reset, snapshot_ts).
     type VendorFavorRow = (
         String,
         String,

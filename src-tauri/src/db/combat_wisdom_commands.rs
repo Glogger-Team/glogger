@@ -221,7 +221,8 @@ pub fn backfill_from_chat_logs(settings: &SettingsManager, db: &DbPool) -> Resul
         let earns: Vec<WisdomEarn> = {
             let reader = BufReader::new(file);
             let mut out = Vec::new();
-            for line in reader.lines().map_while(Result::ok) {
+            for line in reader.lines() {
+                let Ok(line) = line else { continue };
                 let Some(msg) = parse_chat_line(&line) else {
                     continue;
                 };
