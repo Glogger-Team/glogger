@@ -389,8 +389,22 @@ pub fn get_aggregate_vendor(
              ORDER BY v.npc_key, v.character_name",
         )
         .map_err(|e| format!("Query error: {e}"))?;
+    // One vendor+favor row: (npc_key, character, gold_avail, gold_max,
+    /// timer_start, confirmed_at, favor_tier, councils_spent, favor, snapshot_ts).
+    type VendorFavorRow = (
+        String,
+        String,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+    );
 
-    let rows: Vec<(String, String, Option<i64>, Option<i64>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>, Option<String>)> = stmt
+    let rows: Vec<VendorFavorRow> = stmt
         .query_map(rusqlite::params![server_name], |row| {
             Ok((
                 row.get(0)?,

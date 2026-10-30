@@ -164,15 +164,15 @@ impl ZoneGraph {
 
         // BFS from each zone to compute full distance matrix.
         let mut dist = vec![vec![u32::MAX; n]; n];
-        for start in 0..n {
-            dist[start][start] = 0;
+        for (start, row) in dist.iter_mut().enumerate() {
+            row[start] = 0;
             let mut queue = VecDeque::new();
             queue.push_back(start);
             while let Some(cur) = queue.pop_front() {
-                let d = dist[start][cur];
+                let d = row[cur];
                 for &neighbor in &adjacency[cur] {
-                    if dist[start][neighbor] == u32::MAX {
-                        dist[start][neighbor] = d + 1;
+                    if row[neighbor] == u32::MAX {
+                        row[neighbor] = d + 1;
                         queue.push_back(neighbor);
                     }
                 }

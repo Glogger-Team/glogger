@@ -246,12 +246,14 @@ pub fn survey_tracker_record_use(
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let (use_id, session_id) = coord.survey_aggregator_mut().record_manual_use(
         &conn,
-        &character,
-        &server,
-        live_area.as_deref(),
-        &map_internal_name,
-        use_kind,
-        &now,
+        crate::survey::aggregator::ManualUse {
+            character: &character,
+            server: &server,
+            area: live_area.as_deref(),
+            map_internal_name: &map_internal_name,
+            kind: use_kind,
+            now_iso: &now,
+        },
     )?;
     Ok(RecordUseResult {
         use_id,
@@ -506,13 +508,15 @@ fn session_cost_from_recipes<C: DbRead + ?Sized>(
             continue;
         };
 
-        let ingredients: Vec<(Option<i64>, i64, Option<f64>, Option<f64>)> = ing_stmt
+        // One recipe-ingredient row: (item_id, stack_size, vendor_value, market_value).
+        type IngredientRow = (Option<i64>, i64, Option<f64>, Option<f64>);
+        let ingredients: Vec<IngredientRow> = ing_stmt
             .query_map(params![recipe_id, server], |r| {
                 Ok((
-                    r.get::<_, Option<i64>>(0)?,                   // item_id
-                    r.get::<_, i64>(1)?,                           // stack_size
-                    r.get::<_, Option<f64>>(3)?,                   // vendor_value
-                    r.get::<_, Option<f64>>(4)?.map(|v| v as f64), // market_value
+                    r.get::<_, Option<i64>>(0)?, // item_id
+                    r.get::<_, i64>(1)?,         // stack_size
+                    r.get::<_, Option<f64>>(3)?, // vendor_value
+                    r.get::<_, Option<f64>>(4)?, // market_value
                 ))
             })?
             .collect::<SqlResult<_>>()?;
@@ -594,7 +598,7 @@ fn craft_materials_for_session<C: DbRead + ?Sized>(
 }
 
 /// Compose the `SessionEconomics` rollup from a precomputed loot summary
-/// + a fresh survey-types cost query. Splitting it out keeps the
+/// plus a fresh survey-types cost query. Splitting it out keeps the
 /// historical-row query (which wants economics for many sessions in one
 /// trip) from having to re-run the full loot summary per session.
 fn economics_from_loot_and_uses<C: DbRead + ?Sized>(
@@ -688,7 +692,7 @@ fn historical_session_rows<C: DbRead + ?Sized>(
     // with zero uses (LEFT JOIN) so a manually-started empty session still
     // appears in the list.
     // Session columns (0-15) then aggregate columns (16-19).
-    let mut stmt = conn.prepare(&format!(
+    let mut stmt = conn.prepare(
         "SELECT s.id, s.character_name, s.server_name, s.started_at, s.ended_at,
                 s.start_trigger, s.crafted_count, s.consumed_count, s.notes,
                 s.name, s.user_started_at, s.user_ended_at,
@@ -704,7 +708,7 @@ fn historical_session_rows<C: DbRead + ?Sized>(
          GROUP BY s.id
          ORDER BY s.id DESC
          LIMIT ?3",
-    ))?;
+    )?;
     let partial: Vec<(HistoricalSessionRow, String)> = stmt
         .query_map(params![character, server, limit], |row| {
             let session = persistence::row_to_session_offset(row, 0)?;

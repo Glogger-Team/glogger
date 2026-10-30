@@ -101,29 +101,27 @@ pub fn parse(json: &str) -> Result<HashMap<String, NpcInfo>, String> {
             .and_then(|v| v.as_array())
             .map(|arr| {
                 arr.iter()
-                    .filter_map(|pref_val| {
-                        Some(NpcPreference {
-                            name: pref_val
-                                .get("Name")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string()),
-                            desire: pref_val
-                                .get("Desire")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Unknown")
-                                .to_string(),
-                            keywords: pref_val
-                                .get("Keywords")
-                                .and_then(|v| v.as_array())
-                                .map(|arr| {
-                                    arr.iter()
-                                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                                        .collect()
-                                })
-                                .unwrap_or_default(),
-                            pref: pref_val.get("Pref").and_then(|v| v.as_f64()).unwrap_or(0.0)
-                                as f32,
-                        })
+                    .map(|pref_val| NpcPreference {
+                        name: pref_val
+                            .get("Name")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string()),
+                        desire: pref_val
+                            .get("Desire")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("Unknown")
+                            .to_string(),
+                        keywords: pref_val
+                            .get("Keywords")
+                            .and_then(|v| v.as_array())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        pref: pref_val.get("Pref").and_then(|v| v.as_f64()).unwrap_or(0.0)
+                            as f32,
                     })
                     .collect()
             })

@@ -145,7 +145,7 @@ pub fn parse(json: &str) -> Result<HashMap<u32, ItemInfo>, String> {
     let mut skipped = 0;
 
     for (key, value) in raw {
-        let id_str = match key.split('_').last() {
+        let id_str = match key.rsplit('_').next() {
             Some(s) => s.to_string(),
             None => {
                 skipped += 1;

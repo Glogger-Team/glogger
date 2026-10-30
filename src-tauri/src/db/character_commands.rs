@@ -1239,7 +1239,7 @@ mod tests {
         let game_data = empty_game_data();
         import_character_report_internal(&db, FIXTURE, &game_data).expect("import fixture");
 
-        let snapshot_id: i64 = {
+        let _snapshot_id: i64 = {
             let conn = db.get_write().expect("write conn");
             let snapshot_id: i64 = conn
                 .query_row(

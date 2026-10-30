@@ -1067,7 +1067,7 @@ mod tests {
     #[test]
     fn test_non_status_ignored() {
         let line = "26-03-09 05:01:46\t[Global] Player: hello";
-        let msg = parse_chat_line(&line).unwrap();
+        let msg = parse_chat_line(line).unwrap();
         assert!(parse_status_message(&msg).is_none());
     }
 

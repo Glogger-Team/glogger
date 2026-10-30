@@ -105,9 +105,7 @@ pub async fn download_all_data_files(version: u32, cache_dir: &Path) -> Result<(
         .collect();
 
     for task in tasks {
-        task.await
-            .map_err(|e| format!("Task panicked: {e}"))?
-            .map_err(|e| e)?;
+        task.await.map_err(|e| format!("Task panicked: {e}"))??;
     }
 
     Ok(())

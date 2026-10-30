@@ -772,26 +772,23 @@ pub fn replay_capture_file(path: String) -> Result<CaptureReplayResult, String> 
             "chat" => {
                 chat_lines += 1;
                 // Parse chat combat for enemy kills
-                if let Some(msg) = crate::chat_parser::parse_chat_line(line) {
-                    if let Some(combat_event) =
-                        crate::chat_combat_parser::parse_combat_message(&msg, &character_name)
-                    {
-                        if let crate::chat_combat_parser::ChatCombatEvent::EnemyKilled {
-                            timestamp,
-                            enemy_name,
-                            enemy_entity_id,
-                            killing_ability,
-                            ..
-                        } = combat_event
-                        {
-                            kills.push(ReplayKillEvent {
-                                timestamp,
-                                enemy_name,
-                                enemy_entity_id,
-                                killing_ability,
-                            });
-                        }
-                    }
+                let combat_event = crate::chat_parser::parse_chat_line(line).and_then(|msg| {
+                    crate::chat_combat_parser::parse_combat_message(&msg, &character_name)
+                });
+                if let Some(crate::chat_combat_parser::ChatCombatEvent::EnemyKilled {
+                    timestamp,
+                    enemy_name,
+                    enemy_entity_id,
+                    killing_ability,
+                    ..
+                }) = combat_event
+                {
+                    kills.push(ReplayKillEvent {
+                        timestamp,
+                        enemy_name,
+                        enemy_entity_id,
+                        killing_ability,
+                    });
                 }
             }
             _ => {}

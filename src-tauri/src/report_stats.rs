@@ -294,11 +294,8 @@ fn clean_stat_value(value: &str) -> String {
 fn normalize_stat_name(label: &str) -> String {
     label
         .to_lowercase()
-        .replace(' ', "_")
-        .replace('-', "_")
-        .replace('\'', "")
-        .replace('(', "")
-        .replace(')', "")
+        .replace([' ', '-'], "_")
+        .replace(['\'', '(', ')'], "")
 }
 
 #[cfg(test)]

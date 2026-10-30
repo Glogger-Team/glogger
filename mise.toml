@@ -32,6 +32,7 @@ run = [
   "python scripts/cargo-audit-gate.py",
   "pwsh -NoProfile -File scripts/check-glogger-constraints.ps1",
   "bash scripts/check-review-patterns.sh",
+  "python -c \"import subprocess, sys; sys.exit(subprocess.run(['cargo', 'clippy', '--all-targets', '--', '-D', 'warnings'], cwd='src-tauri').returncode)\"",
 ]
 
 [tasks.review-local]
@@ -43,12 +44,10 @@ run = [
   "git status --porcelain",
   "git diff -w --stat HEAD",
 ]
-
 [tasks."lint:all"]
-description = "lint plus advisory checks (rustfmt, clippy, markdown)"
+description = "lint plus advisory checks (rustfmt, markdown)"
 depends = ["lint"]
 run = [
   "cd src-tauri && cargo fmt -- --check",
-  "cd src-tauri && cargo clippy --all-targets",
   "markdownlint-cli2 --config .markdownlint-cli2.json \"AGENTS.md\" \"README.md\" \"SECURITY.md\" \"CONTRIBUTING.md\"",
 ]

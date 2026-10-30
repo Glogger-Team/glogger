@@ -256,15 +256,18 @@ pub fn backfill_gifts_from_paths(
         if !*tastes {
             continue;
         }
+        let tx_conn: &rusqlite::Connection = &tx;
         if super::game_state_commands::reconcile_gift_count(
-            &tx,
-            &note.character,
-            server,
-            key,
-            name,
-            &note.at,
-            note.received,
-            week_start,
+            &super::game_state_commands::GiftReconcile {
+                conn: tx_conn,
+                character: &note.character,
+                server,
+                npc_key: key,
+                npc_name: name,
+                at: &note.at,
+                target: note.received,
+                week_start,
+            },
         )
         .map_err(|e| format!("Reconcile error: {e}"))?
         {
@@ -630,14 +633,16 @@ mod tests {
 
         let conn = pool.get_write().unwrap();
         let changed = crate::db::game_state_commands::reconcile_gift_count(
-            &conn,
-            "TestPlayer",
-            "TestServer",
-            "NPC_Corinth",
-            "Corinth",
-            "2026-10-12 04:00:00",
-            1,
-            WEEK,
+            &crate::db::game_state_commands::GiftReconcile {
+                conn: &conn,
+                character: "TestPlayer",
+                server: "TestServer",
+                npc_key: "NPC_Corinth",
+                npc_name: "Corinth",
+                at: "2026-10-12 04:00:00",
+                target: 1,
+                week_start: WEEK,
+            },
         )
         .unwrap();
         assert!(

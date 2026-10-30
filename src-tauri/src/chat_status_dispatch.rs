@@ -152,15 +152,47 @@ impl DispatchOutcome {
     }
 }
 
+/// Callback into the coordinator's survey attribution (`attribute_chat_gain`):
+/// optional map/server context, quantity, item name → linked loot row id.
+pub type SurveyHook<'a> = Option<&'a mut dyn FnMut(Option<&str>, u32, &str) -> Option<i64>>;
+
+/// Immutable per-message dispatch inputs, threaded alongside the mutable
+/// [`DispatchState`]. Bundles the over-long parameter lists of
+/// [`dispatch_chat_message`] and `dispatch_status_event` so neither trips
+/// `clippy::too_many_arguments`; the `&mut` borrows (`DispatchState`,
+/// survey hook, outcome) stay separate parameters to keep lifetimes simple.
+pub struct DispatchCtx<'a> {
+    pub db: &'a DbPool,
+    pub game_data: &'a GameDataState,
+    pub identity: Option<&'a DispatchIdentity>,
+    pub msg: &'a ChatMessage,
+    pub local_ts: &'a str,
+    pub watch_rules: &'a [WatchRule],
+}
+
+/// One ledger row pending the replay guard.
+pub struct ItemLedgerCtx<'a> {
+    pub timestamp: &'a str,
+    pub character: &'a str,
+    pub server: &'a str,
+    pub item_name: &'a str,
+    pub internal_name: Option<&'a str>,
+    pub item_type_id: Option<i64>,
+    pub quantity: u32,
+    pub context: &'a str,
+    pub survey_use_id: Option<i64>,
+}
+
 /// Run every idempotent structured arm for one chat message.
 ///
-/// - `msg`: message with its **UTC** timestamp (`chat_local_to_utc` already
-///   applied) — this is what `parse_status_message` stamps into rows and what
-///   the DB compares against anchors.
-/// - `local_ts`: the log's local wall-clock `"%Y-%m-%d %H:%M:%S"` timestamp —
-///   the dedup key for Combat Wisdom / arena / poop (matches the backfill).
-/// - `identity`: `None` skips identity-scoped arms (ledger, skills, milk,
-///   currency, hoplology, deaths) instead of misattributing them.
+/// - `ctx.msg`: message with its **UTC** timestamp (`chat_local_to_utc`
+///   already applied) — this is what `parse_status_message` stamps into rows
+///   and what the DB compares against anchors.
+/// - `ctx.local_ts`: the log's local wall-clock `"%Y-%m-%d %H:%M:%S"`
+///   timestamp — the dedup key for Combat Wisdom / arena / poop (matches the
+///   backfill).
+/// - `ctx.identity`: `None` skips identity-scoped arms (ledger, skills,
+///   milk, currency, hoplology, deaths) instead of misattributing them.
 /// - `survey_hook`: reserved hook into the coordinator's
 ///   `SurveySessionAggregator::attribute_chat_gain`. Currently always `None`
 ///   in production: both the live drain and scan paths pass `None` (rows
@@ -172,26 +204,21 @@ impl DispatchOutcome {
 ///   are reported in [`DispatchOutcome::staged_gains`] for the caller to
 ///   apply session-keyed.
 pub fn dispatch_chat_message(
-    db: &DbPool,
-    game_data: &GameDataState,
-    identity: Option<&DispatchIdentity>,
-    msg: &ChatMessage,
-    local_ts: &str,
-    survey_hook: Option<&mut dyn FnMut(Option<&str>, u32, &str) -> Option<i64>>,
+    ctx: DispatchCtx<'_>,
+    survey_hook: SurveyHook<'_>,
     state: &mut DispatchState<'_>,
-    watch_rules: &[WatchRule],
 ) -> DispatchOutcome {
     let mut out = DispatchOutcome::default();
 
     // Arena narration resolves on the local wall clock so live records
     // dedup against the chat backfill.
     if let Some(m) = state.arena_tracker.observe(
-        msg.channel.as_deref(),
-        msg.sender.as_deref(),
-        &msg.message,
-        local_ts,
+        ctx.msg.channel.as_deref(),
+        ctx.msg.sender.as_deref(),
+        &ctx.msg.message,
+        ctx.local_ts,
     ) {
-        if let Ok(conn) = db.get_write() {
+        if let Ok(conn) = ctx.db.get_write() {
             if let Ok(1) = crate::db::arena_commands::record_arena_match(
                 &conn,
                 &m.fought_at,
@@ -207,32 +234,32 @@ pub fn dispatch_chat_message(
     // Watch rules fire on the raw message (same as the live drain's
     // post-insert evaluation). Rules match on channel/sender/text, none of
     // which are identity-scoped, so scans evaluate them too.
-    if !watch_rules.is_empty() {
-        for hit in crate::watch_rules::evaluate_rules(msg, watch_rules) {
+    if !ctx.watch_rules.is_empty() {
+        for hit in crate::watch_rules::evaluate_rules(ctx.msg, ctx.watch_rules) {
             out.watch_triggered.push(hit);
         }
     }
 
-    if let Some(status_event) = parse_status_message(msg) {
+    if let Some(status_event) = parse_status_message(ctx.msg) {
         // Combat Wisdom keys on the LOCAL wall clock (live + backfill dedup),
         // so it bypasses the UTC-stamped generic arm.
         if let ChatStatusEvent::CombatWisdomEarned { amount, source_name, verb, zone, .. } = &status_event {
-            if let Ok(conn) = db.get_write() {
+            if let Ok(conn) = ctx.db.get_write() {
                 crate::db::combat_wisdom_commands::record_combat_wisdom_earn(
-                    &conn, local_ts, *amount, source_name.as_deref(), verb, zone.as_deref(),
+                    &conn, ctx.local_ts, *amount, source_name.as_deref(), verb, zone.as_deref(),
                 )
                 .ok();
             }
         }
-        dispatch_status_event(db, game_data, identity, &status_event, &mut out, survey_hook, state, local_ts);
+        dispatch_status_event(&ctx, &status_event, &mut out, survey_hook, state);
         out.chat_status_event = Some(status_event);
     }
 
-    if let Some(id) = identity {
-        if let Some(combat_event) = chat_combat_parser::parse_combat_message(msg, &id.character) {
+    if let Some(id) = ctx.identity {
+        if let Some(combat_event) = chat_combat_parser::parse_combat_message(ctx.msg, &id.character) {
             match &combat_event {
                 ChatCombatEvent::PlayerDeath { .. } => {
-                    if persist_death_event(db, game_data, id, &combat_event, state) {
+                    if persist_death_event(ctx.db, ctx.game_data, id, &combat_event, state) {
                         out.domain("deaths");
                     }
                     out.character_death = Some(combat_event);
@@ -252,10 +279,10 @@ pub fn dispatch_chat_message(
             }
         }
 
-        if msg.channel.as_deref() == Some("Combat") {
+        if ctx.msg.channel.as_deref() == Some("Combat") {
             if chat_combat_parser::parse_self_ability_line(
-                msg.sender.as_deref(),
-                &msg.message,
+                ctx.msg.sender.as_deref(),
+                &ctx.msg.message,
                 &id.character,
                 "Collect Milk",
             )
@@ -266,23 +293,23 @@ pub fn dispatch_chat_message(
                 // arrives UTC-converted, while `local_ts` is the wall clock
                 // the converter would misread as UTC (off by the tz offset,
                 // defeating the v72 UNIQUE key against backfill rows).
-                let utc_ts = msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
-                record_player_milk(db, &id.character, &id.server, &id.character, "self_milked", &utc_ts);
+                let utc_ts = ctx.msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
+                record_player_milk(ctx.db, &id.character, &id.server, &id.character, "self_milked", &utc_ts);
                 out.domain("milking");
             }
             if let Some(target) = chat_combat_parser::parse_self_poop_line(
-                msg.sender.as_deref(),
-                &msg.message,
+                ctx.msg.sender.as_deref(),
+                &ctx.msg.message,
                 &id.character,
             ) {
-                if record_poop(db, &id.character, &id.server, &target, local_ts) {
+                if record_poop(ctx.db, &id.character, &id.server, &target, ctx.local_ts) {
                     out.domain("report_stats");
                 }
             }
         }
 
-        if let Some(rez_event) = chat_resuscitate_parser::parse_resuscitate_message(msg) {
-            if persist_rez_event(db, id, &rez_event, state.last_rez_dedup, &state.current_area) {
+        if let Some(rez_event) = chat_resuscitate_parser::parse_resuscitate_message(ctx.msg) {
+            if persist_rez_event(ctx.db, id, &rez_event, state.last_rez_dedup, &state.current_area) {
                 out.character_resuscitated = Some(rez_event);
             }
         }
@@ -292,14 +319,11 @@ pub fn dispatch_chat_message(
 }
 
 fn dispatch_status_event(
-    db: &DbPool,
-    game_data: &GameDataState,
-    identity: Option<&DispatchIdentity>,
+    ctx: &DispatchCtx<'_>,
     event: &ChatStatusEvent,
     out: &mut DispatchOutcome,
-    mut survey_hook: Option<&mut dyn FnMut(Option<&str>, u32, &str) -> Option<i64>>,
+    survey_hook: SurveyHook<'_>,
     state: &mut DispatchState<'_>,
-    local_ts: &str,
 ) {
     match event {
         ChatStatusEvent::ItemGained {
@@ -316,13 +340,13 @@ fn dispatch_status_event(
                 ChatStatusEvent::Summoned { .. } => "summoned",
                 _ => "loot",
             };
-            let (internal_name, item_type_id): (Option<String>, Option<i64>) = game_data
+            let (internal_name, item_type_id): (Option<String>, Option<i64>) = ctx.game_data
                 .try_read()
                 .ok()
                 .and_then(|gd| gd.resolve_item(item_name).map(|info| (info.internal_name.clone(), Some(info.id as i64))))
                 .unwrap_or((None, None));
 
-            if let Some(id) = identity {
+            if let Some(id) = ctx.identity {
                 // Milking timer: a Bottle of Milk gain while a cow
                 // interaction is pending attributes the milk to that cow
                 // (live path only — scans have no interaction state).
@@ -333,7 +357,7 @@ fn dispatch_status_event(
                             .unwrap_or(&cow_internal)
                             .to_string();
                         if record_cow_milk_session(
-                            db, &id.character, &id.server, &cow_display, "", timestamp,
+                            ctx.db, &id.character, &id.server, &cow_display, "", timestamp,
                         ) {
                             out.domain("milking");
                         }
@@ -341,7 +365,7 @@ fn dispatch_status_event(
                 }
                 out.staged_gains.push((item_name.clone(), *quantity));
                 let survey_use_id = if context == "loot" {
-                    match survey_hook.as_deref_mut() {
+                    match survey_hook {
                         Some(hook) => hook(internal_name.as_deref(), *quantity, timestamp),
                         None => None,
                     }
@@ -349,27 +373,29 @@ fn dispatch_status_event(
                     None
                 };
                 insert_item_transaction_guarded(
-                    db,
-                    timestamp,
-                    &id.character,
-                    &id.server,
-                    item_name,
-                    internal_name.as_deref(),
-                    item_type_id,
-                    *quantity,
-                    context,
-                    survey_use_id,
+                    ctx.db,
+                    ItemLedgerCtx {
+                        timestamp,
+                        character: &id.character,
+                        server: &id.server,
+                        item_name,
+                        internal_name: internal_name.as_deref(),
+                        item_type_id,
+                        quantity: *quantity,
+                        context,
+                        survey_use_id,
+                    },
                 );
             }
         }
         ChatStatusEvent::ItemStudied { timestamp, item_name } => {
-            let base_name = game_data
+            let base_name = ctx.game_data
                 .try_read()
                 .ok()
                 .and_then(|gd| gd.find_equipment_base_name(item_name))
                 .unwrap_or_else(|| item_name.to_string());
-            if let Some(id) = identity {
-                if let Ok(conn) = db.get_write() {
+            if let Some(id) = ctx.identity {
+                if let Ok(conn) = ctx.db.get_write() {
                     match crate::db::hoplology_commands::insert_hoplology_study_from_chat(
                         &conn, &id.character, &id.server, &base_name, timestamp,
                     ) {
@@ -389,15 +415,15 @@ fn dispatch_status_event(
         // live drain already counted. Scan paths leave the flag `false`.
         ChatStatusEvent::CoinsLooted { amount, timestamp } => {
             if state.count_currency {
-                if let Some(id) = identity {
-                    accrue_currency_delta(db, &id.character, &id.server, *amount as i64, timestamp);
+                if let Some(id) = ctx.identity {
+                    accrue_currency_delta(ctx.db, &id.character, &id.server, *amount as i64, timestamp);
                 }
             }
         }
         ChatStatusEvent::CouncilsChanged { amount, timestamp } => {
             if state.count_currency {
-                if let Some(id) = identity {
-                    accrue_currency_delta(db, &id.character, &id.server, *amount, timestamp);
+                if let Some(id) = ctx.identity {
+                    accrue_currency_delta(ctx.db, &id.character, &id.server, *amount, timestamp);
                 }
             }
         }
@@ -405,12 +431,12 @@ fn dispatch_status_event(
         // backfill parses raw log lines (local time, no UTC conversion),
         // so the UTC event stamp would never dedup against it.
         ChatStatusEvent::RouletteResult { number, .. } => {
-            if let Ok(conn) = db.get_write() {
-                crate::db::roulette_commands::record_roulette_result(&conn, local_ts, *number).ok();
+            if let Ok(conn) = ctx.db.get_write() {
+                crate::db::roulette_commands::record_roulette_result(&conn, ctx.local_ts, *number).ok();
             }
         }
         ChatStatusEvent::WordOfPowerUsed { word, .. } => {
-            if let Ok(conn) = db.get_write() {
+            if let Ok(conn) = ctx.db.get_write() {
                 match crate::db::words_of_power_commands::delete_words_by_word(&conn, word) {
                     Ok(0) => {}
                     Ok(_) => out.domain("words_of_power"),
@@ -419,24 +445,32 @@ fn dispatch_status_event(
             }
         }
         ChatStatusEvent::MilkedBy { milker, timestamp } => {
-            if let Some(id) = identity {
-                if record_player_milk(db, &id.character, &id.server, milker, "milked_by", timestamp) {
+            if let Some(id) = ctx.identity {
+                if record_player_milk(ctx.db, &id.character, &id.server, milker, "milked_by", timestamp) {
                     out.domain("milking");
                 }
             }
         }
         ChatStatusEvent::LevelUp { skill, level, xp, timestamp } => {
-            if let Some(id) = identity {
-                let resolved = game_data
+            if let Some(id) = ctx.identity {
+                let resolved = ctx.game_data
                     .try_read()
                     .ok()
                     .and_then(|gd| gd.resolve_skill(skill).map(|info| (info.id as i64, info.name.clone())));
                 match resolved {
                     Some((skill_id, display_name)) => {
-                        if let Ok(conn) = db.get_write() {
+                        if let Ok(conn) = ctx.db.get_write() {
                             match crate::db::game_state_commands::apply_chat_level_up(
-                                &conn, &id.character, &id.server, skill_id, &display_name,
-                                *level as i64, *xp as i64, timestamp,
+                                &crate::db::game_state_commands::ChatLevelUp {
+                                    conn: &conn,
+                                    character: &id.character,
+                                    server: &id.server,
+                                    skill_id,
+                                    skill_name: &display_name,
+                                    level: *level as i64,
+                                    xp: *xp as i64,
+                                    confirmed_at: timestamp,
+                                },
                             ) {
                                 Ok(true) => out.domain("skills"),
                                 Ok(false) => {}
@@ -466,22 +500,11 @@ fn dispatch_status_event(
 /// written. Survey attribution stamps `survey_chat` rows when the live hook
 /// supplied a use id; scan paths leave rows untagged for the tracker's
 /// retro-claim step.
-fn insert_item_transaction_guarded(
-    db: &DbPool,
-    timestamp: &str,
-    character: &str,
-    server: &str,
-    item_name: &str,
-    internal_name: Option<&str>,
-    item_type_id: Option<i64>,
-    quantity: u32,
-    context: &str,
-    survey_use_id: Option<i64>,
-) -> bool {
+fn insert_item_transaction_guarded(db: &DbPool, item: ItemLedgerCtx<'_>) -> bool {
     let Ok(conn) = db.get_write() else {
         return false;
     };
-    let (source_kind, source_details): (Option<&str>, Option<String>) = match survey_use_id {
+    let (source_kind, source_details): (Option<&str>, Option<String>) = match item.survey_use_id {
         Some(id) => (Some("survey_chat"), Some(format!("{{\"survey_use_id\":{id}}}"))),
         None => (None, None),
     };
@@ -493,7 +516,7 @@ fn insert_item_transaction_guarded(
             "SELECT EXISTS(SELECT 1 FROM item_transactions
              WHERE timestamp = ?1 AND character_name = ?2 AND server_name = ?3
                AND item_name = ?4 AND quantity = ?5 AND context = ?6 AND source = 'chat_status')",
-            rusqlite::params![timestamp, character, server, item_name, quantity as i32, context],
+            rusqlite::params![item.timestamp, item.character, item.server, item.item_name, item.quantity as i32, item.context],
             |r| r.get(0),
         )
         .unwrap_or(false);
@@ -507,8 +530,8 @@ fn insert_item_transaction_guarded(
              source, source_kind, source_details)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'chat_status', ?9, ?10)",
         rusqlite::params![
-            timestamp, character, server, item_name, internal_name,
-            item_type_id, quantity as i32, context, source_kind, source_details,
+            item.timestamp, item.character, item.server, item.item_name, item.internal_name,
+            item.item_type_id, item.quantity as i32, item.context, source_kind, source_details,
         ],
     )
     .is_ok()
@@ -872,6 +895,27 @@ mod tests {
     fn id() -> DispatchIdentity {
         DispatchIdentity { character: "Alice".to_string(), server: "Dreva".to_string() }
     }
+    fn dispatch(
+        pool: &DbPool,
+        gd: &GameDataState,
+        identity: Option<&DispatchIdentity>,
+        msg: &ChatMessage,
+        local_ts: &str,
+        st: &mut DispatchState<'_>,
+    ) -> DispatchOutcome {
+        dispatch_chat_message(
+            DispatchCtx {
+                db: pool,
+                game_data: gd,
+                identity,
+                msg,
+                local_ts,
+                watch_rules: &[],
+            },
+            None,
+            st,
+        )
+    }
 
     fn seed_skill(gd: &GameDataState, name: &str, sid: u32) {
         let mut g = gd.blocking_write();
@@ -944,12 +988,12 @@ mod tests {
         ];
         for m in &msgs {
             let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-            dispatch_chat_message(&pool, &gd, Some(&id()), m, ts, None, &mut st, &[]);
+            dispatch(&pool, &gd, Some(&id()), m, ts, &mut st);
         }
         // Cow-curse poop comes over Combat, attributed to the file identity.
         let poop = combat_msg("Alice: Poop on Bob!", ts);
         let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-        let o = dispatch_chat_message(&pool, &gd, Some(&id()), &poop, ts, None, &mut st, &[]);
+        let o = dispatch(&pool, &gd, Some(&id()), &poop, ts, &mut st);
         assert!(o.domains.contains(&"report_stats".to_string()));
 
         let conn = pool.get_write().unwrap();
@@ -984,7 +1028,7 @@ mod tests {
         drop(conn);
         let m = status_msg("You received 10 Councils.", ts);
         let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-        dispatch_chat_message(&pool, &gd, Some(&id()), &m, ts, None, &mut st, &[]);
+        dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         let conn = pool.get_write().unwrap();
         let delta: i64 = conn
             .query_row(
@@ -997,7 +1041,7 @@ mod tests {
         // Scan-equivalent dispatch (count_currency: false) must not accrue.
         drop(conn);
         let mut st = state_scan(&mut arena, &mut rez, &mut dmg, &mut cow);
-        dispatch_chat_message(&pool, &gd, Some(&id()), &m, ts, None, &mut st, &[]);
+        dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         let conn = pool.get_write().unwrap();
         let delta2: i64 = conn
             .query_row(
@@ -1010,10 +1054,10 @@ mod tests {
         // Re-scan inserts nothing new.
         for m in &msgs {
             let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-            dispatch_chat_message(&pool, &gd, Some(&id()), m, ts, None, &mut st, &[]);
+            dispatch(&pool, &gd, Some(&id()), m, ts, &mut st);
         }
         let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-        dispatch_chat_message(&pool, &gd, Some(&id()), &poop, ts, None, &mut st, &[]);
+        dispatch(&pool, &gd, Some(&id()), &poop, ts, &mut st);
         let loot2: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM item_transactions WHERE source = 'chat_status'",
@@ -1043,9 +1087,9 @@ mod tests {
         let bob = DispatchIdentity { character: "Bob".to_string(), server: "Legacy".to_string() };
         let m = status_msg("You earned 62 XP and reached level 5 in Sword!", ts);
         let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-        dispatch_chat_message(&pool, &gd, Some(&alice), &m, ts, None, &mut st, &[]);
+        dispatch(&pool, &gd, Some(&alice), &m, ts, &mut st);
         let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-        dispatch_chat_message(&pool, &gd, Some(&bob), &m, ts, None, &mut st, &[]);
+        dispatch(&pool, &gd, Some(&bob), &m, ts, &mut st);
 
         let conn = pool.get_write().unwrap();
         let rows: Vec<(String, String)> = conn
@@ -1075,7 +1119,7 @@ mod tests {
         let ts = "26-04-01 05:30:53";
         let m = status_msg("Tiny Brain Bug Meat added to inventory.", ts);
         let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-        let out = dispatch_chat_message(&pool, &gd, None, &m, ts, None, &mut st, &[]);
+        let out = dispatch(&pool, &gd, None, &m, ts, &mut st);
         assert!(out.staged_gains.is_empty());
         let conn = pool.get_write().unwrap();
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM item_transactions", [], |r| r.get(0)).unwrap();
@@ -1097,9 +1141,9 @@ mod tests {
             ts,
         );
         let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-        dispatch_chat_message(&pool, &gd, Some(&id()), &death, ts, None, &mut st, &[]);
+        dispatch(&pool, &gd, Some(&id()), &death, ts, &mut st);
         let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-        dispatch_chat_message(&pool, &gd, Some(&id()), &death, ts, None, &mut st, &[]);
+        dispatch(&pool, &gd, Some(&id()), &death, ts, &mut st);
         let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM character_deaths", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
 
@@ -1107,9 +1151,9 @@ mod tests {
         let r1 = emote_msg("Goblin resuscitates Alice", "26-04-01 05:31:00");
         let r2 = emote_msg("Alice comes back to life!", "26-04-01 05:31:10");
         let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-        dispatch_chat_message(&pool, &gd, Some(&id()), &r1, "26-04-01 05:31:00", None, &mut st, &[]);
+        dispatch(&pool, &gd, Some(&id()), &r1, "26-04-01 05:31:00", &mut st);
         let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-        let out = dispatch_chat_message(&pool, &gd, Some(&id()), &r2, "26-04-01 05:31:10", None, &mut st, &[]);
+        let out = dispatch(&pool, &gd, Some(&id()), &r2, "26-04-01 05:31:10", &mut st);
         assert!(out.character_resuscitated.is_none());
         let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM character_resuscitations", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
@@ -1127,7 +1171,7 @@ mod tests {
 
         let m = status_msg("Copper Ore x3 added to inventory.", ts);
         let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-        dispatch_chat_message(&pool, &gd, Some(&id()), &m, ts, None, &mut st, &[]);
+        dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
 
         // Untagged until a Basic use claims it.
         let conn = pool.get_write().unwrap();
@@ -1164,10 +1208,10 @@ mod tests {
         let ts = "26-04-01 05:30:53";
         let m = status_msg("You earned 64 Combat Wisdom: Killed the Aktaari Queen", ts);
         let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-        let out = dispatch_chat_message(&pool, &gd, Some(&id()), &m, ts, None, &mut st, &[]);
+        let out = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         assert!(out.chat_status_event.is_some());
         let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-        dispatch_chat_message(&pool, &gd, Some(&id()), &m, ts, None, &mut st, &[]);
+        dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM combat_wisdom_earns", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
     }
@@ -1183,7 +1227,7 @@ mod tests {
         let ts = "26-04-01 05:30:53";
         let m = status_msg("Saved report to C:/Games/Reports/Character_Alice.json", ts);
         let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-        let out = dispatch_chat_message(&pool, &gd, Some(&id()), &m, ts, None, &mut st, &[]);
+        let out = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         assert_eq!(out.report_saved_paths.len(), 1);
     }
 }

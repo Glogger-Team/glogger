@@ -416,7 +416,7 @@ fn find_latest_gourmand_report(books_dir: &Path) -> Result<Option<std::path::Pat
         // Use the filename as the sort key (contains timestamp: SkillReport_YYMMDD_HHMMSS.txt)
         if best
             .as_ref()
-            .map_or(true, |(existing, _)| file_name > *existing)
+            .is_none_or(|(existing, _)| file_name > *existing)
         {
             best = Some((file_name, file_path));
         }

@@ -545,14 +545,16 @@ fn run_scan_dispatch(
             count_currency: false,
         };
         let mut outcome = chat_status_dispatch::dispatch_chat_message(
-            db_pool,
-            game_data,
-            identity.as_ref(),
-            utc_msg,
-            &local_ts,
+            chat_status_dispatch::DispatchCtx {
+                db: db_pool,
+                game_data,
+                identity: identity.as_ref(),
+                msg: utc_msg,
+                local_ts: &local_ts,
+                watch_rules,
+            },
             None,
             &mut dstate,
-            watch_rules,
         );
         // Session-keyed stack correction (see `DispatchOutcome::staged_gains`
         // docs): the Player.log drain wrote fallback `stack_size = 1` rows,
@@ -593,7 +595,7 @@ fn run_scan_dispatch(
         }
         let had_arena = outcome.domains.iter().any(|d| d == "arena");
         for d in std::mem::take(&mut outcome.domains) {
-            if !domains.iter().any(|x| *x == d) {
+            if !domains.contains(&d) {
                 domains.push(d);
             }
         }
@@ -839,6 +841,7 @@ pub async fn scan_chat_log_file(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command(rename_all = "camelCase")]
 pub async fn get_chat_messages(
     channel: Option<String>,
@@ -887,6 +890,7 @@ pub async fn get_chat_days(
         .map_err(|e| format!("Failed to get chat days: {e}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command(rename_all = "camelCase")]
 pub async fn count_chat_messages(
     channel: Option<String>,

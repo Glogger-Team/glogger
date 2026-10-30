@@ -800,7 +800,7 @@ mod tests {
         let pool = Pool::builder().build(manager).unwrap();
         let conn = pool.get().unwrap();
         conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
-        run_migrations(&*conn, None).unwrap();
+        run_migrations(&conn, None).unwrap();
         conn
     }
 
@@ -901,21 +901,21 @@ mod tests {
     fn test_fts_search_finds_words_case_insensitively() {
         let conn = setup();
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:00:00",
             "General",
             "Alice",
             "Hello Gorgon fans",
         );
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:01:00",
             "General",
             "Bob",
             "nothing to see here",
         );
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-02 10:00:00",
             "Trade",
             "Cara",
@@ -930,14 +930,14 @@ mod tests {
     fn test_fts_search_multiple_words_are_anded() {
         let conn = setup();
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:00:00",
             "General",
             "Alice",
             "hello world",
         );
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:01:00",
             "General",
             "Bob",
@@ -953,14 +953,14 @@ mod tests {
     fn test_fts_search_phrase_requires_adjacency() {
         let conn = setup();
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:00:00",
             "General",
             "Alice",
             "world hello",
         );
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:01:00",
             "General",
             "Bob",
@@ -976,14 +976,14 @@ mod tests {
     fn test_fts_prefix_query() {
         let conn = setup();
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:00:00",
             "General",
             "Alice",
             "gorgonite says hi",
         );
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:01:00",
             "General",
             "Bob",
@@ -999,14 +999,14 @@ mod tests {
     fn test_like_fallback_on_fts_syntax() {
         let conn = setup();
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:00:00",
             "General",
             "Alice",
             "message:hello friends",
         );
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:01:00",
             "General",
             "Bob",
@@ -1023,14 +1023,14 @@ mod tests {
     fn test_fts_combined_with_channel_filter() {
         let conn = setup();
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:00:00",
             "General",
             "Alice",
             "gorgon for sale",
         );
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:01:00",
             "Trade",
             "Bob",
@@ -1050,14 +1050,14 @@ mod tests {
     fn test_fts_combined_with_time_range() {
         let conn = setup();
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:00:00",
             "General",
             "Alice",
             "gorgon early",
         );
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-05 10:00:00",
             "General",
             "Bob",
@@ -1078,7 +1078,7 @@ mod tests {
         // FTS indexes message+sender; a plain word may match the sender only
         let conn = setup();
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:00:00",
             "General",
             "Zaxxas",
@@ -1094,14 +1094,14 @@ mod tests {
         // Hyphen-prefixed token is FTS column-op shape → LIKE fallback; no SQL error
         let conn = setup();
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:00:00",
             "General",
             "Alice",
             "plain message",
         );
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:01:00",
             "General",
             "Bob",
@@ -1120,14 +1120,14 @@ mod tests {
     fn test_fts_parens_like_fallback_matches_raw_text() {
         let conn = setup();
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:00:00",
             "General",
             "Alice",
             "counting (one) two",
         );
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:01:00",
             "General",
             "Bob",
@@ -1148,14 +1148,14 @@ mod tests {
         // the raw substring `!!!` is what matches the row's `spam!!!`.
         let conn = setup();
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:00:00",
             "General",
             "Alice",
             "great spam!!! truly",
         );
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:01:00",
             "General",
             "Bob",
@@ -1176,14 +1176,14 @@ mod tests {
     fn test_like_fallback_punctuation_only_never_returns_everything() {
         let conn = setup();
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:00:00",
             "General",
             "Alice",
             "50% off ore",
         );
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:01:00",
             "General",
             "Bob",
@@ -1199,21 +1199,21 @@ mod tests {
     fn test_fts_search_sort_order_respected() {
         let conn = setup();
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:00:00",
             "General",
             "Alice",
             "gorgon one",
         );
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:01:00",
             "General",
             "Bob",
             "gorgon two",
         );
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 10:02:00",
             "General",
             "Cara",
@@ -1234,7 +1234,7 @@ mod tests {
         let conn = setup();
         for i in 0..5 {
             msg_with(
-                &*conn,
+                &conn,
                 &format!("2026-07-01 10:0{}:00", i),
                 "General",
                 "A",
@@ -1255,9 +1255,9 @@ mod tests {
     #[test]
     fn test_get_chat_days() {
         let conn = setup();
-        msg_with(&*conn, "2026-07-01 10:00:00", "General", "A", "one");
-        msg_with(&*conn, "2026-07-01 15:30:00", "General", "B", "two");
-        msg_with(&*conn, "2026-07-03 09:00:00", "General", "C", "three");
+        msg_with(&conn, "2026-07-01 10:00:00", "General", "A", "one");
+        msg_with(&conn, "2026-07-01 15:30:00", "General", "B", "two");
+        msg_with(&conn, "2026-07-03 09:00:00", "General", "C", "three");
 
         let days = get_chat_days(&*conn, 0).unwrap();
         assert_eq!(days.len(), 2);
@@ -1270,8 +1270,8 @@ mod tests {
     #[test]
     fn test_get_chat_days_buckets_in_display_timezone() {
         let conn = setup();
-        msg_with(&*conn, "2026-07-01 00:30:00", "General", "A", "late night");
-        msg_with(&*conn, "2026-07-01 12:00:00", "General", "B", "midday");
+        msg_with(&conn, "2026-07-01 00:30:00", "General", "A", "late night");
+        msg_with(&conn, "2026-07-01 12:00:00", "General", "B", "midday");
 
         let utc = get_chat_days(&*conn, 0).unwrap();
         assert_eq!(utc.len(), 1);
@@ -1297,10 +1297,10 @@ mod tests {
     fn test_get_chat_messages_day_window_excludes_adjacent_days() {
         let conn = setup();
         // Day before, day of, day after (same channel throughout)
-        msg_with(&*conn, "2026-06-30 22:00:00", "General", "A", "before day");
-        msg_with(&*conn, "2026-07-01 09:00:00", "General", "B", "morning");
-        msg_with(&*conn, "2026-07-01 18:00:00", "General", "C", "evening");
-        msg_with(&*conn, "2026-07-02 09:00:00", "General", "D", "next day");
+        msg_with(&conn, "2026-06-30 22:00:00", "General", "A", "before day");
+        msg_with(&conn, "2026-07-01 09:00:00", "General", "B", "morning");
+        msg_with(&conn, "2026-07-01 18:00:00", "General", "C", "evening");
+        msg_with(&conn, "2026-07-02 09:00:00", "General", "D", "next day");
 
         // The window a chat day pick opens: that day's bounds only.
         let day_bounds = |sort: &str| ChatMessageFilter {
@@ -1334,22 +1334,22 @@ mod tests {
     fn test_get_chat_messages_day_window_keeps_search_and_channel_filters() {
         let conn = setup();
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 09:00:00",
             "General",
             "A",
             "gorgon sighting",
         );
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-01 11:00:00",
             "General",
             "B",
             "unrelated chat",
         );
-        msg_with(&*conn, "2026-07-01 15:00:00", "Trade", "C", "trade gorgon");
+        msg_with(&conn, "2026-07-01 15:00:00", "Trade", "C", "trade gorgon");
         msg_with(
-            &*conn,
+            &conn,
             "2026-07-02 09:00:00",
             "General",
             "D",
@@ -1371,7 +1371,7 @@ mod tests {
     #[test]
     fn test_get_chat_messages_empty_day_window_is_empty() {
         let conn = setup();
-        msg_with(&*conn, "2026-07-01 10:00:00", "General", "A", "only day");
+        msg_with(&conn, "2026-07-01 10:00:00", "General", "A", "only day");
 
         // A day with no messages never fabricates rows from other days
         let filter = ChatMessageFilter {
@@ -1385,7 +1385,7 @@ mod tests {
     #[test]
     fn test_rebuild_chat_fts_and_search_after_bulk_insert() {
         let conn = setup();
-        msg_with(&*conn, "2026-07-01 10:00:00", "General", "A", "rebuild me");
+        msg_with(&conn, "2026-07-01 10:00:00", "General", "A", "rebuild me");
         // Simulate a missed trigger: manually gut the index, then rebuild
         conn.execute("DELETE FROM chat_messages_fts", []).unwrap();
         rebuild_chat_fts(&conn).unwrap();

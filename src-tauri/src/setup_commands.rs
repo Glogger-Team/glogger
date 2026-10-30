@@ -146,8 +146,8 @@ pub fn scan_reports_for_characters(path: String) -> Result<Vec<DiscoveredCharact
         entry.0 += 1;
 
         // Track the latest timestamp
-        if let Some(ref ts) = header.timestamp {
-            if entry.1.as_ref().map_or(true, |existing| ts > existing) {
+        if let Some(ts) = &header.timestamp {
+            if entry.1.as_ref().is_none_or(|existing| ts > existing) {
                 entry.1 = Some(ts.clone());
             }
         }
@@ -353,7 +353,7 @@ pub fn delete_character(
         .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
 
-    delete_character_on_write_conn(&mut *conn, &character_name, &server_name)?;
+    delete_character_on_write_conn(&mut conn, &character_name, &server_name)?;
 
     // If the deleted character was the active one, clear it from settings
     let settings = settings_manager.get();
@@ -648,10 +648,10 @@ pub fn import_latest_report_for_character(
             }
         }
 
-        if let Some(ref ts) = header.timestamp {
+        if let Some(ts) = &header.timestamp {
             if best_file
                 .as_ref()
-                .map_or(true, |(existing_ts, _)| ts > existing_ts)
+                .is_none_or(|(existing_ts, _)| ts > existing_ts)
             {
                 best_file = Some((ts.clone(), file_path));
             }
@@ -734,10 +734,10 @@ pub fn import_reports_for_server(
             continue;
         }
 
-        if let Some(ref ts) = header.timestamp {
+        if let Some(ts) = &header.timestamp {
             let is_newer = best_per_character
                 .get(&header.character)
-                .map_or(true, |(existing_ts, _)| ts > existing_ts);
+                .is_none_or(|(existing_ts, _)| ts > existing_ts);
             if is_newer {
                 best_per_character.insert(header.character.clone(), (ts.clone(), file_path));
             }
@@ -842,10 +842,10 @@ pub fn import_latest_inventory_for_character(
             }
         }
 
-        if let Some(ref ts) = header.timestamp {
+        if let Some(ts) = &header.timestamp {
             if best_file
                 .as_ref()
-                .map_or(true, |(existing_ts, _)| ts > existing_ts)
+                .is_none_or(|(existing_ts, _)| ts > existing_ts)
             {
                 best_file = Some((ts.clone(), file_path));
             }
@@ -927,10 +927,10 @@ pub fn import_all_inventory_for_server(
             continue;
         }
 
-        if let Some(ref ts) = header.timestamp {
+        if let Some(ts) = &header.timestamp {
             let is_newer = best_per_character
                 .get(&header.character)
-                .map_or(true, |(existing_ts, _)| ts > existing_ts);
+                .is_none_or(|(existing_ts, _)| ts > existing_ts);
             if is_newer {
                 best_per_character.insert(header.character.clone(), (ts.clone(), file_path));
             }

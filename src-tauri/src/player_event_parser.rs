@@ -1080,11 +1080,7 @@ impl PlayerEventParser {
             if g.item_internal_name != item_internal_name {
                 continue;
             }
-            let dist = if g.captured_at_secs >= add_item_at_secs {
-                g.captured_at_secs - add_item_at_secs
-            } else {
-                add_item_at_secs - g.captured_at_secs
-            };
+            let dist = g.captured_at_secs.abs_diff(add_item_at_secs);
             if dist <= CHAT_GAIN_MATCH_WINDOW_SECS && dist < best_dist {
                 best_idx = Some(i);
                 best_dist = dist;
@@ -1811,7 +1807,7 @@ impl PlayerEventParser {
         let args = &line[args_start..args_end];
 
         let parts: Vec<&str> = args.split(',').collect();
-        let instance_id = parse_instance_id(parts.get(0)?)?;
+        let instance_id = parse_instance_id(parts.first()?)?;
         let encoded_value: u32 = parts.get(1)?.trim().parse().ok()?;
         let from_server = parts.get(2)?.trim() == "True";
 
@@ -1977,7 +1973,7 @@ impl PlayerEventParser {
         let args = &line[args_start..args_end];
 
         let parts: Vec<&str> = args.splitn(5, ',').collect();
-        let entity_id: u32 = parts.get(0)?.trim().parse().ok()?;
+        let entity_id: u32 = parts.first()?.trim().parse().ok()?;
         let interaction_type: u32 = parts.get(1)?.trim().parse().ok()?;
         // parts[2] = distance, parts[3] = canInteract, parts[4] = "NPC_Name"
         let npc_name_raw = parts.get(4)?.trim();
@@ -2083,7 +2079,7 @@ impl PlayerEventParser {
         let args = &line[args_start..args_end];
 
         let parts: Vec<&str> = args.split(',').collect();
-        let instance_id = parse_instance_id(parts.get(0)?)?;
+        let instance_id = parse_instance_id(parts.first()?)?;
         let encoded_value: u32 = parts.get(1)?.trim().parse().ok()?;
         let price: u32 = parts.get(2)?.trim().parse().ok()?;
 
@@ -2107,7 +2103,7 @@ impl PlayerEventParser {
         let args = &line[args_start..];
 
         let parts: Vec<&str> = args.splitn(4, ',').collect();
-        let npc_id: u32 = parts.get(0)?.trim().parse().ok()?;
+        let npc_id: u32 = parts.first()?.trim().parse().ok()?;
         // parts[1] = -1 (skip)
         let slot: i32 = parts.get(2)?.trim().parse().ok()?;
 
@@ -2144,7 +2140,7 @@ impl PlayerEventParser {
         let args = &line[args_start..args_end];
 
         let parts: Vec<&str> = args.split(',').collect();
-        let npc_id: u32 = parts.get(0)?.trim().parse().ok()?;
+        let npc_id: u32 = parts.first()?.trim().parse().ok()?;
         // parts[1] = -1 (skip)
         let instance_id = parse_instance_id(parts.get(2)?)?;
         let quantity: u32 = parts.get(3)?.trim().parse().ok()?;
@@ -2634,7 +2630,7 @@ impl PlayerEventParser {
                             let s = &after_sending[start + 3..];
                             s.find("</i>").map(|end| s[..end].trim().to_string())
                         })
-                        .and_then(|s| if s.is_empty() { None } else { Some(s) });
+                        .filter(|s| !s.is_empty());
 
                     // Extract message from "Message:\\n<indent=3em>...<"
                     let message = after_sending
@@ -2793,15 +2789,10 @@ impl PlayerEventParser {
         // separated, but the helpText arg can contain commas inside its
         // quoted string, so split on ", " boundaries at paren-depth 0 —
         // quote-aware scan instead of a naive split.
-        let is_own_stall = match extract_positional_bool(args, 4) {
-            Some(b) => b,
-            None => {
-                // Arg layout changed or unparseable: treat as someone else's
-                // stall (the common case for captures; purchases are gated
-                // on Remove anyway).
-                false
-            }
-        };
+        // Arg layout changed or unparseable: treat as someone else's
+        // stall (the common case for captures; purchases are gated
+        // on Remove anyway).
+        let is_own_stall = extract_positional_bool(args, 4).unwrap_or(false);
 
         self.vendor_screen = Some((npc_id, is_own_stall));
 
@@ -2991,7 +2982,7 @@ impl PlayerEventParser {
         let args = &line[args_start..args_end];
 
         let parts: Vec<&str> = args.split(',').collect();
-        let skill1 = parts.get(0)?.trim().to_string();
+        let skill1 = parts.first()?.trim().to_string();
         let skill2 = parts.get(1)?.trim().to_string();
 
         Some(PlayerEvent::ActiveSkillsChanged {
@@ -3009,7 +3000,7 @@ impl PlayerEventParser {
         let args = &line[args_start..args_end];
 
         let parts: Vec<&str> = args.split(',').collect();
-        let entity_id: u32 = parts.get(0)?.trim().parse().ok()?;
+        let entity_id: u32 = parts.first()?.trim().parse().ok()?;
         let is_mounting = parts.get(1)?.trim() == "True";
 
         Some(PlayerEvent::MountStateChanged {
@@ -3050,7 +3041,7 @@ impl PlayerEventParser {
         let args = &line[args_start..args_end];
 
         let parts: Vec<&str> = args.split(',').collect();
-        let recipe_id: u32 = parts.get(0)?.trim().parse().ok()?;
+        let recipe_id: u32 = parts.first()?.trim().parse().ok()?;
         let completion_count: u32 = parts.get(1)?.trim().parse().ok()?;
 
         Some(PlayerEvent::RecipeUpdated {
@@ -3091,7 +3082,7 @@ impl PlayerEventParser {
         let args = &line[args_start..args_end];
 
         let parts: Vec<&str> = args.split(',').collect();
-        let current_gold: u32 = parts.get(0)?.trim().parse().ok()?;
+        let current_gold: u32 = parts.first()?.trim().parse().ok()?;
         let server_id: u64 = parts.get(1)?.trim().parse().ok()?;
         let max_gold: u32 = parts.get(2)?.trim().parse().ok()?;
 
@@ -3147,9 +3138,7 @@ impl PlayerEventParser {
             return None;
         }
 
-        let attributes: Vec<AttributeValue> = keys
-            .into_iter()
-            .zip(values.into_iter())
+        let attributes: Vec<AttributeValue> = std::iter::zip(keys, values)
             .map(|(name, value)| AttributeValue { name, value })
             .collect();
 
@@ -3534,7 +3523,7 @@ fn classify_delay_loop(
         "Assemble",
         "Forge",
     ];
-    if craft_actions.iter().any(|a| action_type == *a) && label_core != "mining" {
+    if craft_actions.contains(&action_type) && label_core != "mining" {
         return Some(ActivitySource::GeneralCraft {
             action_type: action_type.to_string(),
             label: label_trimmed.to_string(),
@@ -3707,7 +3696,7 @@ fn parse_skill_block(block: &str) -> Option<SkillSnapshot> {
 fn extract_block_field(block: &str, key: &str) -> Option<String> {
     let start = block.find(key)? + key.len();
     let rest = &block[start..];
-    let end = rest.find(|c| c == ',' || c == '}').unwrap_or(rest.len());
+    let end = rest.find([',', '}']).unwrap_or(rest.len());
     Some(rest[..end].to_string())
 }
 
@@ -3751,9 +3740,7 @@ fn extract_positional_arg(text: &str, n: usize) -> Option<&str> {
                 b'"' => in_quotes = true,
                 b'(' | b'[' => depth += 1,
                 b')' | b']' => {
-                    if depth > 0 {
-                        depth -= 1
-                    }
+                    depth = depth.saturating_sub(1);
                 }
                 b',' if depth == 0 => {
                     if index == n {

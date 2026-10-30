@@ -177,7 +177,7 @@ pub fn aggregate_monsters<C: DbRead + ?Sized>(
     );
 
     // Most-recently-earned first.
-    out.sort_by(|a, b| b.last_earned_ms.cmp(&a.last_earned_ms));
+    out.sort_by_key(|a| std::cmp::Reverse(a.last_earned_ms));
     Ok(out)
 }
 
@@ -209,6 +209,8 @@ pub fn backfill_from_chat_logs(settings: &SettingsManager, db: &DbPool) -> Resul
         let Ok(file) = File::open(&path) else {
             continue;
         };
+        // One parsed wisdom earn: (timestamp, amount, source, verb, zone).
+        type WisdomEarn = (String, u32, Option<String>, String, Option<String>);
         // One IMMEDIATE transaction per file: four startup backfills run
         // concurrently, and a single transaction spanning every file holds
         // the write lock long enough for the others' busy_timeout (5s) to
@@ -216,11 +218,10 @@ pub fn backfill_from_chat_logs(settings: &SettingsManager, db: &DbPool) -> Resul
         // idempotent (unique index) so a crash mid-scan just re-runs.
         // PARSE FIRST, WRITER SECOND: the writer must not sit held while the
         // file is read and parsed — collect the records, then acquire the
-        // writer only around the insert transaction.
-        let earns: Vec<(String, u32, Option<String>, String, Option<String>)> = {
+        let earns: Vec<WisdomEarn> = {
             let reader = BufReader::new(file);
             let mut out = Vec::new();
-            for line in reader.lines().filter_map(Result::ok) {
+            for line in reader.lines().map_while(Result::ok) {
                 let Some(msg) = parse_chat_line(&line) else {
                     continue;
                 };

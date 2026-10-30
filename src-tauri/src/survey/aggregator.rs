@@ -89,6 +89,50 @@ struct PendingUse {
     used_at: Option<chrono::NaiveDateTime>,
 }
 
+/// What [`SurveySessionAggregator::record_manual_use`] needs beyond the
+/// connection: the owning character/server plus the hand-framed use's
+/// fields. Grouped so the manual-use entry point stays under the
+/// argument-count lint without changing what it carries.
+#[derive(Debug, Clone, Copy)]
+pub struct ManualUse<'a> {
+    pub character: &'a str,
+    pub server: &'a str,
+    pub area: Option<&'a str>,
+    pub map_internal_name: &'a str,
+    pub kind: SurveyUseKind,
+    pub now_iso: &'a str,
+}
+
+/// What [`SurveySessionAggregator::attribute_chat_gain`] resolves before the
+/// shared tail runs: the owning character/server plus the gain's ledger
+/// fields. Grouped so the attribution tail stays under the argument-count
+/// lint without changing what it carries.
+#[derive(Debug, Clone, Copy)]
+pub struct ChatAttribution<'a> {
+    pub character: &'a str,
+    pub server: &'a str,
+    pub use_id: i64,
+    pub quantity: u32,
+    pub timestamp: &'a str,
+    pub item_name: Option<&'a str>,
+    pub mark_completed: bool,
+}
+
+/// What the crafted-map handler needs beyond the connection: the owning
+/// character/server plus the craft line's fields. Grouped so the handler
+/// stays under the argument-count lint without changing what it carries.
+/// `map_internal_name`/`kind` are unused today (the craft path only bumps
+/// session counts) but kept so the call sites still pass what the log line
+/// carried — prefixed to silence the unused-field lint.
+#[derive(Debug, Clone, Copy)]
+pub struct CraftedUse<'a> {
+    pub character: &'a str,
+    pub server: &'a str,
+    pub _map_internal_name: &'a str,
+    pub _kind: SurveyUseKind,
+    pub timestamp: &'a str,
+}
+
 /// A basic-survey loot gain that arrived *before* the survey map's
 /// `ProcessDeleteItem` created the pending use. Buffered so it can be
 /// attributed once the deletion fires and the pending use exists.
@@ -271,6 +315,9 @@ impl SurveySessionAggregator {
         self.log_dates.set_base_date(date);
     }
 
+    // `to_*` on `&mut self`: `LogDateResolver::resolve` advances the
+    // session-rollover baseline, so a shared borrow would change dates.
+    #[allow(clippy::wrong_self_convention)]
     fn to_utc(&mut self, ts: &str) -> String {
         self.log_dates.resolve(ts)
     }
@@ -344,12 +391,14 @@ impl SurveySessionAggregator {
     pub fn record_manual_use(
         &mut self,
         conn: &Connection,
-        character: &str,
-        server: &str,
-        area: Option<&str>,
-        map_internal_name: &str,
-        kind: SurveyUseKind,
-        now_iso: &str,
+        ManualUse {
+            character,
+            server,
+            area,
+            map_internal_name,
+            kind,
+            now_iso,
+        }: ManualUse<'_>,
     ) -> Result<(i64, Option<i64>), String> {
         // Explicit user action — always create a session when none is active.
         let session_id = match self.fetch_active_session(conn, character, server) {
@@ -642,7 +691,16 @@ impl SurveySessionAggregator {
             .map(|(use_id, _)| *use_id);
         if let Some(use_id) = basic_hit {
             return self.record_chat_attribution(
-                conn, character, server, use_id, quantity, timestamp, internal_name, true,
+                conn,
+                ChatAttribution {
+                    character,
+                    server,
+                    use_id,
+                    quantity,
+                    timestamp,
+                    item_name: internal_name,
+                    mark_completed: true,
+                },
             );
         }
 
@@ -653,7 +711,16 @@ impl SurveySessionAggregator {
             if (0..=cm.swing_window_secs).contains(&dt) {
                 let use_id = cm.survey_use_id;
                 return self.record_chat_attribution(
-                    conn, character, server, use_id, quantity, timestamp, internal_name, false,
+                    conn,
+                    ChatAttribution {
+                        character,
+                        server,
+                        use_id,
+                        quantity,
+                        timestamp,
+                        item_name: internal_name,
+                        mark_completed: false,
+                    },
                 );
             }
         }
@@ -664,7 +731,16 @@ impl SurveySessionAggregator {
             if let Some(session_id) = self.fetch_active_session(conn, character, server) {
                 if let Ok(Some(use_id)) = persistence::latest_use_id_for_session(conn, session_id) {
                     return self.record_chat_attribution(
-                        conn, character, server, use_id, quantity, timestamp, internal_name, false,
+                        conn,
+                        ChatAttribution {
+                            character,
+                            server,
+                            use_id,
+                            quantity,
+                            timestamp,
+                            item_name: internal_name,
+                            mark_completed: false,
+                        },
                     );
                 }
             }
@@ -722,13 +798,15 @@ impl SurveySessionAggregator {
     fn record_chat_attribution(
         &mut self,
         conn: &Connection,
-        character: &str,
-        server: &str,
-        use_id: i64,
-        quantity: u32,
-        timestamp: &str,
-        item_name: Option<&str>,
-        mark_completed: bool,
+        ChatAttribution {
+            character,
+            server,
+            use_id,
+            quantity,
+            timestamp,
+            item_name,
+            mark_completed,
+        }: ChatAttribution<'_>,
     ) -> Option<i64> {
         // Single loot authority for `loot_qty`: a gain seen by both pipelines
         // bumps once. The Player.log side usually lands first, so by the time
@@ -855,11 +933,13 @@ impl SurveySessionAggregator {
                     if let Some(kind) = self.lookup_survey_kind(item_name) {
                         self.handle_survey_crafted(
                             conn,
-                            character,
-                            server,
-                            item_name,
-                            kind,
-                            timestamp,
+                            CraftedUse {
+                                character,
+                                server,
+                                _map_internal_name: item_name,
+                                _kind: kind,
+                                timestamp,
+                            },
                             &mut emitted,
                         );
                     }
@@ -875,11 +955,16 @@ impl SurveySessionAggregator {
                 if let Some(kind) = self.lookup_survey_kind(name) {
                     self.handle_survey_consumed(
                         conn,
-                        character,
-                        server,
-                        current_area,
-                        name,
-                        kind,
+                        ManualUse {
+                            character,
+                            server,
+                            area: current_area,
+                            map_internal_name: name,
+                            kind,
+                            // Log path resolves its own UTC stamp from the
+                            // delete line; the manual wall-clock slot is unused.
+                            now_iso: "",
+                        },
                         timestamp,
                         &mut emitted,
                     );
@@ -990,11 +1075,13 @@ impl SurveySessionAggregator {
     fn handle_survey_crafted(
         &mut self,
         conn: &Connection,
-        character: &str,
-        server: &str,
-        _map_internal_name: &str,
-        _kind: SurveyUseKind,
-        timestamp: &str,
+        CraftedUse {
+            character,
+            server,
+            _map_internal_name,
+            _kind,
+            timestamp,
+        }: CraftedUse<'_>,
         emitted: &mut Vec<SurveyAggregatorEvent>,
     ) {
         let now_iso = self.to_utc(timestamp);
@@ -1053,15 +1140,17 @@ impl SurveySessionAggregator {
     /// Called when a survey map is consumed (deleted). Inserts a
     /// `survey_uses` row, increments session counts, and queues the
     /// `pending_uses` entry for upcoming Mining-context attribution.
-    #[allow(clippy::too_many_arguments)]
     fn handle_survey_consumed(
         &mut self,
         conn: &Connection,
-        character: &str,
-        server: &str,
-        current_area: Option<&str>,
-        map_internal_name: &str,
-        kind: SurveyUseKind,
+        ManualUse {
+            character,
+            server,
+            area: current_area,
+            map_internal_name,
+            kind,
+            now_iso: _,
+        }: ManualUse<'_>,
         timestamp: &str,
         emitted: &mut Vec<SurveyAggregatorEvent>,
     ) {
@@ -2071,7 +2160,7 @@ fn is_mining_loop(action_type: &str, label: &str) -> bool {
 
 fn event_secs_of_day(event: &PlayerEvent) -> Option<u32> {
     let ts = event_hms_timestamp(event)?;
-    parse_secs_of_day(&ts)
+    parse_secs_of_day(ts)
 }
 
 fn event_hms_timestamp(event: &PlayerEvent) -> Option<&str> {
@@ -3196,7 +3285,7 @@ mod tests {
             confidence: crate::player_event_parser::AttributionConfidence::Confident,
             survey_use_id: None,
         };
-        let mut gain = |name: &str| PlayerEvent::ItemAdded {
+        let gain = |name: &str| PlayerEvent::ItemAdded {
             timestamp: "12:00:29".to_string(),
             item_name: name.to_string(),
             instance_id: 999,
@@ -3378,7 +3467,7 @@ mod tests {
         let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
         agg.set_base_date(test_base_date());
 
-        let mut gain = |name: &str| PlayerEvent::ItemAdded {
+        let gain = |name: &str| PlayerEvent::ItemAdded {
             timestamp: "12:00:00".to_string(),
             item_name: name.to_string(),
             instance_id: 999,
@@ -3461,12 +3550,14 @@ mod tests {
         let (use_id, _) = agg
             .record_manual_use(
                 &conn,
-                "Zenith",
-                "Dreva",
-                Some("Povus"),
-                "MiningSurveyPovus7Y",
-                crate::survey::types::SurveyUseKind::Basic,
-                "2026-04-15 12:00:05",
+                ManualUse {
+                    character: "Zenith",
+                    server: "Dreva",
+                    area: Some("Povus"),
+                    map_internal_name: "MiningSurveyPovus7Y",
+                    kind: crate::survey::types::SurveyUseKind::Basic,
+                    now_iso: "2026-04-15 12:00:05",
+                },
             )
             .expect("manual use records");
         assert_eq!(
@@ -3524,12 +3615,14 @@ mod tests {
         let (use_id, _) = agg
             .record_manual_use(
                 &conn,
-                "Zenith",
-                "Dreva",
-                Some("Povus"),
-                "MiningSurveyPovus7Y",
-                crate::survey::types::SurveyUseKind::Basic,
-                "2026-04-15 12:00:05",
+                ManualUse {
+                    character: "Zenith",
+                    server: "Dreva",
+                    area: Some("Povus"),
+                    map_internal_name: "MiningSurveyPovus7Y",
+                    kind: crate::survey::types::SurveyUseKind::Basic,
+                    now_iso: "2026-04-15 12:00:05",
+                },
             )
             .expect("manual use records");
         assert!(
@@ -3607,12 +3700,14 @@ mod tests {
         let (use_id, _) = agg
             .record_manual_use(
                 &conn,
-                "Zenith",
-                "Dreva",
-                Some("Serbule"),
-                "GeologySurveySerbule1",
-                crate::survey::types::SurveyUseKind::Basic,
-                "2026-04-15 12:00:05",
+                ManualUse {
+                    character: "Zenith",
+                    server: "Dreva",
+                    area: Some("Serbule"),
+                    map_internal_name: "GeologySurveySerbule1",
+                    kind: crate::survey::types::SurveyUseKind::Basic,
+                    now_iso: "2026-04-15 12:00:05",
+                },
             )
             .expect("manual use records");
         assert_eq!(agg.deferred_basic_gains.len(), 0, "matching gain drained");
@@ -3652,7 +3747,7 @@ mod tests {
             .unwrap();
         }
 
-        let mut buffered_gain = |name: &str, map: &str| PlayerEvent::ItemAdded {
+        let buffered_gain = |name: &str, map: &str| PlayerEvent::ItemAdded {
             timestamp: "12:00:00".to_string(),
             item_name: name.to_string(),
             instance_id: 999,
@@ -3676,12 +3771,14 @@ mod tests {
         let (use_id, _) = agg
             .record_manual_use(
                 &conn,
-                "Zenith",
-                "Dreva",
-                Some("Povus"),
-                "MiningSurveyPovus7Y",
-                crate::survey::types::SurveyUseKind::Basic,
-                "2026-04-15 12:00:05",
+                ManualUse {
+                    character: "Zenith",
+                    server: "Dreva",
+                    area: Some("Povus"),
+                    map_internal_name: "MiningSurveyPovus7Y",
+                    kind: crate::survey::types::SurveyUseKind::Basic,
+                    now_iso: "2026-04-15 12:00:05",
+                },
             )
             .expect("manual use records");
         assert_eq!(agg.deferred_basic_gains.len(), 1, "only Povus gain drained");
@@ -3751,12 +3848,14 @@ mod tests {
         let (use_id, _) = agg
             .record_manual_use(
                 &conn,
-                "Zenith",
-                "Dreva",
-                Some("Serbule"),
-                "GeologySurveySerbule1",
-                crate::survey::types::SurveyUseKind::Basic,
-                "2026-04-15 12:00:05",
+                ManualUse {
+                    character: "Zenith",
+                    server: "Dreva",
+                    area: Some("Serbule"),
+                    map_internal_name: "GeologySurveySerbule1",
+                    kind: crate::survey::types::SurveyUseKind::Basic,
+                    now_iso: "2026-04-15 12:00:05",
+                },
             )
             .expect("manual use records");
         assert_eq!(agg.deferred_basic_gains.len(), 0, "twinned gain consumed");
@@ -4373,12 +4472,14 @@ mod tests {
         let (use_id, session_id) = agg
             .record_manual_use(
                 &conn,
-                "Zenith",
-                "Dreva",
-                Some("Serbule"),
-                "GeologySurveySerbule1",
-                crate::survey::types::SurveyUseKind::Basic,
-                now,
+                ManualUse {
+                    character: "Zenith",
+                    server: "Dreva",
+                    area: Some("Serbule"),
+                    map_internal_name: "GeologySurveySerbule1",
+                    kind: crate::survey::types::SurveyUseKind::Basic,
+                    now_iso: now,
+                },
             )
             .expect("record_manual_use must succeed");
         assert!(session_id.is_some(), "manual use always creates a session");
@@ -4413,12 +4514,14 @@ mod tests {
         let (use_id, session_id) = agg
             .record_manual_use(
                 &conn,
-                "Zenith",
-                "Dreva",
-                None,
-                "MiningSurveyKurMountains1X",
-                crate::survey::types::SurveyUseKind::Motherlode,
-                "2026-04-15 12:00:00",
+                ManualUse {
+                    character: "Zenith",
+                    server: "Dreva",
+                    area: None,
+                    map_internal_name: "MiningSurveyKurMountains1X",
+                    kind: crate::survey::types::SurveyUseKind::Motherlode,
+                    now_iso: "2026-04-15 12:00:00",
+                },
             )
             .expect("record_manual_use must succeed");
         let sid = session_id.expect("session must be created despite flag");

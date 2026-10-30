@@ -463,17 +463,13 @@ fn search_items(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Unifi
         let mut skip = false;
         for h in &has {
             match *h {
-                "recipe" => {
-                    if !data.recipes_producing_item.contains_key(&item.id) {
-                        skip = true;
-                        break;
-                    }
+                "recipe" if !data.recipes_producing_item.contains_key(&item.id) => {
+                    skip = true;
+                    break;
                 }
-                "description" => {
-                    if item.description.is_none() {
-                        skip = true;
-                        break;
-                    }
+                "description" if item.description.is_none() => {
+                    skip = true;
+                    break;
                 }
                 _ => {}
             }
@@ -483,17 +479,13 @@ fn search_items(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Unifi
         }
         for h in &neg_has {
             match *h {
-                "recipe" => {
-                    if data.recipes_producing_item.contains_key(&item.id) {
-                        skip = true;
-                        break;
-                    }
+                "recipe" if data.recipes_producing_item.contains_key(&item.id) => {
+                    skip = true;
+                    break;
                 }
-                "description" => {
-                    if item.description.is_some() {
-                        skip = true;
-                        break;
-                    }
+                "description" if item.description.is_some() => {
+                    skip = true;
+                    break;
                 }
                 _ => {}
             }

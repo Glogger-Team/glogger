@@ -1050,7 +1050,9 @@ mod import_export_tests {
         assert!(fee_config.contains("\"per_craft_fee\":5"));
         assert_eq!(customer_provides, "{\"item:123\":4}");
 
-        let entries: Vec<(i64, String, i32, i32, String, Option<i32>, String)> = conn
+        // One project entry row: (recipe_id, name, qty, sort, expanded_ids, target_stock, slot_ids).
+    type ProjectEntryRow = (i64, String, i32, i32, String, Option<i32>, String);
+    let entries: Vec<ProjectEntryRow> = conn
             .prepare("SELECT recipe_id, recipe_name, quantity, sort_order, expanded_ingredient_ids, target_stock, slot_item_ids FROM crafting_project_entries WHERE project_id = ?1 ORDER BY sort_order")
             .unwrap()
             .query_map([new_id], |row| {

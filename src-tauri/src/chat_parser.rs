@@ -396,7 +396,7 @@ pub fn get_chat_log_files(chat_logs_dir: &Path) -> std::io::Result<Vec<ChatLogFi
     }
 
     // Sort by date, newest first
-    files.sort_by(|a, b| b.file_date.cmp(&a.file_date));
+    files.sort_by_key(|a| std::cmp::Reverse(a.file_date));
 
     Ok(files)
 }
@@ -471,10 +471,10 @@ fn parse_timezone_offset(line: &str) -> Option<i32> {
     let offset_str = after_marker[..offset_end].trim();
 
     // Determine sign
-    let (sign, time_part) = if offset_str.starts_with('-') {
-        (-1, &offset_str[1..])
-    } else if offset_str.starts_with('+') {
-        (1, &offset_str[1..])
+    let (sign, time_part) = if let Some(rest) = offset_str.strip_prefix('-') {
+        (-1, rest)
+    } else if let Some(rest) = offset_str.strip_prefix('+') {
+        (1, rest)
     } else {
         (1, offset_str)
     };
