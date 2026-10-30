@@ -98,9 +98,9 @@ The codebase currently uses three different approaches for the same semantic pur
 - [`LootDonutChart.vue`](../../src/components/Surveying/LootDonutChart.vue) and [`SkillsTab.vue`](../../src/components/Crafting/SkillsTab.vue) use hardcoded hex palettes for chart.js — `#7ec8e3`, `#6366f1`, `#f59e0b`, etc.
 - Chart axis/grid/label colors use zinc palette hex values (`#52525b`, `#a1a1aa`, `#d4d4d8`, `#27272a`)
 
-**Status indicator dots use Tailwind defaults exclusively:**
-- `bg-green-500` / `bg-red-500` for online/offline dots (MenuBar, StatusWidget, LiveInventoryTab)
-- `bg-yellow-500` for warning-level capacity bars (VaultRow, VaultAreaCard)
+**Status indicator dots use theme tokens where they carry semantics:**
+- `bg-status-active` / `bg-status-inactive` for tailing/offline dots (MenuBar, LiveInventoryTab, `StatusWidget.vue` — the archived copy also kept the Tailwind-default form before removal)
+- `bg-yellow-500` for warning-level capacity bars (VaultRow, VaultAreaCard) — no `status-warning` token use yet
 
 ## Existing System
 

@@ -31,7 +31,7 @@ import { useGameStateStore } from '../../stores/gameStateStore'
 import {
   CONTEXT_BAR_DEFAULTS,
   CURRENCY_DISPLAY_ORDER,
-  CURRENCY_DISPLAY_NAMES,
+  formatCurrencyDisplayName,
   type ContextBarPrefs,
 } from './contextBarPrefs'
 
@@ -51,16 +51,10 @@ const sectionOptions: { key: PrefKey; label: string; parent?: PrefKey }[] = [
   { key: 'use24h', label: '24-hour format' },
   { key: 'showMoon', label: 'Moon Phase' },
   { key: 'showWeather', label: 'Weather' },
-  { key: 'showCombat', label: 'Combat / Mount' },
 ]
 
 function formatCurrencyLabel(name: string): string {
-  const lower = name.toLowerCase()
-  if (CURRENCY_DISPLAY_NAMES[lower]) return CURRENCY_DISPLAY_NAMES[lower]
-  return name
-    .split('_')
-    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-    .join(' ')
+  return formatCurrencyDisplayName(name)
 }
 
 /** Build currency toggle list from known currencies + any the character actually has. */

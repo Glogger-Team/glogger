@@ -1250,6 +1250,16 @@ impl PlayerEventParser {
             return events;
         }
 
+        // Non-LocalPlayer engine lines handled before the fast path below.
+        // `AreaConfig Setting weather:` is the live weather source since the
+        // game stopped emitting ProcessSetWeather.
+        if line.contains("AreaConfig Setting weather:") {
+            if let Some(ev) = self.parse_area_config_weather(line) {
+                events.push(ev);
+            }
+            return events;
+        }
+
         // Fast path: skip lines that aren't LocalPlayer Process events
         // (but still flush pending deletes above)
         if !line.contains("LocalPlayer: Process") {
@@ -3033,7 +3043,28 @@ impl PlayerEventParser {
         })
     }
 
-    /// ProcessUpdateRecipe(recipeId, completionCount)
+    /// AreaConfig Setting weather: <Name>
+    /// The game stopped emitting ProcessSetWeather (last seen in archived
+    /// fixtures) and now logs the active weather through AreaConfig on every
+    /// zone-in and weather transition (verified 2026-10-30 live logs). No
+    /// active flag on this line: it always states the current weather, so
+    /// is_active is true.
+    fn parse_area_config_weather(&self, line: &str) -> Option<PlayerEvent> {
+        let ts = parse_timestamp(line)?;
+        let marker = "AreaConfig Setting weather:";
+        let start = line.find(marker)? + marker.len();
+        let weather_name = line[start..].trim().to_string();
+        if weather_name.is_empty() {
+            return None;
+        }
+
+        Some(PlayerEvent::WeatherChanged {
+            timestamp: ts,
+            weather_name,
+            is_active: true,
+        })
+    }
+
     fn parse_update_recipe(&self, line: &str) -> Option<PlayerEvent> {
         let ts = parse_timestamp(line)?;
         let args_start = line.find("ProcessUpdateRecipe(")? + "ProcessUpdateRecipe(".len();
@@ -5299,6 +5330,37 @@ mod tests {
         match &events[0] {
             PlayerEvent::WeatherChanged { weather_name, .. } => {
                 assert_eq!(weather_name, "Cloudy 3");
+            }
+            _ => panic!("Expected WeatherChanged"),
+        }
+    }
+
+    #[test]
+    fn test_parse_area_config_weather() {
+        let mut parser = PlayerEventParser::new();
+        let events = parser.process_line("[20:23:55] AreaConfig Setting weather: Rain");
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            PlayerEvent::WeatherChanged {
+                weather_name,
+                is_active,
+                ..
+            } => {
+                assert_eq!(weather_name, "Rain");
+                assert!(*is_active);
+            }
+            _ => panic!("Expected WeatherChanged"),
+        }
+    }
+
+    #[test]
+    fn test_parse_area_config_weather_multiword() {
+        let mut parser = PlayerEventParser::new();
+        let events = parser.process_line("[20:06:47] AreaConfig Setting weather: Clear Sky");
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            PlayerEvent::WeatherChanged { weather_name, .. } => {
+                assert_eq!(weather_name, "Clear Sky");
             }
             _ => panic!("Expected WeatherChanged"),
         }

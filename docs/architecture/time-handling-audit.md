@@ -32,7 +32,7 @@ These use browser APIs directly instead of the `useTimestamp.ts` composable, mea
 
 | File | Line | What it does | Severity |
 |---|---|---|---|
-| `src/components/Dashboard/StatusWidget.vue` | 60 | `toLocaleDateString()` for report import dates | Low — these are import metadata, not game event timestamps |
+| ~~`src/components/Dashboard/StatusWidget.vue`~~ (deleted — unregistered copy; the live Status widget is `ContextBar.vue`, which renders no dates) | 60 | `toLocaleDateString()` for report import dates | Low — these are import metadata, not game event timestamps |
 | `src/components/Dashboard/widgets/HoplologyWidget.vue` | 104 | `toLocaleDateString()` for study dates | Low — dates only (no time component), so TZ shift rarely matters |
 | `src/components/Dashboard/widgets/GardenAlmanacWidget.vue` | 120 | `toLocaleString()` for almanac event dates | **Medium** — these are game-world event times that should respect display mode |
 | `src/components/Help/ChangelogTab.vue` | 202 | `toLocaleDateString()` for GitHub release dates | None — external metadata, not game timestamps |
@@ -85,7 +85,7 @@ These use browser APIs directly instead of the `useTimestamp.ts` composable, mea
 
 1. **GardenAlmanacWidget `formatCapturedAt()`** — Should use `formatDateTimeShort()` from `useTimestamp.ts` instead of `toLocaleString()`. This displays game-world event times and should respect the display mode setting. Straightforward fix.
 
-2. **StatusWidget `formatDate()`** — Should use `formatDateTimeShort()` from `useTimestamp.ts`. Low priority since it's just import metadata dates.
+2. ~~**StatusWidget `formatDate()`** — Should use `formatDateTimeShort()` from `useTimestamp.ts`. Low priority since it's just import metadata dates.~~ (Moot — file deleted.)
 
 3. **HoplologyWidget `formatStudyDate()`** — Should use `formatDateShort()` from `useTimestamp.ts`. Low priority since it's date-only.
 

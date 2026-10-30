@@ -53,6 +53,30 @@ export const ALL_PHASES: MoonPhaseInfo[] = [
   { name: 'WaningCrescentMoon', label: 'Waning Crescent', emoji: '🌘' },
 ]
 
+/** Casino portal destination per phase: Rahu on major (New/Quarter/Full/Last Quarter), Statehelm on crescent/gibbous. */
+export const CASINO_PORTAL_BY_PHASE: Record<MoonPhaseName, 'Rahu' | 'Statehelm'> = {
+  NewMoon: 'Rahu',
+  WaxingCrescentMoon: 'Statehelm',
+  QuarterMoon: 'Rahu',
+  WaxingGibbousMoon: 'Statehelm',
+  FullMoon: 'Rahu',
+  WaningGibbousMoon: 'Statehelm',
+  LastQuarterMoon: 'Rahu',
+  WaningCrescentMoon: 'Statehelm',
+}
+
+/** Dark Chapel statue direction per phase. */
+export const DARK_CHAPEL_DIRECTION_BY_PHASE: Record<MoonPhaseName, string> = {
+  NewMoon: 'Southwest',
+  WaxingCrescentMoon: 'South',
+  QuarterMoon: 'Southeast',
+  WaxingGibbousMoon: 'East',
+  FullMoon: 'Northeast',
+  WaningGibbousMoon: 'North',
+  LastQuarterMoon: 'Northwest',
+  WaningCrescentMoon: 'West',
+}
+
 /** Reactive composable that tracks the current moon phase via the Rust backend. */
 export function useMoonPhase() {
   const phase = ref<MoonPhaseInfo | null>(null)
