@@ -169,6 +169,16 @@ pub fn import_inventory_report_internal(
         ));
     }
 
+    // 3b. Reject placeholder reports from the game's extra-report bug:
+    // "???" name or missing character name. Name-only: StorageReport
+    // carries no race field, so the race half cannot apply here.
+    if report.character.trim().is_empty() || report.character.trim() == "???" {
+        return Err(format!(
+            "Skipping placeholder inventory report (character {:?})",
+            report.character
+        ));
+    }
+
     let mut conn = db
         .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
@@ -1004,5 +1014,54 @@ mod tests {
                 .collect()
         };
         assert_eq!(vals, vec![Some(true), Some(false)], "Nth entry fills Nth row");
+    }
+
+    #[test]
+    fn placeholder_storage_report_is_rejected() {
+        // The game's extra-report bug: "???" name or empty name on the
+        // Storage twin. Mirrors placeholder_report_is_rejected
+        // (character_commands.rs).
+        let db = pool();
+        let dir = std::env::temp_dir().join(format!(
+            "inv_placeholder_{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        for (file, name) in [
+            ("Test_Dreva_items_q.json", "???"),
+            ("Test_Dreva_items_pad.json", "  ???  "),
+            ("Test_Dreva_items_empty.json", ""),
+        ] {
+            let path = dir.join(file);
+            std::fs::write(
+                &path,
+                serde_json::json!({
+                    "Character": name,
+                    "ServerName": "Dreva",
+                    "Timestamp": "2026-10-22T12:00:00Z",
+                    "Report": "Storage",
+                    "ReportVersion": 1,
+                    "Items": []
+                })
+                .to_string(),
+            )
+            .expect("write placeholder report");
+            match import_inventory_report_internal(&db, path.to_str().expect("path")) {
+                Ok(_) => panic!("placeholder must be rejected: {file}"),
+                Err(err) => assert!(err.contains("placeholder"), "unexpected error: {err}"),
+            }
+        }
+        let count: i64 = db
+            .get_write()
+            .expect("write conn")
+            .query_row(
+                "SELECT COUNT(*) FROM character_item_snapshots WHERE character_name = '???'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count");
+        assert_eq!(count, 0);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
