@@ -678,16 +678,31 @@ pub fn set_tracked_skills(
 /// (the game's authoritative weekly count). Adds rows stamped `at` (favor 0)
 /// when short, trims the newest extras when long. Returns true when the row
 /// count changed. Same semantics as the live `GiftCountObserved` arm.
-pub(crate) fn reconcile_gift_count(
-    conn: &rusqlite::Connection,
-    character: &str,
-    server: &str,
-    npc_key: &str,
-    npc_name: &str,
-    at: &str,
-    target: u32,
-    week_start: &str,
-) -> Result<bool, rusqlite::Error> {
+/// Inputs for [`reconcile_gift_count`]; groups the args so the fn stays
+/// under the arity lint.
+pub(crate) struct GiftReconcile<'a> {
+    pub conn: &'a rusqlite::Connection,
+    pub character: &'a str,
+    pub server: &'a str,
+    pub npc_key: &'a str,
+    pub npc_name: &'a str,
+    pub at: &'a str,
+    pub target: u32,
+    pub week_start: &'a str,
+}
+
+pub(crate) fn reconcile_gift_count(g: &GiftReconcile<'_>) -> Result<bool, rusqlite::Error> {
+    let GiftReconcile {
+        conn,
+        character,
+        server,
+        npc_key,
+        npc_name,
+        at,
+        target,
+        week_start,
+    } = *g;
+    let target = target as i64;
     // `replace(gifted_at, 'T', ' ')`: rows written by the manual `+` button (and
     // older builds) carry ISO `YYYY-MM-DDTHH:MM:SSZ` stamps, and 'T' sorts after
     // ' ', so an untrimmed comparison counts an early-Monday gift into the new
@@ -700,7 +715,6 @@ pub(crate) fn reconcile_gift_count(
         |row| row.get(0),
     )?;
 
-    let target = target as i64;
     if target > existing {
         for _ in 0..(target - existing) {
             conn.execute(
@@ -750,16 +764,30 @@ pub(crate) fn reconcile_gift_count(
 /// the newer stamp), and a newer stamp never downgrades the level (same-level
 /// newer stamps refresh xp; lower levels are always dropped).
 /// Returns true when the row was inserted or updated (changed the table).
-pub(crate) fn apply_chat_level_up(
-    conn: &rusqlite::Connection,
-    character: &str,
-    server: &str,
-    skill_id: i64,
-    skill_name: &str,
-    level: i64,
-    xp: i64,
-    confirmed_at: &str,
-) -> Result<bool, String> {
+/// Inputs for [`apply_chat_level_up`]; groups the args so the fn stays
+/// under the arity lint.
+pub(crate) struct ChatLevelUp<'a> {
+    pub conn: &'a rusqlite::Connection,
+    pub character: &'a str,
+    pub server: &'a str,
+    pub skill_id: i64,
+    pub skill_name: &'a str,
+    pub level: i64,
+    pub xp: i64,
+    pub confirmed_at: &'a str,
+}
+
+pub(crate) fn apply_chat_level_up(l: &ChatLevelUp<'_>) -> Result<bool, String> {
+    let ChatLevelUp {
+        conn,
+        character,
+        server,
+        skill_id,
+        skill_name,
+        level,
+        xp,
+        confirmed_at,
+    } = *l;
     let changed = conn.execute(
         "INSERT INTO game_state_skills
            (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
@@ -2243,7 +2271,7 @@ mod tests {
         // Verbatim values from the fixture line
         // "You earned 192 XP and reached level 87 in Cartography!"
         let changed =
-            apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 14:23:16")
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 192, confirmed_at: "2026-04-16 14:23:16" })
                 .expect("apply level-up");
         assert!(changed);
 
@@ -2276,7 +2304,7 @@ mod tests {
         .unwrap();
 
         let changed =
-            apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 14:23:16")
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 192, confirmed_at: "2026-04-16 14:23:16" })
                 .expect("apply level-up");
         assert!(changed);
 
@@ -2300,13 +2328,13 @@ mod tests {
         let conn = setup();
 
         let first =
-            apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 14:23:16")
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 192, confirmed_at: "2026-04-16 14:23:16" })
                 .expect("first apply");
         assert!(first);
         // Same values re-applied at a later timestamp: the recency guard lets
         // it through (only the timestamp moves).
         let replay =
-            apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 15:00:00")
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 192, confirmed_at: "2026-04-16 15:00:00" })
                 .expect("replay apply");
         assert!(replay);
 
@@ -2329,7 +2357,7 @@ mod tests {
     fn chat_level_up_stale_replay_is_dropped() {
         let conn = setup();
 
-        apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 15:00:00")
+        apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 192, confirmed_at: "2026-04-16 15:00:00" })
             .expect("first apply");
         // A same-level line at an older timestamp replayed after newer state:
         // the guard drops it, and the timestamp must not move backward.
@@ -2338,7 +2366,7 @@ mod tests {
         // always sorts older — only `excluded.level >` rescues it. This pins
         // the guard logic, not the wire formats.)
         let changed =
-            apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 100, "2026-04-16 14:23:16")
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 100, confirmed_at: "2026-04-16 14:23:16" })
                 .expect("stale apply");
         assert!(!changed);
 
@@ -2359,13 +2387,13 @@ mod tests {
     fn chat_level_up_wins_on_level_despite_older_clock() {
         let conn = setup();
 
-        apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 192, "2026-04-16 15:00:00")
+        apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 192, confirmed_at: "2026-04-16 15:00:00" })
             .expect("first apply");
         // Genuine level-up with a skewed-older clock: chat is authoritative
         // that the level was reached, so the level wins anyway — but the
         // timestamp stays monotonic so a later stale replay can't downgrade.
         let changed =
-            apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 88, 10, "2026-04-16 14:59:00")
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 88, xp: 10, confirmed_at: "2026-04-16 14:59:00" })
                 .expect("level-up apply");
         assert!(changed);
 
@@ -2383,7 +2411,7 @@ mod tests {
         // A stale replay that would have won against the rewound clock is now
         // dropped: 14:59:30 is not newer than the monotonic 15:00:00.
         let stale =
-            apply_chat_level_up(&conn, "TestPlayer", "Dreva", 106, "Cartography", 87, 100, "2026-04-16 14:59:30")
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 100, confirmed_at: "2026-04-16 14:59:30" })
                 .expect("stale apply");
         assert!(!stale);
     }

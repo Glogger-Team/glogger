@@ -1,9 +1,9 @@
-# PR gates on PRs and main pushes: frontend type-check/build, Rust tests,
-# plus fast local-feedback linters. Rust (clippy/rustfmt) and markdown stay
-# advisory in AGENTS.md (823 unformatted spots, 167 clippy findings, 6k+
-# markdown findings pre-existing) — only the green gates run here. The
-# release workflow re-runs the frontend build, Rust tests, and TOS scan
-# before bundling (its `validate` + `test` jobs); `check:grids` is PR-only.
+# PR gates on PRs and main pushes: frontend type-check/build, Rust tests
+# (plus clippy `-D warnings` on all targets), plus fast local-feedback
+# linters. Rust (rustfmt) and markdown stay advisory in AGENTS.md (823
+# unformatted spots, 6k+ markdown findings pre-existing) — only the green
+# gates run here. The release workflow re-runs the frontend build, Rust
+# tests, and TOS scan before bundling (its `validate` + `test` jobs);
 
 name: Lint
 
@@ -209,6 +209,7 @@ jobs:
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: stable
+          components: clippy
 
       - name: Rust cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -263,3 +264,7 @@ jobs:
       - name: Rust tests
         working-directory: src-tauri
         run: cargo test --lib
+
+      - name: Clippy (deny warnings)
+        working-directory: src-tauri
+        run: cargo clippy --all-targets -- -D warnings

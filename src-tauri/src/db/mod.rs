@@ -68,7 +68,7 @@ impl ReadConn {
     /// Prepare a read-only statement. Mirrors `DbRead::prepare` as an inherent
     /// method so call sites do not need the trait in scope.
     pub fn prepare(&self, sql: &str) -> Result<ReadStatement<'_>> {
-        Connection::prepare(&self.0, sql).map(|s| ReadStatement(s))
+        Connection::prepare(&self.0, sql).map(ReadStatement)
     }
 
     /// Query a single row. Mirrors `DbRead::query_row`.
@@ -105,7 +105,7 @@ impl<'conn> ReadStatement<'conn> {
 
 impl DbRead for ReadConn {
     fn prepare(&self, sql: &str) -> Result<ReadStatement<'_>> {
-        Connection::prepare(&self.0, sql).map(|s| ReadStatement(s))
+        Connection::prepare(&self.0, sql).map(ReadStatement)
     }
 
     fn query_row<T, P, F>(&self, sql: &str, params: P, f: F) -> Result<T>
@@ -119,7 +119,7 @@ impl DbRead for ReadConn {
 
 impl DbRead for Connection {
     fn prepare(&self, sql: &str) -> Result<ReadStatement<'_>> {
-        Connection::prepare(self, sql).map(|s| ReadStatement(s))
+        Connection::prepare(self, sql).map(ReadStatement)
     }
 
     fn query_row<T, P, F>(&self, sql: &str, params: P, f: F) -> Result<T>

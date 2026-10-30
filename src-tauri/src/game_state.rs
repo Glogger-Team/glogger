@@ -17,7 +17,7 @@ macro_rules! startup_log {
     };
 }
 
-// to_datetime removed — use GameStateManager::to_utc(ts) instead
+// to_datetime removed — use GameStateManager::utc_for_log_line(ts) instead
 
 /// Monday 00:00 America/New_York of the current week, in the DB timestamp
 /// format (`%Y-%m-%d %H:%M:%S`, UTC). The game's own gift-cap note says "The
@@ -181,11 +181,11 @@ impl GameStateManager {
     ///
     /// Public so coordinator event handlers (which persist their own rows, e.g.
     /// milking) stamp events with the log's time instead of the ingest time.
-    pub fn to_utc(&mut self, ts: &str) -> String {
+    pub fn utc_for_log_line(&mut self, ts: &str) -> String {
         self.log_dates.resolve(ts)
     }
 
-    /// [`Self::to_utc`] **without** advancing the session rollover baseline.
+    /// [`Self::utc_for_log_line`] **without** advancing the session rollover baseline.
     ///
     /// For side channels that read a line before the batch it belongs to is
     /// replayed: the coordinator resolves milking `ScreenText` timestamps while
@@ -370,12 +370,12 @@ impl GameStateManager {
         match event {
             PlayerEvent::LogSessionAnchored { utc } => {
                 // Not a persisted event: it only tells us which UTC day the
-                // lines after it belong to (see `to_utc`).
+                // lines after it belong to (see `utc_for_log_line`).
                 self.anchor_log_session(*utc);
             }
 
             PlayerEvent::SkillsLoaded { timestamp, skills } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 // Full skill dump on login — replace all skills for this character+server
                 conn.execute(
                     "DELETE FROM game_state_skills WHERE character_name = ?1 AND server_name = ?2",
@@ -424,7 +424,7 @@ impl GameStateManager {
                 skill1,
                 skill2,
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 // Resolve skill internal names → IDs + display names
                 let (skill1_id, skill1_name) = match &game_data_guard {
                     Some(data) => match data.resolve_skill(skill1) {
@@ -460,7 +460,7 @@ impl GameStateManager {
                 attributes,
                 ..
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 // Batch upsert in a savepoint for performance (works nested or standalone)
                 conn.execute("SAVEPOINT attributes_batch", []).ok();
                 {
@@ -492,7 +492,7 @@ impl GameStateManager {
                 weather_name,
                 is_active,
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 conn.execute(
                     "INSERT INTO game_state_weather (id, weather_name, is_active, last_confirmed_at)
                      VALUES (1, ?1, ?2, ?3)
@@ -509,7 +509,7 @@ impl GameStateManager {
                 timestamp,
                 in_combat,
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 conn.execute(
                     "INSERT INTO game_state_combat (character_name, server_name, in_combat, last_confirmed_at)
                      VALUES (?1, ?2, ?3, ?4)
@@ -526,7 +526,7 @@ impl GameStateManager {
                 is_mounting,
                 ..
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 conn.execute(
                     "INSERT INTO game_state_mount (character_name, server_name, is_mounted, last_confirmed_at)
                      VALUES (?1, ?2, ?3, ?4)
@@ -547,7 +547,7 @@ impl GameStateManager {
                 initial_quantity,
                 provenance,
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 let resolved = game_data_guard
                     .as_ref()
                     .and_then(|gd| gd.resolve_item(item_name));
@@ -567,7 +567,7 @@ impl GameStateManager {
                 // Record transaction (only for genuinely new items, not login reloads)
                 if *is_new {
                     Self::record_transaction(
-                        &conn,
+                        conn,
                         character,
                         server,
                         &dt,
@@ -595,7 +595,7 @@ impl GameStateManager {
                 provenance,
                 ..
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 // Update existing row, or insert if ItemAdded hasn't arrived yet
                 let name = item_name.as_deref().unwrap_or("Unknown Item");
                 conn.execute(
@@ -627,7 +627,7 @@ impl GameStateManager {
                         None
                     };
                     Self::record_transaction(
-                        &conn,
+                        conn,
                         character,
                         server,
                         &dt,
@@ -677,9 +677,9 @@ impl GameStateManager {
                     DeleteContext::Consumed => "consumed",
                     DeleteContext::Unknown => "unknown",
                 };
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 Self::record_transaction(
-                    &conn,
+                    conn,
                     character,
                     server,
                     &dt,
@@ -704,7 +704,7 @@ impl GameStateManager {
                 recipe_id,
                 completion_count,
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 conn.execute(
                     "INSERT INTO game_state_recipes (character_name, server_name, recipe_id, completion_count, last_confirmed_at, source)
                      VALUES (?1, ?2, ?3, ?4, ?5, 'log')
@@ -724,7 +724,7 @@ impl GameStateManager {
                 delta,
                 is_gift,
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 // Resolve NPC display name → CDN key (e.g., "Kalaba" → "NPC_Kalaba")
                 let (npc_key, display_name) = match &game_data_guard {
                     Some(data) => match data.resolve_npc(npc_name) {
@@ -791,7 +791,7 @@ impl GameStateManager {
                 received,
                 ..
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 // Resolve display name (e.g. "Corinth") → CDN key + canonical name.
                 let (npc_key, display_name) = match &game_data_guard {
                     Some(data) => match data.resolve_npc(npc_name) {
@@ -819,19 +819,21 @@ impl GameStateManager {
                 let has_tastes = game_data_guard
                     .as_ref()
                     .and_then(|gd| gd.resolve_npc(npc_name))
-                    .map_or(true, |info| crate::game_data::has_gift_tastes(info));
+                    .is_none_or(crate::game_data::has_gift_tastes);
                 let week_start = current_week_start_utc();
                 if has_tastes
                     && dt >= week_start
                     && crate::db::game_state_commands::reconcile_gift_count(
-                        conn,
-                        character,
-                        server,
-                        &npc_key,
-                        &display_name,
-                        &dt,
-                        *received,
-                        &week_start,
+                        &crate::db::game_state_commands::GiftReconcile {
+                            conn,
+                            character,
+                            server,
+                            npc_key: &npc_key,
+                            npc_name: &display_name,
+                            at: &dt,
+                            target: *received,
+                            week_start: &week_start,
+                        },
                     )
                     .unwrap_or(false)
                 {
@@ -844,7 +846,7 @@ impl GameStateManager {
                 equipment,
                 ..
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 // Full equipment state — replace all slots
                 conn.execute("DELETE FROM game_state_equipment WHERE character_name = ?1 AND server_name = ?2",
                     rusqlite::params![character, server]).ok();
@@ -876,7 +878,7 @@ impl GameStateManager {
                 is_login_batch,
                 ..
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
 
                 // Login batch = full state dump: clear existing effects first
                 if *is_login_batch {
@@ -922,7 +924,7 @@ impl GameStateManager {
                 display_name,
                 ..
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 conn.execute(
                     "UPDATE game_state_effects SET effect_name = ?1, last_confirmed_at = ?2
                      WHERE character_name = ?3 AND server_name = ?4 AND effect_instance_id = ?5",
@@ -940,96 +942,92 @@ impl GameStateManager {
 
             PlayerEvent::StorageDeposit {
                 timestamp,
-                vault_key,
+                vault_key: Some(vk),
                 instance_id,
                 item_name,
                 slot,
                 ..
             } => {
-                if let Some(vk) = vault_key {
-                    let dt = self.to_utc(timestamp);
-                    let display_name = game_data_guard
-                        .as_ref()
-                        .and_then(|gd| gd.resolve_item(item_name))
-                        .map(|info| info.name.clone());
-                    conn.execute(
-                        "INSERT INTO game_state_storage (character_name, server_name, vault_key, instance_id, item_name, stack_size, slot_index, last_confirmed_at, source)
-                         VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, 'log')
-                         ON CONFLICT(character_name, server_name, vault_key, instance_id) DO UPDATE SET
-                            item_name = excluded.item_name,
-                            slot_index = excluded.slot_index,
-                            last_confirmed_at = excluded.last_confirmed_at",
-                        rusqlite::params![character, server, vk, *instance_id as i64, item_name, slot, dt],
-                    ).ok();
-                    Self::record_transaction(
-                        &conn,
-                        character,
-                        server,
-                        &dt,
-                        display_name.as_deref().unwrap_or(item_name),
-                        Some(item_name),
-                        None,
-                        1, // stack_size=1 initially; corrected later
-                        "storage_deposit",
-                        "player_log",
-                        Some(*instance_id),
-                        Some(vk),
-                        // Deposits move items between player-owned storages
-                        // (inventory ↔ vault). Not a "gain" and not ascribed to
-                        // any activity context.
-                        None,
-                    );
-                    domains.push("storage");
-                }
+                let dt = self.utc_for_log_line(timestamp);
+                let display_name = game_data_guard
+                    .as_ref()
+                    .and_then(|gd| gd.resolve_item(item_name))
+                    .map(|info| info.name.clone());
+                conn.execute(
+                    "INSERT INTO game_state_storage (character_name, server_name, vault_key, instance_id, item_name, stack_size, slot_index, last_confirmed_at, source)
+                     VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7, 'log')
+                     ON CONFLICT(character_name, server_name, vault_key, instance_id) DO UPDATE SET
+                        item_name = excluded.item_name,
+                        slot_index = excluded.slot_index,
+                        last_confirmed_at = excluded.last_confirmed_at",
+                    rusqlite::params![character, server, vk, *instance_id as i64, item_name, slot, dt],
+                ).ok();
+                Self::record_transaction(
+                    conn,
+                    character,
+                    server,
+                    &dt,
+                    display_name.as_deref().unwrap_or(item_name),
+                    Some(item_name),
+                    None,
+                    1, // stack_size=1 initially; corrected later
+                    "storage_deposit",
+                    "player_log",
+                    Some(*instance_id),
+                    Some(vk),
+                    // Deposits move items between player-owned storages
+                    // (inventory ↔ vault). Not a "gain" and not ascribed to
+                    // any activity context.
+                    None,
+                );
+                domains.push("storage");
             }
 
             PlayerEvent::StorageWithdrawal {
                 timestamp,
-                vault_key,
+                vault_key: Some(vk),
                 instance_id,
                 quantity,
                 provenance,
                 ..
             } => {
-                if let Some(vk) = vault_key {
-                    // Look up item name before deleting
-                    let stored_name: String = conn
-                        .query_row(
-                            "SELECT item_name FROM game_state_storage
-                             WHERE character_name = ?1 AND server_name = ?2 AND vault_key = ?3 AND instance_id = ?4",
-                            rusqlite::params![character, server, vk, *instance_id as i64],
-                            |row| row.get(0),
-                        )
-                        .unwrap_or_else(|_| "Unknown".to_string());
-
-                    conn.execute(
-                        "DELETE FROM game_state_storage WHERE character_name = ?1 AND server_name = ?2 AND vault_key = ?3 AND instance_id = ?4",
+                // Look up item name before deleting
+                let stored_name: String = conn
+                    .query_row(
+                        "SELECT item_name FROM game_state_storage
+                         WHERE character_name = ?1 AND server_name = ?2 AND vault_key = ?3 AND instance_id = ?4",
                         rusqlite::params![character, server, vk, *instance_id as i64],
-                    ).ok();
+                        |row| row.get(0),
+                    )
+                    .unwrap_or_else(|_| "Unknown".to_string());
 
-                    let dt = self.to_utc(timestamp);
-                    Self::record_transaction(
-                        &conn,
-                        character,
-                        server,
-                        &dt,
-                        &stored_name,
-                        None,
-                        None,
-                        -(*quantity as i32),
-                        "storage_withdraw",
-                        "player_log",
-                        Some(*instance_id),
-                        Some(vk),
-                        // Negative quantity here represents the vault side of
-                        // a withdrawal; pair with the inventory gain from
-                        // ProcessAddItem that carries the provenance proper.
-                        // Still attach provenance so the withdrawal row can be
-                        // grouped with its counterpart gain when querying.
-                        Some(provenance.to_columns()),
-                    );
-                    domains.push("storage");
-                }
+                conn.execute(
+                    "DELETE FROM game_state_storage WHERE character_name = ?1 AND server_name = ?2 AND vault_key = ?3 AND instance_id = ?4",
+                    rusqlite::params![character, server, vk, *instance_id as i64],
+                ).ok();
+
+                let dt = self.utc_for_log_line(timestamp);
+                Self::record_transaction(
+                    conn,
+                    character,
+                    server,
+                    &dt,
+                    &stored_name,
+                    None,
+                    None,
+                    -(*quantity as i32),
+                    "storage_withdraw",
+                    "player_log",
+                    Some(*instance_id),
+                    Some(vk),
+                    // Negative quantity here represents the vault side of
+                    // a withdrawal; pair with the inventory gain from
+                    // ProcessAddItem that carries the provenance proper.
+                    // Still attach provenance so the withdrawal row can be
+                    // grouped with its counterpart gain when querying.
+                    Some(provenance.to_columns()),
+                );
+                domains.push("storage");
             }
 
             PlayerEvent::InteractionStarted {
@@ -1037,7 +1035,7 @@ impl GameStateManager {
                 npc_name,
                 ..
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 let (npc_key, _display_name) = match &game_data_guard {
                     Some(data) => match data.resolve_npc(npc_name) {
                         Some(info) => (info.key.clone(), info.name.clone()),
@@ -1067,7 +1065,7 @@ impl GameStateManager {
                 timestamp, price, ..
             } => {
                 if let Some(npc_key) = self.current_vendor_npc.clone() {
-                    let dt = self.to_utc(timestamp);
+                    let dt = self.utc_for_log_line(timestamp);
                     let councils = *price as i64;
                     conn.execute(
                         "INSERT INTO game_state_npc_vendor (character_name, server_name, npc_key, last_sell_at, last_confirmed_at, councils_earned_current, councils_earned_lifetime)
@@ -1092,7 +1090,7 @@ impl GameStateManager {
                 ..
             } => {
                 if let Some(npc_key) = self.current_vendor_npc.clone() {
-                    let dt = self.to_utc(timestamp);
+                    let dt = self.utc_for_log_line(timestamp);
                     if *current_gold < *max_gold {
                         conn.execute(
                             "INSERT INTO game_state_npc_vendor (character_name, server_name, npc_key, vendor_gold_available, vendor_gold_max, vendor_gold_timer_start, last_confirmed_at)
@@ -1139,7 +1137,7 @@ impl GameStateManager {
 
             // ── New game state events ──────────────────────────────────
             PlayerEvent::MoonPhaseChanged { timestamp, phase } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 conn.execute(
                     "INSERT INTO game_state_moon (id, phase, last_confirmed_at)
                      VALUES (1, ?1, ?2)
@@ -1158,7 +1156,7 @@ impl GameStateManager {
                 guild_name,
                 motd,
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 conn.execute(
                     "INSERT INTO game_state_guild (character_name, server_name, guild_id, guild_name, motd, last_confirmed_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -1177,7 +1175,7 @@ impl GameStateManager {
                 timestamp,
                 goal_ids,
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 // Full replacement on login — same pattern as SkillsLoaded
                 conn.execute(
                     "DELETE FROM game_state_directed_goals WHERE character_name = ?1 AND server_name = ?2",
@@ -1206,7 +1204,7 @@ impl GameStateManager {
                 key,
                 value,
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 conn.execute(
                     "INSERT INTO game_state_strings (character_name, server_name, key, value, last_confirmed_at)
                      VALUES (?1, ?2, ?3, ?4, ?5)
@@ -1227,7 +1225,7 @@ impl GameStateManager {
                 body,
                 item_name,
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 conn.execute(
                     "INSERT INTO player_messages (character_name, server_name, timestamp, message_type, direction, other_player, body, item_name)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -1243,7 +1241,7 @@ impl GameStateManager {
                 title,
                 content,
             } => {
-                let dt = self.to_utc(timestamp);
+                let dt = self.utc_for_log_line(timestamp);
                 // Poems are global (not character-scoped). The character/server
                 // that recorded it are kept for reference only. INSERT OR IGNORE
                 // + the UNIQUE(author, title, content) index dedups the same poem
@@ -1294,14 +1292,15 @@ impl GameStateManager {
         // NOTE: `base_where` uses ?2/?3 because ?1 is the SET value and ?4 the item name.
         let inv_corrected = correct_stack_in_table(
             &conn,
-            "game_state_inventory",
-            "character_name = ?2 AND server_name = ?3",
-            character,
-            server,
-            None, // no vault_key filter
-            internal_name.as_deref(),
-            display_name,
-            quantity,
+            &StackCorrection {
+                table: "game_state_inventory",
+                base_where: "character_name = ?2 AND server_name = ?3",
+                character,
+                server,
+                internal_name: internal_name.as_deref(),
+                display_name,
+                quantity,
+            },
         );
         if inv_corrected {
             domains.push("inventory");
@@ -1310,14 +1309,15 @@ impl GameStateManager {
         // Try to correct game_state_storage — same logic, any vault
         let storage_corrected = correct_stack_in_table(
             &conn,
-            "game_state_storage",
-            "character_name = ?2 AND server_name = ?3",
-            character,
-            server,
-            None,
-            internal_name.as_deref(),
-            display_name,
-            quantity,
+            &StackCorrection {
+                table: "game_state_storage",
+                base_where: "character_name = ?2 AND server_name = ?3",
+                character,
+                server,
+                internal_name: internal_name.as_deref(),
+                display_name,
+                quantity,
+            },
         );
         if storage_corrected {
             domains.push("storage");
@@ -1416,44 +1416,58 @@ pub fn correct_stack_in_table_for(
     let mut domains = Vec::new();
     if correct_stack_in_table(
         conn,
-        "game_state_inventory",
-        "character_name = ?2 AND server_name = ?3",
-        character,
-        server,
-        None,
-        internal_name,
-        display_name,
-        quantity,
+        &StackCorrection {
+            table: "game_state_inventory",
+            base_where: "character_name = ?2 AND server_name = ?3",
+            character,
+            server,
+            internal_name,
+            display_name,
+            quantity,
+        },
     ) {
         domains.push("inventory");
     }
     if correct_stack_in_table(
         conn,
-        "game_state_storage",
-        "character_name = ?2 AND server_name = ?3",
-        character,
-        server,
-        None,
-        internal_name,
-        display_name,
-        quantity,
+        &StackCorrection {
+            table: "game_state_storage",
+            base_where: "character_name = ?2 AND server_name = ?3",
+            character,
+            server,
+            internal_name,
+            display_name,
+            quantity,
+        },
     ) {
         domains.push("storage");
     }
     domains
 }
-/// Returns true if a row was updated.
-fn correct_stack_in_table(
-    conn: &Connection,
-    table: &str,
-    base_where: &str,
-    character: &str,
-    server: &str,
-    _vault_key: Option<&str>,
-    internal_name: Option<&str>,
-    display_name: &str,
+/// Targeting inputs for one stack-correction UPDATE. Groups the
+/// `correct_stack_in_table` args so the fn stays under the arity lint.
+/// (`vault_key` is gone: every caller passed `None` — no vault filter.)
+#[derive(Clone, Copy)]
+struct StackCorrection<'a> {
+    table: &'a str,
+    base_where: &'a str,
+    character: &'a str,
+    server: &'a str,
+    internal_name: Option<&'a str>,
+    display_name: &'a str,
     quantity: u32,
-) -> bool {
+}
+/// Returns true if a row was updated.
+fn correct_stack_in_table(conn: &Connection, target: &StackCorrection<'_>) -> bool {
+    let StackCorrection {
+        table,
+        base_where,
+        character,
+        server,
+        internal_name,
+        display_name,
+        quantity,
+    } = *target;
     // Build the item name match: prefer internal_name, fall back to display_name
     let name_to_match = internal_name.unwrap_or(display_name);
 
@@ -1866,21 +1880,21 @@ mod tests {
             chrono::NaiveDateTime::parse_from_str("2026-10-14 22:43:41", "%Y-%m-%d %H:%M:%S")
                 .unwrap(),
         );
-        assert_eq!(manager.to_utc("22:43:41"), "2026-10-14 22:43:41");
-        assert_eq!(manager.to_utc("23:31:15"), "2026-10-14 23:31:15");
+        assert_eq!(manager.utc_for_log_line("22:43:41"), "2026-10-14 22:43:41");
+        assert_eq!(manager.utc_for_log_line("23:31:15"), "2026-10-14 23:31:15");
         // Past UTC midnight in the log → next day, still not "now".
-        assert_eq!(manager.to_utc("00:10:00"), "2026-10-15 00:10:00");
+        assert_eq!(manager.utc_for_log_line("00:10:00"), "2026-10-15 00:10:00");
 
         // A side channel peeks a later line (the coordinator's milking resolve
         // runs before the event's batch is replayed); the in-order scan must
         // still date the batch's earlier lines from the session. Before the peek
         // seam this rolled the session date a day forward.
         assert_eq!(manager.peek_utc("00:40:00"), "2026-10-15 00:40:00");
-        assert_eq!(manager.to_utc("00:20:00"), "2026-10-15 00:20:00");
+        assert_eq!(manager.utc_for_log_line("00:20:00"), "2026-10-15 00:20:00");
 
         // A replay/reparse base date still wins over the anchor.
         manager.set_base_date(chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap());
-        assert_eq!(manager.to_utc("23:31:15"), "2026-10-01 23:31:15");
+        assert_eq!(manager.utc_for_log_line("23:31:15"), "2026-10-01 23:31:15");
     }
 
     /// Two Player.log sessions in one catch-up: each session's full-state

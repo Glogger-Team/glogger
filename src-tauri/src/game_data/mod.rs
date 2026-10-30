@@ -98,7 +98,7 @@ pub fn parse_id_map<T: for<'de> Deserialize<'de>>(
     let mut skipped = 0;
     for (key, value) in raw {
         // Keys are like "Item_1", "Ability_42", "Level_1" etc.
-        if let Some(id_str) = key.split('_').last() {
+        if let Some(id_str) = key.rsplit('_').next() {
             if let Ok(id) = id_str.parse::<u32>() {
                 out.insert(id, value);
             } else {
@@ -421,7 +421,7 @@ impl GameData {
             .filter(|item| item.equip_slot.is_some())
             .map(|item| (item.name.as_str(), item.name.as_str()))
             .collect();
-        equipment_names.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        equipment_names.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
 
         for (_, name) in &equipment_names {
             if lower.contains(&name.to_lowercase()) {
@@ -786,9 +786,17 @@ pub async fn load_from_cache_with_progress(
             idx
         } else {
             startup_log!("Building indices from scratch...");
-            let idx = build_all_indices(
-                &items, &skills, &abilities, &recipes, &npcs, &quests, &sources, &areas, &tsys,
-            );
+            let idx = build_all_indices(&GameDataSources {
+                items: &items,
+                skills: &skills,
+                abilities: &abilities,
+                recipes: &recipes,
+                npcs: &npcs,
+                quests: &quests,
+                sources: &sources,
+                areas: &areas,
+                tsys: &tsys,
+            });
             // Save indices to disk for next startup
             match serde_json::to_string(&idx) {
                 Ok(json) => {
@@ -962,18 +970,33 @@ where
     index
 }
 
-/// Build all derived indices from parsed game data.
-fn build_all_indices(
-    items: &HashMap<u32, items::ItemInfo>,
-    skills: &HashMap<u32, skills::SkillInfo>,
-    abilities: &HashMap<u32, abilities::AbilityInfo>,
-    recipes: &HashMap<u32, recipes::RecipeInfo>,
-    npcs: &HashMap<String, npcs::NpcInfo>,
-    quests: &HashMap<String, quests::QuestInfo>,
-    sources: &sources::SourcesData,
-    areas: &HashMap<String, areas::AreaInfo>,
-    tsys: &tsys::TsysData,
-) -> GameDataIndices {
+/// Build all derived indices from parsed game data, from the 9 parsed CDN
+/// source maps grouped in `GameDataSources` (grouped so the builder stays
+/// under the arity lint).
+#[derive(Clone, Copy)]
+struct GameDataSources<'a> {
+    items: &'a HashMap<u32, items::ItemInfo>,
+    skills: &'a HashMap<u32, skills::SkillInfo>,
+    abilities: &'a HashMap<u32, abilities::AbilityInfo>,
+    recipes: &'a HashMap<u32, recipes::RecipeInfo>,
+    npcs: &'a HashMap<String, npcs::NpcInfo>,
+    quests: &'a HashMap<String, quests::QuestInfo>,
+    sources: &'a sources::SourcesData,
+    areas: &'a HashMap<String, areas::AreaInfo>,
+    tsys: &'a tsys::TsysData,
+}
+fn build_all_indices(src: &GameDataSources<'_>) -> GameDataIndices {
+    let GameDataSources {
+        items,
+        skills,
+        abilities,
+        recipes,
+        npcs,
+        quests,
+        sources,
+        areas,
+        tsys,
+    } = *src;
     let item_name_index: HashMap<String, u32> = items
         .iter()
         .map(|(id, item)| (item.name.clone(), *id))
@@ -1148,7 +1171,7 @@ fn build_all_indices(
     for (quest_key, quest) in quests {
         if let Some(favor_npc) = quest.raw.get("FavorNpc").and_then(|v| v.as_str()) {
             // FavorNpc is a path like "AreaName/NPC_Foo" — extract the NPC key
-            if let Some(npc_key) = favor_npc.split('/').last() {
+            if let Some(npc_key) = favor_npc.rsplit('/').next() {
                 quests_by_npc
                     .entry(npc_key.to_string())
                     .or_default()
@@ -1572,7 +1595,7 @@ fn build_tsys_ability_index(
     }
 
     // Sort base names by length desc for prefix disambiguation
-    base_names.sort_by(|a, b| b.len().cmp(&a.len()));
+    base_names.sort_by_key(|b| std::cmp::Reverse(b.len()));
 
     // For each TSys entry, find matching abilities
     for (tsys_key, info) in &tsys.client_info {

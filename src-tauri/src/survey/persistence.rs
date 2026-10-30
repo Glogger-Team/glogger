@@ -171,7 +171,6 @@ pub fn tighten_started_at(conn: &Connection, session_id: i64, ts: &str) -> Resul
 /// separate column-free approach: the frontend already reads
 /// `last_loot_at` / `last_craft_at` for the "last activity" display).
 /// This is a no-op placeholder reserved for future use.
-
 pub fn update_session_name(conn: &Connection, session_id: i64, name: &str) -> Result<()> {
     conn.execute(
         "UPDATE survey_sessions SET name = ?2 WHERE id = ?1",

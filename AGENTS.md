@@ -149,7 +149,7 @@ Frozen-review + CodeRabbit rounds on the `todo-burndown` series (22 commits, ~ha
 Before committing, lint every file type you changed and fix what the linter reports — local feedback first, not CI. Tools live in `mise.toml` (`mise install` fetches them); run from the repo root:
 
 - `mise run lint` — the blocking set (CI `lint.yml` gates runnable locally, plus `npm run build` + `check:grids` + `check-glogger-constraints.ps1`).
-- `mise run lint:all` — `lint` plus advisory (rustfmt, clippy, markdown).
+- `mise run lint:all` — `lint` plus advisory (rustfmt, markdown).
 
 | File type | Linter | Covered by |
 | --------- | ------ | ---------- |
@@ -160,7 +160,7 @@ Before committing, lint every file type you changed and fix what the linter repo
 | Python (`.py`) | ruff check + format --check (gated in CI) | `lint` → `ruff check scripts/`, `ruff format --check scripts/` |
 | Shell (`.sh`, `.githooks/*`) | shellcheck (warning+; info notes don't fail) | `lint` → `python -c` wrapper that globs `scripts/*.sh` plus the two hooks into `shellcheck -S warning` (globbing in-process: portable, since mise array entries run under `cmd.exe`, which passes `*.sh` through literally) |
 | YAML / Workflows (`.yml`) | yamllint + zizmor medium+ (config `.github/zizmor.yml`) + pinact (SHA pins + version comments) | `lint` → `yamllint .github/`, `zizmor --no-online-audits --config .github/zizmor.yml --min-severity medium .github/workflows/`, `pinact run --check` (CI runs yamllint + zizmor only — `pinact-action` is uninstallable on stock runners (aqua bootstrap `command is not found`, v3.0.1, 2026-10-25), so the pin check is local-only via mise; use `jactionlint` ad-hoc wherever actionlint would be called — never actionlint; its cache-poisoning rule can't ignore accepted drift) |
-| Rust (`.rs`) | rustfmt + clippy, both advisory (823 unformatted spots, 167 findings pre-existing — report, don't gate) | `lint:all` → from `src-tauri/`: `cargo fmt -- --check`, `cargo clippy --all-targets` (fix what you touched, never gate on it) |
+| Rust (`.rs`) | rustfmt (advisory, 823 unformatted spots pre-existing) + clippy (gated, zero warnings) | `lint` → clippy `-D warnings` entry (`lint.yml:rust-tests` runs `cargo clippy --all-targets -- -D warnings`); `lint:all` → from `src-tauri/`: `cargo fmt -- --check` (report, don't gate) |
  | Rust deps (`Cargo.lock`) | cargo-audit, gated (critical/high only, CVSS ≥ 7.0; unscored advisories block unless OSV confirms unrated-for-all-locked-versions) | `lint` → `python scripts/cargo-audit-gate.py` (needs `cargo install cargo-audit --locked`; single source of truth shared with CI `lint.yml: cargo-audit` — inline CVSS vector first, OSV max-score fallback per locked version; partial OSV failure with no blocking score fails closed; `--ignore <RUSTSEC-id>` only with justification, documented in the script) |
 | Markdown (`.md`) | markdownlint-cli2 (opt-in, not gated: 6k+ pre-existing) | `lint:all` → `markdownlint-cli2 --config .markdownlint-cli2.json` on hand-maintained docs (same four files CI checks); `--fix "**/*.md"` when ready |
 | PowerShell (`.ps1`) | PSScriptAnalyzer (pending install, opt-in) | not in mise — `Install-Module PSScriptAnalyzer`, then `Invoke-ScriptAnalyzer -Path scripts -Recurse` |

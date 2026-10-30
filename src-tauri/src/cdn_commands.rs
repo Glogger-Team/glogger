@@ -89,7 +89,7 @@ pub async fn init_game_data(app: &AppHandle, state: &GameDataState) -> Result<()
         }
     };
 
-    let needs_download = cached_version.map_or(true, |cv| cv != remote_version);
+    let needs_download = cached_version.is_none_or(|cv| cv != remote_version);
 
     if needs_download {
         startup_log!("Downloading CDN data v{remote_version}...");
@@ -713,7 +713,7 @@ pub async fn search_ability_families(
         .cloned()
         .collect();
 
-    results.sort_by(|a, b| a.base_name.to_lowercase().cmp(&b.base_name.to_lowercase()));
+    results.sort_by_key(|a| a.base_name.to_lowercase());
     if results.len() > max {
         results.truncate(max);
     }
@@ -751,9 +751,9 @@ pub async fn get_skills_with_ability_counts(
     // Convert to display names and sort
     let mut result: Vec<(String, usize)> = counts
         .into_iter()
-        .filter_map(|(internal, count)| {
+        .map(|(internal, count)| {
             let display = internal_to_display.get(internal).unwrap_or(&internal);
-            Some((display.to_string(), count))
+            (display.to_string(), count)
         })
         .filter(|(_, count)| *count > 0)
         .collect();
@@ -1100,8 +1100,8 @@ pub async fn get_current_moon_phase() -> Result<MoonPhaseResult, String> {
 
     // Walk forward through the window, then extend if needed
     // First pass: use the 31-day window (indices 2..31 = tomorrow through day+29)
-    for i in 2..31 {
-        let phase_idx = assigned[i].unwrap();
+    for (i, phase) in assigned.iter().enumerate().take(31).skip(2) {
+        let phase_idx = phase.unwrap();
         if !seen_phases.contains(&phase_idx) {
             seen_phases.insert(phase_idx);
             let (gn, lb) = GAME_PHASE_NAMES[phase_idx as usize];
@@ -4540,7 +4540,7 @@ pub async fn get_abilities_for_tsys(
     // 3. Text name matching: find ability names in text effect descs
     // Sort names longest-first so longer names get priority over shorter prefixes
     let mut sorted_names: Vec<&String> = ability_base_names.keys().collect();
-    sorted_names.sort_by(|a, b| b.len().cmp(&a.len()));
+    sorted_names.sort_by_key(|a| std::cmp::Reverse(a.len()));
 
     if let Some(tier) = info.tiers.values().next() {
         for desc in &tier.effect_descs {

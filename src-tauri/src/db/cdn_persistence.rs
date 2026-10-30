@@ -687,7 +687,7 @@ fn insert_survey_types(
                 .map(|fn_| (fn_.clone(), key.clone()))
         })
         .collect();
-    friendly_to_key.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    friendly_to_key.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
     let mut stmt = tx.prepare(
         "INSERT INTO survey_types (item_id, internal_name, name, zone, icon_id,
                                    survey_category, is_motherlode, kind, skill_req_name,
@@ -828,10 +828,8 @@ fn parse_survey_zone(internal_name: &str) -> Option<String> {
     // Strip the prefix
     let rest = if let Some(r) = internal_name.strip_prefix("GeologySurvey") {
         r
-    } else if let Some(r) = internal_name.strip_prefix("MiningSurvey") {
-        r
     } else {
-        return None;
+        internal_name.strip_prefix("MiningSurvey")?
     };
 
     if rest.is_empty() {

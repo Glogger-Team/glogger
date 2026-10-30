@@ -243,7 +243,7 @@ fn combine_loot_rows(
     imported: Vec<(String, i64, i64)>,
 ) -> Vec<(String, i64, i64)> {
     let mut combined: HashMap<String, (i64, i64)> = HashMap::new();
-    for (item, qty, dropped) in mine.into_iter().chain(imported.into_iter()) {
+    for (item, qty, dropped) in mine.into_iter().chain(imported) {
         let entry = combined.entry(item).or_insert((0, 0));
         entry.0 += qty;
         entry.1 += dropped;
@@ -1324,7 +1324,8 @@ fn parse_csv_aggregated(content: &str) -> Result<Vec<ExportedEnemy>, String> {
     type Key = (String, Option<String>);
     let mut order: Vec<Key> = Vec::new();
     // (enemy, zone) -> (max_kills, item -> (qty, drops), item insertion order)
-    let mut map: HashMap<Key, (i64, HashMap<String, (i64, i64)>, Vec<String>)> = HashMap::new();
+    type EnemyDropTable = (i64, HashMap<String, (i64, i64)>, Vec<String>);
+    let mut map: HashMap<Key, EnemyDropTable> = HashMap::new();
 
     for (i, result) in rdr.records().enumerate() {
         let rec = result.map_err(|e| format!("CSV parse error on row {}: {e}", i + 2))?;

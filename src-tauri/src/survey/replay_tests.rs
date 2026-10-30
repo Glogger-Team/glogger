@@ -638,7 +638,7 @@ fn replay_50x_povus_marvelous() {
     // include incidental other surveys, and chat-aborted uses may or may
     // not count depending on log noise. Assert "reasonably close".
     assert!(
-        multihit >= 40 && multihit <= 60,
+        (40..=60).contains(&multihit),
         "multihit count {multihit} not in expected range 40..60"
     );
 
@@ -743,10 +743,11 @@ fn replay_50x_povus_marvelous() {
             ))
         })
         .unwrap();
+    // Best-effort diagnostic: row-decode errors are skipped (the strict
+    // assertions below are the real gate, not this printout).
     for row in rows {
-        if let Ok((kind, n, qty)) = row {
-            println!("  {:>20}  rows={:>5}  qty={:>6}", kind, n, qty);
-        }
+        let Ok((kind, n, qty)) = row else { continue };
+        println!("  {:>20}  rows={:>5}  qty={:>6}", kind, n, qty);
     }
 
     // For Marvelous Metal Slab specifically: how many rows by source_kind?
@@ -768,10 +769,10 @@ fn replay_50x_povus_marvelous() {
             ))
         })
         .unwrap();
+    // Best-effort diagnostic, same as above: skips undecodable rows.
     for row in rows {
-        if let Ok((kind, n, qty)) = row {
-            println!("  {:>20}  rows={:>5}  qty={:>6}", kind, n, qty);
-        }
+        let Ok((kind, n, qty)) = row else { continue };
+        println!("  {:>20}  rows={:>5}  qty={:>6}", kind, n, qty);
     }
 
     // Strict assertion against the dataset's results.txt (the user
@@ -859,7 +860,7 @@ fn replay_100x_serbcrystal() {
 
     // Serbule basic surveys; most should be Basic kind.
     assert!(
-        basic >= 80 && basic <= 120,
+        (80..=120).contains(&basic),
         "basic count {basic} not in expected range 80..120"
     );
 
@@ -901,7 +902,7 @@ fn replay_100x_eltmetal() {
         use_count(&conn, Some(SurveyUseKind::Motherlode)),
     );
     assert!(
-        basic >= 80 && basic <= 120,
+        (80..=120).contains(&basic),
         "basic count {basic} not in expected range 80..120"
     );
 }
@@ -1246,7 +1247,7 @@ fn run_accuracy_report(chat_only: bool) {
         );
 
         let accuracy_pct = if r.expected_total_qty > 0 {
-            let diff = (r.pipeline_total_qty as i64 - r.expected_total_qty as i64).unsigned_abs();
+            let diff = (r.pipeline_total_qty - r.expected_total_qty as i64).unsigned_abs();
             let captured = if r.pipeline_total_qty >= 0 {
                 r.pipeline_total_qty as u64
             } else {

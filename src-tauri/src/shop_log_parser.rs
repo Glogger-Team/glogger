@@ -115,7 +115,7 @@ pub fn parse_shop_log(title: &str, content: &str, log_timestamp: &str, base_year
     for (i, m) in matches.iter().enumerate() {
         // The match captures `"Day Mon DD HH:MM - "`; strip the trailing ` - `.
         let ts = content[m.start()..m.end()]
-            .trim_end_matches(|c: char| c == ' ' || c == '-')
+            .trim_end_matches([' ', '-'])
             .trim()
             .to_string();
         let msg_start = m.end();

@@ -380,6 +380,7 @@ pub fn set_build_preset_slot_item(
 
 /// Update slot properties (level, rarity, crafted, masterwork, skills) without changing the item.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // Tauri IPC: params mirror the frontend slot form
 pub fn update_build_preset_slot_props(
     db: State<'_, DbPool>,
     preset_id: i64,

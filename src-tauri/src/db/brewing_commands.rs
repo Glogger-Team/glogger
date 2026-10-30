@@ -233,7 +233,7 @@ pub async fn scan_snapshot_for_brewing_discoveries(
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| format!("Failed to start transaction: {e}"))?;
-    let result = record_brewing_items(&*tx, &character, &timestamp, &items)?;
+    let result = record_brewing_items(&tx, &character, &timestamp, &items)?;
     tx.commit().map_err(|e| format!("Commit error: {e}"))?;
     Ok(result)
 }
@@ -361,7 +361,7 @@ pub async fn scan_all_snapshots_for_brewing(
     let mut total_updated = 0u32;
     let mut total_items = 0u32;
     for (character_name, timestamp, items) in &parsed {
-        let result = record_brewing_items(&*tx, character_name, timestamp, items)?;
+        let result = record_brewing_items(&tx, character_name, timestamp, items)?;
         total_new += result.new_discoveries;
         total_updated += result.updated_discoveries;
         total_items += result.total_brewing_items;

@@ -1205,7 +1205,7 @@ mod tests {
 
         // These mirror what export_shop_log_files writes for one date group:
         // entries newest-first, separated by `\n\n`, trailing `\n`.
-        let entries = vec![
+        let entries = [
             (
                 "Wed Apr 15 11:45",
                 "MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500",

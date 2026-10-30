@@ -4,7 +4,7 @@
 /// Settings determine paths for database, game data, and auto-start behavior.
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,18 +274,13 @@ pub fn resolve_item_value(mode: &str, vendor_value: f64, market_value: f64) -> f
 }
 
 /// How conditions within a rule are combined
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub enum ConditionMatch {
     /// All conditions must match
     All,
     /// Any single condition is enough
+    #[default]
     Any,
-}
-
-impl Default for ConditionMatch {
-    fn default() -> Self {
-        ConditionMatch::Any
-    }
 }
 
 /// A single watch rule that fires when conditions match an incoming chat message
@@ -454,7 +449,7 @@ impl SettingsManager {
     }
 
     /// Get the database path (either custom or default)
-    pub fn get_db_path(&self, default_app_data_dir: &PathBuf) -> PathBuf {
+    pub fn get_db_path(&self, default_app_data_dir: &Path) -> PathBuf {
         let settings = self.settings.read().unwrap();
 
         if let Some(custom_path) = &settings.db_path {

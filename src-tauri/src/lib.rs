@@ -27,6 +27,10 @@ mod setup_commands;
 mod shop_log_parser;
 mod single_instance;
 mod stall_aggregations;
+/// Stall OCR is Windows-GDI only: on other targets the command stub stays
+/// but the capture/parse helpers are uncalled. `dead_code` would otherwise
+/// fail the `-D warnings` clippy gate on Linux CI.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 mod stall_ocr;
 mod stall_year_resolver;
 mod survey;

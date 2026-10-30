@@ -184,7 +184,7 @@ mod tests {
     #[test]
     fn test_non_action_emotes_channel_ignored() {
         let line = "26-04-01 05:30:52\t[Status] You earned 5 XP in Dying.";
-        let msg = parse_chat_line(&line).unwrap();
+        let msg = parse_chat_line(line).unwrap();
         assert!(parse_resuscitate_message(&msg).is_none());
     }
 
@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn test_combat_channel_ignored() {
         let line = "26-04-01 05:30:52\t[Combat] Something resuscitates Zenith";
-        let msg = parse_chat_line(&line).unwrap();
+        let msg = parse_chat_line(line).unwrap();
         assert!(parse_resuscitate_message(&msg).is_none());
     }
 

@@ -178,7 +178,7 @@ fn parse_chat_log_events(path: &PathBuf) -> Result<Vec<TimedEvent>, String> {
 }
 
 /// Extract a date from a chat log filename like "Chat-26-03-27.log"
-fn date_from_chat_filename(path: &PathBuf) -> Option<chrono::NaiveDate> {
+fn date_from_chat_filename(path: &Path) -> Option<chrono::NaiveDate> {
     let stem = path.file_stem()?.to_str()?;
     // "Chat-YY-MM-DD"
     let date_part = stem.strip_prefix("Chat-")?;
@@ -903,10 +903,8 @@ pub fn ingest_kill_loot_from_logs(
                     instance_id,
                     quantity,
                     ..
-                } => {
-                    if !item.is_empty() {
-                        loot.push((cid, item, quantity, instance_id as i64));
-                    }
+                } if !item.is_empty() => {
+                    loot.push((cid, item, quantity, instance_id as i64));
                 }
                 _ => {}
             }

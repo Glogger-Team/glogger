@@ -2712,7 +2712,7 @@ fn migration_v17_gift_log(conn: &Connection) -> Result<()> {
 /// Two bugs existed:
 ///
 /// 1) Player.log timestamps are UTC but were treated as local time. The old code did:
-///      stored = actual_utc - tz_offset_seconds
+///    stored = actual_utc - tz_offset_seconds
 ///    For UTC-7 (offset=-25200): stored = utc + 25200 (7 hours too late).
 ///    Fix: correct = stored + offset  (player_modifier)
 ///

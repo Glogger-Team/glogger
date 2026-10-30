@@ -116,7 +116,6 @@ struct StagedChatGain {
 }
 
 /// Central coordinator for all data ingestion
-
 pub struct DataIngestCoordinator {
     player_watcher: Option<PlayerLogWatcher>,
     chat_watcher: Option<ChatLogWatcher>,
@@ -237,8 +236,8 @@ impl DataIngestCoordinator {
             player_log_active: self
                 .player_watcher
                 .as_ref()
-                .map_or(false, |w| w.is_active()),
-            chat_log_active: self.chat_watcher.as_ref().map_or(false, |w| w.is_active()),
+                .is_some_and(|w| w.is_active()),
+            chat_log_active: self.chat_watcher.as_ref().is_some_and(|w| w.is_active()),
             active_character: self
                 .player_watcher
                 .as_ref()
@@ -374,7 +373,7 @@ impl DataIngestCoordinator {
         if self
             .player_watcher
             .as_ref()
-            .map_or(false, |w| w.is_active())
+            .is_some_and(|w| w.is_active())
         {
             return Ok(());
         }
@@ -1432,14 +1431,16 @@ impl DataIngestCoordinator {
                         // after the dispatch returns (same timestamps the
                         // dispatch just wrote).
                         chat_status_dispatch::dispatch_chat_message(
-                            &self.db_pool,
-                            &self.game_data,
-                            identity.as_ref(),
-                            &msg,
-                            &local_ts,
+                            chat_status_dispatch::DispatchCtx {
+                                db: &self.db_pool,
+                                game_data: &self.game_data,
+                                identity: identity.as_ref(),
+                                msg: &msg,
+                                local_ts: &local_ts,
+                                watch_rules: &self.settings.get().watch_rules,
+                            },
                             None,
                             &mut dstate,
-                            &self.settings.get().watch_rules,
                         )
                     };
 
@@ -1766,7 +1767,7 @@ impl DataIngestCoordinator {
 
     /// Persist an enemy kill to the database and cache the entity_id→kill_id mapping
     /// for later loot attribution.
-
+    ///
     /// Record a lootable searched corpse as a kill row (the drop-rate
     /// denominator) and cache its entity_id → kill_id for loot attribution.
     ///
@@ -2904,7 +2905,7 @@ pub fn spawn_polling_thread(
                         }
                         Err(TryLockError::WouldBlock) => {
                             skipped += 1;
-                            if skipped == 1 || skipped % 50 == 0 {
+                            if skipped == 1 || skipped.is_multiple_of(50) {
                                 eprintln!(
                                     "[poll-thread] coordinator busy; skipped {skipped} poll cycle(s)"
                                 );
@@ -3361,7 +3362,7 @@ pub fn ingest_report_stats_content(
     let conn = db
         .get_write()
         .map_err(|e| format!("Failed to persist report stats: {e}"))?;
-    let n = crate::report_stats::persist_stats(&conn, &character, &server, &stats, &dt)
+    let n = crate::report_stats::persist_stats(&conn, character, server, &stats, &dt)
         .map_err(|e| format!("Failed to persist report stats: {e}"))?;
     startup_log!(
         "[coordinator] Imported {} stats from {} report",
@@ -3495,7 +3496,7 @@ pub fn ingest_hoplology_content(
             .unwrap_or_else(|| trimmed.to_string());
 
         match crate::db::hoplology_commands::insert_hoplology_study_from_report(
-            &conn, &character, &server, &base_name, &now,
+            &conn, character, server, &base_name, &now,
         ) {
             Ok(Some(_)) => inserted += 1,
             Ok(None) => {} // already known
@@ -3972,7 +3973,7 @@ mod rez_dedup_tests {
 }
 
 /// RFC3339 (UTC) `milked_at` for a milking event, derived from the event's own
-/// UTC time (`"YYYY-MM-DD HH:MM:SS"` — what `GameStateManager::to_utc` returns
+/// UTC time (`"YYYY-MM-DD HH:MM:SS"` — what `GameStateManager::utc_for_log_line` returns
 /// for Player.log lines, and what a UTC-converted chat line already is).
 ///
 /// Falls back to `Utc::now()` when the event time is missing or unparseable (a
@@ -3999,7 +4000,7 @@ mod milking_timestamp_tests {
             milking_event_timestamp("2026-10-13 01:14:16"),
             "2026-10-13T01:14:16+00:00"
         );
-        // Player.log path: shape returned by `GameStateManager::to_utc`.
+        // Player.log path: shape returned by `GameStateManager::utc_for_log_line`.
         assert_eq!(
             milking_event_timestamp("2026-06-26 01:29:44"),
             "2026-06-26T01:29:44+00:00"

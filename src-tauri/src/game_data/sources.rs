@@ -71,7 +71,7 @@ fn parse_source_map(json: &str, file_name: &str) -> Result<HashMap<u32, SourceIn
 
     for (key, value) in raw {
         // Extract numeric ID from keys like "ability_1002"
-        let id: u32 = match key.split('_').last().and_then(|s| s.parse().ok()) {
+        let id: u32 = match key.rsplit('_').next().and_then(|s| s.parse().ok()) {
             Some(id) => id,
             None => {
                 skipped += 1;

@@ -35,6 +35,10 @@ pub struct StallScanResult {
     pub rows: Vec<StallScanRow>,
 }
 
+/// Panel/legacy scan payload: rows + debug text + optional stall identity.
+/// Named alias so the three scan entry points share one readable signature.
+pub type StallScanOutcome = (Vec<StallScanRow>, String, Option<String>, Option<String>);
+
 #[derive(Serialize, Clone)]
 pub struct OcrStatus {
     pub installed: bool,
@@ -240,7 +244,7 @@ pub fn match_item_name(
     let mut best: Option<(&String, u32, f32)> = None;
     for (name, id) in item_name_index {
         let score = trigram_similarity(cleaned, name);
-        if score >= MATCH_THRESHOLD && best.map(|(_, _, s)| score > s).unwrap_or(true) {
+        if score >= MATCH_THRESHOLD && best.is_none_or(|(_, _, s)| score > s) {
             best = Some((name, *id, score));
         }
     }
@@ -369,6 +373,7 @@ pub fn parse_vendor_text(raw_text: &str) -> Vec<(String, i64)> {
 /// 1. substring `"'s shop"` (any owner header), `"buy"`, `"pay"` (price-box
 ///    rows), matched case-insensitively — `"buy"` also catches "Buy 1/5/10";
 /// 2. no alphabetic char at all (digit/punctuation soup like "1,234").
+///
 /// Anything with at least one letter and none of the substrings passes.
 fn is_ui_chrome_line(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
@@ -453,7 +458,7 @@ pub fn scan_panel(
     h: u32,
     exe: &PathBuf,
     item_name_index: &std::collections::HashMap<String, u32>,
-) -> Result<Option<(Vec<StallScanRow>, String, Option<String>, Option<String>)>, String> {
+) -> Result<Option<StallScanOutcome>, String> {
     let Some((panel_x0, panel_x1, panel_y0, panel_y1)) = locate_panel(pixels, w, h) else {
         return Ok(None);
     };
@@ -496,32 +501,26 @@ pub fn scan_panel(
         // line (proved necessary in offline tuning).
         let py0 = panel_y0 + (*by0 as u32).saturating_sub(4);
         let py1 = panel_y0 + *by1 as u32 + 4;
-        let name_text = ocr_bin_region(
+        let name_text = ocr_bin_region(&OcrCropRequest {
             exe,
-            &gray_bin,
+            gray_bin: gray_bin.as_slice(),
             cw,
             ch,
-            (panel_x0, panel_y0),
-            nx0,
-            nx1,
-            py0,
-            py1,
-            3,
-            "7",
-        )?;
-        let price_raw = ocr_bin_region(
+            origin: (panel_x0, panel_y0),
+            bounds: (nx0, nx1, py0, py1),
+            scale: 3,
+            psm: "7",
+        })?;
+        let price_raw = ocr_bin_region(&OcrCropRequest {
             exe,
-            &gray_bin,
+            gray_bin: gray_bin.as_slice(),
             cw,
             ch,
-            (panel_x0, panel_y0),
-            px0,
-            px1,
-            py0,
-            py1,
-            4,
-            "7",
-        )?;
+            origin: (panel_x0, panel_y0),
+            bounds: (px0, px1, py0, py1),
+            scale: 4,
+            psm: "7",
+        })?;
         let name = {
             let trimmed = name_text.trim();
             if trimmed.is_empty() || is_ui_chrome_line(trimmed) {
@@ -624,13 +623,13 @@ fn locate_panel(pixels: &[u8], w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
                 run_start = Some(x);
             }
         } else if let Some(s) = run_start.take() {
-            if best.map_or(true, |(bs, be)| x - s > be - bs) {
+            if best.is_none_or(|(bs, be)| x - s > be - bs) {
                 best = Some((s, x));
             }
         }
     }
     if let Some(s) = run_start {
-        if best.map_or(true, |(bs, be)| half - s > be - bs) {
+        if best.is_none_or(|(bs, be)| half - s > be - bs) {
             best = Some((s, half));
         }
     }
@@ -798,26 +797,38 @@ mod rust_helpers {
     }
 }
 
+/// Crop + render inputs for one binarized-region OCR pass. Groups the
+/// `ocr_bin_region` geometry args so the fn stays under the arity lint.
+#[derive(Clone, Copy)]
+struct OcrCropRequest<'a> {
+    exe: &'a PathBuf,
+    gray_bin: &'a [u8],
+    cw: usize,
+    ch: usize,
+    origin: (u32, u32),
+    bounds: (u32, u32, u32, u32), // (bx0, bx1, by0, by1)
+    scale: usize,
+    psm: &'a str,
+}
+
 /// Binarized-region OCR: crop (bx0..bx1, by0..by1) from the binarized panel
 /// buffer, nearest-neighbor upscale by `scale`, write a temp 8-bit BMP, run
 /// Tesseract with page-separation mode `psm`.
 ///
 /// The panel buffer is in absolute frame coordinates (its origin is
-/// `panel_origin`), so the crop indices are relative to that origin.
-fn ocr_bin_region(
-    exe: &PathBuf,
-    gray_bin: &[u8],
-    cw: usize,
-    ch: usize,
-    panel_origin: (u32, u32),
-    bx0: u32,
-    bx1: u32,
-    by0: u32,
-    by1: u32,
-    scale: usize,
-    psm: &str,
-) -> Result<String, String> {
-    let (ox, oy) = (panel_origin.0 as usize, panel_origin.1 as usize);
+/// `OcrCropRequest::origin`), so the crop indices are relative to that origin.
+fn ocr_bin_region(req: &OcrCropRequest<'_>) -> Result<String, String> {
+    let OcrCropRequest {
+        exe,
+        gray_bin,
+        cw,
+        ch,
+        origin: (ox0, oy0),
+        bounds: (bx0, bx1, by0, by1),
+        scale,
+        psm,
+    } = *req;
+    let (ox, oy) = (ox0 as usize, oy0 as usize);
     let rx0 = (bx0 as usize).saturating_sub(ox);
     let rx1 = (bx1 as usize).saturating_sub(ox).min(cw);
     let ry0 = (by0 as usize).saturating_sub(oy);
@@ -841,7 +852,7 @@ fn ocr_bin_region(
 
     // 8-bit grayscale BMP, top-down rows (negative height).
     // 8-bit rows must be 4-byte aligned (Leptonica rejects unpadded rows).
-    let row_stride = (uw + 3) / 4 * 4;
+    let row_stride = uw.div_ceil(4) * 4;
     let mut padded = up;
     if row_stride != uw {
         let src = std::mem::take(&mut padded);
@@ -939,7 +950,7 @@ pub fn scan_legacy(
     exe: &PathBuf,
     png_bytes: &[u8],
     item_name_index: &std::collections::HashMap<String, u32>,
-) -> Result<(Vec<StallScanRow>, String, Option<String>, Option<String>), String> {
+) -> Result<StallScanOutcome, String> {
     let text = run_tesseract(exe, png_bytes, 6, false)?;
     let (stall_name, stall_slot) = parse_stall_header(&text);
     let pairs = parse_vendor_text(&text);
@@ -1106,7 +1117,7 @@ mod capture {
     /// BGRA → 24-bit BMP (bottom-up rows), which Tesseract reads natively —
     /// no image-encoding dependency.
     fn bgra_to_bmp(pixels: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
-        let row_bytes = ((w * 3 + 3) / 4) * 4; // 4-byte aligned
+        let row_bytes = (w * 3).div_ceil(4) * 4; // 4-byte aligned
         let data_size = row_bytes * h;
         let file_size = 54 + data_size;
         let mut out = Vec::with_capacity(file_size as usize);
@@ -1155,15 +1166,7 @@ mod capture {
         hwnd: HWND,
         exe: &PathBuf,
         item_name_index: &std::collections::HashMap<String, u32>,
-    ) -> Result<
-        (
-            Vec<super::StallScanRow>,
-            String,
-            Option<String>,
-            Option<String>,
-        ),
-        String,
-    > {
+    ) -> Result<super::StallScanOutcome, String> {
         let (w, h, pixels) = capture_client_bgra(hwnd)?;
         if let Some(rows) = super::scan_panel(&pixels, w, h, exe, item_name_index)? {
             return Ok(rows);
@@ -1308,7 +1311,7 @@ Pay 400
 Basic Stoneskin Potion
 Buy 1
 Pay 20,000";
-        let pairs = parse_vendor_text(&text);
+        let pairs = parse_vendor_text(text);
         assert_eq!(
             pairs.len(),
             3,

@@ -241,7 +241,7 @@ pub fn chat_local_to_utc(
 pub fn extract_field(line: &str, key: &str) -> Option<String> {
     let start = line.find(key)? + key.len();
     let rest = &line[start..];
-    let end = rest.find(|c| c == ',' || c == '}').unwrap_or(rest.len());
+    let end = rest.find([',', '}']).unwrap_or(rest.len());
     Some(rest[..end].to_string())
 }
 
