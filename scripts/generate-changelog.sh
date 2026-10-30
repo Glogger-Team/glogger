@@ -44,6 +44,39 @@ declare -a features=()
 declare -a improvements=()
 declare -a fixes=()
 
+# Squash-merge subjects (`... (#NN)`) carry no conventional prefix; their
+# bodies embed the PR's original `* type:` commits. Classify those bullets
+# the same way next-version.py does, so a squashed feature still lands in
+# the notes (subject line kept as the entry label fallback is the bullet).
+classify_squash_body() {
+  local hash="$1"
+  # Process substitution, not a pipe: `| while` runs in a subshell and the
+  # array appends would be lost when it exits.
+  while IFS= read -r bline; do
+    local entry=""
+    case "$bline" in
+      '*'[[:space:]]*feat:*|'*'*[[:space:]]*feat'('*')'*:*)
+        entry="feature"
+        ;;
+      '*'[[:space:]]*impv:*|'*'*[[:space:]]*impv'('*')'*:*)
+        entry="improvement"
+        ;;
+      '*'[[:space:]]*fix:*|'*'*[[:space:]]*fix'('*')'*:*)
+        entry="fix"
+        ;;
+    esac
+    if [ -n "$entry" ]; then
+      # Strip the leading bullet; keep the conventional line as the entry.
+      local text="${bline#*\* }"
+      case "$entry" in
+        feature) features+=("- ${text} (\`${hash}\`)") ;;
+        improvement) improvements+=("- ${text} (\`${hash}\`)") ;;
+        fix) fixes+=("- ${text} (\`${hash}\`)") ;;
+      esac
+    fi
+  done < <(git log -1 --format=%B "$hash" 2>/dev/null)
+}
+
 while IFS= read -r line; do
   [ -z "$line" ] && continue
 
@@ -62,8 +95,12 @@ while IFS= read -r line; do
       improvements+=("- ${MSG} (\`${HASH}\`)")
       ;;
     *)
-      # release/merge/docs/build/chore/test commits are intentionally
-      # excluded from user-facing release notes.
+      # Squash merges carry the PR's commits in the body, not the subject:
+      # classify `* type:` bullets so squashed features still land in the
+      # notes. Non-squash subjects stay excluded as before.
+      case "$MSG" in
+        *'(#'*[0-9]*')') classify_squash_body "$HASH" ;;
+      esac
       ;;
   esac
 done < <(git log --oneline --no-decorate "$RANGE" 2>/dev/null)
