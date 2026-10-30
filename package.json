@@ -35,7 +35,7 @@
     "@vue/devtools-api": "^8.2.1",
     "pinia": "^4.1.0",
     "vue": "^3.5.13",
-    "vue-data-ui": "^3.17.3",
+    "vue-data-ui": "^3.28.2",
     "vuedraggable": "^4.1.0"
   },
   "devDependencies": {
