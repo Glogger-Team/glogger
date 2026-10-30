@@ -535,3 +535,53 @@ jobs:
       publish: true
     permissions:
       contents: write # the called workflow's attach job uploads the bundle
+
+  # ── Auto-open a dev version-sync PR after each publish ──
+  # Runs after the release is public, so a failed sync can never block or
+  # unpublish a release. Smoke dispatches (publish=false) never reach here.
+  sync-dev-version:
+    name: Open dev version-sync PR
+    needs: [validate, channel]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # must push the chore/version-sync-* branch
+      pull-requests: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      TAG: ${{ needs.validate.outputs.tag }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Bump, commit, and open the sync PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/bump-version.py "$VERSION"
+          if git diff --quiet; then
+            echo "in sync - nothing to do"
+            exit 0
+          fi
+          BRANCH="chore/version-sync-$TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add package.json src-tauri/tauri.conf.json \
+            src-tauri/tauri.release.conf.json \
+            src-tauri/tauri.experimental.conf.json src-tauri/Cargo.toml \
+            src-tauri/Cargo.lock
+          git commit -m "build: sync version files to $TAG"
+          git push --force origin "$BRANCH"
+          if [ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq length)" ]; then
+            echo "sync PR already open for $TAG"
+            exit 0
+          fi
+          gh pr create --base main --head "$BRANCH" \
+            --title "build: sync version files to $TAG" \
+            --body "Auto-opened by the $TAG release. Dev fallback only - the tag remains the version record."

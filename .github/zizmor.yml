@@ -9,3 +9,9 @@ rules:
     # trigger that could let an untrusted run poison either cache.
     ignore:
       - release.yml
+  artipacked:
+    # sync-dev-version must push its chore/version-sync-* branch, so its
+    # checkout keeps the credential (persist-credentials defaults true).
+    # Every other checkout in release.yml/flatpak.yml sets false.
+    ignore:
+      - release.yml:555
