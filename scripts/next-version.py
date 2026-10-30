@@ -7,10 +7,13 @@ Resolution order, first hit wins:
   3. newest ancestor-of-HEAD lightweight/annotated tag matching
      ^v\\d+\\.\\d+\\.\\d+$ (max by semver tuple)
 
-Bump rule over `git log --no-merges <base>..HEAD` subjects: major on a
-`!:` conventional-commit marker or a BREAKING[ -]CHANGE body line; elif any
-`feat:` subject -> minor; else patch. Empty ranges suggest base+patch with a
-stderr warning.
+Bump rule over `git log --no-merges <base>..HEAD` records (subject + body):
+major on a `!:` conventional-commit marker or a BREAKING[ -]CHANGE body
+line; elif any `feat:` subject or squash-body bullet -> minor; else patch.
+Squash merges (`... (#NN)`) carry no prefix in the subject, but GitHub
+embeds the PR's original `* type:` commits in the squash body, so body
+bullets (`* feat: ...`, `* fix!: ...`) count the same as subjects.
+Empty ranges suggest base+patch with a stderr warning.
 
 Usage:
     python scripts/next-version.py [base-tag]
@@ -29,6 +32,10 @@ TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 BREAKING_RE = re.compile(r"BREAKING[ -]CHANGE")
 MAJOR_RE = re.compile(r"(feat|fix|impv|docs|test|build)(\([^)]*\))?!:")
 MINOR_RE = re.compile(r"feat(\([^)]*\))?:")
+# Squash-body bullets (`* feat: ...`, `* fix!: ...`) carry the PR's original
+# conventional prefixes; match them anywhere in the line.
+BULLET_MAJOR_RE = re.compile(r"^\s*\*\s*(feat|fix|impv|docs|test|build)(\([^)]*\))?!:")
+BULLET_MINOR_RE = re.compile(r"^\s*\*\s*feat(\([^)]*\))?:")
 
 
 def run_git(args, cwd=None):
@@ -113,9 +120,6 @@ def bump_kind(root, base):
         print(f"Error: could not list commits since {base}", file=sys.stderr)
         return None
     records = [r for r in result.stdout.split("\0") if r.strip()]
-    if not records:
-        print(f"warning: no commits since {base}", file=sys.stderr)
-        return "patch"
     for record in records:
         lines = record.splitlines()
         subject = lines[0] if lines else ""
@@ -123,9 +127,13 @@ def bump_kind(root, base):
             return "major"
         if any(BREAKING_RE.match(line) for line in lines[1:]):
             return "major"
+        if any(BULLET_MAJOR_RE.match(line) for line in lines[1:]):
+            return "major"
     for record in records:
         lines = record.splitlines()
         if lines and MINOR_RE.match(lines[0]):
+            return "minor"
+        if any(BULLET_MINOR_RE.match(line) for line in lines[1:]):
             return "minor"
     return "patch"
 
