@@ -101,7 +101,7 @@ Small tasks and notes that don't belong in a dedicated plan.
 
 - [ ] Interactive zone maps — see `docs/plans/interactive-maps.md`
   - kaeus is working on this i believe.
-  - **Audit: verified as "no code exists" — drop the unverified Kaeus claim.** No map dependency (`package.json`), no map/zone-map component, no map assets; the plan is an unstarted spec with no phase markers. Zone-adjacent UI is survey analytics (`Surveying/AnalyticsZoneView.vue`, `CrossZoneComparison.vue`) and `CurrentZone.vue` — not maps. Point at an external branch/PR if one exists.
+  - **Audit: verified as "no code exists" — drop the unverified Kaeus claim.** No map dependency (`package.json`), no map/zone-map component, no map assets; the plan is an unstarted spec with no phase markers. Zone-adjacent UI is survey analytics (`Surveying/AnalyticsZoneView.vue`, `CrossZoneComparison.vue`) and the Zone NPCs widget (`Dashboard/widgets/ZoneNpcsWidget.vue`) — not maps. Point at an external branch/PR if one exists.
   - **Effort: Large (mostly frontend) | Impact: High**
 
 - [ ] Statehelm favor planner
