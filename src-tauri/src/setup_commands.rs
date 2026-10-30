@@ -63,10 +63,10 @@ struct ReportHeader {
 }
 
 /// Placeholder reports from the game's extra-report bug: missing character
-/// name, "???" name, or race "error". Filtered on the CharacterSheet scan
-/// and import paths (scan_reports_for_characters,
-/// import_reports_for_server); storage/inventory imports key on the
-/// Storage header/struct instead and never see these rows.
+/// name, "???" name, or race "error". Filtered on the CharacterSheet
+/// scan/import paths and the Storage scan/import paths (name + race via
+/// `ReportHeader`; inventory DB reject is name-only since `StorageReport`
+/// carries no race field).
 fn is_placeholder_report(character: &str, race: Option<&str>) -> bool {
     let name = character.trim();
     if name.is_empty() || name == "???" {
@@ -831,6 +831,12 @@ pub fn import_latest_inventory_for_character(
             continue;
         }
 
+        // The game's extra-report bug: "???" name, empty name, or race
+        // "error" — never a legitimate character, skip unconditionally.
+        if is_placeholder_report(&header.character, header.race.as_deref()) {
+            continue;
+        }
+
         if header.character != character_name {
             continue;
         }
@@ -924,6 +930,12 @@ pub fn import_all_inventory_for_server(
         }
 
         if header.server_name != server_name {
+            continue;
+        }
+
+        // The game's extra-report bug: keep "???"/empty/error-race rows out
+        // of the per-character bucket map (avoids per-file failure log noise).
+        if is_placeholder_report(&header.character, header.race.as_deref()) {
             continue;
         }
 

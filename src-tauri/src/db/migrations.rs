@@ -442,6 +442,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 81)?;
     }
 
+    if current_version < 82 {
+        migration_v82_purge_placeholder_characters(conn)?;
+        super::record_migration(conn, 82)?;
+    }
+
 
     tx.commit()?;
     Ok(())
@@ -694,6 +699,172 @@ fn migration_v81_snapshot_item_details(conn: &Connection) -> Result<()> {
                 ],
             )?;
         }
+    }
+    Ok(())
+}
+
+/// Migration V82: purge `???` placeholder character rows.
+///
+/// The game occasionally emits a placeholder extra report
+/// (`Character_???.json`, race `error`); its Storage twin imported
+/// unguarded into `game_state_inventory` / `game_state_storage` /
+/// `character_item_snapshots` under `character_name = '???'`. The import
+/// paths now reject the placeholder, and the aggregate reads filter it —
+/// this is the one-time repair for rows already stored. `???` can never be
+/// a legitimate name, so the predicate (`TRIM(character_name) IN ('', '???')`)
+/// matches the Rust `is_placeholder_report` name half. `TRIM(NULL)` is NULL
+/// (never matches), so the nullable `character` columns on `enemy_kills` /
+/// `corpse_extracts` are untouched by the sweep. Idempotent: a no-op once clean.
+fn migration_v82_purge_placeholder_characters(conn: &Connection) -> Result<()> {
+    // Table list mirrors delete_character (setup_commands.rs): every
+    // (character_name, server_name) table gets the placeholder predicate.
+    const GAME_STATE_TABLES: &[&str] = &[
+        "game_state_active_skills",
+        "game_state_area",
+        "game_state_attributes",
+        "game_state_books",
+        "game_state_combat",
+        "game_state_currencies",
+        "game_state_directed_goals",
+        "game_state_effects",
+        "game_state_equipment",
+        "game_state_favor",
+        "game_state_gift_log",
+        "game_state_guild",
+        "game_state_inventory",
+        "game_state_mount",
+        "game_state_npc_vendor",
+        "game_state_recipes",
+        "game_state_session",
+        "game_state_skills",
+        "game_state_storage",
+        "game_state_strings",
+        "game_state_teleportation",
+    ];
+    const SCOPED_TABLES: &[&str] = &[
+        "open_multihit_nodes",
+        "character_deaths",
+        "character_report_stats",
+        "character_resuscitations",
+        "corpse_extracts",
+        "currency_estimate",
+        "enemy_kills",
+        "garden_almanac",
+        "garden_almanac_history",
+        "harvest_almanac",
+        "hoplology_studies",
+        "item_transactions",
+        "milking_timers",
+        "player_messages",
+        "player_milking_log",
+        "player_pooping_log",
+        "stall_price_observations",
+        "survey_uses",
+        "survey_sessions",
+        "tracked_skills",
+        "user_timers",
+        "words_of_power",
+    ];
+
+    // Minimal test fixtures build only the tables they need — every DELETE
+    // is guarded by a sqlite_master EXISTS check (same shape as v79/v80/v81),
+    // so an absent table skips instead of failing the whole migration run.
+    let table_exists = |name: &str| -> bool {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [name],
+            |r| r.get(0),
+        )
+        .unwrap_or(false)
+    };
+
+    for table in GAME_STATE_TABLES.iter().chain(SCOPED_TABLES.iter()) {
+        if !table_exists(table) {
+            continue;
+        }
+        conn.execute(
+            &format!(
+                "DELETE FROM {table} WHERE TRIM(character_name) IN ('', '???')"
+            ),
+            [],
+        )?;
+    }
+
+    // Child rows via their resolved parent ids (snapshot children first, then
+    // the snapshot parents). `character_item_snapshots` is intentionally
+    // absent from SCOPED_TABLES above: the dedicated block below must resolve
+    // its ids first to delete the `character_snapshot_items` children — a
+    // scoped pass would remove the parents before their ids are known,
+    // orphaning the children where FKs are off. `character_snapshot_items`
+    // keys on `item_snapshot_id` (v1 schema `migrations.rs`); the
+    // delete_character.rs plural variant is an unrelated table. CASCADE
+    // covers these on the pool, but explicit deletes keep the sweep working
+    // where FKs are off.
+    if table_exists("character_snapshots") {
+        let has_child = |name: &str| table_exists(name);
+        let snapshot_ids: Vec<i64> = {
+            let mut stmt = conn.prepare(
+                "SELECT id FROM character_snapshots WHERE TRIM(character_name) IN ('', '???')",
+            )?;
+            let rows = stmt.query_map([], |row| row.get(0))?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+        for child in [
+            "character_skill_levels",
+            "character_npc_favor",
+            "character_recipe_completions",
+            "character_stats",
+            "character_currencies",
+            "character_active_quests",
+            "snapshot_skill_abilities",
+        ] {
+            if !has_child(child) {
+                continue;
+            }
+            for sid in &snapshot_ids {
+                conn.execute(
+                    &format!("DELETE FROM {child} WHERE snapshot_id = ?1"),
+                    rusqlite::params![sid],
+                )?;
+            }
+        }
+        conn.execute(
+            "DELETE FROM character_snapshots WHERE TRIM(character_name) IN ('', '???')",
+            [],
+        )?;
+    }
+
+    if table_exists("character_item_snapshots") {
+        if table_exists("character_snapshot_items") {
+            let item_snapshot_ids: Vec<i64> = {
+                let mut stmt = conn.prepare(
+                    "SELECT id FROM character_item_snapshots WHERE TRIM(character_name) IN ('', '???')",
+                )?;
+                let rows = stmt.query_map([], |row| row.get(0))?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            };
+            for sid in &item_snapshot_ids {
+                conn.execute(
+                    "DELETE FROM character_snapshot_items WHERE item_snapshot_id = ?1",
+                    rusqlite::params![sid],
+                )?;
+            }
+        }
+        // The parent rows live only here now (not in SCOPED_TABLES, so the
+        // ids above resolve before the parents are removed).
+        conn.execute(
+            "DELETE FROM character_item_snapshots WHERE TRIM(character_name) IN ('', '???')",
+            [],
+        )?;
+    }
+
+    // `???` is never a legitimate registered name; remove it outright
+    // (no server scope to preserve here — the placeholder is global).
+    if table_exists("user_characters") {
+        conn.execute(
+            "DELETE FROM user_characters WHERE TRIM(character_name) IN ('', '???')",
+            [],
+        )?;
     }
     Ok(())
 }
@@ -3952,13 +4123,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            81,
+            82,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 81);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 82);
     }
 
     #[test]
@@ -4076,5 +4247,103 @@ mod tests {
                 .collect()
         };
         assert_eq!(rows, vec![(Some(true), None), (None, None), (None, Some(7))], "Nth entry fills Nth row across valueless gaps");
+    }
+
+    #[test]
+    fn migration_v82_purges_placeholder_rows() {
+        // Proves the v82 chain wiring (full run_migrations, head must be
+        // 82) plus the purge itself on the three aggregate source tables.
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        let head: i64 = c
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(head, 82, "migration chain head");
+        c.execute_batch(
+            "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
+                ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
+                ('Real', 'Dreva', 'Councils', 50, '2026-10-22');
+             INSERT INTO game_state_inventory (character_name, server_name, instance_id, item_name, stack_size, last_confirmed_at) VALUES
+                ('  ???  ', 'Dreva', 1, 'Sword', 1, '2026-10-22'),
+                ('Real', 'Dreva', 1, 'Sword', 2, '2026-10-22');
+             INSERT INTO game_state_skills (character_name, server_name, skill_id, skill_name, level, xp, last_confirmed_at) VALUES
+                ('', 'Dreva', 1, 'Sword', 1, 10, '2026-10-22'),
+                ('Real', 'Dreva', 1, 'Sword', 5, 100, '2026-10-22');",
+        )
+        .unwrap();
+        migration_v82_purge_placeholder_characters(&c).unwrap();
+        for table in ["game_state_currencies", "game_state_inventory", "game_state_skills"] {
+            let orphan: i64 = c
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE TRIM(character_name) IN ('', '???')"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(orphan, 0, "{table} placeholder rows purged");
+            let kept: i64 = c
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE character_name = 'Real'"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(kept, 1, "{table} real rows survive");
+        }
+        // Idempotent: second run is a no-op over the survivor.
+        migration_v82_purge_placeholder_characters(&c).unwrap();
+        let kept: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM game_state_currencies WHERE character_name = 'Real'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 1, "second run preserves real rows");
+    }
+
+    #[test]
+    fn migration_v82_clears_placeholder_children_before_parents() {
+        // Guards the ordering fix: the parent rows live only in the
+        // dedicated block, so the child ids resolve before the parents go.
+        // FKs are OFF on this fixture (plain open_in_memory), so an
+        // early parent delete would orphan the children — no CASCADE rescue.
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        c.execute_batch(
+            "INSERT INTO character_snapshots (character_name, server_name, snapshot_timestamp, race, raw_json) VALUES
+                ('???', 'Dreva', '2026-10-22T12:00:00Z', 'error', '{}'),
+                ('Real', 'Dreva', '2026-10-22T12:00:00Z', 'Human', '{}');
+             INSERT INTO character_skill_levels (snapshot_id, skill_name, level) VALUES
+                (1, 'Sword', 1),
+                (2, 'Sword', 5);
+             INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json) VALUES
+                ('???', 'Dreva', '2026-10-22T12:00:00Z', '{}'),
+                ('Real', 'Dreva', '2026-10-22T12:00:00Z', '{}');
+             INSERT INTO character_snapshot_items (item_snapshot_id, type_id, stack_size, item_name) VALUES
+                (1, 9, 1, 'Phantom'),
+                (2, 9, 1, 'Kept');",
+        )
+        .unwrap();
+        migration_v82_purge_placeholder_characters(&c).unwrap();
+        for table in [
+            "character_snapshots",
+            "character_skill_levels",
+            "character_item_snapshots",
+            "character_snapshot_items",
+        ] {
+            let count: i64 = c
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 1, "{table} keeps only the Real row");
+        }
+        let kept: String = c
+            .query_row(
+                "SELECT item_name FROM character_snapshot_items",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, "Kept", "surviving child belongs to the Real parent");
     }
 }

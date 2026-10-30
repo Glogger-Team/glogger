@@ -103,6 +103,7 @@ pub fn get_aggregate_inventory(
             "SELECT item_name, character_name, SUM(stack_size) as total
          FROM game_state_inventory
          WHERE server_name = ?1
+           AND TRIM(character_name) != '' AND TRIM(character_name) != '???'
          GROUP BY item_name, character_name
          ORDER BY item_name, character_name",
         )
@@ -160,6 +161,7 @@ pub fn get_aggregate_wealth(
             "SELECT currency_name, character_name, amount
          FROM game_state_currencies
          WHERE server_name = ?1
+           AND TRIM(character_name) != '' AND TRIM(character_name) != '???'
          ORDER BY currency_name, character_name",
         )
         .map_err(|e| format!("Query error: {e}"))?;
@@ -216,7 +218,8 @@ pub fn get_aggregate_wealth(
          FROM game_state_inventory i
          LEFT JOIN market_values m ON m.item_type_id = i.item_type_id AND m.server_name = ?2
          LEFT JOIN items ON items.id = i.item_type_id
-         WHERE i.server_name = ?1",
+         WHERE i.server_name = ?1
+           AND TRIM(i.character_name) != '' AND TRIM(i.character_name) != '???'",
         )
         .map_err(|e| format!("Query error: {e}"))?;
 
@@ -295,6 +298,7 @@ pub fn get_aggregate_skills(
             "SELECT skill_name, character_name, level, xp
          FROM game_state_skills
          WHERE server_name = ?1
+           AND TRIM(character_name) != '' AND TRIM(character_name) != '???'
          ORDER BY skill_name, character_name",
         )
         .map_err(|e| format!("Query error: {e}"))?;
@@ -386,6 +390,7 @@ pub fn get_aggregate_vendor(
                AND f.server_name = v.server_name
                AND f.npc_key = v.npc_key
              WHERE v.server_name = ?1
+               AND TRIM(v.character_name) != '' AND TRIM(v.character_name) != '???'
              ORDER BY v.npc_key, v.character_name",
         )
         .map_err(|e| format!("Query error: {e}"))?;
