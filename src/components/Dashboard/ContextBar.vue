@@ -16,11 +16,11 @@
 
     <!-- Divider -->
     <div
-      v-if="showIdentityRow && (showAnyTime || prefs.showMoon)"
+      v-if="showIdentityRow && showTimesOrMoon"
       class="border-t border-border-default" />
 
     <!-- Times + Moon side by side -->
-    <div v-if="showAnyTime || (prefs.showMoon && moonReady)" class="flex gap-4">
+    <div v-if="showTimesOrMoon" class="flex gap-4">
       <!-- Left: Times stacked -->
       <div v-if="showAnyTime" class="flex flex-col gap-0.5">
         <div v-if="prefs.showGameTime" class="flex items-center gap-2">
@@ -79,7 +79,7 @@
 
     <!-- Divider -->
     <div
-      v-if="(showAnyTime || prefs.showMoon) && prefs.showWeather"
+      v-if="showTimesOrMoon && prefs.showWeather"
       class="border-t border-border-default" />
 
     <!-- Weather row -->
@@ -110,7 +110,7 @@
 
     <!-- Empty state -->
     <div
-      v-if="!showIdentityRow && !showAnyTime && !prefs.showMoon && !prefs.showWeather && displayedCurrencies.length === 0"
+      v-if="!showIdentityRow && !showTimesOrMoon && !prefs.showWeather && displayedCurrencies.length === 0"
       class="text-text-dim text-xs italic">
       All sections hidden — use the gear icon to configure.
     </div>
@@ -160,8 +160,10 @@ const showAnyTime = computed(() =>
   prefs.value.showGameTime || prefs.value.showServerTime || prefs.value.showLocalTime
 )
 
+/** Times row or moon section (incl. its loading placeholder) is visible. */
+const showTimesOrMoon = computed(() => showAnyTime.value || prefs.value.showMoon)
+
 function formatTo12h(time24: string): string {
-  if (time24 === '--:--') return time24
   const [hStr, mStr] = time24.split(':')
   const h = parseInt(hStr, 10)
   const period = h >= 12 ? 'PM' : 'AM'

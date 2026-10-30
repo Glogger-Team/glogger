@@ -100,7 +100,7 @@ The codebase currently uses three different approaches for the same semantic pur
 
 **Status indicator dots use theme tokens where they carry semantics:**
 - `bg-status-active` / `bg-status-inactive` for tailing/offline dots (MenuBar, LiveInventoryTab, `StatusWidget.vue` — the archived copy also kept the Tailwind-default form before removal)
-- `bg-status-warning` for warning-level capacity bars (VaultRow, VaultAreaCard)
+- `bg-yellow-500` for warning-level capacity bars (VaultRow, VaultAreaCard) — no `status-warning` token use yet
 
 ## Existing System
 
