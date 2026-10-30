@@ -2474,26 +2474,18 @@ impl PlayerEventParser {
         let args = &line[args_start..];
 
         // Extract first three quoted strings
-        let title = match extract_quoted_string(args, 0) {
-            Some(t) => t,
-            None => return vec![],
+        // Reworked to respect \" escaped quotes
+        let (Some(title), Some(content), Some(book_type)) = (
+            extract_quoted_escaped(args, 0),
+            extract_quoted_escaped(args, 1),
+            extract_quoted_escaped(args, 2),
+        ) else {
+            return vec![];
         };
-        let after_title = match args.find(&format!("\"{}\"", title)) {
-            Some(i) => &args[i + title.len() + 2..],
-            None => return vec![],
-        };
-        let content = match extract_quoted_string(after_title, 0) {
-            Some(c) => c,
-            None => return vec![],
-        };
-        let after_content = match after_title.find(&format!("\"{}\"", content)) {
-            Some(i) => &after_title[i + content.len() + 2..],
-            None => return vec![],
-        };
-        let book_type = match extract_quoted_string(after_content, 0) {
-            Some(b) => b,
-            None => return vec![],
-        };
+        // Un-escape quotes only, other symbols are expected to remain escaped
+        let title = unescape_log_quotes(&title);
+        let content = unescape_log_quotes(&content);
+        let book_type = unescape_log_quotes(&book_type);
 
         let mut events = vec![];
 
@@ -3859,6 +3851,31 @@ fn extract_quoted_escaped(text: &str, n: usize) -> Option<String> {
     None
 }
 
+/// Resolves \" into real quotes
+/// Other escapes are untouched, as other consumers are expecting them
+fn unescape_log_quotes(s: &str) -> String {
+    if !s.contains("\\\"") {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('"') => out.push('"'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// Resolve the log's backslash escapes (`\n`, `\t`, `\r`, `\"`, `\\`) into their
 /// real characters. Unknown escapes are passed through verbatim.
 fn unescape_log_string(s: &str) -> String {
@@ -4786,6 +4803,42 @@ mod tests {
                 assert_eq!(title, "Yesterday's Shop Logs");
                 assert_eq!(content, "Toncom bought Guava x5");
                 assert_eq!(book_type, "PlayerShopLog");
+            }
+            _ => panic!("Expected BookOpened"),
+        }
+    }
+
+    /// Item names containing \" must resolve correctly
+    #[test]
+    fn test_parse_book_hoplology_with_escaped_quotes() {
+        let mut parser = PlayerEventParser::new();
+        let events = parser.process_line(
+            r#"[19:00:01] LocalPlayer: ProcessBook("Skill Info: Hoplology", "Equipment Studied:\n\n  \"Nice\" Sword\n  Thentree Harness\n  Bob's \"Lucky\" Helm\n", "SkillReport", "", "", False, False, False, False, False, "")"#
+        );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            PlayerEvent::BookOpened {
+                title,
+                content,
+                book_type,
+                ..
+            } => {
+                assert_eq!(title, "Skill Info: Hoplology");
+                assert_eq!(book_type, "SkillReport");
+                // Quotes resolved, newlines still escaped.
+                assert_eq!(
+                    content,
+                    "Equipment Studied:\\n\\n  \"Nice\" Sword\\n  Thentree Harness\\n  Bob's \"Lucky\" Helm\\n"
+                );
+                let items: Vec<&str> = content
+                    .split("\\n")
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty() && !l.starts_with("Equipment Studied:"))
+                    .collect();
+                assert_eq!(
+                    items,
+                    vec!["\"Nice\" Sword", "Thentree Harness", "Bob's \"Lucky\" Helm"]
+                );
             }
             _ => panic!("Expected BookOpened"),
         }
