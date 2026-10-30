@@ -86,7 +86,7 @@ Small tasks and notes that don't belong in a dedicated plan.
 - [ ] Ingestion architecture: no shared schema contract for Tauri event payloads (no specta/ts-rs/typeshare). Coordinator is a 3927-line manual dispatch hub; history tables exist per-domain except `game_state_*`. The outage re-source design belongs here.
   - **Effort: Medium | Impact: Medium (reliability)**
 +
-- [ ] UI/UX standardization: Table sweep done — **34 instances across 30 files** (`ux-standards.md` checklist owns it; was 35 — batch-1 removed the MarketView stall-observations table). Remaining: heading-class standardization (`typography-audit.md`), color Tier 3 cleanup (`color-standards.md`).
+- [ ] UI/UX standardization: Table sweep done — **33 instances across 29 files** (`ux-standards.md` checklist owns it; was 35 — batch-1 removed the MarketView stall-observations table and the orphan LiveInventoryTab table). Remaining: heading-class standardization (`typography-audit.md`), color Tier 3 cleanup (`color-standards.md`).
   - **Effort: Medium (iterative) | Impact: Medium**
 
 ---
@@ -217,6 +217,6 @@ Missing event in most entries: a `LocalPlayer:` line (fast-path gate `player_eve
 
 - [ ] Dynamic Items tab slow initial load (user-requested 2026-10-28): `DynamicItemsTab.vue:216-232` `onMounted` awaits `getItemsByKeyword` sequentially per keyword to pre-fill sidebar count badges (`itemCountCache`) before clearing `loading` — N+1 IPC round trips blocking first paint, and `selectKeyword` re-fetches anyway (`:199-214`). Scope: measure (keyword count × per-call latency), then load list first and lazy/defer counts (parallelize, virtualize, or single aggregate keyword-counts command).
 
-- [x] ~~Hide Live inventory tab outright (user-requested 2026-10-28)~~ — **NO-OP 2026-10-30: already gone — `InventoryWrapper.vue` has only `storage/vaults/consolidate`, zero `LiveInventoryTab`/`'live'` refs in `src/`.**
+- [x] ~~Hide Live inventory tab outright (user-requested 2026-10-28)~~ — **DONE 2026-10-30 (batch-1 fix batch): tab wiring was already gone (`InventoryWrapper.vue` has only `storage/vaults/consolidate`, zero importers) — deleted the orphan `LiveInventoryTab.vue` component outright; `LiveInventoryItem` game-state map retained for re-enable. Inventory docs (`inventory.md`, `inventory-live.md`) updated.**
 
 - [ ] NPC list from CDN, report as overlay (user-requested 2026-10-28): `NpcsScreen.vue:105-131` builds `hasData`/`totalNpcs`/`filteredNpcs` from report-derived `characterStore.npcFavor` + `gameState.favor`, so never-talked-to NPCs never appear. Scope: invert to CDN-first (full NPC list from `gameData.npcsByKey` / a `get_npcs`-style query as the row source) with snapshot/live favor filling in tier/details only; keep the filter panel working over the CDN set; decide handling for report-only keys with no CDN match.

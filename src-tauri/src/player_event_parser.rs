@@ -1781,8 +1781,8 @@ impl PlayerEventParser {
         // set on ProcessPlayerVendorScreen and cleared on EndInteraction.
         // The paired ProcessPlayerVendorScreenRemove that follows confirms the
         // purchase (same instance_id); without it the provisional stamp is
-        // harmless: provenance is informational, and the coordinator records
-        // the purchase row from the Remove event, not from this stamp.
+        // informational only — no purchase-row writer remains (stall-price
+        // capture removed; `source_kind='vendor_browsing'` via game_state).
         let provenance = if !is_new {
             ItemProvenance::NotApplicable
         } else if let Some((npc_id, false)) = self.vendor_screen {

@@ -48,51 +48,11 @@ Six options controlling how item values are calculated app-wide:
 - `export_market_values() → String` (JSON)
 - `import_market_values(json_data, strategy) → ImportResult`
 
-## Stall Price Observations (Other Players' Stalls) — experimental
+## Stall Price Observations — removed (batch-1, 2026-10-30)
 
-> **Experimental.** The capture flow is a work in progress and has not been
-> verified against live stalls end to end. The capture panel appears on browse
-> events; rows are entered manually (typed lines, or bought-item sentinels you
-> price yourself). Observations are a separate table and never overwrite your
-> curated `market_values`.
-
-The Market Prices tab also lists **stall price observations** — prices seen at
-other players' stalls, distinct from your curated `market_values` (which are
-never auto-overwritten).
-
-### How prices get in
-
-- **Capture panel** — browsing another player's stall in game emits
-  `stall-browse-started` and opens a bottom-right capture panel on the Market
-  tab. Type one item per line: `Item [x<qty>] @ <price>` (e.g. `Carrot x80 @ 5`,
-  `21890 @ 2500`). Unresolved item names are reported inline and not saved.
-- **Auto-detected purchases** — buying from another stall records a
-  `source='purchase'` row with `price_unit = 0` (the game never logs prices).
-  Set the price inline in the observations table.
-- **OCR scan (Windows, opt-in)** — the panel's "Scan window" button captures
-  the game window, runs a Tesseract child process (portable build downloaded
-  into appdata on first use), and prefills the textarea from the stall's rows.
-  Item names fuzzy-match against the CDN list (trigram Dice ≥ 0.75); unmatched
-  OCR text lands in the panel for manual correction. Nothing auto-saves.
-
-### Data model
-
-Table `stall_price_observations` (migration V68), keyed
-`UNIQUE(observed_at, item_name, stall_npc_entity_id, price_unit)` —
-`INSERT OR IGNORE` makes captures and purchase detection idempotent.
-`price_unit = 0` is the purchase sentinel (the game has no zero-price
-listings). Purged with the player-data purge on `observed_at`.
-
-### Tauri Commands
-
-- `get_stall_price_observations(server_name?, limit?, item_type_id?) → Vec<StallPriceObservation>`
-- `record_stall_prices(entries: Vec<StallPriceEntry>) → usize` (inserted count after dedup)
-- `update_stall_price_observation(id, price_unit, stall_label?, owner_name?)`
-- `delete_stall_price_observation(id)`
-- `scan_stall_window() → StallScanResult` (OCR; Windows only)
-- `ocr_check_status() → OcrStatus`, `ocr_download()`, `ocr_launch_setup()`
-
-### Item tooltips
-
-Items with an observation show a "Last seen: 3x 2500g at <stall> (2h ago)"
-line above the market-value edit row in the item tooltip.
+The experimental stall-price surface (capture panel, auto-detected purchase
+sentinels, OCR scan, `get/record/update/delete_stall_price_observation`
+commands, tooltip "Last seen" line) was stripped from the live app. Table
+`stall_price_observations` (migration V68) and existing rows are retained.
+Re-introduction (capture panel + OCR + purchase-sentinel fill-in) stays a
+backlog item pending a reliable stall-browsing signal.

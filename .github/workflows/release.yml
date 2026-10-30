@@ -154,7 +154,7 @@ jobs:
   # ── Test once on Linux; the platform matrix below builds untested code
   # nowhere. The test *logic* is platform-independent (pure parsers, no
   # target-specific code under test), so running it 3× wasted ~7 min per
-  # release; platform modules (`#[cfg(target_os)]` in stall_ocr.rs, lib.rs)
+  # release; platform modules (`#[cfg(target_os)]` in lib.rs)
   # are compile-checked per-platform by the check step in build below.
   test:
     name: Rust tests

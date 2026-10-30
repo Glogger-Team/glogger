@@ -704,8 +704,9 @@ the manager flag: `True` = own stall (management mode), `False` = someone
 else's stall (buy mode).
 
 **Parsed:** yes (`VendorScreenOpened`, emitted only for OTHERS' stalls —
-own-stall activity is covered by PlayerShopLog books). Drives the stall price
-capture panel (see `docs/features/screens/economics/economics-market.md`).
+own-stall activity is covered by PlayerShopLog books). The stall-price capture
+panel it used to drive was removed (batch-1, 2026-10-30) — the event is
+currently emitted but consumed nowhere.
 The listing contents/prices are not in the log line itself.
 
 ### ProcessPlayerVendorScreenUpdate — Player shop item update
