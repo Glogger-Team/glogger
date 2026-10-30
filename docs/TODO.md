@@ -86,7 +86,7 @@ Small tasks and notes that don't belong in a dedicated plan.
 - [ ] Ingestion architecture: no shared schema contract for Tauri event payloads (no specta/ts-rs/typeshare). Coordinator is a 3927-line manual dispatch hub; history tables exist per-domain except `game_state_*`. The outage re-source design belongs here.
   - **Effort: Medium | Impact: Medium (reliability)**
 +
-- [ ] UI/UX standardization: Table sweep done — **35 instances across 30 files** (`ux-standards.md` checklist owns it). Remaining: heading-class standardization (`typography-audit.md`), color Tier 3 cleanup (`color-standards.md`).
+- [ ] UI/UX standardization: Table sweep done — **34 instances across 30 files** (`ux-standards.md` checklist owns it; was 35 — batch-1 removed the MarketView stall-observations table). Remaining: heading-class standardization (`typography-audit.md`), color Tier 3 cleanup (`color-standards.md`).
   - **Effort: Medium (iterative) | Impact: Medium**
 
 ---
