@@ -99,7 +99,7 @@ The codebase currently uses three different approaches for the same semantic pur
 - Chart axis/grid/label colors use zinc palette hex values (`#52525b`, `#a1a1aa`, `#d4d4d8`, `#27272a`)
 
 **Status indicator dots use theme tokens where they carry semantics:**
-- `bg-status-active` / `bg-status-inactive` for tailing/offline dots (MenuBar); `bg-status-active` for the live tailing dot (LiveInventoryTab — its inactive state is a yellow warning panel, not an inactive dot)
+- `bg-status-active` / `bg-status-inactive` for tailing/offline dots (MenuBar)
 - `bg-yellow-500` for warning-level capacity bars (VaultRow, VaultAreaCard) — no `status-warning` token use yet
 
 ## Existing System
