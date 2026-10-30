@@ -14,4 +14,4 @@ rules:
     # checkout keeps the credential (persist-credentials defaults true).
     # Every other checkout in release.yml/flatpak.yml sets false.
     ignore:
-      - release.yml:555
+      - release.yml:564
