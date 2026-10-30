@@ -115,7 +115,9 @@ const NON_NPC_CDN_KEYS = new Set([
 ])
 const isGridKey = (k: string) =>
   !k.endsWith('WorkOrderSign') && !NON_NPC_CDN_KEYS.has(k)
-const isCountedOrphanKey = (k: string) => k.startsWith('NPC_') && !isGridKey(k)
+// Orphan = NPC_ key with no CDN row. isGridKey is irrelevant here: CDN members
+// are already counted via cdnNpcKeys, and the Set union dedupes any overlap.
+const isCountedOrphanKey = (k: string) => k.startsWith('NPC_')
 
 const cdnNpcKeys = () => Object.keys(gameData.npcsByKey).filter(isGridKey)
 
