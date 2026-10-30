@@ -2,7 +2,7 @@
 
 ## Overview
 
-The inventory screen provides views into what the player owns: point-in-time Storage reports from character exports, and a comprehensive storage vault database showing items across all vaults with capacity tracking. (The real-time live inventory tab was removed with the `LiveInventoryTab.vue` component, batch-1 2026-10-30 — the `LiveInventoryItem` game-state map is retained for re-enable; see `inventory-live.md`.)
+The inventory screen provides views into what the player owns: point-in-time Storage reports from Export Storage as JSON, and a comprehensive storage vault database showing items across all vaults with capacity tracking. (The real-time live inventory tab was removed with the `LiveInventoryTab.vue` component, batch-1 2026-10-30 — the `LiveInventoryItem` game-state map is retained for re-enable; see `inventory-live.md`.)
 
 ## Architecture
 
