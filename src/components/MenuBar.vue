@@ -154,11 +154,6 @@ const viewTabs: Partial<Record<AppView, SubTab[]>> = {
     { id: "account", label: "Account" },
   ],
   inventory: [
-    // Live tab kept visible but dark: the current game client writes no
-    // Player.log item events, so the tab renders the no-new-data banner
-    // (see LiveInventoryTab) instead of an empty tracker. Remove the entry
-    // (and the wrapper branch) only if live tracking is deleted outright.
-    { id: "live", label: "Live" },
     { id: "storage", label: "Storage" },
     { id: "vaults", label: "Vaults" },
     { id: "consolidate", label: "Consolidate" },
