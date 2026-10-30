@@ -102,26 +102,56 @@ const { prefs: rightPanePrefs, update: updateRightPane } = useViewPrefs('npcs.pa
   width: 700,
 })
 
-const cdnNpcKeys = () => Object.keys(gameData.npcsByKey).filter(k => !k.endsWith('WorkOrderSign'))
+// Must match NpcFilterPanel's exclusion exactly — counts can never disagree
+// with the grid. Re-audit both if the grid shows furniture.
+const NON_NPC_CDN_KEYS = new Set([
+  'Altar_Druid',
+  'BearCharmPedestal',
+  'CatCharmPedestal',
+  'Grainmill',
+  'GuildAltar',
+  'PoiBrewingWorkstation',
+  'WerewolfAltar',
+])
+const isGridKey = (k: string) =>
+  !k.endsWith('WorkOrderSign') && !NON_NPC_CDN_KEYS.has(k)
+const isCountedOrphanKey = (k: string) => k.startsWith('NPC_') && !isGridKey(k)
+
+const cdnNpcKeys = () => Object.keys(gameData.npcsByKey).filter(isGridKey)
 
 const hasData = computed(() =>
   cdnNpcKeys().length > 0 ||
-  characterStore.npcFavor.length > 0 || gameState.favor.length > 0
+  characterStore.npcFavor.some(f => isCountedOrphanKey(f.npc_key)) ||
+  gameState.favor.some(f => isCountedOrphanKey(f.npc_key))
 )
 
-const totalNpcs = computed(() => cdnNpcKeys().length)
+const totalNpcs = computed(() => {
+  const keys = new Set<string>(cdnNpcKeys())
+  for (const f of characterStore.npcFavor) if (isCountedOrphanKey(f.npc_key)) keys.add(f.npc_key)
+  for (const f of gameState.favor) if (isCountedOrphanKey(f.npc_key)) keys.add(f.npc_key)
+  return keys.size
+})
 
 const aboveNeutral = computed(() => {
   const snapMap = new Map(characterStore.npcFavor.map(f => [f.npc_key, f.favor_level]))
+  const keys = new Set<string>([
+    ...cdnNpcKeys(),
+    ...characterStore.npcFavor.filter(f => isCountedOrphanKey(f.npc_key)).map(f => f.npc_key),
+    ...gameState.favor.filter(f => isCountedOrphanKey(f.npc_key)).map(f => f.npc_key),
+  ])
   let count = 0
-  for (const k of cdnNpcKeys()) {
+  for (const k of keys) {
     if ((gameState.favorByNpc[k]?.favor_tier ?? snapMap.get(k) ?? 'Neutral') !== 'Neutral') count++
   }
   return count
 })
 
-// Grid renders the CDN rows directly (every row has NpcInfo for NpcCard)
-const filteredNpcs = computed(() => filterPanelRef.value?.filteredRows ?? [])
+// Grid renders CDN rows only (NpcCard requires NpcInfo); NPC_ orphans stay
+// counted but card-less by decision, visible only via Unknown Area / counts
+const filteredNpcs = computed(() => {
+  const rows = filterPanelRef.value?.filteredRows ?? []
+  return rows.filter(r => r.cdnData !== null)
+})
 
 const selectedSnapshotTier = computed(() => {
   if (!selectedNpcKey.value) return null

@@ -221,18 +221,37 @@ const skillQuery = ref('')
 const showItemTypeFilter = ref(false)
 const itemTypeQuery = ref('')
 
+// Interactable CDN entries that are not NPCs: no favor tiers, no gift tastes —
+// boards, altars, workstations, furniture. Shared with NpcsScreen's totals so
+// counts can never disagree with the grid. EventNPC_/LiveNpc_/Poi* entries are
+// real NPCs and stay. Re-audit against live CDN if the grid shows furniture.
+const NON_NPC_CDN_KEYS = new Set([
+  'Altar_Druid',
+  'BearCharmPedestal',
+  'CatCharmPedestal',
+  'Grainmill',
+  'GuildAltar',
+  'PoiBrewingWorkstation',
+  'WerewolfAltar',
+])
+const isExcludedCdnKey = (key: string) =>
+  key.endsWith('WorkOrderSign') || NON_NPC_CDN_KEYS.has(key)
+
 // Build merged rows from the CDN NPC set with snapshot/live favor overlaid as
-// tier/details. Work-order boards (*WorkOrderSign) are interactables, not NPCs
-// — skipped. Report-only keys with no CDN match are excluded entirely: they
-// carry no area/services (all-Neutral empty rows) and can render no card, so
-// keeping them only lets counts disagree with the grid. They reappear with full
-// data automatically if a later CDN snapshot includes them.
+// tier/details. Report-only NPC keys (NPC_ prefix) with no CDN match are
+// appended so favor-bearing renames are never lost; they render no card
+// (NpcCard requires NpcInfo) and rejoin the grid with full data if a later CDN
+// snapshot includes them. Non-NPC favor keys (BeeHiveA, Cow_Bertha, …) are game
+// entities with favor meters, not NPCs — excluded everywhere.
 const allRows = computed<NpcRow[]>(() => {
+  const seen = new Set<string>()
   const rows: NpcRow[] = []
   const snapByKey = new Map(props.snapshotFavor.map(s => [s.npc_key, s]))
 
+  // CDN pass: the full NPC universe, snapshot/live favor overlaid
   for (const cdn of Object.values(props.npcsByKey)) {
-    if (cdn.key.endsWith('WorkOrderSign')) continue
+    if (isExcludedCdnKey(cdn.key)) continue
+    seen.add(cdn.key)
     const snap = snapByKey.get(cdn.key)
     const gs = props.favorByNpc[cdn.key] ?? null
     rows.push({
@@ -251,16 +270,60 @@ const allRows = computed<NpcRow[]>(() => {
     })
   }
 
+  // Orphan passes: report-only NPC_ keys with no CDN match. Null area +
+  // null cdnData; counted in the panel, card-less in the grid by decision.
+  for (const snap of props.snapshotFavor) {
+    if (seen.has(snap.npc_key) || isExcludedCdnKey(snap.npc_key) || !snap.npc_key.startsWith('NPC_')) continue
+    seen.add(snap.npc_key)
+    const gs = props.favorByNpc[snap.npc_key] ?? null
+    rows.push({
+      npc_key: snap.npc_key,
+      display_name: gs?.npc_name ?? snap.npc_key.replace(/^NPC_/, ''),
+      area_friendly_name: null,
+      snapshot_favor: snap.favor_level,
+      gamestate_favor: gs,
+      cdnData: null,
+      effective_tier: gs?.favor_tier ?? snap.favor_level,
+      has_gamestate_data: !!gs,
+      snapshot_favor_points: snap.favor ?? null,
+      snapshot_councils_spent: snap.councils_spent_at_vendor ?? null,
+      snapshot_notes: snap.player_notes ?? null,
+      snapshot_vendor_reset: snap.vendor_reset_time ?? null,
+    })
+  }
+
+  for (const [key, gs] of Object.entries(props.favorByNpc)) {
+    if (seen.has(key) || isExcludedCdnKey(key) || !key.startsWith('NPC_')) continue
+    rows.push({
+      npc_key: key,
+      display_name: gs.npc_name ?? key.replace(/^NPC_/, ''),
+      area_friendly_name: null,
+      snapshot_favor: null,
+      gamestate_favor: gs,
+      cdnData: null,
+      effective_tier: gs.favor_tier ?? 'Neutral',
+      has_gamestate_data: true,
+      snapshot_favor_points: null,
+      snapshot_councils_spent: null,
+      snapshot_notes: null,
+      snapshot_vendor_reset: null,
+    })
+  }
+
   return rows
 })
 
 // Collect available areas for the area dropdown
 const availableAreas = computed(() => {
   const areas = new Set<string>()
+  let hasUnknown = false
   for (const row of allRows.value) {
     if (row.area_friendly_name) areas.add(row.area_friendly_name)
+    else hasUnknown = true
   }
-  return Array.from(areas).sort()
+  const sorted = Array.from(areas).sort()
+  if (hasUnknown) sorted.push('Unknown Area')
+  return sorted
 })
 
 // Filter
@@ -276,7 +339,11 @@ const filteredAndSorted = computed(() => {
   }
 
   if (areaFilter.value) {
-    rows = rows.filter(r => r.area_friendly_name === areaFilter.value)
+    if (areaFilter.value === 'Unknown Area') {
+      rows = rows.filter(r => !r.area_friendly_name)
+    } else {
+      rows = rows.filter(r => r.area_friendly_name === areaFilter.value)
+    }
   }
 
   const f = filter.value.toLowerCase()
