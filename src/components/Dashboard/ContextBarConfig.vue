@@ -51,7 +51,6 @@ const sectionOptions: { key: PrefKey; label: string; parent?: PrefKey }[] = [
   { key: 'use24h', label: '24-hour format' },
   { key: 'showMoon', label: 'Moon Phase' },
   { key: 'showWeather', label: 'Weather' },
-  { key: 'showCombat', label: 'Combat / Mount' },
 ]
 
 function formatCurrencyLabel(name: string): string {

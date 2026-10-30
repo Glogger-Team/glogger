@@ -79,51 +79,20 @@
 
     <!-- Divider -->
     <div
-      v-if="(showAnyTime || prefs.showMoon) && (prefs.showWeather || prefs.showCombat)"
+      v-if="(showAnyTime || prefs.showMoon) && prefs.showWeather"
       class="border-t border-border-default" />
 
-    <!-- Weather & Status row -->
-    <div v-if="prefs.showWeather || prefs.showCombat" class="flex items-center gap-4">
-      <div v-if="prefs.showWeather" class="flex items-center gap-1.5">
+    <!-- Weather row -->
+    <div v-if="prefs.showWeather" class="flex items-center gap-4">
+      <div class="flex items-center gap-1.5">
         <span v-if="weather" class="text-text-primary text-xs">{{ weather }}</span>
         <span v-else class="text-text-dim italic text-xs">Unknown</span>
       </div>
-
-      <template v-if="prefs.showCombat">
-        <div v-if="prefs.showWeather" class="w-px h-4 bg-border-default" />
-
-        <div class="flex items-center gap-1.5">
-          <span class="text-text-muted text-xs uppercase tracking-wide shrink-0">Status</span>
-          <span
-            v-if="inCombat"
-            class="px-2 py-0.5 rounded text-xs font-bold bg-status-inactive/15 text-status-inactive border border-status-inactive/40">
-            In Combat
-          </span>
-          <span
-            v-if="isMounted"
-            class="px-2 py-0.5 rounded text-xs font-bold bg-accent-blue/15 text-accent-blue border border-accent-blue/40">
-            Mounted
-          </span>
-          <span
-            v-if="!inCombat && !isMounted"
-            class="px-2 py-0.5 rounded text-xs text-text-dim italic border border-transparent">
-            Idle
-          </span>
-        </div>
-
-        <template v-if="store.namedEffects.length > 0">
-          <div class="w-px h-4 bg-border-default" />
-          <div class="flex items-center gap-1.5">
-            <span class="text-text-muted text-xs uppercase tracking-wide">Effects</span>
-            <span class="text-accent-gold font-bold text-xs">{{ store.namedEffects.length }}</span>
-          </div>
-        </template>
-      </template>
     </div>
 
     <!-- Divider -->
     <div
-      v-if="(prefs.showWeather || prefs.showCombat) && displayedCurrencies.length > 0"
+      v-if="prefs.showWeather && displayedCurrencies.length > 0"
       class="border-t border-border-default" />
 
     <!-- Currencies -->
@@ -141,7 +110,7 @@
 
     <!-- Empty state -->
     <div
-      v-if="!showIdentityRow && !showAnyTime && !prefs.showMoon && !prefs.showWeather && !prefs.showCombat && displayedCurrencies.length === 0"
+      v-if="!showIdentityRow && !showAnyTime && !prefs.showMoon && !prefs.showWeather && displayedCurrencies.length === 0"
       class="text-text-dim text-xs italic">
       All sections hidden — use the gear icon to configure.
     </div>
@@ -262,15 +231,12 @@ const fullMoonText = computed(() => {
   return `Full Moon in ${fullMoonEntry.days}d`
 })
 
-// --- Weather / Combat ---
+// --- Weather (live via AreaConfig lines; is_active always true) ---
 const weather = computed(() => {
   const w = store.world.weather
   if (!w || !w.is_active) return null
   return w.weather_name
 })
-
-const inCombat = computed(() => store.world.combat?.in_combat ?? false)
-const isMounted = computed(() => store.world.mount?.is_mounted ?? false)
 
 // --- Currencies ---
 

@@ -76,7 +76,6 @@ export interface ContextBarPrefs extends Record<string, unknown> {
   showLocalTime: boolean
   showMoon: boolean
   showWeather: boolean
-  showCombat: boolean
   use24h: boolean
   // Per-currency toggles are dynamic: `currency_<lowercase_name>: boolean`
   [key: string]: unknown
@@ -91,7 +90,6 @@ export const CONTEXT_BAR_DEFAULTS: ContextBarPrefs = {
   showLocalTime: false,
   showMoon: true,
   showWeather: true,
-  showCombat: true,
   use24h: true,
   ...CURRENCY_DEFAULTS,
 }
