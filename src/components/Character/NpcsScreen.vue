@@ -12,7 +12,7 @@
       </div>
       <div class="flex items-center gap-4 text-xs">
         <div>
-          <span class="text-text-muted">Known NPCs:</span>
+          <span class="text-text-muted">NPCs:</span>
           <span class="text-accent-gold font-bold ml-1">{{ totalNpcs }}</span>
         </div>
         <div>
@@ -102,33 +102,26 @@ const { prefs: rightPanePrefs, update: updateRightPane } = useViewPrefs('npcs.pa
   width: 700,
 })
 
+const cdnNpcKeys = () => Object.keys(gameData.npcsByKey).filter(k => !k.endsWith('WorkOrderSign'))
+
 const hasData = computed(() =>
+  cdnNpcKeys().length > 0 ||
   characterStore.npcFavor.length > 0 || gameState.favor.length > 0
 )
 
-const totalNpcs = computed(() => {
-  const keys = new Set<string>()
-  for (const f of characterStore.npcFavor) keys.add(f.npc_key)
-  for (const f of gameState.favor) keys.add(f.npc_key)
-  return keys.size
-})
+const totalNpcs = computed(() => cdnNpcKeys().length)
 
 const aboveNeutral = computed(() => {
-  const keys = new Set<string>()
-  for (const f of characterStore.npcFavor) {
-    if (f.favor_level !== 'Neutral') keys.add(f.npc_key)
+  const snapMap = new Map(characterStore.npcFavor.map(f => [f.npc_key, f.favor_level]))
+  let count = 0
+  for (const k of cdnNpcKeys()) {
+    if ((gameState.favorByNpc[k]?.favor_tier ?? snapMap.get(k) ?? 'Neutral') !== 'Neutral') count++
   }
-  for (const f of gameState.favor) {
-    if (f.favor_tier && f.favor_tier !== 'Neutral') keys.add(f.npc_key)
-  }
-  return keys.size
+  return count
 })
 
-/** Filtered NPCs from the filter panel — only include those with CDN data (needed for NpcCard) */
-const filteredNpcs = computed(() => {
-  const rows = filterPanelRef.value?.filteredRows ?? []
-  return rows.filter(r => r.cdnData !== null)
-})
+// Grid renders the CDN rows directly (every row has NpcInfo for NpcCard)
+const filteredNpcs = computed(() => filterPanelRef.value?.filteredRows ?? [])
 
 const selectedSnapshotTier = computed(() => {
   if (!selectedNpcKey.value) return null

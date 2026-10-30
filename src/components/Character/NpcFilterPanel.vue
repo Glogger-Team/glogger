@@ -221,50 +221,33 @@ const skillQuery = ref('')
 const showItemTypeFilter = ref(false)
 const itemTypeQuery = ref('')
 
-// Build merged rows from all data sources
+// Build merged rows from the CDN NPC set with snapshot/live favor overlaid as
+// tier/details. Work-order boards (*WorkOrderSign) are interactables, not NPCs
+// — skipped. Report-only keys with no CDN match are excluded entirely: they
+// carry no area/services (all-Neutral empty rows) and can render no card, so
+// keeping them only lets counts disagree with the grid. They reappear with full
+// data automatically if a later CDN snapshot includes them.
 const allRows = computed<NpcRow[]>(() => {
-  const seen = new Set<string>()
   const rows: NpcRow[] = []
+  const snapByKey = new Map(props.snapshotFavor.map(s => [s.npc_key, s]))
 
-  // Start from snapshot NPCs
-  for (const snap of props.snapshotFavor) {
-    seen.add(snap.npc_key)
-    const cdn = props.npcsByKey[snap.npc_key] ?? null
-    const gs = props.favorByNpc[snap.npc_key] ?? null
-    const effectiveTier = gs?.favor_tier ?? snap.favor_level
+  for (const cdn of Object.values(props.npcsByKey)) {
+    if (cdn.key.endsWith('WorkOrderSign')) continue
+    const snap = snapByKey.get(cdn.key)
+    const gs = props.favorByNpc[cdn.key] ?? null
     rows.push({
-      npc_key: snap.npc_key,
-      display_name: cdn?.name ?? gs?.npc_name ?? snap.npc_key.replace(/^NPC_/, ''),
-      area_friendly_name: cdn?.area_friendly_name ?? null,
-      snapshot_favor: snap.favor_level,
+      npc_key: cdn.key,
+      display_name: cdn.name,
+      area_friendly_name: cdn.area_friendly_name ?? null,
+      snapshot_favor: snap?.favor_level ?? null,
       gamestate_favor: gs,
       cdnData: cdn,
-      effective_tier: effectiveTier,
+      effective_tier: gs?.favor_tier ?? snap?.favor_level ?? 'Neutral',
       has_gamestate_data: !!gs,
-      snapshot_favor_points: snap.favor ?? null,
-      snapshot_councils_spent: snap.councils_spent_at_vendor ?? null,
-      snapshot_notes: snap.player_notes ?? null,
-      snapshot_vendor_reset: snap.vendor_reset_time ?? null,
-    })
-  }
-
-  // Add game-state-only NPCs (discovered this session but not in snapshot)
-  for (const [key, gs] of Object.entries(props.favorByNpc)) {
-    if (seen.has(key)) continue
-    const cdn = props.npcsByKey[key] ?? null
-    rows.push({
-      npc_key: key,
-      display_name: cdn?.name ?? gs.npc_name ?? key.replace(/^NPC_/, ''),
-      area_friendly_name: cdn?.area_friendly_name ?? null,
-      snapshot_favor: null,
-      gamestate_favor: gs,
-      cdnData: cdn,
-      effective_tier: gs.favor_tier ?? 'Neutral',
-      has_gamestate_data: true,
-      snapshot_favor_points: null,
-      snapshot_councils_spent: null,
-      snapshot_notes: null,
-      snapshot_vendor_reset: null,
+      snapshot_favor_points: snap?.favor ?? null,
+      snapshot_councils_spent: snap?.councils_spent_at_vendor ?? null,
+      snapshot_notes: snap?.player_notes ?? null,
+      snapshot_vendor_reset: snap?.vendor_reset_time ?? null,
     })
   }
 
@@ -274,14 +257,10 @@ const allRows = computed<NpcRow[]>(() => {
 // Collect available areas for the area dropdown
 const availableAreas = computed(() => {
   const areas = new Set<string>()
-  let hasUnknown = false
   for (const row of allRows.value) {
     if (row.area_friendly_name) areas.add(row.area_friendly_name)
-    else hasUnknown = true
   }
-  const sorted = Array.from(areas).sort()
-  if (hasUnknown) sorted.push('Unknown Area')
-  return sorted
+  return Array.from(areas).sort()
 })
 
 // Filter
@@ -297,11 +276,7 @@ const filteredAndSorted = computed(() => {
   }
 
   if (areaFilter.value) {
-    if (areaFilter.value === 'Unknown Area') {
-      rows = rows.filter(r => !r.area_friendly_name)
-    } else {
-      rows = rows.filter(r => r.area_friendly_name === areaFilter.value)
-    }
+    rows = rows.filter(r => r.area_friendly_name === areaFilter.value)
   }
 
   const f = filter.value.toLowerCase()
