@@ -2966,7 +2966,6 @@ impl PlayerEventParser {
 
         // Clear interaction context
         self.current_interaction = None;
-        // The stall-price capture session ends with the interaction too.
         self.vendor_screen = None;
 
         // Close any activity contexts keyed to this entity_id. `entity_id` is

@@ -69,11 +69,6 @@
       <!-- Giftable Items in Inventory & Storage -->
       <NpcInventoryGiftsSection :npc="cdnData" />
 
-      <!-- Gift Calculator -->
-      <NpcGiftCalculatorSection
-        :npc="cdnData"
-        :current-favor-tier="effectiveTier" />
-
       <!-- Quests -->
       <NpcQuestsSection :npc-key="npcKey" />
 
@@ -122,7 +117,6 @@ import NpcFavorSection from './NpcDetailSections/NpcFavorSection.vue'
 import NpcVendorSection from './NpcDetailSections/NpcVendorSection.vue'
 import NpcStorageSection from './NpcDetailSections/NpcStorageSection.vue'
 import NpcInventoryGiftsSection from './NpcDetailSections/NpcInventoryGiftsSection.vue'
-import NpcGiftCalculatorSection from './NpcDetailSections/NpcGiftCalculatorSection.vue'
 import NpcServicesSection from './NpcDetailSections/NpcServicesSection.vue'
 import NpcPreferencesSection from './NpcDetailSections/NpcPreferencesSection.vue'
 import NpcQuestsSection from './NpcDetailSections/NpcQuestsSection.vue'

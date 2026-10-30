@@ -48,6 +48,22 @@ const { prefs, update } = useViewPrefs('dashboard', {
   hiddenCards: [] as string[],
   cardSpans: {} as Record<string, number>,
 })
+// One-time migration: XpRateWidget was merged into ProdigyTrackerWidget (superset).
+// Strip 'xp-rate' from saved prefs; unhide prodigy-tracker if the user loses the widget entirely.
+if (prefs.value.cardOrder.includes('xp-rate')) {
+  const hidden = new Set(prefs.value.hiddenCards)
+  const xpRateWasVisible = !hidden.has('xp-rate')
+  hidden.delete('xp-rate')
+  if (xpRateWasVisible && hidden.has('prodigy-tracker')) {
+    hidden.delete('prodigy-tracker')
+  }
+  const { ['xp-rate']: _removed, ...spans } = prefs.value.cardSpans ?? {}
+  update({
+    cardOrder: prefs.value.cardOrder.filter(id => id !== 'xp-rate'),
+    hiddenCards: [...hidden],
+    cardSpans: spans,
+  })
+}
 
 function setCardSpan(id: string, span: number) {
   const spans = { ...(prefs.value.cardSpans ?? {}) }
