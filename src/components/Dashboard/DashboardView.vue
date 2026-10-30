@@ -47,12 +47,15 @@ const { prefs, update } = useViewPrefs('dashboard', {
   cardOrder: DEFAULT_CARD_ORDER,
   hiddenCards: [] as string[],
   cardSpans: {} as Record<string, number>,
+  xpRateMigrated: false as boolean,
 })
 // One-time migration: XpRateWidget was merged into ProdigyTrackerWidget (superset).
 // ProdigyTracker takes over xp-rate's saved position; if the user would lose the
 // widget entirely (xp-rate visible while prodigy-tracker hidden), unhide it at
-// the migrated position.
-if (prefs.value.cardOrder.includes('xp-rate')) {
+// the migrated position. Guarded by a marker (not by xp-rate's presence): older
+// saved orders may omit xp-rate while still displaying it via the registry
+// fallback, so presence alone misses them.
+if (!prefs.value.xpRateMigrated) {
   const hidden = new Set(prefs.value.hiddenCards)
   const xpRateWasVisible = !hidden.has('xp-rate')
   hidden.delete('xp-rate')
@@ -71,6 +74,7 @@ if (prefs.value.cardOrder.includes('xp-rate')) {
     cardOrder,
     hiddenCards: [...hidden],
     cardSpans: spans,
+    xpRateMigrated: true as boolean,
   })
 }
 
