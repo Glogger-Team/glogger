@@ -1,6 +1,6 @@
 [package]
 name = "glogger"
-version = "1.6.0"
+version = "1.7.0"
 description = "Project: Gorgon Log Watcher and Data Tracker"
 authors = ["Daniel"]
 license = "GPL-3.0"

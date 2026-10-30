@@ -54,4 +54,4 @@ Experimental releases use a `-exp` tag suffix: `v0.7.12-exp`. This keeps them cl
 | `src-tauri/tauri.release.conf.json` | Release overlay (identifier, window title) |
 | `src-tauri/tauri.experimental.conf.json` | Experimental overlay (identifier, window title, no updater) |
 
-All three configs have their window titles updated by `scripts/bump-version.sh`.
+All three configs have their window titles updated by `scripts/bump-version.py`.

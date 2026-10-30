@@ -1,7 +1,7 @@
 {
   "name": "glogger",
   "private": true,
-  "version": "1.6.0",
+  "version": "1.7.0",
   "type": "module",
   "engines": {
     "node": ">=24"
@@ -20,8 +20,8 @@
     "tauri:build": "bash scripts/release-build.sh",
     "tauri:build:experimental": "tauri build --config src-tauri/tauri.experimental.conf.json",
     "tauri:dev:experimental": "tauri dev --config src-tauri/tauri.experimental.conf.json",
-    "version:bump": "bash scripts/bump-version.sh",
-    "release": "bash scripts/release.sh",
+    "version:bump": "python scripts/bump-version.py",
+    "release": "python scripts/release.py",
     "changelog": "bash scripts/generate-changelog.sh",
     "survey-test": "cd src-tauri && cargo test --lib survey::replay_tests::accuracy_report -- --ignored --nocapture"
   },

@@ -282,6 +282,13 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
+      - name: Setup Python
+        # bump-version.py runs on every platform leg (windows/macos/ubuntu),
+        # so the interpreter must be declared, not assumed from PATH.
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
       - name: Rust cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -290,17 +297,19 @@ jobs:
           # the cache releases read. No pull_request trigger exists, so no
           # untrusted run can poison it; this narrows the writers to releases.
           save-if: ${{ github.event_name == 'push' }}
+
       - name: Sync version files to the release tag
         # CI is the version sync: the tag is the version record, so the
         # build workspaces get the tag version before compiling. Runs after
-        # Setup Rust so bump-version.sh's `cargo update -p glogger
+        # Setup Python so the interpreter is declared on every platform leg,
+        # and after Setup Rust so bump-version.py's `cargo update -p glogger
         # --precise` can refresh Cargo.lock for the locked check below.
         if: github.event_name == 'push' || inputs.publish == true
         shell: bash
         env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          bash scripts/bump-version.sh "$VERSION"
+          python scripts/bump-version.py "$VERSION"
           grep -q "\"version\": \"$VERSION\"" src-tauri/tauri.conf.json
 
       - name: Compile-check tests per platform
@@ -535,3 +544,58 @@ jobs:
       publish: true
     permissions:
       contents: write # the called workflow's attach job uploads the bundle
+
+  # ── Auto-open a dev version-sync PR after each publish ──
+  # Runs after the release is public, so a failed sync can never block or
+  # unpublish a release. Smoke dispatches (publish=false) never reach here.
+  sync-dev-version:
+    name: Open dev version-sync PR
+    needs: [validate, channel]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # must push the chore/version-sync-* branch
+      pull-requests: write
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
+      TAG: ${{ needs.validate.outputs.tag }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
+      - name: Bump, commit, and open the sync PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/bump-version.py "$VERSION"
+          if git diff --quiet; then
+            echo "in sync - nothing to do"
+            exit 0
+          fi
+          BRANCH="chore/version-sync-$TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add package.json src-tauri/tauri.conf.json \
+            src-tauri/tauri.release.conf.json \
+            src-tauri/tauri.experimental.conf.json src-tauri/Cargo.toml \
+            src-tauri/Cargo.lock
+          git commit -m "build: sync version files to $TAG"
+          git push --force origin "$BRANCH"
+          if [ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq length)" ]; then
+            echo "sync PR already open for $TAG"
+            exit 0
+          fi
+          gh pr create --base main --head "$BRANCH" \
+            --title "build: sync version files to $TAG" \
+            --body "Auto-opened by the $TAG release. Dev fallback only - the tag remains the version record."
