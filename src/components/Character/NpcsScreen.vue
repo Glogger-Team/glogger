@@ -12,7 +12,7 @@
       </div>
       <div class="flex items-center gap-4 text-xs">
         <div>
-          <span class="text-text-muted">Known NPCs:</span>
+          <span class="text-text-muted">NPCs:</span>
           <span class="text-accent-gold font-bold ml-1">{{ totalNpcs }}</span>
         </div>
         <div>
@@ -102,29 +102,54 @@ const { prefs: rightPanePrefs, update: updateRightPane } = useViewPrefs('npcs.pa
   width: 700,
 })
 
+// Must match NpcFilterPanel's exclusion exactly — counts can never disagree
+// with the grid. Re-audit both if the grid shows furniture.
+const NON_NPC_CDN_KEYS = new Set([
+  'Altar_Druid',
+  'BearCharmPedestal',
+  'CatCharmPedestal',
+  'Grainmill',
+  'GuildAltar',
+  'PoiBrewingWorkstation',
+  'WerewolfAltar',
+])
+const isGridKey = (k: string) =>
+  !k.endsWith('WorkOrderSign') && !NON_NPC_CDN_KEYS.has(k)
+// Orphan = NPC_ key with no CDN row. isGridKey is irrelevant here: CDN members
+// are already counted via cdnNpcKeys, and the Set union dedupes any overlap.
+const isCountedOrphanKey = (k: string) => k.startsWith('NPC_')
+
+const cdnNpcKeys = () => Object.keys(gameData.npcsByKey).filter(isGridKey)
+
 const hasData = computed(() =>
-  characterStore.npcFavor.length > 0 || gameState.favor.length > 0
+  cdnNpcKeys().length > 0 ||
+  characterStore.npcFavor.some(f => isCountedOrphanKey(f.npc_key)) ||
+  gameState.favor.some(f => isCountedOrphanKey(f.npc_key))
 )
 
 const totalNpcs = computed(() => {
-  const keys = new Set<string>()
-  for (const f of characterStore.npcFavor) keys.add(f.npc_key)
-  for (const f of gameState.favor) keys.add(f.npc_key)
+  const keys = new Set<string>(cdnNpcKeys())
+  for (const f of characterStore.npcFavor) if (isCountedOrphanKey(f.npc_key)) keys.add(f.npc_key)
+  for (const f of gameState.favor) if (isCountedOrphanKey(f.npc_key)) keys.add(f.npc_key)
   return keys.size
 })
 
 const aboveNeutral = computed(() => {
-  const keys = new Set<string>()
-  for (const f of characterStore.npcFavor) {
-    if (f.favor_level !== 'Neutral') keys.add(f.npc_key)
+  const snapMap = new Map(characterStore.npcFavor.map(f => [f.npc_key, f.favor_level]))
+  const keys = new Set<string>([
+    ...cdnNpcKeys(),
+    ...characterStore.npcFavor.filter(f => isCountedOrphanKey(f.npc_key)).map(f => f.npc_key),
+    ...gameState.favor.filter(f => isCountedOrphanKey(f.npc_key)).map(f => f.npc_key),
+  ])
+  let count = 0
+  for (const k of keys) {
+    if ((gameState.favorByNpc[k]?.favor_tier ?? snapMap.get(k) ?? 'Neutral') !== 'Neutral') count++
   }
-  for (const f of gameState.favor) {
-    if (f.favor_tier && f.favor_tier !== 'Neutral') keys.add(f.npc_key)
-  }
-  return keys.size
+  return count
 })
 
-/** Filtered NPCs from the filter panel — only include those with CDN data (needed for NpcCard) */
+// Grid renders CDN rows only (NpcCard requires NpcInfo); NPC_ orphans stay
+// counted but card-less by decision, visible only via Unknown Area / counts
 const filteredNpcs = computed(() => {
   const rows = filterPanelRef.value?.filteredRows ?? []
   return rows.filter(r => r.cdnData !== null)

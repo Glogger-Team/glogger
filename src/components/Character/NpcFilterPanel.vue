@@ -221,25 +221,69 @@ const skillQuery = ref('')
 const showItemTypeFilter = ref(false)
 const itemTypeQuery = ref('')
 
-// Build merged rows from all data sources
+// Interactable CDN entries that are not NPCs: no favor tiers, no gift tastes —
+// boards, altars, workstations, furniture. Shared with NpcsScreen's totals so
+// counts can never disagree with the grid. EventNPC_/LiveNpc_/Poi* entries are
+// real NPCs and stay. Re-audit against live CDN if the grid shows furniture.
+const NON_NPC_CDN_KEYS = new Set([
+  'Altar_Druid',
+  'BearCharmPedestal',
+  'CatCharmPedestal',
+  'Grainmill',
+  'GuildAltar',
+  'PoiBrewingWorkstation',
+  'WerewolfAltar',
+])
+const isExcludedCdnKey = (key: string) =>
+  key.endsWith('WorkOrderSign') || NON_NPC_CDN_KEYS.has(key)
+
+// Build merged rows from the CDN NPC set with snapshot/live favor overlaid as
+// tier/details. Report-only NPC keys (NPC_ prefix) with no CDN match are
+// appended so favor-bearing renames are never lost; they render no card
+// (NpcCard requires NpcInfo) and rejoin the grid with full data if a later CDN
+// snapshot includes them. Non-NPC favor keys (BeeHiveA, Cow_Bertha, …) are game
+// entities with favor meters, not NPCs — excluded everywhere.
 const allRows = computed<NpcRow[]>(() => {
   const seen = new Set<string>()
   const rows: NpcRow[] = []
+  const snapByKey = new Map(props.snapshotFavor.map(s => [s.npc_key, s]))
 
-  // Start from snapshot NPCs
-  for (const snap of props.snapshotFavor) {
-    seen.add(snap.npc_key)
-    const cdn = props.npcsByKey[snap.npc_key] ?? null
-    const gs = props.favorByNpc[snap.npc_key] ?? null
-    const effectiveTier = gs?.favor_tier ?? snap.favor_level
+  // CDN pass: the full NPC universe, snapshot/live favor overlaid
+  for (const cdn of Object.values(props.npcsByKey)) {
+    if (isExcludedCdnKey(cdn.key)) continue
+    seen.add(cdn.key)
+    const snap = snapByKey.get(cdn.key)
+    const gs = props.favorByNpc[cdn.key] ?? null
     rows.push({
-      npc_key: snap.npc_key,
-      display_name: cdn?.name ?? gs?.npc_name ?? snap.npc_key.replace(/^NPC_/, ''),
-      area_friendly_name: cdn?.area_friendly_name ?? null,
-      snapshot_favor: snap.favor_level,
+      npc_key: cdn.key,
+      display_name: cdn.name,
+      area_friendly_name: cdn.area_friendly_name ?? null,
+      snapshot_favor: snap?.favor_level ?? null,
       gamestate_favor: gs,
       cdnData: cdn,
-      effective_tier: effectiveTier,
+      effective_tier: gs?.favor_tier ?? snap?.favor_level ?? 'Neutral',
+      has_gamestate_data: !!gs,
+      snapshot_favor_points: snap?.favor ?? null,
+      snapshot_councils_spent: snap?.councils_spent_at_vendor ?? null,
+      snapshot_notes: snap?.player_notes ?? null,
+      snapshot_vendor_reset: snap?.vendor_reset_time ?? null,
+    })
+  }
+
+  // Orphan passes: report-only NPC_ keys with no CDN match. Null area +
+  // null cdnData; counted in the panel, card-less in the grid by decision.
+  for (const snap of props.snapshotFavor) {
+    if (seen.has(snap.npc_key) || isExcludedCdnKey(snap.npc_key) || !snap.npc_key.startsWith('NPC_')) continue
+    seen.add(snap.npc_key)
+    const gs = props.favorByNpc[snap.npc_key] ?? null
+    rows.push({
+      npc_key: snap.npc_key,
+      display_name: gs?.npc_name ?? snap.npc_key.replace(/^NPC_/, ''),
+      area_friendly_name: null,
+      snapshot_favor: snap.favor_level,
+      gamestate_favor: gs,
+      cdnData: null,
+      effective_tier: gs?.favor_tier ?? snap.favor_level,
       has_gamestate_data: !!gs,
       snapshot_favor_points: snap.favor ?? null,
       snapshot_councils_spent: snap.councils_spent_at_vendor ?? null,
@@ -248,17 +292,15 @@ const allRows = computed<NpcRow[]>(() => {
     })
   }
 
-  // Add game-state-only NPCs (discovered this session but not in snapshot)
   for (const [key, gs] of Object.entries(props.favorByNpc)) {
-    if (seen.has(key)) continue
-    const cdn = props.npcsByKey[key] ?? null
+    if (seen.has(key) || isExcludedCdnKey(key) || !key.startsWith('NPC_')) continue
     rows.push({
       npc_key: key,
-      display_name: cdn?.name ?? gs.npc_name ?? key.replace(/^NPC_/, ''),
-      area_friendly_name: cdn?.area_friendly_name ?? null,
+      display_name: gs.npc_name ?? key.replace(/^NPC_/, ''),
+      area_friendly_name: null,
       snapshot_favor: null,
       gamestate_favor: gs,
-      cdnData: cdn,
+      cdnData: null,
       effective_tier: gs.favor_tier ?? 'Neutral',
       has_gamestate_data: true,
       snapshot_favor_points: null,
