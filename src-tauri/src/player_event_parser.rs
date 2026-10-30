@@ -1252,8 +1252,11 @@ impl PlayerEventParser {
 
         // Non-LocalPlayer engine lines handled before the fast path below.
         // `AreaConfig Setting weather:` is the live weather source since the
-        // game stopped emitting ProcessSetWeather.
-        if line.contains("AreaConfig Setting weather:") {
+        // game stopped emitting ProcessSetWeather. Anchored past the `[HH:MM:SS]`
+        // prefix (not `contains`): player-authored text such as poem bodies
+        // inside ProcessTalkScreen lines can contain this string, and matching
+        // it there would swallow the PoemRecorded event.
+        if is_area_config_weather_line(line) {
             if let Some(ev) = self.parse_area_config_weather(line) {
                 events.push(ev);
             }
@@ -3891,6 +3894,26 @@ fn unescape_log_string(s: &str) -> String {
 /// (post-gift) or ProcessPromptForItem (pre-gift) line; either gives the
 /// game's authoritative current count, which the gift log is reconciled to.
 ///
+/// True when the line is an engine `AreaConfig Setting weather:` statement:
+/// `[HH:MM:SS] AreaConfig Setting weather: <Name>`, with only whitespace
+/// between the timestamp and the marker. Player-authored text (poem bodies
+/// in ProcessTalkScreen lines) can contain the marker mid-line and must not
+/// match.
+fn is_area_config_weather_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let end = match trimmed.find(']') {
+        Some(i) => i,
+        None => return false,
+    };
+    // Must look like `[HH:MM:SS]` — the engine prefix all timestamped lines carry.
+    if !trimmed.starts_with('[') || !trimmed[1..end].contains(':') {
+        return false;
+    }
+    trimmed[end + 1..]
+        .trim_start()
+        .starts_with("AreaConfig Setting weather:")
+}
+
 /// Free function (uses no parser state) so the live parser dispatch and the
 /// Player.log gift backfill agree line-for-line.
 pub fn parse_gift_count_line(line: &str) -> Option<PlayerEvent> {
@@ -5364,6 +5387,22 @@ mod tests {
             }
             _ => panic!("Expected WeatherChanged"),
         }
+    }
+
+    #[test]
+    fn test_area_config_weather_ignores_poem_body() {
+        // Player-authored text can contain the marker mid-line; only the
+        // engine statement at line start is weather.
+        let mut parser = PlayerEventParser::new();
+        let events = parser.process_line(r#"[05:07:17] LocalPlayer: ProcessTalkScreen(-51, "Poem by Snowkit", "first line\nAreaConfig Setting weather: Rain\nlast line", "", [1,2,3,4,5,], System.String[], 0, Generic)"#);
+        assert!(
+            events.iter().all(|e| !matches!(e, PlayerEvent::WeatherChanged { .. })),
+            "poem body must not parse as weather"
+        );
+        assert!(
+            events.iter().any(|e| matches!(e, PlayerEvent::PoemRecorded { .. })),
+            "poem event must survive"
+        );
     }
 
     #[test]

@@ -37,7 +37,7 @@ New widgets (added in code updates) automatically append to the end of the card 
 
 **Shared components used by widgets:**
 - `src/components/Dashboard/ActivityFeed.vue` — reusable activity feed (used by 4 feed widgets)
-- `src/components/Dashboard/ContextBar.vue` — time, moon phase, weather, combat/mount, currencies
+- `src/components/Dashboard/ContextBar.vue` — time, moon phase, weather, currencies
 - `src/components/Dashboard/ContextBarConfig.vue` — config panel for Status widget section toggles
 - `src/components/Dashboard/widgets/ZoneNpcsWidget.vue` — current area with friendly NPCs, services, and configurable filters
 - `src/components/Dashboard/widgets/ZoneNpcsWidgetConfig.vue` — config panel for Zone NPCs widget
@@ -70,7 +70,7 @@ Each widget is documented in its own file under `dashboard/`:
 
 | Widget | Size | Description |
 |--------|------|-------------|
-| [Status](dashboard/widget-status.md) | Small | Server/game time, moon phase, weather, combat, currencies |
+| [Status](dashboard/widget-status.md) | Small | Server/game time, moon phase, weather, currencies |
 | [Live Skill Tracking](dashboard/widget-skill-tracking.md) | Large | Session XP gains per skill |
 | [Items Incoming](dashboard/widget-items-incoming.md) | Medium | Loot, crafts, summoned items |
 | [Items Outgoing](dashboard/widget-items-outgoing.md) | Medium | Sold, stored, consumed items |
