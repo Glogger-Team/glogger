@@ -15,24 +15,25 @@
       class="absolute left-0 top-full mt-1 w-72 bg-surface-card border border-border-default rounded shadow-lg z-50 overflow-hidden">
       <!-- Character list -->
       <div class="max-h-64 overflow-y-auto">
-        <button
+        <div
           v-for="char in characters"
           :key="`${char.character_name}-${char.server_name}`"
-          class="w-full text-left px-3 py-2 text-sm hover:bg-surface-elevated transition-colors flex items-center justify-between group"
-          :class="isSelected(char) ? 'bg-surface-elevated text-text-primary' : 'text-text-secondary'"
-          @click="switchTo(char)">
-          <span>
+          class="w-full text-left text-sm hover:bg-surface-elevated transition-colors flex items-center justify-between group"
+          :class="isSelected(char) ? 'bg-surface-elevated text-text-primary' : 'text-text-secondary'">
+          <button
+            class="flex-1 text-left bg-transparent border-none cursor-pointer text-inherit text-sm px-3 py-2"
+            @click="switchTo(char)">
             <span class="font-bold">{{ char.character_name }}</span>
             <span class="text-text-muted ml-1.5">{{ char.server_name }}</span>
-          </span>
+          </button>
           <button
             v-if="!isSelected(char)"
-            class="opacity-0 group-hover:opacity-100 text-text-muted hover:text-red-400 bg-transparent border-none cursor-pointer text-xs px-1 transition-opacity"
+            class="opacity-0 group-hover:opacity-100 text-text-muted hover:text-red-400 bg-transparent border-none cursor-pointer text-xs px-1 py-2 mr-2 transition-opacity"
             title="Delete character"
             @click.stop="confirmDelete(char)">
             ✕
           </button>
-        </button>
+        </div>
 
         <div v-if="characters.length === 0" class="px-3 py-4 text-text-muted text-sm text-center">
           No characters found
@@ -70,7 +71,7 @@
         <button
           v-else
           class="w-full text-left px-3 py-2 text-sm text-text-muted hover:bg-surface-elevated hover:text-text-primary transition-colors"
-          @click="showAdd = true">
+          @click.stop="showAdd = true">
           + Add Character
         </button>
       </div>
@@ -122,7 +123,6 @@ const containerRef = ref<HTMLElement | null>(null)
 
 const activeCharacter = computed(() => settingsStore.settings.activeCharacterName)
 const activeServer = computed(() => settingsStore.settings.activeServerName)
-
 function isSelected(char: UserCharacter): boolean {
   return char.character_name === activeCharacter.value
     && char.server_name === activeServer.value
@@ -241,9 +241,20 @@ async function addCharacter() {
 
 // Close dropdown on outside click
 function handleClickOutside(event: MouseEvent) {
-  if (containerRef.value && !containerRef.value.contains(event.target as Node)) {
+  const container = containerRef.value
+  if (!container) return
+  const target = event.target as Node | null
+  // Detached or non-node targets (post-swap re-dispatch, forwarded events)
+  // fail open: never close the picker on them.
+  if (!target || !(target instanceof Node) || !document.contains(target)) return
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : []
+  // composedPath is a dispatch-time snapshot: immune to the v-else form/button
+  // swap removing event.target from the DOM after this event fires.
+  const inside = path.length > 0 ? path.includes(container) : container.contains(target)
+  if (!inside) {
     open.value = false
     deleteTarget.value = null
+    showAdd.value = false
   }
 }
 
