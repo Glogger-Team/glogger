@@ -743,6 +743,8 @@ fn replay_50x_povus_marvelous() {
             ))
         })
         .unwrap();
+    // Best-effort diagnostic: row-decode errors are skipped (the strict
+    // assertions below are the real gate, not this printout).
     for row in rows {
         let Ok((kind, n, qty)) = row else { continue };
         println!("  {:>20}  rows={:>5}  qty={:>6}", kind, n, qty);
@@ -767,6 +769,7 @@ fn replay_50x_povus_marvelous() {
             ))
         })
         .unwrap();
+    // Best-effort diagnostic, same as above: skips undecodable rows.
     for row in rows {
         let Ok((kind, n, qty)) = row else { continue };
         println!("  {:>20}  rows={:>5}  qty={:>6}", kind, n, qty);
