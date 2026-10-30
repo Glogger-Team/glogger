@@ -86,6 +86,7 @@ jobs:
       # in-workspace in the installer matrix). Sync here too so the Flatpak
       # bundle reports the tag version — smoke runs skip this (publish=false),
       # matching the installer matrix, which only syncs when publishing.
+      # The builder image carries system python3 (debian), no setup-python.
       - name: Sync version files to the release tag
         if: ${{ inputs.publish == true }}
         shell: bash

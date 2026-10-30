@@ -282,6 +282,13 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
 
+      - name: Setup Python
+        # bump-version.py runs on every platform leg (windows/macos/ubuntu),
+        # so the interpreter must be declared, not assumed from PATH.
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
       - name: Rust cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -290,17 +297,19 @@ jobs:
           # the cache releases read. No pull_request trigger exists, so no
           # untrusted run can poison it; this narrows the writers to releases.
           save-if: ${{ github.event_name == 'push' }}
+
       - name: Sync version files to the release tag
         # CI is the version sync: the tag is the version record, so the
         # build workspaces get the tag version before compiling. Runs after
-        # Setup Rust so bump-version.py's `cargo update -p glogger
+        # Setup Python so the interpreter is declared on every platform leg,
+        # and after Setup Rust so bump-version.py's `cargo update -p glogger
         # --precise` can refresh Cargo.lock for the locked check below.
         if: github.event_name == 'push' || inputs.publish == true
         shell: bash
         env:
           VERSION: ${{ needs.validate.outputs.version }}
         run: |
-          python3 scripts/bump-version.py "$VERSION"
+          python scripts/bump-version.py "$VERSION"
           grep -q "\"version\": \"$VERSION\"" src-tauri/tauri.conf.json
 
       - name: Compile-check tests per platform
@@ -558,12 +567,17 @@ jobs:
           ref: main
           fetch-depth: 0
 
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+
       - name: Bump, commit, and open the sync PR
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python3 scripts/bump-version.py "$VERSION"
+          python scripts/bump-version.py "$VERSION"
           if git diff --quiet; then
             echo "in sync - nothing to do"
             exit 0

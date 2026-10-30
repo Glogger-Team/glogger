@@ -28,28 +28,24 @@ EXPLICIT_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
 def replace_once(path, old, new):
     """Replace the first occurrence of old with new; exit 1 if absent."""
-    raw = path.read_bytes()
-    # Preserve the file's existing line endings: universal-newline reads
-    # would normalize CRLF to LF and rewrite the whole file on Windows.
-    newline = "\r\n" if b"\r\n" in raw else "\n"
-    text = raw.decode("utf-8")
+    # Read/write as bytes: text-mode newline translation would turn CRLF
+    # files into LF (read) or double CRs (write with newline="\r\n").
+    text = path.read_bytes().decode("utf-8")
     if old not in text:
         print(f"Error: expected string not found in {path}: {old}")
         return False
-    path.write_text(text.replace(old, new, 1), encoding="utf-8", newline=newline)
+    path.write_bytes(text.replace(old, new, 1).encode("utf-8"))
     return True
 
 
 def replace_regex(path, pattern, replacement):
     """Replace the first regex match; exit 1 if absent."""
-    raw = path.read_bytes()
-    newline = "\r\n" if b"\r\n" in raw else "\n"
-    text = raw.decode("utf-8")
+    text = path.read_bytes().decode("utf-8")
     new_text, count = re.subn(pattern, replacement, text, count=1)
     if count == 0:
         print(f"Error: expected pattern not found in {path}: {pattern}")
         return False
-    path.write_text(new_text, encoding="utf-8", newline=newline)
+    path.write_bytes(new_text.encode("utf-8"))
     return True
 
 

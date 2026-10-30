@@ -16,7 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
+TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 
 
 def git(args, root):
@@ -98,6 +98,9 @@ def main():
         return 1
     pushed = subprocess.run(["git", "push", "origin", tag], cwd=root, check=False)
     if pushed.returncode != 0:
+        print(f"Error: failed to push {tag} - the local tag is kept.")
+        print(f"Verify with: git ls-remote --tags origin refs/tags/{tag}")
+        print(f"Then retry with: git push origin {tag}")
         return 1
     print(
         f"Pushed {tag} - the Release workflow builds, publishes, and refreshes the channel."

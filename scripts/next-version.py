@@ -25,7 +25,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-TAG_RE = re.compile(r"^v\d+\.\d+\.\d+$")
+TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 BREAKING_RE = re.compile(r"BREAKING[ -]CHANGE")
 MAJOR_RE = re.compile(r"(feat|fix|impv|docs|test|build)(\([^)]*\))?!:")
 MINOR_RE = re.compile(r"feat(\([^)]*\))?:")
