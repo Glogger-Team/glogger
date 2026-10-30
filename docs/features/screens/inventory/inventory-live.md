@@ -1,8 +1,9 @@
-# Inventory — Live Inventory
+# Inventory — Live Inventory (removed, batch-1 2026-10-30)
 
-## Overview
+> The `LiveInventoryTab.vue` component was deleted. The tab wiring is gone;
+> the `LiveInventoryItem` game-state map is retained for re-enable.
 
-Real-time inventory tracking that shows what the player currently has, updated as items are gained, lost, or changed during gameplay.
+## Overview (historical)
 
 ## How It Works
 

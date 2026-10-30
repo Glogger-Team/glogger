@@ -165,84 +165,6 @@
       </div>
     </AccordionSection>
 
-    <!-- Stall price observations (other players' stalls) — experimental -->
-    <AccordionSection :default-open="false" class="shrink-0">
-      <template #title>Stall Price Observations (experimental)</template>
-      <div class="shrink-0 mt-2 mb-2 p-2 rounded bg-status-warning/10 border border-status-warning/30 flex items-center gap-2 text-xs">
-        <span class="text-status-warning font-semibold">Experimental</span>
-        <span class="text-text-secondary">Capturing prices from other players' stalls is a work in progress and has not been verified against live stalls. Entries are manual (or bought-item sentinels you price yourself) and never overwrite your Market values.</span>
-      </div>
-      <p class="text-text-dim text-xs mt-2 mb-2">
-        Prices seen at other players' stalls — typed in from the live capture panel
-        (opens automatically when you browse a stall) or auto-detected purchases.
-      </p>
-      <EmptyState
-        v-if="stallPriceStore.observations.length === 0"
-        primary="No stall prices captured yet"
-        secondary="Browse another player's stall in game — a capture panel will appear. Or scan the stall window from that panel." />
-      <div v-else class="overflow-y-auto max-h-80 border border-border-default rounded">
-        <DataTable
-          :columns="observationColumns"
-          :rows="(stallPriceStore.observations as unknown as Record<string, unknown>[])"
-          :row-key="(row) => String(obsOf(row).id)"
-          :hoverable="false"
-          compact>
-          <template #cell-item_name="{ row }">
-            <ItemInline
-              v-if="obsOf(row).item_type_id != null"
-              :reference="obsOf(row).item_name" />
-            <span
-              v-else
-              class="text-amber-400"
-              :title="'Unresolved item name — click Set price to fix'">
-              {{ obsOf(row).item_name }} (unresolved)
-            </span>
-          </template>
-          <template #cell-price_unit="{ row }">
-            <template v-if="obsOf(row).source === 'purchase' && obsOf(row).price_unit === 0">
-              <input
-                v-model.number="stallPriceEdit[obsOf(row).id]"
-                type="number"
-                min="1"
-                class="input w-20 text-xs py-0.5"
-                placeholder="price?"
-                @keydown.enter="setPurchasePrice(obsOf(row))" />
-              <button
-                class="btn btn-secondary text-[10px] py-0.5 px-1.5 ml-1"
-                @click="setPurchasePrice(obsOf(row))">
-                Set
-              </button>
-            </template>
-            <template v-else>{{ obsOf(row).price_unit.toLocaleString() }}g</template>
-          </template>
-          <template #cell-stall_label="{ row }">
-            <span
-              class="block max-w-40 truncate text-text-secondary"
-              :title="obsOf(row).stall_label">
-              {{ obsOf(row).stall_label }}<span v-if="obsOf(row).owner_name" class="text-text-dim"> ({{ obsOf(row).owner_name }})</span>
-            </span>
-          </template>
-          <template #cell-observed_at="{ row }">
-            <span class="text-text-dim whitespace-nowrap">{{ formatRelative(obsOf(row).observed_at) }}</span>
-          </template>
-          <template #cell-source="{ row }">
-            <span
-              class="px-1.5 py-0.5 rounded-sm text-[10px] uppercase tracking-wide"
-              :class="obsOf(row).source === 'purchase' ? 'bg-sky-900/40 text-sky-300' : 'bg-emerald-900/40 text-emerald-300'">
-              {{ obsOf(row).source }}
-            </span>
-          </template>
-          <template #cell-actions="{ row }">
-            <button
-              class="text-text-muted hover:text-red-400 bg-transparent border-none cursor-pointer text-xs"
-              title="Delete observation"
-              @click="deleteObservation(obsOf(row))">
-              &times;
-            </button>
-          </template>
-        </DataTable>
-      </div>
-    </AccordionSection>
 
     <!-- Bulk action bar -->
     <div v-if="selectedIds.size > 0" class="flex items-center gap-3 shrink-0 px-3 py-2 bg-surface-elevated border border-accent-gold/30 rounded">
@@ -481,9 +403,6 @@
         </div>
       </div>
     </div>
-
-    <!-- Stall price capture overlay (teleports to body; shows on browse event) -->
-    <StallPriceCapturePanel />
   </div>
 </template>
 
@@ -499,15 +418,11 @@ import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 import EmptyState from '../Shared/EmptyState.vue'
 import AccordionSection from '../Shared/AccordionSection.vue'
 import ItemInline from '../Shared/Item/ItemInline.vue'
-import StallPriceCapturePanel from './StallPriceCapturePanel.vue'
-import { useStallPriceStore } from '../../stores/stallPriceStore'
-import type { StallPriceObservation } from '../../types/stallPrices'
 
 const toast = useToast()
 const marketStore = useMarketStore()
 const settingsStore = useSettingsStore()
 const gameDataStore = useGameDataStore()
-const stallPriceStore = useStallPriceStore()
 
 const search = ref('')
 const sortField = ref<'item_name' | 'market_value' | 'updated_at'>('item_name')
@@ -856,47 +771,5 @@ onMounted(() => {
   if (marketStore.values.length === 0) {
     marketStore.loadAll()
   }
-  if (stallPriceStore.observations.length === 0) {
-    void stallPriceStore.loadObservations()
-  }
 })
-
-// ── Stall price observations ────────────────────────────────────────────────
-
-const observationColumns: ColumnDef[] = [
-  { key: 'item_name', label: 'Item' },
-  { key: 'quantity', label: 'Qty', align: 'right' as const, numeric: true },
-  { key: 'price_unit', label: 'Price', align: 'right' as const, numeric: true },
-  { key: 'stall_label', label: 'Stall' },
-  { key: 'observed_at', label: 'Seen' },
-  { key: 'source', label: 'Source' },
-  { key: 'actions', label: '', align: 'right' as const },
-]
-
-/** DataTable hands rows back as Record<string, unknown>; recover the typed row. */
-function obsOf(row: Record<string, unknown>): StallPriceObservation {
-  return row as unknown as StallPriceObservation
-}
-
-/** Per-row price edit inputs for purchase-sentinel rows. */
-const stallPriceEdit = ref<Record<number, number | undefined>>({})
-
-async function setPurchasePrice(obs: StallPriceObservation): Promise<void> {
-  const value = stallPriceEdit.value[obs.id]
-  if (value == null || value < 1 || !Number.isFinite(value)) return
-  try {
-    await stallPriceStore.updateObservation(obs.id, value)
-    stallPriceEdit.value[obs.id] = undefined
-  } catch (e) {
-    toast.error('Failed to set price: ' + String(e))
-  }
-}
-
-async function deleteObservation(obs: StallPriceObservation): Promise<void> {
-  try {
-    await stallPriceStore.deleteObservation(obs.id)
-  } catch (e) {
-    toast.error('Failed to delete observation: ' + String(e))
-  }
-}
 </script>

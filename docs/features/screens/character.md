@@ -45,7 +45,6 @@ CharacterView.vue                   — 9-tab container
 │       ├── NpcFavorSection.vue     — favor level and progress
 │       ├── NpcServicesSection.vue  — vendor/training/barter/storage
 │       ├── NpcPreferencesSection.vue — gift preferences
-│       ├── NpcGiftCalculatorSection.vue — gift calculator
 │       ├── NpcInventoryGiftsSection.vue — inventory gift matching
 │       ├── NpcQuestsSection.vue    — NPC-related quests
 │       ├── NpcStorageSection.vue   — NPC storage access

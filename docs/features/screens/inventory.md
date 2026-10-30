@@ -2,7 +2,7 @@
 
 ## Overview
 
-The inventory screen provides three views into what the player owns: a real-time live inventory tracker, point-in-time Storage reports from character exports, and a comprehensive storage vault database showing items across all vaults with capacity tracking.
+The inventory screen provides views into what the player owns: point-in-time Storage reports from Export Storage as JSON, a comprehensive storage vault database, and a cross-character consolidation planner. (The real-time live inventory tab was removed with the `LiveInventoryTab.vue` component, batch-1 2026-10-30 — the `LiveInventoryItem` game-state map is retained for re-enable; see `inventory-live.md`.)
 
 ## Architecture
 
@@ -14,9 +14,9 @@ The inventory screen provides three views into what the player owns: a real-time
 
 **Frontend (Vue/TS):**
 - `src/components/Inventory/InventoryWrapper.vue` — 3-tab container
-- `src/components/Inventory/LiveInventoryTab.vue` — real-time inventory tracking
 - `src/components/Character/InventoryView.vue` — report-based inventory browser
 - `src/components/Inventory/VaultDatabaseTab.vue` — storage vault browser
+- `src/components/Inventory/ConsolidateTab.vue` — cross-character consolidation planner
 - `src/components/Inventory/VaultAreaCard.vue` — area grouping card
 - `src/components/Inventory/VaultRow.vue` — individual vault with items
 
@@ -28,22 +28,23 @@ The inventory screen provides three views into what the player owns: a real-time
 
 ```
 InventoryWrapper.vue                — 3-tab container
-├── LiveInventoryTab.vue            — real-time inventory from player log
 ├── InventoryView.vue               — report-based browsing (from Storage exports)
 │   ├── InventoryTable.vue          — detail list view
 │   ├── InventorySmallGrid.vue      — small icon grid
 │   ├── InventoryLargeGrid.vue      — large icon grid
 │   └── InventoryItemPanel.vue      — card view
-└── VaultDatabaseTab.vue            — all vaults with capacity tracking
-    ├── VaultAreaCard.vue           — area summary card
-    └── VaultRow.vue                — per-vault detail with items
+├── VaultDatabaseTab.vue            — all vaults with capacity tracking
+│   ├── VaultAreaCard.vue           — area summary card
+│   └── VaultRow.vue                — per-vault detail with items
+└── ConsolidateTab.vue              — cross-character consolidation planner
 ```
 
 ## Per-Tab Documentation
 
-- [inventory-live.md](inventory/inventory-live.md) — Live Inventory
+- [inventory-live.md](inventory/inventory-live.md) — Live Inventory (removed tab; retained game-state map)
 - [inventory-snapshots.md](inventory/inventory-snapshots.md) — Storage Reports
 - [inventory-vaults.md](inventory/inventory-vaults.md) — Storage Vault Database
+- [inventory-consolidate.md](inventory/inventory-consolidate.md) — Consolidation Planner
 
 ## Tauri Commands
 
@@ -67,7 +68,7 @@ InventoryWrapper.vue                — 3-tab container
 
 ## Key Design Decisions
 
-- **Dual inventory tracking** — Live tab shows real-time session state (in-memory, transient), Storage reports show persisted point-in-time data from exports. Both serve different use cases.
+- ~~**Dual inventory tracking** — the Live tab (real-time session state, in-memory) was removed batch-1; Storage reports (persisted point-in-time exports) and the vault database remain.~~
 - **Storage report import seeds game state** — importing a Storage export report populates both `game_state_inventory` and `game_state_storage`, making vault data available immediately.
 - **Vault capacity models** — vaults use multiple capacity systems (fixed slots, favor-tiered, attribute-scaled), all unified behind `getVaultUnlockedSlots()` / `getVaultMaxPossibleSlots()` helpers.
 - **Entity resolution** — all item names use `ItemInline` and NPC names use `NpcInline` for consistent tooltip/navigation behavior.

@@ -47,7 +47,36 @@ const { prefs, update } = useViewPrefs('dashboard', {
   cardOrder: DEFAULT_CARD_ORDER,
   hiddenCards: [] as string[],
   cardSpans: {} as Record<string, number>,
+  xpRateMigrated: false as boolean,
 })
+// One-time migration: XpRateWidget was merged into ProdigyTrackerWidget (superset).
+// ProdigyTracker takes over xp-rate's saved position; if the user would lose the
+// widget entirely (xp-rate visible while prodigy-tracker hidden), unhide it at
+// the migrated position. Guarded by a marker (not by xp-rate's presence): older
+// saved orders may omit xp-rate while still displaying it via the registry
+// fallback, so presence alone misses them.
+if (!prefs.value.xpRateMigrated) {
+  const hidden = new Set(prefs.value.hiddenCards)
+  const xpRateWasVisible = !hidden.has('xp-rate')
+  hidden.delete('xp-rate')
+  if (xpRateWasVisible && hidden.has('prodigy-tracker')) {
+    hidden.delete('prodigy-tracker')
+  }
+  const { ['xp-rate']: _removed, ...spans } = prefs.value.cardSpans ?? {}
+  const hadProdigySlot = prefs.value.cardOrder.includes('prodigy-tracker')
+  const cardOrder = prefs.value.cardOrder.flatMap(id =>
+    id === 'xp-rate' ? (hidden.has('prodigy-tracker') || hadProdigySlot ? [] : ['prodigy-tracker']) : [id],
+  )
+  if (!hadProdigySlot && !cardOrder.includes('prodigy-tracker') && !hidden.has('prodigy-tracker')) {
+    cardOrder.push('prodigy-tracker')
+  }
+  update({
+    cardOrder,
+    hiddenCards: [...hidden],
+    cardSpans: spans,
+    xpRateMigrated: true as boolean,
+  })
+}
 
 function setCardSpan(id: string, span: number) {
   const spans = { ...(prefs.value.cardSpans ?? {}) }

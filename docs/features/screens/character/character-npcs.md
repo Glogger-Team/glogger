@@ -102,11 +102,10 @@ Sections displayed in order:
 3. NpcVendorSection (gold status, timer, last sell) — only if NPC has a store service
 4. NpcStorageSection (slot usage, stored items) — only if NPC has a storage service
 5. NpcInventoryGiftsSection (inventory items matching NPC preferences)
-6. NpcGiftCalculatorSection (interactive favor calculator)
-7. NpcServicesSection (vendor caps, training, barter, etc.)
-8. NpcPreferencesSection (gift preferences)
-9. NpcQuestsSection (associated quests with favor rewards)
-10. Training fallback (if not covered by services section)
+6. NpcServicesSection (vendor caps, training, barter, etc.)
+7. NpcPreferencesSection (gift preferences)
+8. NpcQuestsSection (associated quests with favor rewards)
+9. Training fallback (if not covered by services section)
 
 ### NpcFavorSection (`src/components/Character/NpcDetailSections/NpcFavorSection.vue`)
 
@@ -163,14 +162,6 @@ Cross-references player inventory with NPC gift preferences:
 - Shows quantity owned, desire badge, and preference value per item
 - Estimated total favor from gifting all matching items
 - Falls back to "No matching gifts in inventory"
-
-### NpcGiftCalculatorSection (`src/components/Character/NpcDetailSections/NpcGiftCalculatorSection.vue`)
-
-Interactive gifting calculator:
-- Target tier dropdown (tiers above current)
-- Item search that filters NPC preferences by name/keyword
-- Calculates estimated items needed: sums `pointsToNextTier` for intermediate tiers, divides by preference value
-- Shows caveats about estimate accuracy
 
 ### NpcQuestsSection (`src/components/Character/NpcDetailSections/NpcQuestsSection.vue`)
 
