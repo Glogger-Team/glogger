@@ -598,4 +598,14 @@ jobs:
           fi
           gh pr create --base main --head "$BRANCH" \
             --title "build: sync version files to $TAG" \
-            --body "Auto-opened by the $TAG release. Dev fallback only - the tag remains the version record."
+            --body "Auto-opened by the $TAG release. Dev fallback only - the tag remains the version record." \
+            | tee /tmp/sync-pr-url.txt
+          # Auto-merge: the sync is mechanical (version files only, same script
+          # CI already ran in-build), so no human review is owed. Squash keeps
+          # the `build:` prefix for the next-version bump calculation. If the
+          # number parse or merge enablement fails, the PR stays open for a
+          # human — never fail the release on the convenience sync.
+          PR_NUMBER="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')"
+          gh pr merge "$PR_NUMBER" --squash --auto \
+            --subject "build: sync version files to $TAG" \
+            || echo "auto-merge enablement failed - PR left open for manual merge"
