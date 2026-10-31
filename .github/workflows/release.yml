@@ -592,7 +592,8 @@ jobs:
             src-tauri/Cargo.lock
           git commit -m "build: sync version files to $TAG"
           git push --force origin "$BRANCH"
-          if [ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq length)" ]; then
+          OPEN_COUNT="$(gh pr list --head "$BRANCH" --state open --json number --jq 'length')"
+          if [ "${OPEN_COUNT:-0}" -gt 0 ]; then
             echo "sync PR already open for $TAG - ensuring auto-merge"
           else
             gh pr create --base main --head "$BRANCH" \
