@@ -68,7 +68,7 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
   },
   {
     id: "prodigy-tracker",
-    name: "Prodigy Tracker",
+    name: "XP Rate",
     component: ProdigyTrackerWidget,
     defaultSize: "small",
   },

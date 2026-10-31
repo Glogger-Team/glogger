@@ -44,7 +44,7 @@ Instructions available in short (<2 minutes) video form here. Featuring Cheb! <h
 
 ### Dashboard
 
-Customizable widget grid with drag-to-reorder. Widgets include live skill tracking, item gain/loss feeds, currency changes, zone info with NPC favor, death tracker, watchword alerts, Words of Power capture (with wiki-sourced category/level grouping and CSV export), trip planner, Statehelm gifting progress (favor-aware, so maxed NPCs fall off and the next-best backfills), Vendor Council tracking (Available + Earned tabs — current-period and lifetime councils earned per NPC), Combat Wisdom tracker (session totals plus per-monster reuse-cooldown countdowns learned from your own kill history), Prodigy Tracker (combat + prodigy XP rates), critical resource tracking, arena tracking (Earthblood arena kill stats), mushroom farming and milking timers, garden/harvest almanacs, roulette, stat tracking, and personal notes.
+Customizable widget grid with drag-to-reorder. Widgets include live skill tracking, item gain/loss feeds, currency changes, zone info with NPC favor, death tracker, watchword alerts, Words of Power capture (with wiki-sourced category/level grouping and CSV export), trip planner, Statehelm gifting progress (favor-aware, so maxed NPCs fall off and the next-best backfills), Vendor Council tracking (Available + Earned tabs — current-period and lifetime councils earned per NPC), Combat Wisdom tracker (session totals plus per-monster reuse-cooldown countdowns learned from your own kill history), XP Rate (combat + prodigy XP rates), critical resource tracking, arena tracking (Earthblood arena kill stats), mushroom farming and milking timers, garden/harvest almanacs, roulette, stat tracking, and personal notes.
 
 ### Character
 
