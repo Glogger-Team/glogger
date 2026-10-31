@@ -575,8 +575,17 @@ jobs:
       - name: Bump, commit, and open the sync PR
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # SYNC_PAT, not GITHUB_TOKEN: org policy blocks Actions-created PRs
+          # for GITHUB_TOKEN ("not permitted to create or approve pull requests").
+          # Fine-grained PAT on Glogger-Team/glogger with Contents read+write
+          # and Pull requests read+write. Missing secret = clean skip.
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
         run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "SYNC_PAT secret is not configured - skipping sync PR."
+            echo "One-time setup: fine-grained PAT (this repo; Contents RW, Pull requests RW) stored as the SYNC_PAT repo secret."
+            exit 0
+          fi
           python scripts/bump-version.py "$VERSION"
           if git diff --quiet; then
             echo "in sync - nothing to do"
