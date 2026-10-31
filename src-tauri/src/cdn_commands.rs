@@ -4717,11 +4717,11 @@ pub async fn find_recipe_items_in_inventory(
         .filter_map(|r: Result<_, rusqlite::Error>| r.ok())
         .collect();
 
-    // Get known recipes
+    // Get known recipes — row existence marks known; completion_count is 0 on learn
     let mut recipe_stmt = conn
         .prepare(
             "SELECT recipe_id FROM game_state_recipes
-         WHERE character_name = ?1 AND server_name = ?2 AND completion_count > 0",
+         WHERE character_name = ?1 AND server_name = ?2",
         )
         .map_err(|e| format!("Query error: {e}"))?;
 
