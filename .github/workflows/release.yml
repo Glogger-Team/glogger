@@ -604,7 +604,11 @@ jobs:
           # the `build:` prefix for the next-version bump calculation. If the
           # number parse or merge enablement fails, the PR stays open for a
           # human — never fail the release on the convenience sync.
-          PR_NUMBER="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number')"
-          gh pr merge "$PR_NUMBER" --squash --auto \
-            --subject "build: sync version files to $TAG" \
-            || echo "auto-merge enablement failed - PR left open for manual merge"
+          PR_NUMBER="$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number' || true)"
+          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+            echo "could not resolve sync PR number - PR left open for manual merge"
+          else
+            gh pr merge "$PR_NUMBER" --squash --auto \
+              --subject "build: sync version files to $TAG" \
+              || echo "auto-merge enablement failed - PR left open for manual merge"
+          fi
