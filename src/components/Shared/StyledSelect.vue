@@ -8,7 +8,7 @@
       class="flex items-center gap-1.5 rounded border cursor-pointer transition-colors text-left min-w-0"
       :class="[sizeClasses.button, buttonColorClass, fullWidth ? 'w-full' : '']"
       @click="toggle"
-      @keydown.escape.stop="close"
+      @keydown.escape="onButtonEscape"
       @keydown.enter.prevent="toggle"
       @keydown.space.prevent="toggle"
       @keydown.up.prevent="selectPrev"
@@ -198,6 +198,14 @@ function toggle() {
 
 function close() {
   open.value = false
+}
+
+// Closed-toggle Esc must bubble to a parent dialog (e.g. Import Equipped's
+// window-level Esc); only contain the key when the dropdown is actually open.
+function onButtonEscape(e: KeyboardEvent) {
+  if (!open.value) return
+  e.stopPropagation()
+  close()
 }
 
 function selectFirstFiltered() {

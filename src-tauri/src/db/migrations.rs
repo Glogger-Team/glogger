@@ -682,6 +682,9 @@ fn migration_v81_snapshot_item_details(conn: &Connection) -> Result<()> {
                 // No debug_assert (see live path): divergence is detected by
                 // this skip; a panic would abort the whole one-shot migration.
                 if s != *n {
+                    eprintln!(
+                        "[migration_v81] ordinal guard: skipping divergent group ({type_id}, {vault}): file={n} stored={s}"
+                    );
                     divergent.insert((*type_id, vault.to_string()));
                 }
             }
