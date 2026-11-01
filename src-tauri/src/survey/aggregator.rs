@@ -439,48 +439,75 @@ impl SurveySessionAggregator {
             .ok()
             .flatten()
         });
-        // Single write transaction: a failed count update rolls back the use
-        // row instead of returning success with a stale session count.
-        // No outer transaction is open here (fresh pool checkout in the
-        // command), so new_unchecked is safe.
-        let tx = rusqlite::Transaction::new_unchecked(
-            conn,
-            rusqlite::TransactionBehavior::Immediate,
-        )
-        .map_err(|e| e.to_string())?;
+        // Single write transaction per attempt: a failed count update rolls
+        // back the use row instead of returning success with a stale session
+        // count. No outer transaction is open here (fresh pool checkout in
+        // the command), so new_unchecked is safe.
+        // Transparent stale-session retry: the cached active-session id can
+        // point at a session deleted out from under us (History UI deletes
+        // directly on the DB), which trips the survey_uses → survey_sessions
+        // FK. Mirror the log path (`handle_survey_consumed`): drop the cache,
+        // re-resolve (auto-starting a fresh session), re-insert once.
+        let mut session_id = session_id;
+        let mut retried = false;
+        let use_id = loop {
+            let tx = rusqlite::Transaction::new_unchecked(
+                conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )
+            .map_err(|e| e.to_string())?;
 
-        let use_id = match persistence::insert_use(
-            &tx,
-            session_id,
-            character,
-            server,
-            now_iso,
-            map_internal_name,
-            &display_name,
-            kind,
-            resolved_area.as_deref(),
-        ) {
-            Ok(id) => id,
-            Err(e) => {
-                eprintln!("[survey-aggregator] insert_use failed: {e}");
-                // A cached active-session id can point at a session that was
-                // deleted out from under us (e.g. the user deleted it in the
-                // History UI, which operates directly on the DB). Drop the
-                // cache so the next call re-resolves instead of failing
-                // forever.
-                self.cached_active_session_id = None;
-                return Err(format!(
-                    "survey use insert failed (the session may have been deleted; try again): {e}"
-                ));
+            match persistence::insert_use(
+                &tx,
+                session_id,
+                character,
+                server,
+                now_iso,
+                map_internal_name,
+                &display_name,
+                kind,
+                resolved_area.as_deref(),
+            ) {
+                Ok(id) => {
+                    if let Some(s) = session_id {
+                        persistence::increment_consumed_count(&tx, s)
+                            .map_err(|e| format!("survey count update failed: {e}"))?;
+                    }
+                    tx.commit()
+                        .map_err(|e| format!("survey use transaction failed: {e}"))?;
+                    break id;
+                }
+                Err(_e) if session_id.is_some() && !retried => {
+                    retried = true;
+                    drop(tx);
+                    self.cached_active_session_id = None;
+                    session_id = match self.fetch_active_session(conn, character, server) {
+                        Some(id) => Some(id),
+                        None => {
+                            let id = persistence::insert_session(
+                                conn,
+                                character,
+                                server,
+                                now_iso,
+                                SessionStartTrigger::FirstUse,
+                                None,
+                            )
+                            .map_err(|e| e.to_string())?;
+                            self.cached_active_session_id = Some(Some(id));
+                            Some(id)
+                        }
+                    };
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("[survey-aggregator] insert_use failed: {e}");
+                    self.cached_active_session_id = None;
+                    return Err(format!(
+                        "survey use insert failed (the session may have been deleted; try again): {e}"
+                    ));
+                }
             }
         };
-
-        if let Some(s) = session_id {
-            persistence::increment_consumed_count(&tx, s)
-                .map_err(|e| format!("survey count update failed: {e}"))?;
-        }
-        tx.commit()
-            .map_err(|e| format!("survey use transaction failed: {e}"))?;
 
         if let Some(s) = session_id {
             // Tighten started_at so the session header reflects the actual
@@ -4531,5 +4558,143 @@ mod tests {
         let su = persistence::get_use(&conn, use_id).unwrap().unwrap();
         assert_eq!(su.session_id, Some(sid));
         assert_eq!(su.area, None, "no live area and empty survey_types.zone → NULL");
+    }
+
+    #[test]
+    fn test_record_manual_use_multihit_queues_for_mining_adopt() {
+        // Manual "Record use" with a Multihit map: the use queues in
+        // pending_uses (Basic is excluded), skips the Basic chat-claim tail,
+        // and a later mining hit adopts it — opens the node, chains the
+        // second hit, loot accumulates, status stays PendingLoot.
+        let conn = fresh_db();
+        let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
+        agg.set_base_date(test_base_date());
+
+        // 1. Manual Multihit use — queued, not completed.
+        let (use_id, session_id) = agg
+            .record_manual_use(
+                &conn,
+                ManualUse {
+                    character: "Zenith",
+                    server: "Dreva",
+                    area: Some("Povus"),
+                    map_internal_name: "MiningSurveyPovus7Y",
+                    kind: crate::survey::types::SurveyUseKind::Multihit,
+                    now_iso: "2026-04-15 12:00:00",
+                },
+            )
+            .expect("record_manual_use must succeed");
+        assert!(session_id.is_some(), "manual use always creates a session");
+        assert!(
+            agg.pending_uses.iter().any(|p| p.survey_use_id == use_id),
+            "manual Multihit must queue for mining adoption"
+        );
+        let su = persistence::get_use(&conn, use_id).unwrap().unwrap();
+        assert_eq!(su.loot_qty, 0);
+        assert_eq!(su.status, SurveyUseStatus::PendingLoot);
+
+        // 2. First mining gain on node 9999 — adopts the pending use.
+        let mut hit1 = PlayerEvent::ItemAdded {
+            timestamp: "12:00:10".to_string(),
+            item_name: "Marvelous Metal Slab".to_string(),
+            instance_id: 1001,
+            slot_index: -1,
+            is_new: true,
+            initial_quantity: 1,
+            provenance: ItemProvenance::Attributed {
+                source: ActivitySource::Mining {
+                    node_entity_id: Some(9999),
+                    node_name: None,
+                },
+                confidence: crate::player_event_parser::AttributionConfidence::Confident,
+                survey_use_id: None,
+            },
+        };
+        let emitted = agg.process_event(&mut hit1, &conn, "Zenith", "Dreva", Some("Povus"));
+        assert!(
+            emitted.iter().any(|e| matches!(
+                e,
+                SurveyAggregatorEvent::MultihitNodeOpened { node_entity_id: 9999, .. }
+            )),
+            "adopt must emit MultihitNodeOpened: {emitted:?}"
+        );
+        let node = multihit_state::get_node(&conn, "Zenith", "Dreva", 9999)
+            .unwrap()
+            .expect("node row should exist");
+        assert_eq!(node.survey_use_id, use_id);
+
+        // 3. Second hit same node — chains, loot accumulates, stays open.
+        let mut hit2 = PlayerEvent::ItemAdded {
+            timestamp: "12:00:16".to_string(),
+            item_name: "Pebbles".to_string(),
+            instance_id: 1002,
+            slot_index: -1,
+            is_new: true,
+            initial_quantity: 1,
+            provenance: ItemProvenance::Attributed {
+                source: ActivitySource::Mining {
+                    node_entity_id: Some(9999),
+                    node_name: None,
+                },
+                confidence: crate::player_event_parser::AttributionConfidence::Confident,
+                survey_use_id: None,
+            },
+        };
+        agg.process_event(&mut hit2, &conn, "Zenith", "Dreva", Some("Povus"));
+        let u = persistence::get_use(&conn, use_id).unwrap().unwrap();
+        assert_eq!(u.loot_qty, 2);
+        assert_eq!(u.status, SurveyUseStatus::PendingLoot);
+        let updated_node = multihit_state::get_node(&conn, "Zenith", "Dreva", 9999)
+            .unwrap()
+            .unwrap();
+        assert!(
+            updated_node.last_hit_at > updated_node.opened_at,
+            "last_hit_at ({}) should be later than opened_at ({})",
+            updated_node.last_hit_at,
+            updated_node.opened_at
+        );
+    }
+
+    #[test]
+    fn test_record_manual_use_retries_after_session_deleted_midflight() {
+        // Stale-FK race: session resolved + cached, deleted out from under
+        // us, then record_manual_use must transparently re-resolve (fresh
+        // session) and insert once — no "try again" surfaced.
+        let conn = fresh_db();
+        let mut agg = SurveySessionAggregator::new(game_data_with_survey_maps());
+        agg.set_base_date(test_base_date());
+
+        // Prime the cache with a live session.
+        let sid = agg
+            .start_manual_session(&conn, "Zenith", "Dreva", "2026-04-15 12:00:00")
+            .expect("manual session start must succeed");
+        assert_eq!(
+            agg.fetch_active_session(&conn, "Zenith", "Dreva"),
+            Some(sid),
+            "cache must hold the primed session"
+        );
+        // Delete it behind the aggregator's back (History UI path, but
+        // without the command's cache invalidation — that is the race).
+        conn.execute("DELETE FROM survey_sessions WHERE id = ?1", [sid])
+            .unwrap();
+
+        // Must succeed via transparent retry, landing in a fresh session.
+        let (use_id, new_sid) = agg
+            .record_manual_use(
+                &conn,
+                ManualUse {
+                    character: "Zenith",
+                    server: "Dreva",
+                    area: Some("Serbule"),
+                    map_internal_name: "GeologySurveySerbule1",
+                    kind: crate::survey::types::SurveyUseKind::Basic,
+                    now_iso: "2026-04-15 12:00:05",
+                },
+            )
+            .expect("retry must heal the stale FK without surfacing");
+        let new_sid = new_sid.expect("manual use always creates a session");
+        assert_ne!(new_sid, sid, "retry must land in a fresh session");
+        let su = persistence::get_use(&conn, use_id).unwrap().unwrap();
+        assert_eq!(su.session_id, Some(new_sid));
     }
 }

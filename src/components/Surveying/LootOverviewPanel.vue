@@ -42,7 +42,7 @@
 
 <script setup lang="ts">
 // Loot overview table for the center panel. Shows each item as an
-// ItemMinicard row (with inline market-value editing via the ??? button)
+// ItemMinicard row (with inline market-value editing via the set-price button)
 // plus quantity, primary/bonus split, and total value.
 import { computed } from 'vue'
 import type { LootSummaryRow } from '../../stores/surveyTrackerStore'

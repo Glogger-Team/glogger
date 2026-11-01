@@ -447,6 +447,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 82)?;
     }
 
+    if current_version < 83 {
+        migration_v83_clear_divergent_ordinal_details(conn)?;
+        super::record_migration(conn, 83)?;
+    }
+
 
     tx.commit()?;
     Ok(())
@@ -865,6 +870,94 @@ fn migration_v82_purge_placeholder_characters(conn: &Connection) -> Result<()> {
             "DELETE FROM user_characters WHERE TRIM(character_name) IN ('', '???')",
             [],
         )?;
+    }
+    Ok(())
+}
+
+/// Migration V83: clear possibly-mistagged ordinal backfill details.
+///
+/// V81 backfilled `is_augmented`/`dye_count`/`inscription`/`inscriber` by
+/// matching the Nth file entry to the Nth stored row (`ORDER BY id`) per
+/// (type_id, vault) group. When a group's stored count diverges from the
+/// file count (rows deleted/re-inserted out of order), blind ordinal writes
+/// silently mistag twin stacks. V81 shipped in v1.9.1 without a guard and
+/// must not be edited — this is the one-time repair: for each snapshot,
+/// compare per-group file counts (from stored `raw_json`) against stored
+/// row counts, and NULL out the four detail columns for divergent groups.
+/// Clearing is safer than keeping possibly-wrong values; the live
+/// duplicate-import path (now guarded) re-backfills correctly on the next
+/// re-import. Idempotent: a no-op once clean.
+fn migration_v83_clear_divergent_ordinal_details(conn: &Connection) -> Result<()> {
+    // Minimal test fixtures build only the tables they need — absent tables
+    // skip instead of failing the whole migration run (same shape as v82).
+    let table_exists = |name: &str| -> bool {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [name],
+            |r| r.get(0),
+        )
+        .unwrap_or(false)
+    };
+    if !table_exists("character_item_snapshots") || !table_exists("character_snapshot_items") {
+        return Ok(());
+    }
+    let snapshots: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, raw_json FROM character_item_snapshots WHERE raw_json IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for (snapshot_id, raw_json) in snapshots {
+        let parsed: serde_json::Value = match serde_json::from_str(&raw_json) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let items = match parsed.get("Items").and_then(|v| v.as_array()) {
+            Some(items) => items,
+            None => continue,
+        };
+        let mut file_counts: std::collections::HashMap<(i64, String), i64> =
+            std::collections::HashMap::new();
+        for item in items {
+            let type_id = item.get("TypeID").and_then(|v| v.as_i64());
+            let vault = item
+                .get("StorageVault")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if let Some(id) = type_id {
+                *file_counts.entry((id, vault)).or_insert(0) += 1;
+            }
+        }
+        let stored: std::collections::HashMap<(i64, String), i64> = {
+            let mut stmt = conn.prepare(
+                "SELECT type_id, storage_vault, COUNT(*) FROM character_snapshot_items
+                 WHERE item_snapshot_id = ?1 GROUP BY type_id, storage_vault",
+            )?;
+            let rows = stmt.query_map([snapshot_id], |r| {
+                Ok(((r.get::<_, i64>(0)?, r.get::<_, String>(1)?), r.get::<_, i64>(2)?))
+            })?;
+            rows.collect::<Result<_, _>>()?
+        };
+        for ((type_id, vault), n) in &file_counts {
+            let s = stored
+                .get(&(*type_id, vault.clone()))
+                .copied()
+                .unwrap_or(0);
+            if s != *n {
+                eprintln!(
+                    "[migration_v83] clearing possibly-mistagged details for ({type_id}, {vault}): file={n} stored={s}"
+                );
+                conn.execute(
+                    "UPDATE character_snapshot_items
+                     SET is_augmented = NULL, dye_count = NULL,
+                         inscription = NULL, inscriber = NULL
+                     WHERE item_snapshot_id = ?1 AND type_id = ?2 AND storage_vault = ?3",
+                    rusqlite::params![snapshot_id, type_id, vault],
+                )?;
+            }
+        }
     }
     Ok(())
 }
@@ -4123,13 +4216,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            82,
+            83,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 82);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 83);
     }
 
     #[test]
@@ -4258,7 +4351,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 82, "migration chain head");
+        assert_eq!(head, 83, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -4302,6 +4395,57 @@ mod tests {
         assert_eq!(kept, 1, "second run preserves real rows");
     }
 
+    #[test]
+    fn migration_v83_chain_head_and_divergent_clear() {
+        // Chain wiring: full run_migrations head must be 83. Repair: a
+        // divergent group (file 2 vs stored 1) gets its details NULLed
+        // while an aligned group keeps its values.
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        let head: i64 = c
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(head, 83, "migration chain head");
+        c.execute_batch(
+            "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
+            VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
+                {\"TypeID\":9,\"StorageVault\":\"V\",\"StackSize\":1,\"Value\":1,\"Name\":\"Twin\",\"IsAugmented\":true},
+                {\"TypeID\":9,\"StorageVault\":\"V\",\"StackSize\":1,\"Value\":1,\"Name\":\"Twin\",\"IsAugmented\":false},
+                {\"TypeID\":7,\"StorageVault\":\"W\",\"StackSize\":1,\"Value\":1,\"Name\":\"Solo\",\"IsAugmented\":true}
+            ]}');
+            INSERT INTO character_snapshot_items (item_snapshot_id, type_id, storage_vault, is_augmented, is_in_inventory, stack_size, value, item_name)
+            VALUES (1, 9, 'V', 1, 0, 1, 1, 'Twin'),
+                    (1, 7, 'W', 1, 0, 1, 1, 'Solo');",
+        )
+        .unwrap();
+        migration_v83_clear_divergent_ordinal_details(&c).unwrap();
+        let divergent: Option<bool> = c
+            .query_row(
+                "SELECT is_augmented FROM character_snapshot_items WHERE type_id = 9",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(divergent, None, "divergent group details cleared");
+        let aligned: Option<bool> = c
+            .query_row(
+                "SELECT is_augmented FROM character_snapshot_items WHERE type_id = 7",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(aligned, Some(true), "aligned group keeps values");
+        // Idempotent: second run is a no-op.
+        migration_v83_clear_divergent_ordinal_details(&c).unwrap();
+        let aligned2: Option<bool> = c
+            .query_row(
+                "SELECT is_augmented FROM character_snapshot_items WHERE type_id = 7",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(aligned2, Some(true), "second run preserves aligned values");
+    }
     #[test]
     fn migration_v82_clears_placeholder_children_before_parents() {
         // Guards the ordering fix: the parent rows live only in the

@@ -27,6 +27,7 @@
           >
             Start New Session
           </button>
+          <div v-if="store.sessionError" class="text-[11px] text-accent-red px-1">{{ store.sessionError }}</div>
 
           <label class="flex items-center gap-2 text-xs text-text-secondary cursor-pointer px-1"
             title="Automatic detection needs Player.log survey events, which the current game client no longer writes. Manual start always works.">

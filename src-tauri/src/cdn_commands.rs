@@ -438,10 +438,15 @@ pub async fn get_items_by_keyword(
 }
 
 /// Info about a keyword used as a recipe ingredient slot.
+/// `item_count` is the number of CDN items carrying the keyword
+/// (same case-insensitive match as `get_items_by_keyword`), so the
+/// Dynamic Items tab can paint sidebar badges from this single call
+/// instead of one `get_items_by_keyword` IPC per keyword.
 #[derive(Debug, serde::Serialize, Clone)]
 pub struct IngredientKeywordInfo {
     pub keyword: String,
     pub description: String,
+    pub item_count: usize,
 }
 
 /// Return all distinct keywords used as wildcard ingredient slots in recipes,
@@ -471,11 +476,29 @@ pub async fn get_recipe_ingredient_keywords(
         }
     }
 
+    // Count items per keyword (lowercased) in one pass over the catalog.
+    // Dedupe per item: the parser can preserve duplicate keyword entries
+    // on one item, but get_items_by_keyword returns each item once — the
+    // badge count must match the selected list length.
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for item in data.items.values() {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for k in &item.keywords {
+            if seen.insert(k.to_lowercase()) {
+                *counts.entry(k.to_lowercase()).or_insert(0) += 1;
+            }
+        }
+    }
+
     let mut results: Vec<IngredientKeywordInfo> = keyword_descs
         .into_iter()
-        .map(|(keyword, description)| IngredientKeywordInfo {
-            keyword,
-            description,
+        .map(|(keyword, description)| {
+            let item_count = counts.get(&keyword.to_lowercase()).copied().unwrap_or(0);
+            IngredientKeywordInfo {
+                keyword,
+                description,
+                item_count,
+            }
         })
         .collect();
     results.sort_by(|a, b| a.description.cmp(&b.description));

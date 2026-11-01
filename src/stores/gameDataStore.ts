@@ -281,6 +281,7 @@ export const useGameDataStore = defineStore("gameData", () => {
   interface IngredientKeywordInfo {
     keyword: string
     description: string
+    item_count: number
   }
 
   async function getRecipeIngredientKeywords(): Promise<IngredientKeywordInfo[]> {

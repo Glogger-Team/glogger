@@ -413,14 +413,21 @@ export const useSurveyTrackerStore = defineStore("surveyTracker", () => {
     }
   }
 
+  // Session-control errors (start/end) predate `recordError`, which is scoped
+  // to the Record-use block. Separate ref so a start/end failure renders
+  // beside the session controls instead of under the Record button.
+  const sessionError = ref<string | null>(null);
+
   async function startSession(): Promise<number | null> {
     isBusy.value = true;
+    sessionError.value = null;
     try {
       const id = await invoke<number>("survey_tracker_start_session");
       await Promise.all([refreshStatus(), refreshRecentSessions(), refreshHistorical()]);
       return id;
     } catch (err) {
       console.error("[surveyTracker] start_session failed:", err);
+      sessionError.value = String(err);
       return null;
     } finally {
       isBusy.value = false;
@@ -429,6 +436,7 @@ export const useSurveyTrackerStore = defineStore("surveyTracker", () => {
 
   async function endSession(): Promise<number | null> {
     isBusy.value = true;
+    sessionError.value = null;
     try {
       const id = await invoke<number | null>("survey_tracker_end_session");
       await Promise.all([refreshStatus(), refreshRecentSessions(), refreshHistorical()]);
@@ -440,6 +448,7 @@ export const useSurveyTrackerStore = defineStore("surveyTracker", () => {
       return id;
     } catch (err) {
       console.error("[surveyTracker] end_session failed:", err);
+      sessionError.value = String(err);
       return null;
     } finally {
       isBusy.value = false;
@@ -576,6 +585,7 @@ export const useSurveyTrackerStore = defineStore("surveyTracker", () => {
     startSession,
     endSession,
     recordError,
+    sessionError,
     recordUse,
     updateSessionNotes,
     updateSessionName,

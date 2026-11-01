@@ -9,7 +9,7 @@
         <div
           v-for="toast in store.visibleToasts"
           :key="toast.id"
-          class="max-w-[350px] bg-surface-elevated border border-border-default rounded text-xs flex items-start gap-2 px-3 py-2 shadow-lg border-l-2"
+          class="max-w-[min(350px,calc(100vw_-_2rem))] bg-surface-elevated border border-border-default rounded text-xs flex items-start gap-2 px-3 py-2 shadow-lg border-l-2"
           :class="borderClass(toast.type)"
           @mouseenter="pauseTimer(toast.id)"
           @mouseleave="resumeTimer(toast)">

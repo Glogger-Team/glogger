@@ -30,7 +30,8 @@
             v-else
             class="text-text-dim hover:text-accent-green bg-transparent border-none cursor-pointer p-0 text-[10px] underline"
             @click.stop="startSetMarket"
-          >???</button>
+            title="Set market price"
+          >set price</button>
           <span v-if="ownedCount > 0" class="text-text-secondary">×{{ ownedCount.toLocaleString() }}</span>
         </div>
       </div>
@@ -136,9 +137,13 @@ const editPopupStyle = ref<Record<string, string>>({});
 function startSetMarket(event: MouseEvent) {
   const target = event.target as HTMLElement;
   const rect = target.getBoundingClientRect();
+  const popupWidth = 200;
+  const popupHeight = 60;
+  const maxLeft = window.innerWidth - popupWidth - 4;
+  const maxTop = window.innerHeight - popupHeight - 4;
   editPopupStyle.value = {
-    top: `${rect.bottom + 4}px`,
-    left: `${rect.left}px`,
+    top: `${Math.max(4, Math.min(rect.bottom + 4, maxTop))}px`,
+    left: `${Math.max(4, Math.min(rect.left, maxLeft))}px`,
   };
   marketEditValue.value = marketPrice.value?.toString() ?? "";
   editingMarket.value = true;

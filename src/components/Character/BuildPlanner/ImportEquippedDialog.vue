@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center">
+      <div v-if="show" ref="dialogRef" tabindex="-1" class="fixed inset-0 z-50 flex items-center justify-center outline-none" @keydown.escape="cancel">
         <!-- Backdrop -->
         <div class="absolute inset-0 bg-black/50" @click="cancel" />
 
@@ -63,7 +63,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { EQUIPMENT_SLOTS, getRarityTextColor } from '../../../types/buildPlanner'
 import type { EquippedSlotCandidates, EquippedCandidate, EquippedSelection } from '../../../types/buildPlanner'
 import StyledSelect from '../../Shared/StyledSelect.vue'
@@ -87,16 +87,25 @@ const candidatesBySlot = computed<Record<string, EquippedCandidate[]>>(() => {
   return map
 })
 
-// When the dialog opens, default every slot with candidates to the best guess
-// (index 0, which the backend ordered worn/attuned/level-first).
-watch(() => props.show, (open) => {
-  if (!open) return
-  const next: Record<string, number> = {}
-  for (const s of props.slots) {
-    next[s.equip_slot] = s.candidates.length > 0 ? 0 : -1
+let previouslyFocused: HTMLElement | null = null
+const dialogRef = ref<HTMLElement | null>(null)
+
+ // When the dialog opens, default every slot with candidates to the best guess
+ // (index 0, which the backend ordered worn/attuned/level-first).
+ watch(() => props.show, (open) => {
+  if (open) {
+    previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    nextTick(() => dialogRef.value?.focus())
+    const next: Record<string, number> = {}
+    for (const s of props.slots) {
+      next[s.equip_slot] = s.candidates.length > 0 ? 0 : -1
+    }
+    selection.value = next
+  } else {
+    previouslyFocused?.focus()
+    previouslyFocused = null
   }
-  selection.value = next
-}, { immediate: true })
+ }, { immediate: true })
 
 function candidateLabel(c: EquippedCandidate): string {
   const tags: string[] = []
@@ -147,6 +156,14 @@ function confirm() {
 function cancel() {
   emit('update:show', false)
 }
+
+// Window-level Esc: focus sits inside per-slot StyledSelects, so a
+// dialog-level handler would rarely fire. Guarded to open state.
+function onWindowKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && props.show) cancel()
+}
+onMounted(() => window.addEventListener('keydown', onWindowKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
 </script>
 
 <style scoped>

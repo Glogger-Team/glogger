@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center">
+      <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center" @keydown.escape="close">
         <!-- Backdrop -->
         <div class="absolute inset-0 bg-black/60" @click="close" />
 
@@ -43,6 +43,7 @@
           <!-- Filter + toggles row -->
           <div class="px-4 pb-2 shrink-0 flex flex-col gap-1.5">
             <input
+              ref="searchInputRef"
               v-model="searchFilter"
               type="text"
               placeholder="Search abilities..."
@@ -125,7 +126,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useBuildPlannerStore } from '../../../stores/buildPlannerStore'
 import { useGameDataStore } from '../../../stores/gameDataStore'
 import { useCharacterStore } from '../../../stores/characterStore'
@@ -159,6 +160,8 @@ const characterStore = useCharacterStore()
 const settingsStore = useSettingsStore()
 const { familyHasKnownAbility } = useBuildCrossRef()
 
+let previouslyFocused: HTMLElement | null = null
+const searchInputRef = ref<HTMLInputElement | null>(null)
 const searchFilter = ref('')
 const hideUnlearned = ref(false)
 const limitBySkillLevel = ref(false)
@@ -435,12 +438,25 @@ function close() {
   emit('update:show', false)
 }
 
+// Window-level Esc: the search input owns focus on open, so a dialog-level
+// handler would never fire. Guarded to this dialog's open state.
+function onWindowKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && props.show) close()
+}
+onMounted(() => window.addEventListener('keydown', onWindowKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
+
 // ── Watchers ─────────────────────────────────────────────────────────────────
 
 watch(() => props.show, (open) => {
   if (open) {
+    previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
     searchFilter.value = ''
     loadAbilities()
+    nextTick(() => searchInputRef.value?.focus())
+  } else {
+    previouslyFocused?.focus()
+    previouslyFocused = null
   }
 }, { immediate: true })
 

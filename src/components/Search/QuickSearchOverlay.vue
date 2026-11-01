@@ -96,7 +96,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick, computed } from "vue"
+import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from "vue"
 import ItemInline from "../Shared/Item/ItemInline.vue"
 import RecipeInline from "../Shared/Recipe/RecipeInline.vue"
 import NpcInline from "../Shared/NPC/NpcInline.vue"
@@ -119,6 +119,7 @@ const inputRef = ref<HTMLInputElement>()
 const resultsRef = ref<HTMLElement>()
 const query = ref("")
 const selectedIndex = ref(0)
+let previouslyFocused: HTMLElement | null = null
 
 const { categories, loading } = useUnifiedSearch(query)
 
@@ -145,10 +146,14 @@ function flatIndex(categoryName: string, resultIndex: number): number {
 // Reset state when opening
 watch(() => props.show, async (open) => {
   if (open) {
+    previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
     query.value = ""
     selectedIndex.value = 0
     await nextTick()
     inputRef.value?.focus()
+  } else {
+    previouslyFocused?.focus()
+    previouslyFocused = null
   }
 })
 
@@ -160,6 +165,21 @@ watch(categories, () => {
 function close() {
   emit("update:show", false)
 }
+
+// Window-level Esc: the footer promises `esc closes`, but the input-only
+// handler orphans Esc as soon as focus lands on a result button.
+// Capture phase + stopPropagation: QuickSearch sits above picker dialogs
+// (global Ctrl+F layer), so its Esc must not reach their window listeners —
+// one Esc closes only the topmost overlay.
+function onWindowKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape" && props.show) {
+    close()
+    event.preventDefault()
+    event.stopPropagation()
+  }
+}
+onMounted(() => window.addEventListener("keydown", onWindowKeydown, true))
+onBeforeUnmount(() => window.removeEventListener("keydown", onWindowKeydown, true))
 
 function handleKeydown(event: KeyboardEvent) {
   const total = allResults.value.length

@@ -8,7 +8,7 @@
       class="flex items-center gap-1.5 rounded border cursor-pointer transition-colors text-left min-w-0"
       :class="[sizeClasses.button, buttonColorClass, fullWidth ? 'w-full' : '']"
       @click="toggle"
-      @keydown.escape="close"
+      @keydown.escape="onButtonEscape"
       @keydown.enter.prevent="toggle"
       @keydown.space.prevent="toggle"
       @keydown.up.prevent="selectPrev"
@@ -43,9 +43,9 @@
           class="shrink-0 w-full bg-surface border-b border-border-default text-text-primary placeholder:text-text-muted focus:outline-none"
           :class="sizeClasses.option"
           @keydown.enter.prevent="selectFirstFiltered"
-          @keydown.escape.prevent="close"
+          @keydown.escape.stop.prevent="close"
           @keydown.down.prevent="focusFirstOption" />
-        <div class="overflow-y-auto min-h-0">
+        <div class="overflow-y-auto min-h-0" @keydown.escape.stop.prevent="closeAndRefocus">
           <button
             v-for="option in filteredOptions"
             :key="option.value"
@@ -175,7 +175,7 @@ function positionDropdown() {
   const openAbove = spaceBelow < 200 && rect.top > spaceBelow
 
   dropdownStyle.value = {
-    left: `${rect.left}px`,
+    left: `${Math.max(4, Math.min(rect.left, window.innerWidth - Math.max(rect.width, 160) - 4))}px`,
     width: `${Math.max(rect.width, 160)}px`,
     ...(openAbove
       ? { bottom: `${window.innerHeight - rect.top + 2}px` }
@@ -198,6 +198,22 @@ function toggle() {
 
 function close() {
   open.value = false
+}
+
+// Esc from an option button: contain the dropdown (don't bubble to a
+// parent dialog's window-level Esc) and return focus to the toggle.
+function closeAndRefocus() {
+  close()
+  const btn = containerRef.value?.querySelector<HTMLButtonElement>('button')
+  btn?.focus()
+}
+
+// Closed-toggle Esc must bubble to a parent dialog (e.g. Import Equipped's
+// window-level Esc); only contain the key when the dropdown is actually open.
+function onButtonEscape(e: KeyboardEvent) {
+  if (!open.value) return
+  e.stopPropagation()
+  close()
 }
 
 function selectFirstFiltered() {

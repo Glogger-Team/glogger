@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center">
+      <div v-if="show" ref="dialogRef" tabindex="-1" class="fixed inset-0 z-50 flex items-center justify-center outline-none" @keydown.escape="handleCancel">
         <!-- Backdrop -->
         <div class="absolute inset-0 bg-black/50" @click="handleCancel" />
 
@@ -22,8 +22,7 @@
                 type="text"
                 :placeholder="placeholder"
                 class="w-full bg-surface-elevated border border-border-default rounded px-3 py-1.5 text-sm text-text-primary focus:border-accent-gold/50 focus:outline-none"
-                @keydown.enter="handleConfirm"
-                @keydown.escape="handleCancel" />
+                @keydown.enter="handleConfirm" />
               <p v-else-if="type === 'confirm'" class="text-sm text-text-secondary">
                 {{ message }}
               </p>
@@ -77,8 +76,12 @@ const emit = defineEmits<{
   cancel: []
 }>()
 
+const dialogRef = ref<HTMLElement>()
 const inputRef = ref<HTMLInputElement>()
 const inputValue = ref('')
+// Focus restore: dialogs steal focus on open; return it on close so
+// keyboard users don't lose their place.
+let previouslyFocused: HTMLElement | null = null
 
 const confirmClass = computed(() =>
   props.danger
@@ -88,10 +91,18 @@ const confirmClass = computed(() =>
 
 watch(() => props.show, async (open) => {
   if (open) {
+    previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
     inputValue.value = props.initialValue
     await nextTick()
-    inputRef.value?.focus()
-    inputRef.value?.select()
+    if (props.type === 'prompt') {
+      inputRef.value?.focus()
+      inputRef.value?.select()
+    } else {
+      dialogRef.value?.focus()
+    }
+  } else {
+    previouslyFocused?.focus()
+    previouslyFocused = null
   }
 })
 
