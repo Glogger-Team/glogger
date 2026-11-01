@@ -245,8 +245,8 @@ pub fn import_inventory_report_internal(
                     Ok(((r.get::<_, i64>(0)?, r.get::<_, String>(1)?), r.get::<_, i64>(2)?))
                 })
                 .map_err(|e| format!("Failed to read ordinal guard counts: {e}"))?
-                .filter_map(|r| r.ok())
-                .collect();
+                .collect::<rusqlite::Result<_>>()
+                .map_err(|e| format!("Failed to read ordinal guard counts: {e}"))?;
             let mut divergent: std::collections::HashSet<(i64, String)> =
                 std::collections::HashSet::new();
             for ((type_id, vault), n) in &file_counts {

@@ -673,8 +673,7 @@ fn migration_v81_snapshot_item_details(conn: &Connection) -> Result<()> {
                 .query_map([snapshot_id], |r| {
                     Ok(((r.get::<_, i64>(0)?, r.get::<_, String>(1)?), r.get::<_, i64>(2)?))
                 })?
-                .filter_map(|r| r.ok())
-                .collect();
+                .collect::<rusqlite::Result<_>>()?;
             for ((type_id, vault), n) in &file_counts {
                 let s = stored
                     .get(&(*type_id, vault.to_string()))
