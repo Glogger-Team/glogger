@@ -22,8 +22,7 @@
                 type="text"
                 :placeholder="placeholder"
                 class="w-full bg-surface-elevated border border-border-default rounded px-3 py-1.5 text-sm text-text-primary focus:border-accent-gold/50 focus:outline-none"
-                @keydown.enter="handleConfirm"
-                @keydown.escape="handleCancel" />
+                @keydown.enter="handleConfirm" />
               <p v-else-if="type === 'confirm'" class="text-sm text-text-secondary">
                 {{ message }}
               </p>

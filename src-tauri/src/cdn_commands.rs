@@ -477,10 +477,16 @@ pub async fn get_recipe_ingredient_keywords(
     }
 
     // Count items per keyword (lowercased) in one pass over the catalog.
+    // Dedupe per item: the parser can preserve duplicate keyword entries
+    // on one item, but get_items_by_keyword returns each item once — the
+    // badge count must match the selected list length.
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for item in data.items.values() {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for k in &item.keywords {
-            *counts.entry(k.to_lowercase()).or_insert(0) += 1;
+            if seen.insert(k.to_lowercase()) {
+                *counts.entry(k.to_lowercase()).or_insert(0) += 1;
+            }
         }
     }
 
