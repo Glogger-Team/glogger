@@ -649,6 +649,44 @@ fn migration_v81_snapshot_item_details(conn: &Connection) -> Result<()> {
         // Same ordinal matching as the duplicate-import path: (type_id,
         // vault) repeats within a report, so the Nth entry targets the Nth
         // stored row ordered by id.
+        // Ordinal guard (mirrors the live path): verify per-group file vs
+        // stored counts before writing, skip divergent groups. One-shot
+        // migration — a count skew means stored order can't be trusted.
+        let mut file_counts: std::collections::HashMap<(i64, &str), i64> =
+            std::collections::HashMap::new();
+        for item in items {
+            let type_id = item.get("TypeID").and_then(|v| v.as_i64());
+            let vault = item.get("StorageVault").and_then(|v| v.as_str()).unwrap_or("");
+            if let Some(id) = type_id {
+                *file_counts.entry((id, vault)).or_insert(0) += 1;
+            }
+        }
+        let mut divergent: std::collections::HashSet<(i64, String)> =
+            std::collections::HashSet::new();
+        {
+            let mut count_stmt = conn
+                .prepare(
+                    "SELECT type_id, storage_vault, COUNT(*) FROM character_snapshot_items
+                     WHERE item_snapshot_id = ?1 GROUP BY type_id, storage_vault",
+                )?;
+            let stored: std::collections::HashMap<(i64, String), i64> = count_stmt
+                .query_map([snapshot_id], |r| {
+                    Ok(((r.get::<_, i64>(0)?, r.get::<_, String>(1)?), r.get::<_, i64>(2)?))
+                })?
+                .filter_map(|r| r.ok())
+                .collect();
+            for ((type_id, vault), n) in &file_counts {
+                let s = stored
+                    .get(&(*type_id, vault.to_string()))
+                    .copied()
+                    .unwrap_or(0);
+                // No debug_assert (see live path): divergence is detected by
+                // this skip; a panic would abort the whole one-shot migration.
+                if s != *n {
+                    divergent.insert((*type_id, vault.to_string()));
+                }
+            }
+        }
         let mut ordinals: std::collections::HashMap<(i64, String), i64> =
             std::collections::HashMap::new();
         for item in items {
@@ -662,6 +700,11 @@ fn migration_v81_snapshot_item_details(conn: &Connection) -> Result<()> {
             // entry-for-entry with the duplicate-import path, which executes
             // (harmless no-op) UPDATEs for valueless entries too.
             let key = (type_id, vault.to_string());
+            // Divergent groups fail the count guard above — skip without
+            // consuming an ordinal so surviving groups stay aligned.
+            if divergent.contains(&key) {
+                continue;
+            }
             let ordinal = ordinals.entry(key).or_insert(0);
             let offset = *ordinal;
             *ordinal += 1;

@@ -220,6 +220,50 @@ pub fn import_inventory_report_internal(
                     |row| row.get(0),
                 )
                 .map_err(|e| format!("Failed to locate existing storage report: {e}"))?;
+            // Ordinal guard: file order is assumed to match stored id order
+            // per (type_id, vault) group. If a group diverged (rows deleted /
+            // re-inserted out of order), blind ordinal writes would silently
+            // mistag twin stacks — so verify counts first and skip divergent
+            // groups. Count skew is the detectable symptom; intra-group
+            // reorder with equal counts is accepted (import path preserves
+            // order, and no writer reorders within a group).
+            let mut file_counts: std::collections::HashMap<(i64, &str), i64> =
+                std::collections::HashMap::new();
+            for item in &report.items {
+                *file_counts
+                    .entry((item.type_id, item.storage_vault.as_str()))
+                    .or_insert(0) += 1;
+            }
+            let mut count_stmt = conn
+                .prepare(
+                    "SELECT type_id, storage_vault, COUNT(*) FROM character_snapshot_items
+                     WHERE item_snapshot_id = ?1 GROUP BY type_id, storage_vault",
+                )
+                .map_err(|e| format!("Failed to prepare ordinal guard: {e}"))?;
+            let stored_counts: std::collections::HashMap<(i64, String), i64> = count_stmt
+                .query_map([snapshot_id], |r| {
+                    Ok(((r.get::<_, i64>(0)?, r.get::<_, String>(1)?), r.get::<_, i64>(2)?))
+                })
+                .map_err(|e| format!("Failed to read ordinal guard counts: {e}"))?
+                .filter_map(|r| r.ok())
+                .collect();
+            let mut divergent: std::collections::HashSet<(i64, String)> =
+                std::collections::HashSet::new();
+            for ((type_id, vault), n) in &file_counts {
+                let stored = stored_counts
+                    .get(&(*type_id, vault.to_string()))
+                    .copied()
+                    .unwrap_or(0);
+                // No debug_assert: divergence is a runtime condition the
+                // regression test below exercises deliberately (debug builds
+                // would trip the assert). Detection = this skip + eprintln.
+                if stored != *n {
+                    eprintln!(
+                        "[inventory] ordinal guard: skipping divergent group ({type_id}, {vault}): file={n} stored={stored}"
+                    );
+                    divergent.insert((*type_id, vault.to_string()));
+                }
+            }
             let mut backfill_stmt = conn
                 .prepare(
                     "UPDATE character_snapshot_items
@@ -239,6 +283,11 @@ pub fn import_inventory_report_internal(
             let mut items_imported = 0usize;
             for item in &report.items {
                 let key = (item.type_id, item.storage_vault.clone());
+                // Divergent groups fail the count guard above — skip without
+                // consuming an ordinal so surviving groups stay aligned.
+                if divergent.contains(&key) {
+                    continue;
+                }
                 let ordinal = ordinals.entry(key).or_insert(0);
                 let offset = *ordinal;
                 *ordinal += 1;
@@ -1014,6 +1063,55 @@ mod tests {
                 .collect()
         };
         assert_eq!(vals, vec![Some(true), Some(false)], "Nth entry fills Nth row");
+    }
+
+    #[test]
+    fn duplicate_import_backfill_skips_divergent_group() {
+        // Ordinal guard: a group whose stored count diverges from the file
+        // (e.g. a row deleted out of band) must be skipped, not silently
+        // mistagged onto the wrong twin.
+        let db = pool();
+        let dir = std::env::temp_dir().join(format!(
+            "inv_diverge_{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let path = dir.join("T_Dreva_items_2026-01-01-00-00-00Z.json");
+        std::fs::write(
+            &path,
+            r#"{"Character":"T","ServerName":"Dreva","Timestamp":"2026-01-01 00:00:00","Report":"Storage","ReportVersion":1,"Items":[
+                {"TypeID":9,"StorageVault":"V","StackSize":1,"Value":1,"Name":"Twin","IsAugmented":true},
+                {"TypeID":9,"StorageVault":"V","StackSize":1,"Value":1,"Name":"Twin","IsAugmented":false}
+            ]}"#,
+        )
+        .expect("write report");
+        import_inventory_report_internal(&db, path.to_str().expect("path")).expect("import");
+        // Corrupt the group: NULL the columns, then delete one twin so
+        // stored (1) != file (2).
+        let conn = db.get_write().expect("write conn");
+        conn.execute("UPDATE character_snapshot_items SET is_augmented = NULL", [])
+            .expect("null out");
+        conn.execute(
+            "DELETE FROM character_snapshot_items WHERE id = (SELECT MIN(id) FROM character_snapshot_items)",
+            [],
+        )
+        .expect("delete one twin");
+        drop(conn);
+        let r = import_inventory_report_internal(&db, path.to_str().expect("path")).expect("re-import");
+        assert!(r.was_duplicate);
+        assert_eq!(r.items_imported, 0, "divergent group must be skipped entirely");
+        let conn = db.get().expect("read conn");
+        let vals: Vec<Option<bool>> = {
+            let mut stmt = conn
+                .prepare("SELECT is_augmented FROM character_snapshot_items ORDER BY id")
+                .expect("stmt");
+            stmt.query_map([], |row| row.get(0))
+                .expect("rows")
+                .filter_map(|r| r.ok())
+                .collect()
+        };
+        assert_eq!(vals, vec![None], "surviving twin must stay NULL, not mistagged");
     }
 
     #[test]

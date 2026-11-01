@@ -265,12 +265,13 @@ function clearAndClose() {
 function positionPopover() {
   if (!containerRef.value) return
   const rect = containerRef.value.getBoundingClientRect()
+  const popoverWidth = 260
   const popoverHeight = 280
   const spaceBelow = window.innerHeight - rect.bottom
   const openAbove = spaceBelow < popoverHeight && rect.top > spaceBelow
 
   popoverStyle.value = {
-    left: `${rect.left}px`,
+    left: `${Math.max(4, Math.min(rect.left, window.innerWidth - popoverWidth - 4))}px`,
     ...(openAbove
       ? { bottom: `${window.innerHeight - rect.top + 2}px` }
       : { top: `${rect.bottom + 2}px` }),

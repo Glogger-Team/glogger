@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center">
+      <div v-if="show" ref="dialogRef" tabindex="-1" class="fixed inset-0 z-50 flex items-center justify-center outline-none" @keydown.escape="handleCancel">
         <!-- Backdrop -->
         <div class="absolute inset-0 bg-black/50" @click="handleCancel" />
 
@@ -77,6 +77,7 @@ const emit = defineEmits<{
   cancel: []
 }>()
 
+const dialogRef = ref<HTMLElement>()
 const inputRef = ref<HTMLInputElement>()
 const inputValue = ref('')
 
@@ -90,8 +91,12 @@ watch(() => props.show, async (open) => {
   if (open) {
     inputValue.value = props.initialValue
     await nextTick()
-    inputRef.value?.focus()
-    inputRef.value?.select()
+    if (props.type === 'prompt') {
+      inputRef.value?.focus()
+      inputRef.value?.select()
+    } else {
+      dialogRef.value?.focus()
+    }
   }
 })
 

@@ -175,7 +175,7 @@ function positionDropdown() {
   const openAbove = spaceBelow < 200 && rect.top > spaceBelow
 
   dropdownStyle.value = {
-    left: `${rect.left}px`,
+    left: `${Math.max(4, Math.min(rect.left, window.innerWidth - Math.max(rect.width, 160) - 4))}px`,
     width: `${Math.max(rect.width, 160)}px`,
     ...(openAbove
       ? { bottom: `${window.innerHeight - rect.top + 2}px` }

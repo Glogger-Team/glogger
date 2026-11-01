@@ -112,6 +112,7 @@ import ItemInline from "../Shared/Item/ItemInline.vue";
 interface KeywordEntry {
   keyword: string
   description: string
+  item_count: number
 }
 
 const gameData = useGameDataStore();
@@ -218,10 +219,11 @@ onMounted(async () => {
     const result = await gameData.getRecipeIngredientKeywords();
     keywords.value = result;
 
-    // Pre-load item counts and disabled sets for sidebar badges
+    // Badge totals ride along with the keywords call — no per-keyword IPC.
+    // Disabled sets are local settings reads (sync, no IPC). Item lists
+    // still lazy-load per selection in selectKeyword.
     for (const kw of result) {
-      const items = await gameData.getItemsByKeyword(kw.keyword);
-      itemCountCache.value.set(kw.keyword, items.length);
+      itemCountCache.value.set(kw.keyword, kw.item_count);
       disabledCache.value.set(kw.keyword, craftingStore.getDynamicItemDisabledSet(kw.keyword));
     }
   } catch (e) {

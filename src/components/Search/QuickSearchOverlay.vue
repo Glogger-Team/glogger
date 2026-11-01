@@ -96,7 +96,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick, computed } from "vue"
+import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from "vue"
 import ItemInline from "../Shared/Item/ItemInline.vue"
 import RecipeInline from "../Shared/Recipe/RecipeInline.vue"
 import NpcInline from "../Shared/NPC/NpcInline.vue"
@@ -160,6 +160,17 @@ watch(categories, () => {
 function close() {
   emit("update:show", false)
 }
+
+// Window-level Esc: the footer promises `esc closes`, but the input-only
+// handler orphans Esc as soon as focus lands on a result button.
+function onWindowKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape" && props.show) {
+    close()
+    event.preventDefault()
+  }
+}
+onMounted(() => window.addEventListener("keydown", onWindowKeydown))
+onBeforeUnmount(() => window.removeEventListener("keydown", onWindowKeydown))
 
 function handleKeydown(event: KeyboardEvent) {
   const total = allResults.value.length

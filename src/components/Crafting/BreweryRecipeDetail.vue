@@ -385,9 +385,12 @@
     <!-- Create-project dialog -->
     <div
       v-if="showProjectDialog"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-      @click.self="showProjectDialog = false">
-      <div class="bg-surface-card border border-border-default rounded-lg p-4 w-96 shadow-lg flex flex-col gap-3">
+      ref="projectDialogRef"
+      tabindex="-1"
+      class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 outline-none"
+      @click.self="showProjectDialog = false"
+      @keydown.escape="showProjectDialog = false">
+      <div class="bg-surface-card border border-border-default rounded-lg p-4 w-96 max-w-full max-h-[85vh] overflow-y-auto shadow-lg flex flex-col gap-3">
         <div class="flex items-center justify-between">
           <h3 class="text-sm font-bold text-text-primary m-0">Create crafting project</h3>
           <button class="text-text-dim hover:text-text-secondary cursor-pointer bg-transparent border-none" @click="showProjectDialog = false">✕</button>
@@ -449,7 +452,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch, onMounted, onBeforeUnmount } from "vue";
+import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from "vue";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import ItemInline from "../Shared/Item/ItemInline.vue";
 import type { BrewingRecipe, BrewingIngredient, BrewingDiscovery } from "../../types/gameData/brewing";
@@ -732,6 +735,8 @@ const selectedCombos = computed<number[][]>(() =>
 // Create-project dialog state
 const showProjectDialog = ref(false);
 const projectMode = ref<"new" | "existing">("new");
+const projectDialogRef = ref<HTMLElement | null>(null);
+watch(showProjectDialog, (open) => { if (open) nextTick(() => projectDialogRef.value?.focus()) });
 const newProjectName = ref("");
 const existingProjectId = ref<number | null>(null);
 const creatingProject = ref(false);

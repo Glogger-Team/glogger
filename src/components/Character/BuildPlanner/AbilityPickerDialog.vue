@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center">
+      <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center" @keydown.escape="close">
         <!-- Backdrop -->
         <div class="absolute inset-0 bg-black/60" @click="close" />
 
@@ -125,7 +125,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useBuildPlannerStore } from '../../../stores/buildPlannerStore'
 import { useGameDataStore } from '../../../stores/gameDataStore'
 import { useCharacterStore } from '../../../stores/characterStore'
@@ -434,6 +434,14 @@ async function clearAll() {
 function close() {
   emit('update:show', false)
 }
+
+// Window-level Esc: the search input owns focus on open, so a dialog-level
+// handler would never fire. Guarded to this dialog's open state.
+function onWindowKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && props.show) close()
+}
+onMounted(() => window.addEventListener('keydown', onWindowKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
 
 // ── Watchers ─────────────────────────────────────────────────────────────────
 

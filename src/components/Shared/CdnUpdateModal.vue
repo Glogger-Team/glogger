@@ -1,12 +1,12 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center">
+      <div v-if="show" ref="dialogRef" tabindex="-1" class="fixed inset-0 z-50 flex items-center justify-center p-4 outline-none" @keydown.escape="$emit('dismiss')">
         <!-- Backdrop (no click-to-dismiss — this is intentionally blocking) -->
         <div class="absolute inset-0 bg-black/60" />
 
         <!-- Dialog -->
-        <div class="relative bg-surface-base border border-accent-red/40 rounded-lg shadow-xl w-[28rem] max-w-[90vw]">
+        <div class="relative bg-surface-base border border-accent-red/40 rounded-lg shadow-xl w-[28rem] max-w-full max-h-[85vh] overflow-y-auto">
           <!-- Header -->
           <div class="px-5 pt-5 pb-2 flex items-center gap-2">
             <span class="text-accent-red text-lg">!</span>
@@ -50,7 +50,9 @@
 </template>
 
 <script setup lang="ts">
-defineProps<{
+import { ref, watch, nextTick } from 'vue'
+
+const props = defineProps<{
   show: boolean
   currentVersion: number
   remoteVersion: number
@@ -61,6 +63,12 @@ defineEmits<{
   dismiss: []
   restart: []
 }>()
+
+const dialogRef = ref<HTMLElement | null>(null)
+
+// Blocking modal keeps no-click backdrop, but keyboard users still need an
+// out: Esc maps to `dismiss` (same as Remind Me Later), not restart.
+watch(() => props.show, (open) => { if (open) nextTick(() => dialogRef.value?.focus()) })
 </script>
 
 <style scoped>

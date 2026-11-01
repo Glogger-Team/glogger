@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center">
+      <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center" @keydown.escape="cancel">
         <!-- Backdrop -->
         <div class="absolute inset-0 bg-black/50" @click="cancel" />
 
@@ -63,7 +63,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { EQUIPMENT_SLOTS, getRarityTextColor } from '../../../types/buildPlanner'
 import type { EquippedSlotCandidates, EquippedCandidate, EquippedSelection } from '../../../types/buildPlanner'
 import StyledSelect from '../../Shared/StyledSelect.vue'
@@ -147,6 +147,14 @@ function confirm() {
 function cancel() {
   emit('update:show', false)
 }
+
+// Window-level Esc: focus sits inside per-slot StyledSelects, so a
+// dialog-level handler would rarely fire. Guarded to open state.
+function onWindowKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && props.show) cancel()
+}
+onMounted(() => window.addEventListener('keydown', onWindowKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
 </script>
 
 <style scoped>

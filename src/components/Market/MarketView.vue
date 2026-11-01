@@ -301,8 +301,8 @@
     </div>
 
     <!-- Import dialog -->
-    <div v-if="showImport" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="showImport = false">
-      <div class="bg-surface-card border border-border-default rounded-lg p-6 w-full max-w-lg">
+    <div v-if="showImport" tabindex="-1" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" @click.self="showImport = false" @keydown.escape="showImport = false" ref="importDialogRef">
+      <div class="bg-surface-card border border-border-default rounded-lg p-6 w-full max-w-lg max-h-[85vh] overflow-y-auto">
         <h3 class="text-text-primary text-lg mb-4 mt-0">Import Market Values</h3>
         <div class="mb-3">
           <label class="text-text-muted text-sm block mb-1">Paste JSON data</label>
@@ -331,8 +331,8 @@
       </div>
     </div>
     <!-- Bulk delete confirmation dialog -->
-    <div v-if="showBulkDeleteConfirm" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="showBulkDeleteConfirm = false">
-      <div class="bg-surface-card border border-border-default rounded-lg p-6 w-full max-w-sm">
+    <div v-if="showBulkDeleteConfirm" tabindex="-1" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" @click.self="showBulkDeleteConfirm = false" @keydown.escape="showBulkDeleteConfirm = false" ref="bulkDeleteDialogRef">
+      <div class="bg-surface-card border border-border-default rounded-lg p-6 w-full max-w-sm max-h-[85vh] overflow-y-auto">
         <h3 class="text-text-primary text-lg mb-2 mt-0">Delete {{ selectedIds.size }} Market Values?</h3>
         <p class="text-text-muted text-sm mb-4">This will permanently remove the selected market values. This cannot be undone.</p>
         <div class="flex gap-2 justify-end">
@@ -343,8 +343,8 @@
     </div>
 
     <!-- Bulk set price dialog -->
-    <div v-if="showBulkSetPrice" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="showBulkSetPrice = false">
-      <div class="bg-surface-card border border-border-default rounded-lg p-6 w-full max-w-sm">
+    <div v-if="showBulkSetPrice" tabindex="-1" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" @click.self="showBulkSetPrice = false" @keydown.escape="showBulkSetPrice = false" ref="bulkSetPriceDialogRef">
+      <div class="bg-surface-card border border-border-default rounded-lg p-6 w-full max-w-sm max-h-[85vh] overflow-y-auto">
         <h3 class="text-text-primary text-lg mb-2 mt-0">Set Price for {{ selectedIds.size }} Items</h3>
         <p class="text-text-muted text-sm mb-3">All selected items will be set to the same price.</p>
         <div class="mb-4">
@@ -370,8 +370,8 @@
     </div>
 
     <!-- Bulk adjust prices dialog -->
-    <div v-if="showBulkAdjust" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" @click.self="showBulkAdjust = false">
-      <div class="bg-surface-card border border-border-default rounded-lg p-6 w-full max-w-sm">
+    <div v-if="showBulkAdjust" tabindex="-1" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" @click.self="showBulkAdjust = false" @keydown.escape="showBulkAdjust = false" ref="bulkAdjustDialogRef">
+      <div class="bg-surface-card border border-border-default rounded-lg p-6 w-full max-w-sm max-h-[85vh] overflow-y-auto">
         <h3 class="text-text-primary text-lg mb-2 mt-0">Adjust Prices for {{ selectedIds.size }} Items</h3>
         <p class="text-text-muted text-sm mb-3">Apply a percentage adjustment to all selected items.</p>
         <div class="mb-2">
@@ -407,7 +407,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useToast } from '../../composables/useToast'
 import { formatRelative } from '../../composables/useTimestamp'
 import { useMarketStore, type MarketValue, type ImportMarketValuesResult } from '../../stores/marketStore'
@@ -569,6 +569,17 @@ const showImport = ref(false)
 const importJson = ref('')
 const importStrategy = ref('newest')
 const importResult = ref<ImportMarketValuesResult | null>(null)
+const importDialogRef = ref<HTMLElement | null>(null)
+const bulkDeleteDialogRef = ref<HTMLElement | null>(null)
+const bulkSetPriceDialogRef = ref<HTMLElement | null>(null)
+const bulkAdjustDialogRef = ref<HTMLElement | null>(null)
+
+// Focus the dialog wrapper on open so dialog-level Esc works even when
+// focus lands on a non-input element (same pattern as ModalDialog).
+watch(showImport, (open) => { if (open) nextTick(() => importDialogRef.value?.focus()) })
+watch(showBulkDeleteConfirm, (open) => { if (open) nextTick(() => bulkDeleteDialogRef.value?.focus()) })
+watch(showBulkSetPrice, (open) => { if (open) nextTick(() => bulkSetPriceDialogRef.value?.focus()) })
+watch(showBulkAdjust, (open) => { if (open) nextTick(() => bulkAdjustDialogRef.value?.focus()) })
 
 // Summary stats
 const totalMarketValue = computed(() =>
