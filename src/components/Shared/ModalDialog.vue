@@ -79,6 +79,9 @@ const emit = defineEmits<{
 const dialogRef = ref<HTMLElement>()
 const inputRef = ref<HTMLInputElement>()
 const inputValue = ref('')
+// Focus restore: dialogs steal focus on open; return it on close so
+// keyboard users don't lose their place.
+let previouslyFocused: HTMLElement | null = null
 
 const confirmClass = computed(() =>
   props.danger
@@ -88,6 +91,7 @@ const confirmClass = computed(() =>
 
 watch(() => props.show, async (open) => {
   if (open) {
+    previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
     inputValue.value = props.initialValue
     await nextTick()
     if (props.type === 'prompt') {
@@ -96,6 +100,9 @@ watch(() => props.show, async (open) => {
     } else {
       dialogRef.value?.focus()
     }
+  } else {
+    previouslyFocused?.focus()
+    previouslyFocused = null
   }
 })
 

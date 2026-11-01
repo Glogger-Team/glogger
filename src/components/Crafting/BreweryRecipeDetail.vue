@@ -736,7 +736,16 @@ const selectedCombos = computed<number[][]>(() =>
 const showProjectDialog = ref(false);
 const projectMode = ref<"new" | "existing">("new");
 const projectDialogRef = ref<HTMLElement | null>(null);
-watch(showProjectDialog, (open) => { if (open) nextTick(() => projectDialogRef.value?.focus()) });
+let previouslyFocused: HTMLElement | null = null;
+watch(showProjectDialog, (open) => {
+  if (open) {
+    previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    nextTick(() => projectDialogRef.value?.focus());
+  } else {
+    previouslyFocused?.focus();
+    previouslyFocused = null;
+  }
+});
 const newProjectName = ref("");
 const existingProjectId = ref<number | null>(null);
 const creatingProject = ref(false);

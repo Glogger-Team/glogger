@@ -159,6 +159,7 @@ const characterStore = useCharacterStore()
 const settingsStore = useSettingsStore()
 const { familyHasKnownAbility } = useBuildCrossRef()
 
+let previouslyFocused: HTMLElement | null = null
 const searchFilter = ref('')
 const hideUnlearned = ref(false)
 const limitBySkillLevel = ref(false)
@@ -447,8 +448,12 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
 
 watch(() => props.show, (open) => {
   if (open) {
+    previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
     searchFilter.value = ''
     loadAbilities()
+  } else {
+    previouslyFocused?.focus()
+    previouslyFocused = null
   }
 }, { immediate: true })
 

@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="show" ref="dialogRef" tabindex="-1" class="fixed inset-0 z-50 flex items-center justify-center p-4 outline-none" @keydown.escape="$emit('dismiss')">
+      <div v-if="show" ref="dialogRef" tabindex="-1" class="fixed inset-0 z-50 flex items-center justify-center p-4 outline-none" @keydown.escape="onEscape">
         <!-- Backdrop (no click-to-dismiss — this is intentionally blocking) -->
         <div class="absolute inset-0 bg-black/60" />
 
@@ -59,16 +59,31 @@ const props = defineProps<{
   restarting: boolean
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   dismiss: []
   restart: []
 }>()
 
+// Esc maps to `dismiss` (same as Remind Me Later) — but never while
+// `restarting` is true (buttons disabled; the modal must stay until done).
+function onEscape() {
+  if (!props.restarting) emit('dismiss')
+}
+
 const dialogRef = ref<HTMLElement | null>(null)
+let previouslyFocused: HTMLElement | null = null
 
 // Blocking modal keeps no-click backdrop, but keyboard users still need an
 // out: Esc maps to `dismiss` (same as Remind Me Later), not restart.
-watch(() => props.show, (open) => { if (open) nextTick(() => dialogRef.value?.focus()) })
+watch(() => props.show, (open) => {
+  if (open) {
+    previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    nextTick(() => dialogRef.value?.focus())
+  } else {
+    previouslyFocused?.focus()
+    previouslyFocused = null
+  }
+})
 </script>
 
 <style scoped>

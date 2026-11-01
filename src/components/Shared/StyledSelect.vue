@@ -45,7 +45,7 @@
           @keydown.enter.prevent="selectFirstFiltered"
           @keydown.escape.stop.prevent="close"
           @keydown.down.prevent="focusFirstOption" />
-        <div class="overflow-y-auto min-h-0">
+        <div class="overflow-y-auto min-h-0" @keydown.escape.stop.prevent="closeAndRefocus">
           <button
             v-for="option in filteredOptions"
             :key="option.value"
@@ -198,6 +198,14 @@ function toggle() {
 
 function close() {
   open.value = false
+}
+
+// Esc from an option button: contain the dropdown (don't bubble to a
+// parent dialog's window-level Esc) and return focus to the toggle.
+function closeAndRefocus() {
+  close()
+  const btn = containerRef.value?.querySelector<HTMLButtonElement>('button')
+  btn?.focus()
 }
 
 // Closed-toggle Esc must bubble to a parent dialog (e.g. Import Equipped's

@@ -87,16 +87,23 @@ const candidatesBySlot = computed<Record<string, EquippedCandidate[]>>(() => {
   return map
 })
 
-// When the dialog opens, default every slot with candidates to the best guess
-// (index 0, which the backend ordered worn/attuned/level-first).
-watch(() => props.show, (open) => {
-  if (!open) return
-  const next: Record<string, number> = {}
-  for (const s of props.slots) {
-    next[s.equip_slot] = s.candidates.length > 0 ? 0 : -1
+let previouslyFocused: HTMLElement | null = null
+
+ // When the dialog opens, default every slot with candidates to the best guess
+ // (index 0, which the backend ordered worn/attuned/level-first).
+ watch(() => props.show, (open) => {
+  if (open) {
+    previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const next: Record<string, number> = {}
+    for (const s of props.slots) {
+      next[s.equip_slot] = s.candidates.length > 0 ? 0 : -1
+    }
+    selection.value = next
+  } else {
+    previouslyFocused?.focus()
+    previouslyFocused = null
   }
-  selection.value = next
-}, { immediate: true })
+ }, { immediate: true })
 
 function candidateLabel(c: EquippedCandidate): string {
   const tags: string[] = []

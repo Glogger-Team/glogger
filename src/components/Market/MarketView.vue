@@ -573,13 +573,14 @@ const importDialogRef = ref<HTMLElement | null>(null)
 const bulkDeleteDialogRef = ref<HTMLElement | null>(null)
 const bulkSetPriceDialogRef = ref<HTMLElement | null>(null)
 const bulkAdjustDialogRef = ref<HTMLElement | null>(null)
+let previouslyFocused: HTMLElement | null = null
 
 // Focus the dialog wrapper on open so dialog-level Esc works even when
 // focus lands on a non-input element (same pattern as ModalDialog).
-watch(showImport, (open) => { if (open) nextTick(() => importDialogRef.value?.focus()) })
-watch(showBulkDeleteConfirm, (open) => { if (open) nextTick(() => bulkDeleteDialogRef.value?.focus()) })
-watch(showBulkSetPrice, (open) => { if (open) nextTick(() => bulkSetPriceDialogRef.value?.focus()) })
-watch(showBulkAdjust, (open) => { if (open) nextTick(() => bulkAdjustDialogRef.value?.focus()) })
+watch(showImport, (open) => { if (open) { previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null; nextTick(() => importDialogRef.value?.focus()) } else { previouslyFocused?.focus(); previouslyFocused = null } })
+watch(showBulkDeleteConfirm, (open) => { if (open) { previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null; nextTick(() => bulkDeleteDialogRef.value?.focus()) } else { previouslyFocused?.focus(); previouslyFocused = null } })
+watch(showBulkSetPrice, (open) => { if (open) { previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null; nextTick(() => bulkSetPriceDialogRef.value?.focus()) } else { previouslyFocused?.focus(); previouslyFocused = null } })
+watch(showBulkAdjust, (open) => { if (open) { previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null; nextTick(() => bulkAdjustDialogRef.value?.focus()) } else { previouslyFocused?.focus(); previouslyFocused = null } })
 
 // Summary stats
 const totalMarketValue = computed(() =>
