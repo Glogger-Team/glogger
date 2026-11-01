@@ -888,6 +888,19 @@ fn migration_v82_purge_placeholder_characters(conn: &Connection) -> Result<()> {
 /// duplicate-import path (now guarded) re-backfills correctly on the next
 /// re-import. Idempotent: a no-op once clean.
 fn migration_v83_clear_divergent_ordinal_details(conn: &Connection) -> Result<()> {
+    // Minimal test fixtures build only the tables they need — absent tables
+    // skip instead of failing the whole migration run (same shape as v82).
+    let table_exists = |name: &str| -> bool {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [name],
+            |r| r.get(0),
+        )
+        .unwrap_or(false)
+    };
+    if !table_exists("character_item_snapshots") || !table_exists("character_snapshot_items") {
+        return Ok(());
+    }
     let snapshots: Vec<(i64, String)> = {
         let mut stmt = conn.prepare(
             "SELECT id, raw_json FROM character_item_snapshots WHERE raw_json IS NOT NULL",
