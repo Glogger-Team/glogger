@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center" @keydown.escape="cancel">
+      <div v-if="show" ref="dialogRef" tabindex="-1" class="fixed inset-0 z-50 flex items-center justify-center outline-none" @keydown.escape="cancel">
         <!-- Backdrop -->
         <div class="absolute inset-0 bg-black/50" @click="cancel" />
 
@@ -63,7 +63,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { EQUIPMENT_SLOTS, getRarityTextColor } from '../../../types/buildPlanner'
 import type { EquippedSlotCandidates, EquippedCandidate, EquippedSelection } from '../../../types/buildPlanner'
 import StyledSelect from '../../Shared/StyledSelect.vue'
@@ -88,12 +88,14 @@ const candidatesBySlot = computed<Record<string, EquippedCandidate[]>>(() => {
 })
 
 let previouslyFocused: HTMLElement | null = null
+const dialogRef = ref<HTMLElement | null>(null)
 
  // When the dialog opens, default every slot with candidates to the best guess
  // (index 0, which the backend ordered worn/attuned/level-first).
  watch(() => props.show, (open) => {
   if (open) {
     previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    nextTick(() => dialogRef.value?.focus())
     const next: Record<string, number> = {}
     for (const s of props.slots) {
       next[s.equip_slot] = s.candidates.length > 0 ? 0 : -1

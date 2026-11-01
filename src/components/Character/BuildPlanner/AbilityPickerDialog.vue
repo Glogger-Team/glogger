@@ -43,6 +43,7 @@
           <!-- Filter + toggles row -->
           <div class="px-4 pb-2 shrink-0 flex flex-col gap-1.5">
             <input
+              ref="searchInputRef"
               v-model="searchFilter"
               type="text"
               placeholder="Search abilities..."
@@ -125,7 +126,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useBuildPlannerStore } from '../../../stores/buildPlannerStore'
 import { useGameDataStore } from '../../../stores/gameDataStore'
 import { useCharacterStore } from '../../../stores/characterStore'
@@ -160,6 +161,7 @@ const settingsStore = useSettingsStore()
 const { familyHasKnownAbility } = useBuildCrossRef()
 
 let previouslyFocused: HTMLElement | null = null
+const searchInputRef = ref<HTMLInputElement | null>(null)
 const searchFilter = ref('')
 const hideUnlearned = ref(false)
 const limitBySkillLevel = ref(false)
@@ -451,6 +453,7 @@ watch(() => props.show, (open) => {
     previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null
     searchFilter.value = ''
     loadAbilities()
+    nextTick(() => searchInputRef.value?.focus())
   } else {
     previouslyFocused?.focus()
     previouslyFocused = null
