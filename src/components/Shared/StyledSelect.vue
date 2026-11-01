@@ -8,7 +8,7 @@
       class="flex items-center gap-1.5 rounded border cursor-pointer transition-colors text-left min-w-0"
       :class="[sizeClasses.button, buttonColorClass, fullWidth ? 'w-full' : '']"
       @click="toggle"
-      @keydown.escape="close"
+      @keydown.escape.stop="close"
       @keydown.enter.prevent="toggle"
       @keydown.space.prevent="toggle"
       @keydown.up.prevent="selectPrev"
@@ -43,7 +43,7 @@
           class="shrink-0 w-full bg-surface border-b border-border-default text-text-primary placeholder:text-text-muted focus:outline-none"
           :class="sizeClasses.option"
           @keydown.enter.prevent="selectFirstFiltered"
-          @keydown.escape.prevent="close"
+          @keydown.escape.stop.prevent="close"
           @keydown.down.prevent="focusFirstOption" />
         <div class="overflow-y-auto min-h-0">
           <button
