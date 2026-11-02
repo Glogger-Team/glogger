@@ -1,7 +1,9 @@
 use super::DbPool;
+use crate::books_watcher::rescan_books_once;
+use crate::settings::SettingsManager;
 use crate::shop_log_parser::{parse_shop_log, ShopLog};
 use crate::stall_aggregations::{
-    aggregate_inventory, aggregate_revenue, aggregate_sales_timeseries, Granularity,
+    aggregate_revenue, aggregate_sales_timeseries, BaselineSeed, Granularity,
     InventoryEvent, InventoryResult, RevenueEvent, RevenueResult, SalesTimeseriesResult,
     TimeseriesEvent, TimeseriesMode, TimeseriesPeriod,
 };
@@ -10,7 +12,8 @@ use rusqlite::types::Value;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
-use tauri::State;
+use std::sync::Arc;
+use tauri::{AppHandle, Manager, State};
 
 /// Input shape for a single stall event, built by the coordinator from the
 /// shop log parser's output.
@@ -589,8 +592,10 @@ pub fn get_stall_revenue(
     Ok(aggregate_revenue(events, granularity))
 }
 
-/// Inventory tier-stack snapshot for the Inventory tab. Replays every
-/// non-ignored event for the owner, in `(event_at ASC, id ASC)` order so
+/// Inventory tier-stack snapshot for the Inventory tab. Seeds the replay from
+/// the owner's `stall_inventory_baseline` rows (opening stock counted
+/// in-game), then replays every non-ignored shop-log event after each
+/// baseline's timestamp on top — in `(event_at ASC, id ASC)` order so
 /// same-minute `visible` events arrive after their `added` counterpart.
 #[tauri::command]
 pub fn get_stall_inventory(
@@ -637,8 +642,34 @@ pub fn get_stall_inventory(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to read inventory results: {e}"))?;
 
+    // Baselines are few (one row per item the user counted) so a second
+    // small query on the same read checkout is cheaper than a JOIN the
+    // DB-free aggregator cannot consume anyway. The intermediate `rows`
+    // binding forces the `MappedRows` temporary to drop before `bstmt`.
+    let mut bstmt = conn
+        .prepare(
+            "SELECT item, quantity, price_unit, recorded_at FROM stall_inventory_baseline \
+             WHERE owner = ?1",
+        )
+        .map_err(|e| format!("Failed to prepare baseline query: {e}"))?;
+    let rows = bstmt
+        .query_map(rusqlite::params![owner], |row| {
+            Ok(BaselineSeed {
+                item: row.get::<_, String>(0)?,
+                quantity: row.get::<_, i64>(1)?,
+                price_unit: row.get::<_, Option<f64>>(2)?,
+                recorded_at: row.get::<_, String>(3)?,
+            })
+        })
+        .map_err(|e| format!("Baseline query failed: {e}"))?;
+    let baselines: Vec<BaselineSeed> = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read baselines: {e}"))?;
+
     let period_days = params.period_days.unwrap_or(7);
-    Ok(aggregate_inventory(events, period_days))
+    Ok(crate::stall_aggregations::aggregate_inventory_with_baselines(
+        events, period_days, baselines,
+    ))
 }
 
 /// Parameters for `get_stall_sales_timeseries` (Trends tab).
@@ -1114,9 +1145,204 @@ pub fn seed_stall_events_dev(
     insert_stall_events(&db, &inputs)
 }
 
+/// Manual "Check for new logs" command: one stateless sweep over
+/// `Books/PlayerShopLog_*.txt` for the active character. The Books watcher
+/// owns its mtime map on its thread and offers no shared handle, so this
+/// command re-runs the same `process_book_file` ingest statelessly — `INSERT
+/// OR IGNORE` dedup makes reprocessing already-seen files a no-op.
+///
+/// `async` + `spawn_blocking`: the sweep stats + reads every book file, which
+/// can stall the main thread on a cold disk (statehelm `backfill_statehelm_gifts`
+/// precedent). Returns `(files_scanned, new_events)`.
+#[tauri::command]
+pub async fn rescan_stall_books(app: AppHandle) -> Result<(usize, usize), String> {
+    let settings = app
+        .try_state::<Arc<SettingsManager>>()
+        .map(|s| s.inner().clone())
+        .ok_or_else(|| "SettingsManager not managed yet".to_string())?;
+    let db = app
+        .try_state::<DbPool>()
+        .map(|s| s.inner().clone())
+        .ok_or_else(|| "DbPool not managed yet".to_string())?;
+    tauri::async_runtime::spawn_blocking(move || rescan_books_once(&settings, &db, &app))
+        .await
+        .map_err(|e| format!("Rescan task failed: {e}"))?
+}
+
+/// One manual opening-stock row: what the user counted in their stall for one
+/// item. `quantity` is the counted stock, `price_unit` the current per-unit
+/// listing price (None = unpriced). Upserts on `UNIQUE(owner, item)` so
+/// re-counting the same item replaces the old row instead of duplicating it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StallBaselineInput {
+    pub owner: Option<String>,
+    pub item: Option<String>,
+    pub quantity: Option<i64>,
+    pub price_unit: Option<f64>,
+    pub note: Option<String>,
+}
+
+/// The stored baseline row returned to the frontend.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StallBaseline {
+    pub id: i64,
+    pub owner: String,
+    pub item: String,
+    pub quantity: i64,
+    pub price_unit: Option<f64>,
+    pub recorded_at: String,
+    pub note: Option<String>,
+}
+
+/// Upsert one baseline row for the active character. `quantity <= 0` deletes
+/// the row instead (counted to zero = no opening stock) and returns None.
+/// Non-positive quantities never reach the aggregator as zero-qty seeds.
+#[tauri::command]
+pub fn save_stall_baseline(
+    db: State<'_, DbPool>,
+    input: StallBaselineInput,
+) -> Result<Option<StallBaseline>, String> {
+    let conn = db
+        .get_write()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    save_stall_baseline_internal(&conn, &input)
+}
+
+/// Validated upsert/delete behind `save_stall_baseline`. Takes a plain
+/// `Connection` so tests exercise the real SQL without a Tauri `State`.
+fn save_stall_baseline_internal(
+    conn: &rusqlite::Connection,
+    input: &StallBaselineInput,
+) -> Result<Option<StallBaseline>, String> {
+    let owner = opt_nonempty(&input.owner)
+        .ok_or_else(|| "save_stall_baseline requires an owner".to_string())?
+        .to_string();
+    let item = opt_nonempty(&input.item)
+        .ok_or_else(|| "save_stall_baseline requires an item name".to_string())?
+        .to_string();
+    let quantity = input
+        .quantity
+        .ok_or_else(|| "save_stall_baseline requires a quantity".to_string())?;
+    if !(0..=1_000_000).contains(&quantity) {
+        return Err("save_stall_baseline quantity out of range (0-1000000)".to_string());
+    }
+    if let Some(p) = input.price_unit {
+        if !(0.0..=1_000_000_000.0).contains(&p) {
+            return Err("save_stall_baseline price out of range".to_string());
+        }
+    }
+
+    if quantity == 0 {
+        conn.execute(
+            "DELETE FROM stall_inventory_baseline WHERE owner = ?1 AND item = ?2",
+            rusqlite::params![owner, item],
+        )
+        .map_err(|e| format!("Baseline delete failed: {e}"))?;
+        return Ok(None);
+    }
+
+    // `recorded_at` stamps every upsert with now (localtime, matching the
+    // column default): a re-count supersedes history up to *now*, not up to
+    // the original count. `note` clears on each save unless re-supplied —
+    // stale notes ("counted Tuesday") would otherwise outlive their count.
+    conn.execute(
+        "INSERT INTO stall_inventory_baseline (owner, item, quantity, price_unit, recorded_at, note)
+         VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime'), ?5)
+         ON CONFLICT(owner, item) DO UPDATE SET
+            quantity = excluded.quantity,
+            price_unit = excluded.price_unit,
+            recorded_at = excluded.recorded_at,
+            note = excluded.note",
+        rusqlite::params![owner, item, quantity, input.price_unit, input.note],
+    )
+    .map_err(|e| format!("Baseline save failed: {e}"))?;
+
+    conn.query_row(
+        "SELECT id, owner, item, quantity, price_unit, recorded_at, note FROM stall_inventory_baseline \
+         WHERE owner = ?1 AND item = ?2",
+        rusqlite::params![owner, item],
+        |row| {
+            Ok(StallBaseline {
+                id: row.get(0)?,
+                owner: row.get(1)?,
+                item: row.get(2)?,
+                quantity: row.get(3)?,
+                price_unit: row.get(4)?,
+                recorded_at: row.get(5)?,
+                note: row.get(6)?,
+            })
+        },
+    )
+    .map_err(|e| format!("Baseline readback failed: {e}"))
+    .map(Some)
+}
+
+/// List every baseline row for the active character, newest-recorded first.
+/// Empty owner returns no rows (never cross-character data).
+#[tauri::command]
+pub fn get_stall_baselines(
+    db: State<'_, DbPool>,
+    owner: Option<String>,
+) -> Result<Vec<StallBaseline>, String> {
+    let Some(owner) = opt_nonempty(&owner).map(str::to_string) else {
+        return Ok(Vec::new());
+    };
+    let conn = db
+        .get()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, owner, item, quantity, price_unit, recorded_at, note FROM stall_inventory_baseline \
+             WHERE owner = ?1 ORDER BY recorded_at DESC, item ASC",
+        )
+        .map_err(|e| format!("Failed to prepare baselines query: {e}"))?;
+    // Intermediate `rows` binding: the `MappedRows` temporary must drop
+    // before `stmt` (same shape as the inventory baseline block above).
+    let rows = stmt
+        .query_map(rusqlite::params![owner], |row| {
+            Ok(StallBaseline {
+                id: row.get(0)?,
+                owner: row.get(1)?,
+                item: row.get(2)?,
+                quantity: row.get(3)?,
+                price_unit: row.get(4)?,
+                recorded_at: row.get(5)?,
+                note: row.get(6)?,
+            })
+        })
+        .map_err(|e| format!("Baselines query failed: {e}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Failed to read baselines: {e}"))
+}
+
+/// Delete one baseline row by id, scoped to the owner so a stale id can never
+/// clear another character's count. Returns rows deleted (0 or 1).
+#[tauri::command]
+pub fn delete_stall_baseline(
+    db: State<'_, DbPool>,
+    id: i64,
+    owner: Option<String>,
+) -> Result<usize, String> {
+    let Some(owner) = opt_nonempty(&owner).map(str::to_string) else {
+        return Err("delete_stall_baseline requires an owner".to_string());
+    };
+    let conn = db
+        .get_write()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    conn.execute(
+        "DELETE FROM stall_inventory_baseline WHERE id = ?1 AND owner = ?2",
+        rusqlite::params![id, owner],
+    )
+    .map_err(|e| format!("Baseline delete failed: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Local;
+    use std::path::Path;
 
     #[test]
     fn year_from_filename_extracts_iso_year() {
@@ -1245,5 +1471,127 @@ mod tests {
             parsed.entries[2].event_at.as_deref(),
             Some("2026-04-15 11:45:00")
         );
+    }
+
+    fn baseline_pool() -> crate::db::DbPool {
+        // Shared-cache memory URI: both pool legs hit the same in-memory DB.
+        // Unique name per call keeps parallel tests isolated.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let mk = |query_only: bool| {
+            r2d2_sqlite::SqliteConnectionManager::file(format!(
+                "file:stall_baseline_test_{n}?mode=memory&cache=shared"
+            ))
+            .with_init(move |conn| {
+                if query_only {
+                    conn.execute_batch(
+                        "PRAGMA journal_mode=WAL;
+                         PRAGMA busy_timeout=5000;
+                         PRAGMA synchronous=NORMAL;
+                         PRAGMA foreign_keys=ON;
+                         PRAGMA query_only=ON;",
+                    )
+                } else {
+                    conn.execute_batch(
+                        "PRAGMA journal_mode=WAL;
+                         PRAGMA busy_timeout=5000;
+                         PRAGMA synchronous=NORMAL;
+                         PRAGMA foreign_keys=ON;",
+                    )
+                }
+            })
+        };
+        let writes = r2d2::Pool::builder()
+            .max_size(1)
+            .build(mk(false))
+            .expect("writes pool");
+        let reads = r2d2::Pool::builder()
+            .max_size(2)
+            .build(mk(true))
+            .expect("reads pool");
+        let conn = writes.get().expect("conn");
+        crate::db::migrations::run_migrations(&conn, None).expect("migrations");
+        drop(conn);
+        crate::db::DbPool::from_pools(reads, writes)
+    }
+
+    fn baseline_input(owner: &str, item: &str, qty: i64) -> StallBaselineInput {
+        StallBaselineInput {
+            owner: Some(owner.to_string()),
+            item: Some(item.to_string()),
+            quantity: Some(qty),
+            price_unit: Some(4500.0),
+            note: None,
+        }
+    }
+
+    #[test]
+    fn baseline_upsert_replaces_same_item() {
+        let db = baseline_pool();
+        let conn = db.get_write().expect("write conn");
+        let first = save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 5))
+            .expect("save")
+            .expect("row");
+        assert_eq!(first.quantity, 5);
+        let second = save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 3))
+            .expect("re-save")
+            .expect("row");
+        assert_eq!(second.quantity, 3);
+        assert_eq!(first.id, second.id, "upsert keeps the same row");
+        drop(conn);
+        let count: i64 = db
+            .get()
+            .expect("read conn")
+            .query_row(
+                "SELECT COUNT(*) FROM stall_inventory_baseline WHERE owner = 'Deradon'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn baseline_zero_quantity_deletes_row() {
+        let db = baseline_pool();
+        let conn = db.get_write().expect("write conn");
+        save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 5)).expect("save");
+        let deleted =
+            save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 0))
+                .expect("zero-out");
+        assert!(deleted.is_none());
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM stall_inventory_baseline WHERE owner = 'Deradon'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn baselines_are_owner_scoped() {
+        let db = baseline_pool();
+        let conn = db.get_write().expect("write conn");
+        save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 5)).expect("save");
+        save_stall_baseline_internal(&conn, &baseline_input("Alvida", "Reins", 2)).expect("save");
+        // Wrong-owner delete is a no-op (same predicate the command uses).
+        let deleted = conn
+            .execute(
+                "DELETE FROM stall_inventory_baseline WHERE id = 1 AND owner = 'Alvida'",
+                [],
+            )
+            .expect("delete");
+        assert_eq!(deleted, 0);
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM stall_inventory_baseline",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(count, 2);
     }
 }

@@ -54,6 +54,112 @@ pub fn spawn_books_watcher(settings: std::sync::Arc<SettingsManager>, db: DbPool
     });
 }
 
+/// One-shot Books-directory scan for the manual "Check for new logs" command.
+/// Stateless sweep over `PlayerShopLog_*.txt` files: `INSERT OR IGNORE` dedup
+/// (not the watcher's mtime map) decides what is new, so it can never mark a
+/// file seen without ingesting it, and stays correct when the watcher thread
+/// already processed the same files (0 new rows). Returns `(files_scanned,
+/// new_events)`; both 0 with no error when the Books dir is missing or no
+/// character/server is active. New-row count is the `stall_events` row delta
+/// for the active character across the sweep.
+pub fn rescan_books_once(
+    settings: &SettingsManager,
+    db: &DbPool,
+    app: &AppHandle,
+) -> Result<(usize, usize), String> {
+    let snapshot = settings.get();
+    let (Some(game_data_path), Some(character), Some(server)) = (
+        nonempty_owned(&snapshot.game_data_path),
+        snapshot
+            .active_character_name
+            .as_deref()
+            .and_then(nonempty_owned),
+        snapshot
+            .active_server_name
+            .as_deref()
+            .and_then(nonempty_owned),
+    ) else {
+        return Ok((0, 0));
+    };
+
+    let books_dir = Path::new(&game_data_path).join("Books");
+    let Ok(entries) = std::fs::read_dir(&books_dir) else {
+        return Ok((0, 0));
+    };
+
+    // Baseline row count for the delta: only this owner's stall rows can be
+    // added by the sweep below, so the difference is the new-event count.
+    // A read-pool checkout is fine — the sweep's writes go through the
+    // single write pool, and COUNT(*) never blocks them.
+    let count_for_owner = |db: &DbPool| -> usize {
+        db.get()
+            .ok()
+            .and_then(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM stall_events WHERE owner = ?1",
+                    rusqlite::params![character],
+                    |row| row.get::<_, i64>(0),
+                )
+                .ok()
+            })
+            .unwrap_or(0) as usize
+    };
+    let before = count_for_owner(db);
+    let mut scanned = 0usize;
+
+    for path in entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("txt"))
+        })
+    {
+        // Only stall logs matter for the inventory command; other books go
+        // through the watcher's normal mtime-tracked path. `process_book_file`
+        // classifies by stem so a ShopLog-only guard keeps this cheap.
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if !stem.starts_with("PlayerShopLog") {
+            continue;
+        }
+        // Skip files mid-write (mtime changed under us) — the next scan or
+        // the watcher thread picks them up with a fresh mtime.
+        let pre = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => continue,
+        };
+        let post = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        if pre != post {
+            continue;
+        }
+        scanned += 1;
+        let content = String::from_utf8_lossy(&bytes);
+        // Unparseable/empty files are normal (no entries, hire-only books)
+        // — count as scanned, not as failure.
+        let _ = process_book_file(&path, &content, &character, &server, db, app);
+    }
+    let new_events = count_for_owner(db).saturating_sub(before);
+    Ok((scanned, new_events))
+}
+
+/// `Some(trimmed)` when non-empty, else `None`.
+fn nonempty_owned(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
 /// Consecutive failed attempts after which a book file is given up on (logged
 /// once, then recorded in `seen` so it stops retrying every tick). A
 /// deterministically broken file — permanently non-parseable content, a

@@ -253,7 +253,18 @@ pub struct InventoryItem {
     /// Most recent priced event seen for this item — survives `finalize_tiers`
     /// even when all tiers drop to zero, so the Recently Sold Out view can
     /// still display "what customers were paying when this ran out".
+    /// Also the fallback price for unpriced tiers (added but never
+    /// visible/configured, or pricing history scrolled out of the log).
     pub last_known_price: Option<f64>,
+    /// Units priced at `last_known_price` because no priced tier survived.
+    /// 0 when every unit has a real price or the item never had a price.
+    pub fallback_priced_qty: i64,
+    /// True when the earliest event for this item is NOT a baseline
+    /// (`added`/`visible`/`configured`) — the log starts mid-history
+    /// (sale or removal first), so the baseline is truncated.
+    pub history_truncated: bool,
+    /// Earliest `event_at` seen for this item (`YYYY-MM-DD HH:MM:SS`).
+    pub first_event_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -279,6 +290,8 @@ struct ItemState {
     last_sold_at: Option<String>,
     last_activity_at: Option<String>,
     last_known_price: Option<f64>,
+    first_action: Option<String>,
+    first_event_at: Option<String>,
 }
 
 impl ItemState {
@@ -402,7 +415,15 @@ fn apply_removed(state: &mut ItemState, qty: i64) {
 
 /// Collapse same-price tiers, drop non-positive tiers, sort by price ascending
 /// (None last). Run once at the end of replay.
-fn finalize_tiers(state: &mut ItemState) {
+///
+/// `fallback_price` is the item's `last_known_price`. It prices surviving
+/// unpriced qty ONLY when no priced tier survived at all (added-but-never-
+/// priced stock whose only price signal is a later `bought`, or pricing
+/// history scrolled out of the log). When a real priced tier exists, the
+/// unpriced remainder is kept as `price: None` — a partial `visible` that
+/// covers 3 of 5 units must not retroactively price the other 2.
+/// Returns how many units were fallback-priced (0 when none).
+fn finalize_tiers(state: &mut ItemState, fallback_price: Option<f64>) -> i64 {
     state.prune_zero();
 
     // Collapse: group by price (treating None as a distinct bucket).
@@ -426,14 +447,30 @@ fn finalize_tiers(state: &mut ItemState) {
             price: Some(scaled as f64 / 1000.0),
         })
         .collect();
+    let mut fallback_qty = 0i64;
     if unpriced_qty > 0 {
-        tiers.push(PriceTier {
-            qty: unpriced_qty,
-            price: None,
-        });
+        // Only fall back when nothing genuinely priced survived; otherwise
+        // the unpriced remainder is real signal (partially priced stock).
+        let use_fallback = tiers.is_empty();
+        match (use_fallback, fallback_price) {
+            (true, Some(p)) => {
+                tiers.push(PriceTier {
+                    qty: unpriced_qty,
+                    price: Some(p),
+                });
+                fallback_qty = unpriced_qty;
+            }
+            _ => {
+                tiers.push(PriceTier {
+                    qty: unpriced_qty,
+                    price: None,
+                });
+            }
+        }
     }
 
     state.tiers = tiers;
+    fallback_qty
 }
 
 /// Replay a stream of inventory events into per-item tier stacks, then
@@ -445,14 +482,80 @@ fn finalize_tiers(state: &mut ItemState) {
 ///   active date count) — conservative forecasting.
 /// - **Zero / negative / ≥ 99999** → "all time". Window is every distinct
 ///   date, divisor is `max(distinct_date_count, 1)`.
+///
+/// Test-only shorthand for `aggregate_inventory_with_baselines` with no
+/// seeds: the production caller (`get_stall_inventory`) seeds baselines.
+#[cfg(test)]
 pub fn aggregate_inventory(
     events: impl IntoIterator<Item = InventoryEvent>,
     period_days: i64,
 ) -> InventoryResult {
-    let events: Vec<InventoryEvent> = events.into_iter().collect();
+    aggregate_inventory_with_baselines(events, period_days, Vec::new())
+}
 
-    // First pass: collect distinct active dates (newest-first).
+/// Baseline seed rows: opening stock counted in-game. Each seeds one priced
+/// tier dated at `recorded_at`, so shop-log events after that timestamp replay
+/// on top. Events at-or-before the baseline for the same item are dropped —
+/// the baseline supersedes scrolled-out history. Rows with `quantity <= 0`
+/// are ignored (use the UI clear for removals).
+#[derive(Debug, Clone)]
+pub struct BaselineSeed {
+    pub item: String,
+    pub quantity: i64,
+    pub price_unit: Option<f64>,
+    pub recorded_at: String,
+}
+
+pub fn aggregate_inventory_with_baselines(
+    events: impl IntoIterator<Item = InventoryEvent>,
+    period_days: i64,
+    baselines: Vec<BaselineSeed>,
+) -> InventoryResult {
+    // Seed baselines BEFORE the event walk: each baseline is an opening tier
+    // dated at `recorded_at`. Events at-or-before it for the same item are
+    // dropped below (the baseline supersedes scrolled-out history); the
+    // baseline itself sets first_action so the item never reads truncated.
+    // Quantity/date length guards keep one malformed row from poisoning the
+    // pane — same defensive shape as the malformed-`event_at` drop in
+    // `aggregate_revenue`.
+    let mut baseline_at: BTreeMap<String, String> = BTreeMap::new();
+    let mut by_item: BTreeMap<String, ItemState> = BTreeMap::new();
+    for b in &baselines {
+        if b.quantity <= 0 || b.recorded_at.len() < 10 || b.item.is_empty() {
+            continue;
+        }
+        // Latest baseline per item wins when duplicates arrive.
+        let keep = baseline_at
+            .get(&b.item)
+            .map(|at| b.recorded_at.as_str() > at.as_str())
+            .unwrap_or(true);
+        if !keep {
+            continue;
+        }
+        baseline_at.insert(b.item.clone(), b.recorded_at.clone());
+        let state = by_item.entry(b.item.clone()).or_default();
+        state.tiers.clear();
+        state.tiers.push(PriceTier {
+            qty: b.quantity,
+            price: b.price_unit,
+        });
+        if b.price_unit.is_some() {
+            state.last_known_price = b.price_unit;
+        }
+        state.first_action = Some("baseline".to_string());
+        state.first_event_at = Some(b.recorded_at.clone());
+        state.last_activity_at = Some(b.recorded_at.clone());
+    }
+
+    // First pass: collect distinct active dates (newest-first) — baselines
+    // included so a baseline-only item still anchors the window.
     let mut date_set: BTreeMap<String, ()> = BTreeMap::new();
+    for b in &baselines {
+        if b.quantity > 0 && b.recorded_at.len() >= 10 && !b.item.is_empty() {
+            date_set.insert(b.recorded_at[..10].to_string(), ());
+        }
+    }
+    let events: Vec<InventoryEvent> = events.into_iter().collect();
     for ev in &events {
         if ev.event_at.len() >= 10 {
             date_set.insert(ev.event_at[..10].to_string(), ());
@@ -473,9 +576,23 @@ pub fn aggregate_inventory(
     };
 
     // Walk events in input order — caller must pre-sort by (event_at, id).
-    let mut by_item: BTreeMap<String, ItemState> = BTreeMap::new();
+    // Events at-or-before an item's baseline are dropped: the baseline is
+    // the ground truth for everything up to its timestamp.
     for ev in events {
+        if let Some(at) = baseline_at.get(&ev.item) {
+            if ev.event_at.as_str() <= at.as_str() {
+                continue;
+            }
+        }
         let state = by_item.entry(ev.item.clone()).or_default();
+        // First-seen action per item: a baseline action (added/visible/
+        // configured/baseline) means the log covers this item's history from
+        // the start. Anything else first (bought/removed) means the log starts
+        // mid-history — `history_truncated` is set at finalize time.
+        if state.first_action.is_none() {
+            state.first_action = Some(ev.action.clone());
+            state.first_event_at = Some(ev.event_at.clone());
+        }
         let date_in_window = ev
             .event_at
             .get(..10)
@@ -523,7 +640,8 @@ pub fn aggregate_inventory(
     let mut grand_period_revenue: i64 = 0;
 
     for (item_name, mut state) in by_item {
-        finalize_tiers(&mut state);
+        let fallback = state.last_known_price;
+        let fallback_qty = finalize_tiers(&mut state, fallback);
         let quantity: i64 = state.tiers.iter().map(|t| t.qty).sum();
         let estimated_value: i64 = state
             .tiers
@@ -531,6 +649,12 @@ pub fn aggregate_inventory(
             .map(|t| (t.qty as f64) * t.price.unwrap_or(0.0))
             .sum::<f64>() as i64;
         let avg_per_day = state.period_sold as f64 / divisor;
+        // Baselines prove the log covers this item from the start.
+        // First sighting as bought/removed means history scrolled out.
+        let history_truncated = !matches!(
+            state.first_action.as_deref(),
+            Some("added") | Some("visible") | Some("configured") | Some("baseline")
+        );
 
         grand_estimated_value += estimated_value.max(0);
         grand_total_sold += state.period_sold;
@@ -547,6 +671,9 @@ pub fn aggregate_inventory(
             last_sold_at: state.last_sold_at,
             last_activity_at: state.last_activity_at,
             last_known_price: state.last_known_price,
+            fallback_priced_qty: fallback_qty,
+            history_truncated,
+            first_event_at: state.first_event_at,
         });
     }
 
@@ -1553,6 +1680,141 @@ mod tests {
         assert!(r.active_dates.is_empty());
         assert_eq!(r.estimated_value, 0);
         assert_eq!(r.total_sold, 0);
+    }
+
+    #[test]
+    fn inventory_unpriced_stock_falls_back_to_last_known_price() {
+        // Added but never made visible; the only price signal is a later
+        // `bought`. No priced tier survives, so the unpriced qty is
+        // fallback-priced at last_known_price instead of valued at 0.
+        let events = vec![
+            inv("added", "Mystery Pouch", "2026-04-13 09:00:00", 5, None),
+            inv(
+                "bought",
+                "Mystery Pouch",
+                "2026-04-14 10:00:00",
+                1,
+                Some(450.0),
+            ),
+        ];
+        let r = aggregate_inventory(events, 7);
+        let item = &r.items[0];
+        assert_eq!(item.quantity, 4);
+        assert_eq!(item.price_tiers.len(), 1);
+        assert_eq!(item.price_tiers[0].qty, 4);
+        assert_eq!(item.price_tiers[0].price, Some(450.0));
+        assert_eq!(item.estimated_value, 1800);
+        assert_eq!(item.fallback_priced_qty, 4);
+        assert!(!item.history_truncated);
+        assert_eq!(
+            item.first_event_at.as_deref(),
+            Some("2026-04-13 09:00:00")
+        );
+    }
+
+    #[test]
+    fn inventory_partial_pricing_keeps_unpriced_remainder() {
+        // visible covers 3 of 5 added units: the other 2 stay price None
+        // even though a last_known_price exists — partial pricing is real
+        // signal, not a fallback case.
+        let events = vec![
+            inv("added", "Quality Reins", "2026-04-10 09:00:00", 5, None),
+            inv(
+                "visible",
+                "Quality Reins",
+                "2026-04-10 09:01:00",
+                3,
+                Some(4500.0),
+            ),
+        ];
+        let r = aggregate_inventory(events, 7);
+        let item = &r.items[0];
+        assert_eq!(item.quantity, 5);
+        assert_eq!(item.price_tiers.len(), 2);
+        assert_eq!(item.estimated_value, 13500);
+        assert_eq!(item.fallback_priced_qty, 0);
+    }
+
+    #[test]
+    fn inventory_sale_first_marks_history_truncated() {
+        // Log starts mid-history: first sighting is a sale, no baseline.
+        let events = vec![inv(
+            "bought",
+            "Old Stock",
+            "2026-04-13 09:00:00",
+            2,
+            Some(100.0),
+        )];
+        let r = aggregate_inventory(events, 7);
+        let item = &r.items[0];
+        assert!(item.history_truncated);
+        assert_eq!(
+            item.first_event_at.as_deref(),
+            Some("2026-04-13 09:00:00")
+        );
+    }
+
+    #[test]
+    fn inventory_added_first_is_not_truncated() {
+        let events = vec![
+            inv("added", "Fresh Stock", "2026-04-13 09:00:00", 5, None),
+            inv(
+                "visible",
+                "Fresh Stock",
+                "2026-04-13 09:01:00",
+                5,
+                Some(200.0),
+            ),
+        ];
+        let r = aggregate_inventory(events, 7);
+        assert!(!r.items[0].history_truncated);
+    }
+
+    #[test]
+    fn inventory_baseline_seeds_opening_stock() {
+        // No shop-log events at all: the baseline alone is the inventory.
+        let r = aggregate_inventory_with_baselines(
+            Vec::new(),
+            7,
+            vec![BaselineSeed {
+                item: "Counted Reins".into(),
+                quantity: 5,
+                price_unit: Some(4500.0),
+                recorded_at: "2026-04-13 09:00:00".into(),
+            }],
+        );
+        assert_eq!(r.items.len(), 1);
+        let item = &r.items[0];
+        assert_eq!(item.quantity, 5);
+        assert_eq!(item.estimated_value, 22500);
+        assert_eq!(item.fallback_priced_qty, 0);
+        assert!(!item.history_truncated);
+    }
+
+    #[test]
+    fn inventory_baseline_supersedes_older_events() {
+        // The pre-baseline sale belongs to scrolled-out history; only the
+        // post-baseline sale replays on top of the counted stock.
+        let events = vec![
+            inv("bought", "Counted Reins", "2026-04-12 10:00:00", 2, Some(4500.0)),
+            inv("bought", "Counted Reins", "2026-04-14 10:00:00", 1, Some(4500.0)),
+        ];
+        let r = aggregate_inventory_with_baselines(
+            events,
+            7,
+            vec![BaselineSeed {
+                item: "Counted Reins".into(),
+                quantity: 5,
+                price_unit: Some(4500.0),
+                recorded_at: "2026-04-13 09:00:00".into(),
+            }],
+        );
+        let item = &r.items[0];
+        // 5 counted − 1 post-baseline sale. The Apr 12 sale is dropped and
+        // must not count toward period_sold either.
+        assert_eq!(item.quantity, 4);
+        assert_eq!(item.period_sold, 1);
+        assert!(!item.history_truncated);
     }
 
     // ---------- Sales time-series ----------

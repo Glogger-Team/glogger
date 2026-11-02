@@ -452,6 +452,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 83)?;
     }
 
+    if current_version < 84 {
+        migration_v84_stall_inventory_baseline(conn)?;
+        super::record_migration(conn, 84)?;
+    }
+
 
     tx.commit()?;
     Ok(())
@@ -959,6 +964,33 @@ fn migration_v83_clear_divergent_ordinal_details(conn: &Connection) -> Result<()
             }
         }
     }
+    Ok(())
+}
+
+/// Migration V84: Stall Tracker opening-stock baseline — a manual ground truth
+/// for inventory the shop-log history no longer covers (scrolled-out
+/// `added`/`visible` events, or `ProcessBook` dark periods).
+///
+/// One row per (owner, item): the user counts their stall stock in-game and
+/// records qty + price. `get_stall_inventory` seeds the tier replay from these
+/// rows (priced tiers, dated at the baseline's `recorded_at`), then replays
+/// shop-log events after that timestamp on top. Updating a baseline is an
+/// upsert on the UNIQUE key; clearing the pane is a DELETE per owner.
+fn migration_v84_stall_inventory_baseline(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE stall_inventory_baseline (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner TEXT NOT NULL,
+            item TEXT NOT NULL,
+            quantity INTEGER NOT NULL,
+            price_unit REAL,
+            recorded_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')),
+            note TEXT,
+            UNIQUE(owner, item)
+        );
+        CREATE INDEX IF NOT EXISTS idx_stall_baseline_owner
+            ON stall_inventory_baseline(owner);",
+    )?;
     Ok(())
 }
 
@@ -4216,13 +4248,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            83,
+            84,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 83);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 84);
     }
 
     #[test]
@@ -4351,7 +4383,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 83, "migration chain head");
+        assert_eq!(head, 84, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -4405,7 +4437,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 83, "migration chain head");
+        assert_eq!(head, 84, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -4445,6 +4477,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(aligned2, Some(true), "second run preserves aligned values");
+    }
+
+    #[test]
+    fn migration_v84_creates_baseline_table() {
+        // Shape: one row per (owner, item), upsert key + owner index.
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        c.execute(
+            "INSERT INTO stall_inventory_baseline (owner, item, quantity, price_unit, note)
+             VALUES ('Deradon', 'Quality Reins', 5, 4500.0, 'counted')",
+            [],
+        )
+        .unwrap();
+        let (qty, price): (i64, Option<f64>) = c
+            .query_row(
+                "SELECT quantity, price_unit FROM stall_inventory_baseline
+                 WHERE owner = 'Deradon' AND item = 'Quality Reins'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((qty, price), (5, Some(4500.0)));
+        // UNIQUE(owner, item): second insert for the same pair fails.
+        assert!(c
+            .execute(
+                "INSERT INTO stall_inventory_baseline (owner, item, quantity) VALUES ('Deradon', 'Quality Reins', 1)",
+                [],
+            )
+            .is_err());
     }
     #[test]
     fn migration_v82_clears_placeholder_children_before_parents() {

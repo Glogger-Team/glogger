@@ -30,6 +30,14 @@
           type="button"
           class="px-3 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-accent-gold/50 text-text-primary disabled:opacity-50"
           :disabled="actionInProgress"
+          :title="store.currentOwner ? 'Re-read the game\'s Books folder for new shop logs' : 'Set an active character first'"
+          @click="handleRescan">
+          Check for new logs
+        </button>
+        <button
+          type="button"
+          class="px-3 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-accent-gold/50 text-text-primary disabled:opacity-50"
+          :disabled="actionInProgress"
           @click="handleImport">
           Import
         </button>
@@ -248,6 +256,29 @@ async function handleImport() {
     }
 
     flashMessage(parts.join(' '))
+  } finally {
+    actionInProgress.value = false
+  }
+}
+
+async function handleRescan() {
+  if (actionInProgress.value) return
+  actionInProgress.value = true
+  try {
+    // Stateless sweep over Books/PlayerShopLog_*.txt (INSERT OR IGNORE
+    // dedup). Returns (files_scanned, new_events).
+    const [scanned, added] = await invoke<[number, number]>('rescan_stall_books')
+    await store.refresh()
+    if (added > 0) {
+      flashMessage(`Checked ${scanned} shop log file(s): ${added.toLocaleString()} new event(s).`)
+    } else if (scanned > 0) {
+      flashMessage(`Checked ${scanned} shop log file(s): nothing new.`)
+    } else {
+      flashMessage('No shop log files found — open your shop log in-game first.')
+    }
+  } catch (e) {
+    flashMessage(`Rescan failed: ${e}`)
+    console.error('[StallTracker] Rescan failed:', e)
   } finally {
     actionInProgress.value = false
   }
