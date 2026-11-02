@@ -214,7 +214,7 @@
           </h4>
         </button>
         <span class="text-[10px] text-text-secondary italic hidden sm:inline">
-          Counted in-game — true as of your last count. Recount after restocking or delisting the tier you touched.
+          Counted in-game — true as of your last count. Recount the whole item after restocking or delisting (one count per item, not per tier).
         </span>
       </div>
       <div

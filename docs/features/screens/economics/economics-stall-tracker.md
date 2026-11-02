@@ -376,7 +376,7 @@ narrow the gap without a live `LocalPlayer:` feed:
   owner+item: counted qty + current price). `get_stall_inventory` seeds the
   tier replay from it and drops shop-log events at-or-before its timestamp
   for that item. Set it by counting stock in-game (Inventory tab → Opening
-  stock); qty 0 deletes the row. Re-counting re-stamps `recorded_at` to now. The baseline is only as true as the last count: a delist after counting without a logged removed line stays invisible until the next count or a logged removal. Recount after restocking, or at least the tier touched.
+  stock); qty 0 deletes the row. Re-counting re-stamps `recorded_at` to now. The baseline is only as true as the last count: a delist after counting without a logged removed line stays invisible until the next count or a logged removal. Recount the whole item after restocking or delisting (the baseline is one row per item, not per tier).
 
 - The parser treats entries that don't match any action regex as `"unknown"`
   (e.g., the hire-duration messages). These are excluded from the list views
