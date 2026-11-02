@@ -59,33 +59,51 @@ pub fn spawn_books_watcher(settings: std::sync::Arc<SettingsManager>, db: DbPool
 /// (not the watcher's mtime map) decides what is new, so it can never mark a
 /// file seen without ingesting it, and stays correct when the watcher thread
 /// already processed the same files (0 new rows). Returns `(files_scanned,
-/// new_events)`; both 0 with no error when the Books dir is missing or no
-/// character/server is active. `new_events` is the total `stall_events` row
-/// delta across all owners during the sweep — rows stamped for a different
-/// alt (parser advisory owner, mirroring Import) count too.
+/// new_events)`; a missing Books dir returns Ok((0,0)), but missing
+/// settings (game data path, character, server), unreadable directories /
+/// entries / files, and DB failures return Err so the UI can name the
+/// prerequisite instead of saying "nothing new". `new_events` is the total
+/// `stall_events` row delta across all owners during the sweep — rows
+/// stamped for a different alt (parser advisory owner, mirroring Import)
+/// count too.
 pub fn rescan_books_once(
     settings: &SettingsManager,
     db: &DbPool,
     app: &AppHandle,
 ) -> Result<(usize, usize), String> {
     let snapshot = settings.get();
-    let (Some(game_data_path), Some(character), Some(server)) = (
-        nonempty_owned(&snapshot.game_data_path),
-        snapshot
-            .active_character_name
-            .as_deref()
-            .and_then(nonempty_owned),
-        snapshot
-            .active_server_name
-            .as_deref()
-            .and_then(nonempty_owned),
-    ) else {
-        return Ok((0, 0));
-    };
+    let game_data_path = nonempty_owned(&snapshot.game_data_path).ok_or_else(|| {
+        "rescan needs a game data path — set it in Settings first".to_string()
+    })?;
+    let character = snapshot
+        .active_character_name
+        .as_deref()
+        .and_then(nonempty_owned)
+        .ok_or_else(|| {
+            "rescan needs an active character — pick one in Settings first".to_string()
+        })?;
+    let server = snapshot
+        .active_server_name
+        .as_deref()
+        .and_then(nonempty_owned)
+        .ok_or_else(|| {
+            "rescan needs an active server — pick a character in Settings first".to_string()
+        })?;
 
     let books_dir = Path::new(&game_data_path).join("Books");
-    let Ok(entries) = std::fs::read_dir(&books_dir) else {
-        return Ok((0, 0));
+    // Missing Books dir = empty scan (fresh install, game never opened a
+    // book). Anything else (permissions, I/O) is a real failure — the old
+    // `let Ok(entries)` shape reported Ok((0,0)) and the UI said "no logs
+    // found" for a scan that never ran.
+    let entries = match std::fs::read_dir(&books_dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+        Err(err) => {
+            return Err(format!(
+                "cannot read Books folder {}: {err}",
+                books_dir.display()
+            ));
+        }
     };
 
     // Baseline row count for the delta: total stall rows before the sweep.
@@ -94,27 +112,40 @@ pub fn rescan_books_once(
     // the delta counts every inserted stall row, not just the active
     // character's. A read-pool checkout is fine — the sweep's writes go
     // through the single write pool, and COUNT(*) never blocks them.
-    let count_all = |db: &DbPool| -> usize {
-        db.get()
-            .ok()
-            .and_then(|conn| {
-                conn.query_row("SELECT COUNT(*) FROM stall_events", [], |row| {
-                    row.get::<_, i64>(0)
-                })
-                .ok()
-            })
-            .unwrap_or(0) as usize
+    // Failures propagate: a zero-substitute here would report existing rows
+    // as new (before) or successful inserts as nothing-new (after).
+    let count_all = |db: &DbPool| -> Result<usize, String> {
+        let conn = db
+            .get()
+            .map_err(|e| format!("Database connection error: {e}"))?;
+        conn.query_row("SELECT COUNT(*) FROM stall_events", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map(|n| n as usize)
+        .map_err(|e| format!("Count query failed: {e}"))
     };
-    let before = count_all(db);
+    let before = count_all(db)?;
     let mut scanned = 0usize;
     // First non-benign failure: `process_book_file` errors with
     // "no parseable shop-log entries" are normal (empty/hire-only books);
     // anything else (DB write failures, unreadable-but-present files that
     // passed the mid-write guard) must surface instead of reporting Ok(0).
     let mut first_err: Option<String> = None;
-    for path in entries
-        .flatten()
-        .map(|e| e.path())
+    // Entry-iteration errors surface (no `flatten()` swallow): a failing
+    // entry is not silently omitted from a "nothing new" report.
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(e) => paths.push(e.path()),
+            Err(err) => {
+                if first_err.is_none() {
+                    first_err = Some(format!("Books entry unreadable: {err}"));
+                }
+            }
+        }
+    }
+    for path in paths
+        .into_iter()
         .filter(|p| {
             p.is_file()
                 && p.extension()
@@ -176,7 +207,7 @@ pub fn rescan_books_once(
     if let Some(e) = first_err {
         return Err(e);
     }
-    let new_events = count_all(db).saturating_sub(before);
+    let new_events = count_all(db)?.saturating_sub(before);
     Ok((scanned, new_events))
 }
 
