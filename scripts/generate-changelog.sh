@@ -92,13 +92,13 @@ classify_squash_body() {
   while IFS= read -r bline; do
     local entry=""
     case "$bline" in
-      '*'[[:space:]]feat:*|'*'[[:space:]]feat'!'*:*)
+      '*'[[:space:]]feat:*|'*'[[:space:]]feat'('*')'*:*|'*'[[:space:]]feat'!'*:*)
         entry="feature"
         ;;
-      '*'[[:space:]]impv:*|'*'[[:space:]]impv'!'*:*)
+      '*'[[:space:]]impv:*|'*'[[:space:]]impv'('*')'*:*|'*'[[:space:]]impv'!'*:*)
         entry="improvement"
         ;;
-      '*'[[:space:]]fix:*|'*'[[:space:]]fix'!'*:*)
+      '*'[[:space:]]fix:*|'*'[[:space:]]fix'('*')'*:*|'*'[[:space:]]fix'!'*:*)
         entry="fix"
         ;;
     esac
