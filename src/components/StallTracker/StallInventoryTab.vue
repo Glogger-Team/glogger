@@ -82,6 +82,20 @@
               :title="`History starts mid-stream (oldest event ${formatShortDate((row as unknown as InventoryItem).first_event_at)}). Count stock below to set a baseline.`">
               ⚠
             </span>
+            <button
+              v-if="(row as unknown as InventoryItem).baseline_at != null"
+              type="button"
+              class="text-text-secondary hover:text-accent-gold bg-transparent border-none cursor-pointer text-xs flex-shrink-0"
+              :title="`Recount ${(row as unknown as InventoryItem).item} — prefill Opening stock below`"
+              @click="startRecount((row as unknown as InventoryItem))">
+              ↻
+            </button>
+            <span
+              v-if="(row as unknown as InventoryItem).baseline_at != null"
+              class="text-[10px] text-text-secondary"
+              :title="`Baseline counted ${(row as unknown as InventoryItem).baseline_at}; ${(row as unknown as InventoryItem).events_since_baseline} logged event(s) replayed on top. Unlogged take-downs stay invisible — recount after restocking/delisting.`">
+              counted {{ formatShortDate((row as unknown as InventoryItem).baseline_at) }}<template v-if="(row as unknown as InventoryItem).events_since_baseline > 0"> · {{ (row as unknown as InventoryItem).events_since_baseline }} since</template>
+            </span>
           </span>
         </template>
         <template #cell-price="{ row }">
@@ -200,7 +214,7 @@
           </h4>
         </button>
         <span class="text-[10px] text-text-secondary italic hidden sm:inline">
-          Counted in-game — supersedes scrolled-out history
+          Counted in-game — true as of your last count. Recount after restocking or delisting the tier you touched.
         </span>
       </div>
       <div
@@ -218,6 +232,7 @@
           <label class="flex flex-col gap-1 text-[11px] text-text-secondary w-20">
             Qty
             <input
+              id="baseline-qty-input"
               v-model.number="baselineQty"
               type="number"
               min="0"
@@ -271,7 +286,7 @@
         <p
           v-else
           class="text-[11px] text-text-secondary italic m-0">
-          No opening stock set. Count an item in your stall and enter it above — sales after that moment replay on top.
+          No opening stock set. Count an item in your stall and enter it above — sales after that moment replay on top. Silent take-downs without a log line stay invisible until the next count or a logged removal.
         </p>
       </div>
     </div>
@@ -285,7 +300,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useStallTrackerStore } from '../../stores/stallTrackerStore'
 import StatCard from './StatCard.vue'
@@ -520,6 +535,17 @@ async function loadBaselines() {
   } catch (e) {
     console.error('[StallInventoryTab] loadBaselines failed:', e)
   }
+}
+async function startRecount(item: InventoryItem) {
+  baselineItem.value = item.item
+  baselineQty.value = item.quantity
+  baselinePrice.value = item.price_tiers.length === 1 && item.price_tiers[0].price != null
+    ? item.price_tiers[0].price
+    : ''
+  baselineError.value = null
+  baselineOpen.value = true
+  await nextTick()
+  document.getElementById('baseline-qty-input')?.focus()
 }
 
 async function saveBaseline() {

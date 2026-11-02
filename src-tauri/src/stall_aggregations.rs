@@ -263,6 +263,10 @@ pub struct InventoryItem {
     /// (`added`/`visible`/`configured`) — the log starts mid-history
     /// (sale or removal first), so the baseline is truncated.
     pub history_truncated: bool,
+    /// Winning baseline `recorded_at` for this item, `None` when no baseline row.
+    pub baseline_at: Option<String>,
+    /// Count of surviving (post-drop) events replayed on top of the baseline.
+    pub events_since_baseline: i64,
     /// Earliest `event_at` seen for this item (`YYYY-MM-DD HH:MM:SS`).
     pub first_event_at: Option<String>,
 }
@@ -292,6 +296,8 @@ struct ItemState {
     last_known_price: Option<f64>,
     first_action: Option<String>,
     first_event_at: Option<String>,
+    baseline_at: Option<String>,
+    post_baseline_count: i64,
 }
 
 impl ItemState {
@@ -545,6 +551,7 @@ pub fn aggregate_inventory_with_baselines(
         state.first_action = Some("baseline".to_string());
         state.first_event_at = Some(b.recorded_at.clone());
         state.last_activity_at = Some(b.recorded_at.clone());
+        state.baseline_at = Some(b.recorded_at.clone());
     }
 
     // First pass: collect distinct LIVE dates (newest-first) — only winning
@@ -600,6 +607,9 @@ pub fn aggregate_inventory_with_baselines(
             }
         }
         let state = by_item.entry(ev.item.clone()).or_default();
+        if state.baseline_at.is_some() {
+            state.post_baseline_count += 1;
+        }
         // First-seen action per item: a baseline action (added/visible/
         // configured/baseline) means the log covers this item's history from
         // the start. Anything else first (bought/removed) means the log starts
@@ -688,6 +698,8 @@ pub fn aggregate_inventory_with_baselines(
             last_known_price: state.last_known_price,
             fallback_priced_qty: fallback_qty,
             history_truncated,
+            baseline_at: state.baseline_at,
+            events_since_baseline: state.post_baseline_count,
             first_event_at: state.first_event_at,
         });
     }
@@ -1855,6 +1867,82 @@ mod tests {
         );
         assert_eq!(r.active_dates, vec!["2026-04-14", "2026-04-13"]);
         assert!((r.items[0].avg_per_day - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn inventory_baseline_only_reports_provenance() {
+        let r = aggregate_inventory_with_baselines(
+            Vec::new(),
+            7,
+            vec![BaselineSeed {
+                item: "Counted Reins".into(),
+                quantity: 5,
+                price_unit: Some(4500.0),
+                recorded_at: "2026-04-13 09:00:00".into(),
+            }],
+        );
+        let item = &r.items[0];
+        assert_eq!(item.baseline_at.as_deref(), Some("2026-04-13 09:00:00"));
+        assert_eq!(item.events_since_baseline, 0);
+    }
+
+    #[test]
+    fn inventory_baseline_counts_only_surviving_events() {
+        let events = vec![
+            inv("bought", "Counted Reins", "2026-04-12 10:00:00", 2, Some(4500.0)),
+            inv("bought", "Counted Reins", "2026-04-14 10:00:00", 1, Some(4500.0)),
+        ];
+        let r = aggregate_inventory_with_baselines(
+            events,
+            7,
+            vec![BaselineSeed {
+                item: "Counted Reins".into(),
+                quantity: 5,
+                price_unit: Some(4500.0),
+                recorded_at: "2026-04-13 09:00:00".into(),
+            }],
+        );
+        let item = &r.items[0];
+        assert_eq!(item.quantity, 4);
+        assert_eq!(item.period_sold, 1);
+        assert_eq!(item.events_since_baseline, 1);
+    }
+
+    #[test]
+    fn inventory_unbaselined_item_has_no_provenance() {
+        let events = vec![
+            inv("added", "Wild Saddle", "2026-04-14 10:00:00", 3, None),
+            inv("visible", "Wild Saddle", "2026-04-14 11:00:00", 3, Some(4000.0)),
+        ];
+        let r = aggregate_inventory_with_baselines(events, 7, Vec::new());
+        let item = &r.items[0];
+        assert_eq!(item.baseline_at, None);
+        assert_eq!(item.events_since_baseline, 0);
+    }
+
+    #[test]
+    fn inventory_older_duplicate_baseline_keeps_winning_provenance() {
+        let r = aggregate_inventory_with_baselines(
+            Vec::new(),
+            7,
+            vec![
+                BaselineSeed {
+                    item: "Counted Reins".into(),
+                    quantity: 5,
+                    price_unit: Some(4500.0),
+                    recorded_at: "2026-04-13 09:00:00".into(),
+                },
+                BaselineSeed {
+                    item: "Counted Reins".into(),
+                    quantity: 9,
+                    price_unit: Some(4500.0),
+                    recorded_at: "2026-04-10 09:00:00".into(),
+                },
+            ],
+        );
+        let item = &r.items[0];
+        assert_eq!(item.quantity, 5);
+        assert_eq!(item.baseline_at.as_deref(), Some("2026-04-13 09:00:00"));
     }
 
     // ---------- Sales time-series ----------
