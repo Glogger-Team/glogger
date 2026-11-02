@@ -504,7 +504,7 @@ const baselines = ref<StallBaseline[]>([])
 const baselineOpen = ref(false)
 const baselineItem = ref('')
 const baselineQty = ref<number | null>(null)
-const baselinePrice = ref<number | null>(null)
+const baselinePrice = ref<number | '' | null>(null)
 const baselineSaving = ref(false)
 const baselineError = ref<string | null>(null)
 
@@ -525,11 +525,26 @@ async function loadBaselines() {
 async function saveBaseline() {
   const item = baselineItem.value.trim()
   if (!store.currentOwner || !item || baselineSaving.value) return
-  if (baselineQty.value == null || baselineQty.value < 0 || baselineQty.value > 1000000) {
+  // `v-model.number` yields `''` (not null) when the field is cleared —
+  // without this, `'' < 0` / `'' > 1000000` are both false and
+  // `Math.floor('')` is 0, silently deleting the baseline for that item.
+  if (typeof baselineQty.value !== 'number' || !Number.isFinite(baselineQty.value)) {
+    baselineError.value = 'Enter a quantity 0–1000000 (0 removes the baseline).'
+    return
+  }
+  if (baselineQty.value < 0 || baselineQty.value > 1000000) {
     baselineError.value = 'Quantity must be 0–1000000 (0 removes the baseline).'
     return
   }
-  if (baselinePrice.value != null && baselinePrice.value < 0) {
+  // A cleared Price field is unpriced (null), not invalid: `v-model.number`
+  // yields `''` on clear, and `''` must map back to "no price" rather than
+  // erroring. Qty keeps the strict guard above — `''` there stays invalid.
+  const price = baselinePrice.value === '' ? null : baselinePrice.value
+  if (price != null && (typeof price !== 'number' || !Number.isFinite(price))) {
+    baselineError.value = 'Price must be a number (leave empty for unpriced).'
+    return
+  }
+  if (price != null && price < 0) {
     baselineError.value = 'Price cannot be negative (leave empty for unpriced).'
     return
   }
@@ -541,7 +556,7 @@ async function saveBaseline() {
         owner: store.currentOwner,
         item,
         quantity: Math.floor(baselineQty.value),
-        priceUnit: baselinePrice.value,
+        priceUnit: price,
         note: null,
       } satisfies StallBaselineInput,
     })

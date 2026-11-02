@@ -763,25 +763,39 @@ pub fn get_stall_sales_timeseries(
     Ok(aggregate_sales_timeseries(events, period, mode))
 }
 
-/// Delete every stall event for a single character. Requires non-empty owner —
-/// we never want a typo to wipe all data across every alt. Serialized with
-/// live ingest at the SQLite level: this is a single `DELETE` on the
-/// single-write pool while inserts run in a `BEGIN IMMEDIATE` transaction.
+/// Delete every stall event + opening-stock baseline for a single character.
+/// Requires non-empty owner — we never want a typo to wipe all data across
+/// every alt. One BEGIN IMMEDIATE transaction for both DELETEs on the
+/// single-write pool (pool-is-the-lock): either both commit or neither does,
+/// serialized with live-ingest inserts which run in their own transaction.
 #[tauri::command]
 pub fn clear_stall_events(db: State<'_, DbPool>, owner: Option<String>) -> Result<usize, String> {
     let owner = opt_nonempty(&owner)
         .ok_or_else(|| "clear_stall_events requires an owner".to_string())?
         .to_string();
 
-    let conn = db
+    // One BEGIN IMMEDIATE transaction for both DELETEs (pool-is-the-lock
+    // invariant): either both commit or neither does — a baseline-only
+    // second-statement failure can never leave phantom inventory behind.
+    let mut conn = db
         .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
-    let deleted = conn
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("Failed to begin transaction: {e}"))?;
+    let deleted = tx
         .execute(
             "DELETE FROM stall_events WHERE owner = ?1",
             rusqlite::params![owner],
         )
         .map_err(|e| format!("Clear query failed: {e}"))?;
+    tx.execute(
+        "DELETE FROM stall_inventory_baseline WHERE owner = ?1",
+        rusqlite::params![owner],
+    )
+    .map_err(|e| format!("Baseline clear failed: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("Failed to commit clear: {e}"))?;
     Ok(deleted)
 }
 
