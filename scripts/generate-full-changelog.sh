@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 #
 # Generate the full CHANGELOG.md from every v<semver> tag to HEAD.
-# Ranges use scripts/generate-changelog.sh grouping (feat:/impv:/fix:);
-# ranges with no prefixed commits (pre-convention history) fall back to a
-# raw commit-subject list so old history is still recorded.
+# Ranges use scripts/generate-changelog.sh grouping (feat:/impv:/fix:) with
+# humanized entries (type prefix stripped, scope kept as `Scope: …`, no hash,
+# PR ref, or commit count); ranges with no prefixed commits (pre-convention
+# history) fall back to a raw commit-subject list so old history is still
+# recorded.
 #
 # Usage: ./scripts/generate-full-changelog.sh > CHANGELOG.md
 set -euo pipefail
@@ -18,7 +20,8 @@ echo "# Changelog"
 echo ""
 echo "Full release history for glogger, generated from git tags."
 echo "Per-release notes use the same grouping as scripts/generate-changelog.sh"
-echo "(\`feat:\` → Features, \`impv:\` → Improvements, \`fix:\` → Fixes)."
+echo "(feat: → Features, impv: → Improvements, fix: → Fixes) with humanized"
+echo "entries (no type prefix, hash, PR ref, or commit count)."
 echo "Releases that predate the commit-prefix convention list all commit subjects."
 echo ""
 
@@ -54,10 +57,6 @@ for (( i=${#TAGS[@]}-1; i>=0; i-- )); do
     echo "_Pre-convention history — all commits in range:_"
     echo ""
     git log --format='- %s (`%h`)' --no-decorate "$RANGE" 2>/dev/null || true
-    COUNT="$(git rev-list --count "$RANGE" 2>/dev/null || echo 0)"
-    echo ""
-    echo "---"
-    echo "*${COUNT} commits in ${RANGE}*"
   else
     echo "$NOTES"
   fi
