@@ -19,24 +19,47 @@
     <!-- Sales period dropdown + estimation note -->
     <div class="flex items-center justify-between flex-wrap gap-2 flex-shrink-0">
       <p class="text-xs text-text-secondary italic">
-        Inventory is estimated from shop log events. It may be incomplete if older log data is missing.
+        <template v-if="truncatedCount > 0">
+          ⚠ {{ truncatedCount }} item{{ truncatedCount === 1 ? '' : 's' }} start mid-history (oldest event {{ oldestFirstEvent }}).
+          Open older shop logs (or Import them) — or count stock below to set a baseline.
+        </template>
+        <template v-else>
+          Inventory is estimated from shop log events. It may be incomplete if older log data is missing.
+        </template>
+        <template v-if="fallbackCount > 0">
+          {{ fallbackCount }} item{{ fallbackCount === 1 ? '' : 's' }} priced at last sale (never listed at a visible price).
+        </template>
       </p>
-      <label class="flex items-center gap-2 text-xs text-text-secondary">
-        Sales period
-        <select
-          v-model.number="periodDays"
-          class="bg-surface-elevated border border-border-default rounded px-2 py-1 text-xs text-text-primary focus:outline-none focus:border-accent-gold/50">
-          <option
-            v-for="p in periodOptions"
-            :key="p.value"
-            :value="p.value">
-            {{ p.label }}
-          </option>
-        </select>
-      </label>
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          class="px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-accent-gold/50 text-text-primary disabled:opacity-50"
+          :disabled="loading || rescanning"
+          :title="store.currentOwner ? 'Re-read the game\'s Books folder for new shop logs' : 'Set an active character first'"
+          @click="handleRescan">
+          {{ rescanning ? 'Checking…' : 'Check for new logs' }}
+        </button>
+        <span
+          v-if="lastSyncLabel"
+          class="text-[11px] text-text-secondary"
+          :title="`Last synced ${lastSyncFull}`">
+          Synced {{ lastSyncLabel }}
+        </span>
+        <label class="flex items-center gap-2 text-xs text-text-secondary">
+          Sales period
+          <select
+            v-model.number="periodDays"
+            class="bg-surface-elevated border border-border-default rounded px-2 py-1 text-xs text-text-primary focus:outline-none focus:border-accent-gold/50">
+            <option
+              v-for="p in periodOptions"
+              :key="p.value"
+              :value="p.value">
+              {{ p.label }}
+            </option>
+          </select>
+        </label>
+      </div>
     </div>
-
-    <!-- In-stock table -->
     <div class="flex-1 min-h-0 overflow-auto border border-border-default rounded">
       <DataTable
         :columns="inStockColumns"
@@ -50,12 +73,23 @@
         compact
         empty-text="No items currently in stock."
         @sort="handleInStockSort">
-        <template #cell-item="{ value }">
-          <ItemInline :reference="(value as string)" />
+        <template #cell-item="{ value, row }">
+          <span class="inline-flex items-center gap-1">
+            <ItemInline :reference="(value as string)" />
+            <span
+              v-if="(row as unknown as InventoryItem).history_truncated"
+              class="text-amber-400 text-[11px]"
+              :title="`History starts mid-stream (oldest event ${formatShortDate((row as unknown as InventoryItem).first_event_at)}). Count stock below to set a baseline.`">
+              ⚠
+            </span>
+          </span>
         </template>
         <template #cell-price="{ row }">
           <span v-if="(row as unknown as InventoryItem).price_tiers.length === 1">
-            {{ formatPriceTier((row as unknown as InventoryItem).price_tiers[0]) }}
+            {{ formatPriceTier((row as unknown as InventoryItem).price_tiers[0]) }}<span
+              v-if="(row as unknown as InventoryItem).fallback_priced_qty > 0"
+              class="text-text-secondary"
+              title="Priced at last sale — never listed at a visible price">~</span>
           </span>
           <span
             v-else-if="(row as unknown as InventoryItem).price_tiers.length > 1"
@@ -147,6 +181,101 @@
       </div>
     </div>
 
+    <!-- Opening-stock baseline — manual ground truth for items whose log
+         history scrolled out. One row per item: counted qty + current price.
+         Re-counting replaces the row; qty 0 deletes it. -->
+    <div class="flex-shrink-0 border border-border-default rounded">
+      <div class="flex items-center justify-between px-3 py-2 hover:bg-surface-elevated/50 transition-colors">
+        <button
+          type="button"
+          class="flex items-center gap-2 bg-transparent border-none cursor-pointer text-left flex-1"
+          @click="baselineOpen = !baselineOpen">
+          <span
+            class="text-text-secondary text-xs transition-transform"
+            :class="{ 'rotate-90': baselineOpen }">
+            ▶
+          </span>
+          <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
+            Opening stock ({{ baselines.length }})
+          </h4>
+        </button>
+        <span class="text-[10px] text-text-secondary italic hidden sm:inline">
+          Counted in-game — supersedes scrolled-out history
+        </span>
+      </div>
+      <div
+        v-show="baselineOpen"
+        class="px-3 pb-3 flex flex-col gap-2">
+        <div class="flex items-end gap-2 flex-wrap">
+          <label class="flex flex-col gap-1 text-[11px] text-text-secondary flex-1 min-w-32">
+            Item
+            <input
+              v-model="baselineItem"
+              type="text"
+              placeholder="e.g. Quality Reins"
+              class="bg-surface-elevated border border-border-default rounded px-2 py-1 text-xs text-text-primary focus:outline-none focus:border-accent-gold/50" />
+          </label>
+          <label class="flex flex-col gap-1 text-[11px] text-text-secondary w-20">
+            Qty
+            <input
+              v-model.number="baselineQty"
+              type="number"
+              min="0"
+              max="1000000"
+              placeholder="5"
+              class="bg-surface-elevated border border-border-default rounded px-2 py-1 text-xs text-text-primary focus:outline-none focus:border-accent-gold/50" />
+          </label>
+          <label class="flex flex-col gap-1 text-[11px] text-text-secondary w-28">
+            Price each (g)
+            <input
+              v-model.number="baselinePrice"
+              type="number"
+              min="0"
+              placeholder="4500"
+              class="bg-surface-elevated border border-border-default rounded px-2 py-1 text-xs text-text-primary focus:outline-none focus:border-accent-gold/50" />
+          </label>
+          <button
+            type="button"
+            class="px-3 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-accent-gold/50 text-text-primary disabled:opacity-50"
+            :disabled="baselineSaving || !baselineItem.trim()"
+            @click="saveBaseline">
+            {{ baselineSaving ? 'Saving…' : 'Set baseline' }}
+          </button>
+        </div>
+        <p
+          v-if="baselineError"
+          class="text-xs text-red-400">
+          {{ baselineError }}
+        </p>
+        <ul
+          v-if="baselines.length > 0"
+          class="flex flex-col gap-1 max-h-32 overflow-auto m-0 p-0 list-none">
+          <li
+            v-for="b in baselines"
+            :key="b.id"
+            class="flex items-center justify-between gap-2 text-xs text-text-primary bg-surface-elevated/50 rounded px-2 py-1">
+            <span class="truncate">
+              {{ b.item }} — {{ b.quantity.toLocaleString() }}×{{ b.priceUnit == null ? '—' : `${Math.round(b.priceUnit).toLocaleString()}g` }}
+              <span class="text-text-secondary">({{ formatShortDate(b.recordedAt) }})</span>
+            </span>
+            <button
+              type="button"
+              class="text-text-secondary hover:text-red-400 bg-transparent border-none cursor-pointer text-xs flex-shrink-0 disabled:opacity-50"
+              :disabled="baselineSaving"
+              :title="`Remove opening stock for ${b.item}`"
+              @click="removeBaseline(b)">
+              ✕
+            </button>
+          </li>
+        </ul>
+        <p
+          v-else
+          class="text-[11px] text-text-secondary italic m-0">
+          No opening stock set. Count an item in your stall and enter it above — sales after that moment replay on top.
+        </p>
+      </div>
+    </div>
+
     <p
       v-if="error"
       class="text-xs text-red-400 flex-shrink-0">
@@ -166,6 +295,8 @@ import type {
   InventoryItem,
   InventoryResult,
   PriceTier,
+  StallBaseline,
+  StallBaselineInput,
   StallInventoryParams,
 } from '../../types/stallTracker'
 
@@ -315,6 +446,149 @@ function buildParams(): StallInventoryParams {
   }
 }
 
+// ── Inventory health signals ────────────────────────────────────────────
+/** Items shown whose log history starts mid-stream (no baseline `added`). */
+const truncatedItems = computed<InventoryItem[]>(() =>
+  result.value ? result.value.items.filter((i) => i.history_truncated) : [],
+)
+const truncatedCount = computed(() => truncatedItems.value.length)
+/** Items priced at `last_known_price` because no priced tier survived. */
+const fallbackCount = computed(() =>
+  result.value
+    ? result.value.items.filter((i) => i.quantity > 0 && i.fallback_priced_qty > 0).length
+    : 0,
+)
+const oldestFirstEvent = computed(() => {
+  const dates = truncatedItems.value
+    .map((i) => i.first_event_at)
+    .filter((d): d is string => d != null)
+    .sort()
+  return dates.length > 0 ? formatShortDate(dates[0]) : '—'
+})
+
+// ── Manual "Check for new logs" ─────────────────────────────────────────
+// Same `rescan_stall_books` command as the parent action row — surfaced here
+// because the 30s Books-watcher cadence is the pane's update path now that
+// the live Player.log trigger is dark.
+const rescanning = ref(false)
+const lastSyncAt = ref<number | null>(null)
+const lastSyncLabel = computed(() => {
+  if (lastSyncAt.value == null) return ''
+  const secs = Math.max(0, Math.round((Date.now() - lastSyncAt.value) / 1000))
+  if (secs < 60) return 'just now'
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
+  return `${Math.floor(secs / 3600)}h ago`
+})
+const lastSyncFull = computed(() =>
+  lastSyncAt.value == null ? '' : new Date(lastSyncAt.value).toLocaleString(),
+)
+
+async function handleRescan() {
+  if (rescanning.value) return
+  rescanning.value = true
+  try {
+    await invoke<[number, number]>('rescan_stall_books')
+    lastSyncAt.value = Date.now()
+    await Promise.all([reload(), loadBaselines()])
+    await store.refresh()
+  } catch (e) {
+    error.value = String(e)
+    console.error('[StallInventoryTab] rescan failed:', e)
+  } finally {
+    rescanning.value = false
+  }
+}
+
+// ── Opening-stock baselines ─────────────────────────────────────────────
+const baselines = ref<StallBaseline[]>([])
+const baselineOpen = ref(false)
+const baselineItem = ref('')
+const baselineQty = ref<number | null>(null)
+const baselinePrice = ref<number | '' | null>(null)
+const baselineSaving = ref(false)
+const baselineError = ref<string | null>(null)
+
+async function loadBaselines() {
+  if (!store.currentOwner) {
+    baselines.value = []
+    return
+  }
+  try {
+    baselines.value = await invoke<StallBaseline[]>('get_stall_baselines', {
+      owner: store.currentOwner,
+    })
+  } catch (e) {
+    console.error('[StallInventoryTab] loadBaselines failed:', e)
+  }
+}
+
+async function saveBaseline() {
+  const item = baselineItem.value.trim()
+  if (!store.currentOwner || !item || baselineSaving.value) return
+  // `v-model.number` yields `''` (not null) when the field is cleared —
+  // without this, `'' < 0` / `'' > 1000000` are both false and
+  // `Math.floor('')` is 0, silently deleting the baseline for that item.
+  if (typeof baselineQty.value !== 'number' || !Number.isFinite(baselineQty.value)) {
+    baselineError.value = 'Enter a quantity 0–1000000 (0 removes the baseline).'
+    return
+  }
+  if (baselineQty.value < 0 || baselineQty.value > 1000000) {
+    baselineError.value = 'Quantity must be 0–1000000 (0 removes the baseline).'
+    return
+  }
+  // A cleared Price field is unpriced (null), not invalid: `v-model.number`
+  // yields `''` on clear, and `''` must map back to "no price" rather than
+  // erroring. Qty keeps the strict guard above — `''` there stays invalid.
+  const price = baselinePrice.value === '' ? null : baselinePrice.value
+  if (price != null && (typeof price !== 'number' || !Number.isFinite(price))) {
+    baselineError.value = 'Price must be a number (leave empty for unpriced).'
+    return
+  }
+  if (price != null && price < 0) {
+    baselineError.value = 'Price cannot be negative (leave empty for unpriced).'
+    return
+  }
+  baselineSaving.value = true
+  baselineError.value = null
+  try {
+    await invoke('save_stall_baseline', {
+      input: {
+        owner: store.currentOwner,
+        item,
+        quantity: Math.floor(baselineQty.value),
+        priceUnit: price,
+        note: null,
+      } satisfies StallBaselineInput,
+    })
+    baselineItem.value = ''
+    baselineQty.value = null
+    baselinePrice.value = null
+    await Promise.all([reload(), loadBaselines()])
+    await store.refresh()
+  } catch (e) {
+    baselineError.value = String(e)
+    console.error('[StallInventoryTab] saveBaseline failed:', e)
+  } finally {
+    baselineSaving.value = false
+  }
+}
+
+async function removeBaseline(b: StallBaseline) {
+  if (baselineSaving.value) return
+  baselineSaving.value = true
+  baselineError.value = null
+  try {
+    await invoke('delete_stall_baseline', { id: b.id, owner: store.currentOwner })
+    await Promise.all([reload(), loadBaselines()])
+    await store.refresh()
+  } catch (e) {
+    baselineError.value = String(e)
+    console.error('[StallInventoryTab] removeBaseline failed:', e)
+  } finally {
+    baselineSaving.value = false
+  }
+}
+
 async function reload() {
   if (!store.currentOwner) {
     result.value = null
@@ -366,16 +640,25 @@ function formatShortDate(iso: string | null): string {
 }
 
 watch(periodDays, () => void reload())
-watch(() => store.dataVersion, () => void reload())
+watch(() => store.dataVersion, () => {
+  void reload()
+  void loadBaselines()
+})
 watch(
   () => store.currentOwner,
   () => {
     periodDays.value = 7
     soldOutDays.value = 3
     soldOutOpen.value = false
+    baselineOpen.value = false
+    baselineError.value = null
     void reload()
+    void loadBaselines()
   },
 )
 
-onMounted(reload)
+onMounted(() => {
+  void reload()
+  void loadBaselines()
+})
 </script>

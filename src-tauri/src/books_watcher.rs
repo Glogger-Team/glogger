@@ -54,6 +54,173 @@ pub fn spawn_books_watcher(settings: std::sync::Arc<SettingsManager>, db: DbPool
     });
 }
 
+/// One-shot Books-directory scan for the manual "Check for new logs" command.
+/// Stateless sweep over `PlayerShopLog_*.txt` files: `INSERT OR IGNORE` dedup
+/// (not the watcher's mtime map) decides what is new, so it can never mark a
+/// file seen without ingesting it, and stays correct when the watcher thread
+/// already processed the same files (0 new rows). Returns `(files_scanned,
+/// new_events)`; a missing Books dir returns Ok((0,0)), but missing
+/// settings (game data path, character, server), unreadable directories /
+/// entries / files, and DB failures return Err so the UI can name the
+/// prerequisite instead of saying "nothing new". `new_events` is the total
+/// `stall_events` row delta across all owners during the sweep — rows
+/// stamped for a different alt (parser advisory owner, mirroring Import)
+/// count too.
+pub fn rescan_books_once(
+    settings: &SettingsManager,
+    db: &DbPool,
+    app: &AppHandle,
+) -> Result<(usize, usize), String> {
+    let snapshot = settings.get();
+    let game_data_path = nonempty_owned(&snapshot.game_data_path).ok_or_else(|| {
+        "rescan needs a game data path — set it in Settings first".to_string()
+    })?;
+    let character = snapshot
+        .active_character_name
+        .as_deref()
+        .and_then(nonempty_owned)
+        .ok_or_else(|| {
+            "rescan needs an active character — pick one in Settings first".to_string()
+        })?;
+    let server = snapshot
+        .active_server_name
+        .as_deref()
+        .and_then(nonempty_owned)
+        .ok_or_else(|| {
+            "rescan needs an active server — pick a character in Settings first".to_string()
+        })?;
+
+    let books_dir = Path::new(&game_data_path).join("Books");
+    // Missing Books dir = empty scan (fresh install, game never opened a
+    // book). Anything else (permissions, I/O) is a real failure — the old
+    // `let Ok(entries)` shape reported Ok((0,0)) and the UI said "no logs
+    // found" for a scan that never ran.
+    let entries = match std::fs::read_dir(&books_dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok((0, 0)),
+        Err(err) => {
+            return Err(format!(
+                "cannot read Books folder {}: {err}",
+                books_dir.display()
+            ));
+        }
+    };
+
+    // Baseline row count for the delta: total stall rows before the sweep.
+    // Owner-scoping would miss rows stamped for a different alt (the parser
+    // advisory owner wins for non-bought-only files, mirroring Import), so
+    // the delta counts every inserted stall row, not just the active
+    // character's. A read-pool checkout is fine — the sweep's writes go
+    // through the single write pool, and COUNT(*) never blocks them.
+    // Failures propagate: a zero-substitute here would report existing rows
+    // as new (before) or successful inserts as nothing-new (after).
+    let count_all = |db: &DbPool| -> Result<usize, String> {
+        let conn = db
+            .get()
+            .map_err(|e| format!("Database connection error: {e}"))?;
+        conn.query_row("SELECT COUNT(*) FROM stall_events", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .map(|n| n as usize)
+        .map_err(|e| format!("Count query failed: {e}"))
+    };
+    let before = count_all(db)?;
+    let mut scanned = 0usize;
+    // First non-benign failure: `process_book_file` errors with
+    // "no parseable shop-log entries" are normal (empty/hire-only books);
+    // anything else (DB write failures, unreadable-but-present files that
+    // passed the mid-write guard) must surface instead of reporting Ok(0).
+    let mut first_err: Option<String> = None;
+    // Entry-iteration errors surface (no `flatten()` swallow): a failing
+    // entry is not silently omitted from a "nothing new" report.
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(e) => paths.push(e.path()),
+            Err(err) => {
+                if first_err.is_none() {
+                    first_err = Some(format!("Books entry unreadable: {err}"));
+                }
+            }
+        }
+    }
+    for path in paths
+        .into_iter()
+        .filter(|p| {
+            p.is_file()
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("txt"))
+        })
+    {
+        // Only stall logs matter for the inventory command; other books go
+        // through the watcher's normal mtime-tracked path. `process_book_file`
+        // classifies by stem so a ShopLog-only guard keeps this cheap.
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if !stem.starts_with("PlayerShopLog") {
+            continue;
+        }
+        // Skip files mid-write (mtime changed under us) — the next scan or
+        // the watcher thread picks them up with a fresh mtime.
+        let pre = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            // Vanished between read_dir and read: not an error, just gone.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => {
+                eprintln!("[books-watcher] rescan {file_name}: unreadable: {err}");
+                if first_err.is_none() {
+                    first_err = Some(format!("{file_name}: unreadable: {err}"));
+                }
+                continue;
+            }
+        };
+        let post = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        if pre != post {
+            continue;
+        }
+        scanned += 1;
+        let content = String::from_utf8_lossy(&bytes);
+        // Unparseable/empty files are normal (no entries, hire-only books)
+        // — count as scanned, not as failure. Anything else (DB write
+        // failures) is recorded and returned after the sweep so one bad
+        // file never hides a good file's inserts. Every non-benign failure
+        // is logged; the first is also returned so the UI can surface it.
+        if let Err(e) = process_book_file(&path, &content, &character, &server, db, app) {
+            if e != "no parseable shop-log entries" {
+                eprintln!("[books-watcher] rescan {file_name}: {e}");
+                if first_err.is_none() {
+                    first_err = Some(format!("{file_name}: {e}"));
+                }
+            }
+        }
+    }
+    if let Some(e) = first_err {
+        return Err(e);
+    }
+    let new_events = count_all(db)?.saturating_sub(before);
+    Ok((scanned, new_events))
+}
+
+/// `Some(trimmed)` when non-empty, else `None`.
+fn nonempty_owned(s: &str) -> Option<String> {
+    let t = s.trim();
+    if t.is_empty() {
+        None
+    } else {
+        Some(t.to_string())
+    }
+}
+
 /// Consecutive failed attempts after which a book file is given up on (logged
 /// once, then recorded in `seen` so it stops retrying every tick). A
 /// deterministically broken file — permanently non-parseable content, a

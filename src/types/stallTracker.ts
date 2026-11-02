@@ -125,6 +125,14 @@ export interface InventoryItem {
   /** Most recent priced event seen for this item — survives the sellout
    * collapse so Recently Sold Out can still display a last price. */
   last_known_price: number | null;
+  /** Units priced at `last_known_price` because no priced tier survived
+   * (added-but-never-priced stock). 0 when every unit has a real price. */
+  fallback_priced_qty: number;
+  /** True when the earliest event for this item is not a baseline
+   * (`added`/`visible`/`configured`) — the log starts mid-history. */
+  history_truncated: boolean;
+  /** Earliest `event_at` seen for this item (`YYYY-MM-DD HH:MM:SS`). */
+  first_event_at: string | null;
 }
 
 export interface InventoryResult {
@@ -139,6 +147,29 @@ export interface InventoryResult {
 export interface StallInventoryParams {
   owner?: string | null;
   periodDays?: number | null;
+}
+
+// ── Opening-stock baseline (manual ground truth) ─────────────────────────
+
+/** One row of the `stall_inventory_baseline` table. camelCase to match
+ * the Rust `StallBaseline` serde rename. */
+export interface StallBaseline {
+  id: number;
+  owner: string;
+  item: string;
+  quantity: number;
+  priceUnit: number | null;
+  recordedAt: string;
+  note: string | null;
+}
+
+/** Input for `save_stall_baseline`. `quantity: 0` deletes the row. */
+export interface StallBaselineInput {
+  owner?: string | null;
+  item?: string | null;
+  quantity?: number | null;
+  priceUnit?: number | null;
+  note?: string | null;
 }
 
 // ── Sales time-series (Trends tab) ──────────────────────────────────────
