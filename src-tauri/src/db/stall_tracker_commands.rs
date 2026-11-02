@@ -1196,9 +1196,9 @@ pub struct StallBaseline {
     pub note: Option<String>,
 }
 
-/// Upsert one baseline row for the active character. `quantity <= 0` deletes
-/// the row instead (counted to zero = no opening stock) and returns None.
-/// Non-positive quantities never reach the aggregator as zero-qty seeds.
+/// Upsert one baseline row for the active character. `quantity == 0` deletes
+/// the row instead (counted to zero = no opening stock) and returns None;
+/// negative quantities are rejected, never stored.
 #[tauri::command]
 pub fn save_stall_baseline(
     db: State<'_, DbPool>,

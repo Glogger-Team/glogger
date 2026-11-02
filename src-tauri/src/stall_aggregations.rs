@@ -547,8 +547,12 @@ pub fn aggregate_inventory_with_baselines(
         state.last_activity_at = Some(b.recorded_at.clone());
     }
 
-    // First pass: collect distinct active dates (newest-first) — baselines
-    // included so a baseline-only item still anchors the window.
+    // First pass: collect distinct LIVE dates (newest-first) — only winning
+    // baselines plus events that survive the at-or-before-baseline drop.
+    // Pre-baseline (superseded) event dates are dead history: counting them
+    // here would inflate the all-time divisor and depress avg_per_day /
+    // avg_daily_revenue for exactly the baseline users this feature targets.
+    // Baselines included so a baseline-only item still anchors the window.
     let mut date_set: BTreeMap<String, ()> = BTreeMap::new();
     for b in &baselines {
         if b.quantity > 0 && b.recorded_at.len() >= 10 && !b.item.is_empty() {
@@ -557,9 +561,20 @@ pub fn aggregate_inventory_with_baselines(
     }
     let events: Vec<InventoryEvent> = events.into_iter().collect();
     for ev in &events {
-        if ev.event_at.len() >= 10 {
-            date_set.insert(ev.event_at[..10].to_string(), ());
+        // Mirror the walk-loop drop below via the winning-baseline map:
+        // skip events the baseline for their item supersedes (lexicographic
+        // ISO comparison, same as the replay drop, so the date set and the
+        // replay agree exactly). Items without a baseline keep all dates.
+        if ev.event_at.len() < 10 {
+            continue;
         }
+        if baseline_at
+            .get(&ev.item)
+            .is_some_and(|at| ev.event_at.as_str() <= at.as_str())
+        {
+            continue;
+        }
+        date_set.insert(ev.event_at[..10].to_string(), ());
     }
     let active_dates: Vec<String> = date_set.into_keys().rev().collect();
 
@@ -1815,6 +1830,31 @@ mod tests {
         assert_eq!(item.quantity, 4);
         assert_eq!(item.period_sold, 1);
         assert!(!item.history_truncated);
+    }
+
+    #[test]
+    fn inventory_baseline_excludes_dead_dates_from_divisor() {
+        // Dead pre-baseline dates (04-10/11/12) must not inflate the all-time
+        // divisor: only the baseline date (04-13) and the live sale date
+        // (04-14) count. One sale over 2 live dates → avg 0.5/day, not 1/5.
+        let events = vec![
+            inv("bought", "Counted Reins", "2026-04-10 10:00:00", 1, Some(4500.0)),
+            inv("bought", "Counted Reins", "2026-04-11 10:00:00", 1, Some(4500.0)),
+            inv("bought", "Counted Reins", "2026-04-12 10:00:00", 1, Some(4500.0)),
+            inv("bought", "Counted Reins", "2026-04-14 10:00:00", 1, Some(4500.0)),
+        ];
+        let r = aggregate_inventory_with_baselines(
+            events,
+            ALL_TIME_SENTINEL,
+            vec![BaselineSeed {
+                item: "Counted Reins".into(),
+                quantity: 5,
+                price_unit: Some(4500.0),
+                recorded_at: "2026-04-13 09:00:00".into(),
+            }],
+        );
+        assert_eq!(r.active_dates, vec!["2026-04-14", "2026-04-13"]);
+        assert!((r.items[0].avg_per_day - 0.5).abs() < 1e-9);
     }
 
     // ---------- Sales time-series ----------

@@ -275,6 +275,12 @@
         </p>
       </div>
     </div>
+
+    <p
+      v-if="error"
+      class="text-xs text-red-400 flex-shrink-0">
+      {{ error }}
+    </p>
   </div>
 </template>
 

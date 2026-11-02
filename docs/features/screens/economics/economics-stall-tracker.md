@@ -18,13 +18,14 @@ Shop log data also supports **Import** (load an exported book file) and
 data from CSVs or back up a character before the in-game log scrolls old
 entries out of range.
 
-The Stall Tracker has three visible tabs plus a fourth view behind a modal:
+The Stall Tracker has four visible tabs plus a fifth view behind a modal:
 
 | View | Purpose |
 |---|---|
 | Sales | Paginated list of every `bought` event with filters, sorting, stats header, per-row ignore toggle |
 | Revenue | Excel-style pivot of revenue with items as rows and daily/weekly/monthly periods as columns |
 | Inventory | Estimated current shop stock reconstructed from the event log with per-tier pricing |
+| Trends | Sales-over-time chart (gold/units lines, top-grossing or single-item modes) |
 | Shop Log (modal) | Full event log across all action types — a maintenance view for finding/ignoring specific events |
 
 ## Visible surfaces
@@ -66,12 +67,13 @@ The Stall Tracker has three visible tabs plus a fourth view behind a modal:
 - `src-tauri/src/coordinator.rs` — intercepts `PlayerEvent::BookOpened { book_type: "PlayerShopLog", … }` and persists the parsed events.
 
 **Frontend (Vue/TS):**
-- `src/types/stallTracker.ts` — `StallEvent`, `StallStats` TypeScript types.
+- `src/types/stallTracker.ts` — TypeScript mirrors of the Rust payloads (`StallEvent`, `StallStats`, revenue/inventory/timeseries shapes, baseline rows, import/export results).
 - `src/stores/stallTrackerStore.ts` — shared state (`stats`, `filterOptions`, `dataVersion`, `currentOwner`), listens for coordinator events.
 - `src/components/StallTracker/StallTrackerView.vue` — parent view with `TabBar`, action-row buttons, Shop Log modal.
 - `src/components/StallTracker/StallSalesTab.vue` — paginated sales table + stats header.
 - `src/components/StallTracker/StallRevenueTab.vue` — pivot table (Daily / Weekly / Monthly).
-- `src/components/StallTracker/StallInventoryTab.vue` — In Stock + Recently Sold Out tables.
+- `src/components/StallTracker/StallInventoryTab.vue` — In Stock + Recently Sold Out tables + opening-stock baseline editor.
+- `src/components/StallTracker/StallTrendsTab.vue` — sales-over-time chart (Gold/Units toggle, top-grossing and single-item modes).
 - `src/components/StallTracker/StallShopLogTab.vue` — full event log (rendered inside a teleported modal).
 
 The Sales / Revenue / Shop Log filter rows depend on two shared components: `src/components/Shared/SearchableSelect.vue` for the buyer / item / action dropdowns, and `src/components/Shared/DatePicker.vue` for the from / to date inputs. Both are documented in [shared-components.md](../../../architecture/shared-components.md).
@@ -262,9 +264,12 @@ instead of leaking cross-character data.
 
 ## Operations
 
-The action row in the parent view exposes Import, Export, and Clear data
-buttons. Export and Clear are gated on `hasData && currentOwner`; Import is
-always available so a fresh character can bootstrap from an exported book.
+The action row in the parent view exposes five buttons: Shop Log (gated on
+`hasData`), Check for new logs (always available; re-runs the Books sweep
+statelessly), Import (always available so a fresh character can bootstrap
+from an exported book), and Export + Clear data (gated on
+`hasData && currentOwner`). The Inventory tab repeats Check for new logs
+beside its sales-period dropdown.
 
 ### Import
 
@@ -341,9 +346,10 @@ Stall Tracker follows the app-wide time standards defined in
   use this column.
 - **Display format** — the Sales and Shop Log tabs display the raw
   `event_timestamp` (the game's own format) since users are already trained on
-  it and no conversion adds clarity. The Inventory tab's "Last Sold" / "Last
-  Activity" columns slice the first 10 chars of `event_at` and render them as
-  `"Apr 13"`.
+  it and no conversion adds clarity. The Inventory tab's `LAST` (In Stock)
+  and `LAST ACTIVITY` (Recently Sold Out) columns slice the first 10 chars
+  of `last_activity_at` and render them as `"Apr 13"`. `last_sold_at` is
+  computed per item but has no dedicated column in either table.
 - **Revenue year suffix** — when `aggregate_revenue` detects that the dataset
   spans multiple calendar years, daily and weekly period labels get a year
   suffix (`"Apr 13 2026"`) so same-label collisions can't happen. Single-year

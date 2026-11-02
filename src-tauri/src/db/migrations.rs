@@ -4429,7 +4429,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 83. Repair: a
+        // Chain wiring: full run_migrations head must be 84 (v83 repair +
+        // v84 baseline table). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();

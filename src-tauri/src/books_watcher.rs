@@ -87,24 +87,24 @@ pub fn rescan_books_once(
         return Ok((0, 0));
     };
 
-    // Baseline row count for the delta: only this owner's stall rows can be
-    // added by the sweep below, so the difference is the new-event count.
-    // A read-pool checkout is fine — the sweep's writes go through the
-    // single write pool, and COUNT(*) never blocks them.
-    let count_for_owner = |db: &DbPool| -> usize {
+    // Baseline row count for the delta: total stall rows before the sweep.
+    // Owner-scoping would miss rows stamped for a different alt (the parser
+    // advisory owner wins for non-bought-only files, mirroring Import), so
+    // the delta counts every inserted stall row, not just the active
+    // character's. A read-pool checkout is fine — the sweep's writes go
+    // through the single write pool, and COUNT(*) never blocks them.
+    let count_all = |db: &DbPool| -> usize {
         db.get()
             .ok()
             .and_then(|conn| {
-                conn.query_row(
-                    "SELECT COUNT(*) FROM stall_events WHERE owner = ?1",
-                    rusqlite::params![character],
-                    |row| row.get::<_, i64>(0),
-                )
+                conn.query_row("SELECT COUNT(*) FROM stall_events", [], |row| {
+                    row.get::<_, i64>(0)
+                })
                 .ok()
             })
             .unwrap_or(0) as usize
     };
-    let before = count_for_owner(db);
+    let before = count_all(db);
     let mut scanned = 0usize;
 
     for path in entries
@@ -146,7 +146,7 @@ pub fn rescan_books_once(
         // — count as scanned, not as failure.
         let _ = process_book_file(&path, &content, &character, &server, db, app);
     }
-    let new_events = count_for_owner(db).saturating_sub(before);
+    let new_events = count_all(db).saturating_sub(before);
     Ok((scanned, new_events))
 }
 
