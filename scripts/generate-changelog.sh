@@ -11,10 +11,13 @@
 #   ./scripts/generate-changelog.sh v0.1.0          # since a specific tag
 #   ./scripts/generate-changelog.sh v1.0.2 v1.0.3^  # a historical range (until ref)
 #
-# Commit prefixes are the source of truth for the notes:
+# Commit prefixes are the source of truth for grouping:
 #   feat: -> Features, impv: -> Improvements, fix: -> Fixes.
 # docs:/test:/build:/chore:/release: and merges are intentionally excluded —
 # anything a user should read about belongs in a feat:/impv:/fix: commit.
+# Output is humanized for end users: the type prefix and `!` are stripped at
+# render, the scope (if any) is kept as a `Scope: …` label, sentence-cased,
+# with no hashes, PR refs, or commit counts.
 
 set -euo pipefail
 
@@ -44,6 +47,40 @@ declare -a features=()
 declare -a improvements=()
 declare -a fixes=()
 
+# Render one conventional line for end users: strip the type prefix and any
+# trailing ` (#NN)` PR ref, sentence-case the text, keep the scope (if any)
+# as a `Scope: …` label. Anything without a type prefix passes through
+# unchanged so classified lines are never dropped here.
+humanize_entry() {
+  local line="$1"
+  local scope=""
+  local rest=""
+  if [[ "$line" =~ ^(feat|fix|impv)\(([^\)]*)\)!?:[[:space:]]*(.*)$ ]]; then
+    scope="${BASH_REMATCH[2]}"
+    rest="${BASH_REMATCH[3]}"
+  elif [[ "$line" =~ ^(feat|fix|impv)!?:[[:space:]]*(.*)$ ]]; then
+    rest="${BASH_REMATCH[2]}"
+  else
+    printf '%s' "$line"
+    return
+  fi
+  rest="$(printf '%s' "$rest" | sed -E 's/[[:space:]]*\(#[0-9]+\)[[:space:]]*$//')"
+  rest="$(printf '%s' "$rest" | sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')"
+  if [ -z "$rest" ]; then
+    printf '%s' "$line"
+    return
+  fi
+  local first upper
+  first="$(printf '%s' "$rest" | cut -c1)"
+  upper="$(printf '%s' "$first" | tr '[:lower:]' '[:upper:]')"
+  rest="${upper}$(printf '%s' "$rest" | cut -c2-)"
+  if [ -n "$scope" ]; then
+    printf '%s: %s' "$scope" "$rest"
+  else
+    printf '%s' "$rest"
+  fi
+}
+
 # Squash-merge subjects (`... (#NN)`) carry no conventional prefix; their
 # bodies embed the PR's original `* type:` commits. Classify those bullets
 # the same way next-version.py does, so a squashed feature still lands in
@@ -55,23 +92,25 @@ classify_squash_body() {
   while IFS= read -r bline; do
     local entry=""
     case "$bline" in
-      '*'[[:space:]]*feat:*|'*'*[[:space:]]*feat'('*')'*:*)
+      '*'[[:space:]]feat:*|'*'[[:space:]]feat'('*')'*:*|'*'[[:space:]]feat'!'*:*)
         entry="feature"
         ;;
-      '*'[[:space:]]*impv:*|'*'*[[:space:]]*impv'('*')'*:*)
+      '*'[[:space:]]impv:*|'*'[[:space:]]impv'('*')'*:*|'*'[[:space:]]impv'!'*:*)
         entry="improvement"
         ;;
-      '*'[[:space:]]*fix:*|'*'*[[:space:]]*fix'('*')'*:*)
+      '*'[[:space:]]fix:*|'*'[[:space:]]fix'('*')'*:*|'*'[[:space:]]fix'!'*:*)
         entry="fix"
         ;;
     esac
     if [ -n "$entry" ]; then
-      # Strip the leading bullet; keep the conventional line as the entry.
+      # Strip the leading bullet; humanize the conventional line as the entry.
       local text="${bline#*\* }"
+      local cleaned
+      cleaned="$(humanize_entry "$text")"
       case "$entry" in
-        feature) features+=("- ${text} (\`${hash}\`)") ;;
-        improvement) improvements+=("- ${text} (\`${hash}\`)") ;;
-        fix) fixes+=("- ${text} (\`${hash}\`)") ;;
+        feature) features+=("- ${cleaned}") ;;
+        improvement) improvements+=("- ${cleaned}") ;;
+        fix) fixes+=("- ${cleaned}") ;;
       esac
     fi
   done < <(git log -1 --format=%B "$hash" 2>/dev/null)
@@ -84,15 +123,19 @@ while IFS= read -r line; do
   HASH="${line%% *}"
   MSG="${line#* }"
 
+  cleaned=""
   case "$MSG" in
-    feat:*|feat\(*)
-      features+=("- ${MSG} (\`${HASH}\`)")
+    feat:*|feat!:*|feat\(*:*)
+      cleaned="$(humanize_entry "$MSG")"
+      features+=("- ${cleaned}")
       ;;
-    fix:*|fix\(*)
-      fixes+=("- ${MSG} (\`${HASH}\`)")
+    fix:*|fix!:*|fix\(*:*)
+      cleaned="$(humanize_entry "$MSG")"
+      fixes+=("- ${cleaned}")
       ;;
-    impv:*|impv\(*)
-      improvements+=("- ${MSG} (\`${HASH}\`)")
+    impv:*|impv!:*|impv\(*:*)
+      cleaned="$(humanize_entry "$MSG")"
+      improvements+=("- ${cleaned}")
       ;;
     *)
       # Squash merges carry the PR's commits in the body, not the subject:
@@ -126,14 +169,4 @@ fi
 if [ ${#features[@]} -eq 0 ] && [ ${#improvements[@]} -eq 0 ] && [ ${#fixes[@]} -eq 0 ]; then
   echo "No user-facing changes in this release."
   echo ""
-fi
-
-# Stats
-COMMIT_COUNT=$(git rev-list --count "$RANGE" 2>/dev/null || echo "0")
-if [ "$COMMIT_COUNT" = "1" ]; then
-  echo "---"
-  echo "*1 commit since ${SINCE_TAG:-initial}*"
-else
-  echo "---"
-  echo "*${COMMIT_COUNT} commits since ${SINCE_TAG:-initial}*"
 fi
