@@ -131,9 +131,13 @@ export interface InventoryItem {
   /** True when the earliest event for this item is not a baseline
    * (`added`/`visible`/`configured`) — the log starts mid-history. */
   history_truncated: boolean;
-  /** Earliest `event_at` seen for this item (`YYYY-MM-DD HH:MM:SS`). */
-  first_event_at: string | null;
-}
+  // Winning baseline recorded_at ("YYYY-MM-DD HH:MM:SS"), null when uncounted.
+  baseline_at: string | null;
+  // Surviving log events replayed on top of the baseline. 0 when none / no baseline.
+  events_since_baseline: number;
+   /** Earliest `event_at` seen for this item (`YYYY-MM-DD HH:MM:SS`). */
+   first_event_at: string | null;
+ }
 
 export interface InventoryResult {
   items: InventoryItem[];
