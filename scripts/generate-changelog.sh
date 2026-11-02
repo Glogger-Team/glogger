@@ -55,10 +55,10 @@ humanize_entry() {
   local line="$1"
   local scope=""
   local rest=""
-  if [[ "$line" =~ ^(feat|fix|impv)\(([^\)]*)\)!?:[[:space:]]+(.*)$ ]]; then
+  if [[ "$line" =~ ^(feat|fix|impv)\(([^\)]*)\)!?:[[:space:]]*(.*)$ ]]; then
     scope="${BASH_REMATCH[2]}"
     rest="${BASH_REMATCH[3]}"
-  elif [[ "$line" =~ ^(feat|fix|impv)!?:[[:space:]]+(.*)$ ]]; then
+  elif [[ "$line" =~ ^(feat|fix|impv)!?:[[:space:]]*(.*)$ ]]; then
     rest="${BASH_REMATCH[2]}"
   else
     printf '%s' "$line"
