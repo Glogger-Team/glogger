@@ -34,6 +34,8 @@ def main(argv: list[str]) -> int:
                 repo,
                 "--exclude-drafts",
                 "--exclude-pre-releases",
+                "--limit",
+                "200",
                 "--json",
                 "tagName",
             ],

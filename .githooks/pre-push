@@ -8,6 +8,7 @@
 if [ -n "$GLOGGER_SKIP_CONSTRAINTS" ]; then
   echo "[glogger] WARNING: constraint check skipped via GLOGGER_SKIP_CONSTRAINTS" >&2
   exit 0
+fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Probe with `-c ''`: `command -v` matches the Windows App Execution Alias
 # stub, whose exec then fails and would block every push.
