@@ -273,6 +273,9 @@ def run_tests():
         # `!` inside the scope is not a breaking marker (group 3 only).
         ("feat(wow!): add thing", [], "minor", ["feat"]),
         ("fix(api:v2): scoped colon", [], "patch", ["fix"]),
+        # Colon in scope plus a real bang still breaks (the old
+        # `split(":")[0]` check missed this shape entirely).
+        ("feat(api:v2)!: scoped colon breaking", [], "major", ["feat"]),
     ]
     failures = 0
     for subject, body, want_bump, want_sections in cases:
