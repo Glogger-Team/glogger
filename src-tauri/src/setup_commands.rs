@@ -629,7 +629,9 @@ pub fn rename_character(
         &new_server_name,
     )?;
 
-    // Active identity follows the rename.
+    // Active identity follows the rename. The DB tx already committed, so a
+    // settings-write failure can't roll anything back — log it loudly
+    // instead of returning Ok into a stale persisted identity.
     let settings = settings_manager.get();
     if settings.active_character_name.as_deref() == Some(&character_name)
         && settings.active_server_name.as_deref() == Some(&server_name)
@@ -637,7 +639,9 @@ pub fn rename_character(
         let mut updated = settings;
         updated.active_character_name = Some(new_character_name.clone());
         updated.active_server_name = Some(new_server_name.clone());
-        settings_manager.update(updated).ok();
+        if let Err(e) = settings_manager.update(updated) {
+            eprintln!("[setup] rename committed but settings follow failed: {e}");
+        }
     }
 
     eprintln!(
