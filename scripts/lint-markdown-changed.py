@@ -49,9 +49,12 @@ def git(*args: str) -> list[str]:
 
 
 def unpushed_base() -> str | None:
-    # Two-tier base for "commits not on the remote yet": the upstream when
-    # set, else the remote default (covers `git push -u` on a fresh
-    # branch). None when neither ref resolves.
+    """Fork point of HEAD vs the remote, for linting unpushed commits.
+
+    Tries the upstream first (`@{u}`), then the remote default
+    (`origin/HEAD`, which covers `git push -u` on a fresh branch with no
+    upstream yet). Returns None when neither ref resolves.
+    """
     for base_ref in ("@{u}", "origin/HEAD"):
         try:
             base = subprocess.run(
@@ -68,6 +71,14 @@ def unpushed_base() -> str | None:
 
 
 def main() -> int:
+    """Lint hand-maintained Markdown changed by the selected scope.
+
+    `--base <sha>` (CI): files changed between base and HEAD. `--push`
+    (pre-push hook): files changed in unpushed commits only, failing
+    closed on worktree overlap. Neither flag (commit hook / manual):
+    worktree files plus unpushed commits. Returns the linter exit code,
+    1 on overlap or gate failure, 0 when nothing in scope.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", default=None)
     parser.add_argument(
