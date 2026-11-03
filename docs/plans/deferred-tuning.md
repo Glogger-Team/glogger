@@ -22,6 +22,7 @@ apart and forward-ordered. Both assumptions are unverified against real
 game behavior — tuning requires a capture of actual paired lines.
 
 **Concrete open items:**
+
 - [ ] Capture a real session containing at least one rez pair; measure
       the actual timestamp gap between the two phrasings. If any pair
       exceeds 30s, widen `WINDOW` (there's no re-rez-cooldown evidence
@@ -61,6 +62,7 @@ that matters depends on real report counts/sizes on the user's
 machine — pure tuning, no correctness bug.
 
 **Concrete open items:**
+
 - [x] **Measured 2026-10-13 — leave as-is.** On the real dev DB
       (`%APPDATA%/glogger.Dev/glogger.db`, 149 MB): **12 report rows,
       158 KB average `raw_json`, 1.79 MB total** — an order of magnitude
@@ -106,6 +108,7 @@ non-zero — day-jump would land mid-list. Intermittent by nature; not
 statically provable. Needs live observation.
 
 **Concrete open items (all moot — kept for reference):**
+
 - [x] Repro attempt: slow network/dev-tools throttling + jump to a day
       far from the current window; check whether the list sometimes
       opens mid-list instead of at the top. Desc AND asc sort orders
