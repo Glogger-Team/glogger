@@ -350,9 +350,13 @@ function buildParams(): StallInventoryParams {
 }
 
 // ── Inventory health signals ────────────────────────────────────────────
-/** Items shown whose log history starts mid-stream (no baseline `added`). */
+/** In-stock rows whose log history starts mid-stream (no baseline `added`).
+ * Sold-out rows (qty 0) are excluded: the table only shows in-stock items,
+ * so the warning count always matches a visible ⚠ flag. */
 const truncatedItems = computed<InventoryItem[]>(() =>
-  result.value ? result.value.items.filter((i) => i.history_truncated) : [],
+  result.value
+    ? result.value.items.filter((i) => i.quantity > 0 && i.history_truncated)
+    : [],
 )
 const truncatedCount = computed(() => truncatedItems.value.length)
 /** Items priced at `last_known_price` because no priced tier survived. */
@@ -361,13 +365,6 @@ const fallbackCount = computed(() =>
     ? result.value.items.filter((i) => i.quantity > 0 && i.fallback_priced_qty > 0).length
     : 0,
 )
-const oldestFirstEvent = computed(() => {
-  const dates = truncatedItems.value
-    .map((i) => i.first_event_at)
-    .filter((d): d is string => d != null)
-    .sort()
-  return dates.length > 0 ? formatShortDate(dates[0]) : '—'
-})
 
 /** Rows whose quantity is a guess: truncated history, or fallback-priced
  * (in-stock only — a sold-out item has qty 0 regardless of its price). */
