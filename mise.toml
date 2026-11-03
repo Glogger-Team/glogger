@@ -48,6 +48,6 @@ run = [
 description = "lint plus advisory rustfmt and the changed-files markdown gate"
 depends = ["lint"]
 run = [
-  "cd src-tauri && cargo fmt -- --check",
+  "cd src-tauri && cargo fmt -- --check || true",
   "python scripts/lint-markdown-changed.py",
 ]

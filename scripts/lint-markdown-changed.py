@@ -36,10 +36,14 @@ def in_scope(path: str) -> bool:
 
 
 def git(*args: str) -> list[str]:
+    # -z: NUL-delimited output; git quotes non-ASCII paths by default
+    # (docs/café.md would arrive as "docs/caf\\303\\251.md" and silently
+    # miss in_scope). text=False: split raw bytes on NUL, decode per path
+    # with surrogateescape so undecodable bytes survive as names.
     out = subprocess.run(
-        ["git", *args], capture_output=True, text=True, check=True
+        ["git", *args, "-z"], capture_output=True, text=False, check=True
     ).stdout
-    return [line for line in out.splitlines() if line]
+    return [p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p]
 
 
 def main() -> int:
@@ -69,7 +73,9 @@ def main() -> int:
         os.environ.get("MARKDOWNLINT", "markdownlint-cli2"),
         posix=os.name != "nt",
     )
-    cmd += ["--config", ".markdownlint-cli2.json", *files]
+    # ":" prefix: markdownlint-cli2 literal-path mode; without it args are
+    # globs and a file like docs/notes[1].md can skip or match elsewhere.
+    cmd += ["--config", ".markdownlint-cli2.json"] + [f":{f}" for f in files]
     print("+", " ".join(cmd))
     return subprocess.run(cmd, check=False).returncode
 
