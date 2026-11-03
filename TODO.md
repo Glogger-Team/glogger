@@ -169,7 +169,7 @@ Small tasks and notes that don't belong in a dedicated plan.
   - **Effort: Small | Impact: Low (UX papercut)**
 - [x] ~~`startSession`/`endSession` error surfacing~~ — **DONE 2026-11-01: dedicated `sessionError` ref (separate from record-use `recordError`) set in both catch arms, exported, rendered under Start button; `vue-tsc` clean.**
   - **Effort: Small | Impact: Low**
-- [ ] Debug-capture + login-skill-list `snapshot` wording — kept deliberately (different sense from export reports). Revisit only if users confuse the terms; no action owed.
+- [x] ~~Debug-capture + login-skill-list `snapshot` wording~~ — **CLOSED 2026-11-03: kept deliberately — debug-capture `GameStateSnapshot` (point-in-time DB dump at capture start/stop, `debug_capture.rs:41`) and login `SkillsLoaded`/`SkillSnapshot` (in-memory full skill dump seeding the running table, `player_event_parser.rs:55-58`) are transient live-state captures, not persisted VIP export reports (`character_snapshots` / `character_item_snapshots`). Reopen only if users confuse the terms.**
   - **Effort: Trivial | Impact: Nil (decision record)**
 - [ ] Tier-2 identifier rename (`SnapshotItem`, `get_snapshot_items`, `source='snapshot'`, table names) — explicitly out of scope for the tier-1 pass. A breaking IPC/DB migration; needs its own plan if ever wanted.
   - **Effort: Large | Impact: Low (cosmetic, high blast radius)**
