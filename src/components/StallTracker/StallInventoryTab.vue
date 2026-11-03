@@ -37,7 +37,7 @@
           :disabled="loading || rescanning"
           :title="store.currentOwner ? 'Re-read the game\'s Books folder for new shop logs' : 'Set an active character first'"
           @click="handleRescan">
-          {{ rescanning ? 'Checking…' : 'Check for new logs' }}
+          {{ rescanning ? 'Refreshing…' : 'Refresh' }}
         </button>
         <span
           v-if="lastSyncLabel"

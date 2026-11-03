@@ -32,7 +32,7 @@
           :disabled="actionInProgress"
           :title="store.currentOwner ? 'Re-read the game\'s Books folder for new shop logs' : 'Set an active character first'"
           @click="handleRescan">
-          Check for new logs
+          Refresh
         </button>
         <button
           type="button"
