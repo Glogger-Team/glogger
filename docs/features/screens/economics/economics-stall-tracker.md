@@ -266,10 +266,9 @@ instead of leaking cross-character data.
 
 The action row in the parent view exposes five buttons: Shop Log (gated on
 `hasData`), Refresh (always available; re-runs the Books sweep
-statelessly), Import (always available so a fresh character can bootstrap
-from an exported book), and Export + Clear data (gated on
-`hasData && currentOwner`). The Inventory tab repeats Refresh
-beside its sales-period dropdown with a Synced relative-time label.
+statelessly, with a Synced relative-time label stamped on success), Import
+(always available so a fresh character can bootstrap from an exported book),
+and Export + Clear data (gated on `hasData && currentOwner`).
 
 ### Clear unsure
 

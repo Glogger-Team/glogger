@@ -34,6 +34,21 @@ export const useStallTrackerStore = defineStore('stallTracker', () => {
     actions: [],
   })
   const dataVersion = ref(0)
+  /** Epoch ms of the last successful manual `rescan_stall_books` from the
+   * parent action row. Tabs read this for the "Synced <label>" display —
+   * it lives in the store (not the action row) so it survives tab switches
+   * and HMR remounts of the parent view. */
+  const lastSyncedAt = ref<number | null>(null)
+  const lastSyncedLabel = computed(() => {
+    if (lastSyncedAt.value == null) return ''
+    const secs = Math.max(0, Math.round((Date.now() - lastSyncedAt.value) / 1000))
+    if (secs < 60) return 'just now'
+    if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
+    return `${Math.floor(secs / 3600)}h ago`
+  })
+  const lastSyncedFull = computed(() =>
+    lastSyncedAt.value == null ? '' : new Date(lastSyncedAt.value).toLocaleString(),
+  )
 
   // Per-method request tokens. Every loadStats / loadFilterOptions call
   // captures the current token and the owner at issue time; on resume after
@@ -198,5 +213,8 @@ export const useStallTrackerStore = defineStore('stallTracker', () => {
     toggleIgnored,
     clearAll,
     refresh,
+    lastSyncedAt,
+    lastSyncedLabel,
+    lastSyncedFull,
   }
 })

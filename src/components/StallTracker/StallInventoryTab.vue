@@ -31,19 +31,11 @@
         </template>
       </p>
       <div class="flex items-center gap-2">
-        <button
-          type="button"
-          class="px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-accent-gold/50 text-text-primary disabled:opacity-50"
-          :disabled="loading || rescanning"
-          :title="store.currentOwner ? 'Re-read the game\'s Books folder for new shop logs' : 'Set an active character first'"
-          @click="handleRescan">
-          {{ rescanning ? 'Refreshing…' : 'Refresh' }}
-        </button>
         <span
-          v-if="lastSyncLabel"
+          v-if="store.lastSyncedAt != null"
           class="text-[11px] text-text-secondary"
-          :title="`Last synced ${lastSyncFull}`">
-          Synced {{ lastSyncLabel }}
+          :title="`Last synced ${store.lastSyncedFull}`">
+          Synced {{ store.lastSyncedLabel }}
         </span>
         <label class="flex items-center gap-2 text-xs text-text-secondary">
           Sales period
@@ -411,39 +403,6 @@ async function clearUnsure() {
     console.error('[StallInventoryTab] clearUnsure failed:', e)
   } finally {
     clearingUnsure.value = false
-  }
-}
-
-// ── Manual "Check for new logs" ─────────────────────────────────────────
-// Same `rescan_stall_books` command as the parent action row — surfaced here
-// because the 30s Books-watcher cadence is the pane's update path now that
-// the live Player.log trigger is dark.
-const rescanning = ref(false)
-const lastSyncAt = ref<number | null>(null)
-const lastSyncLabel = computed(() => {
-  if (lastSyncAt.value == null) return ''
-  const secs = Math.max(0, Math.round((Date.now() - lastSyncAt.value) / 1000))
-  if (secs < 60) return 'just now'
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
-  return `${Math.floor(secs / 3600)}h ago`
-})
-const lastSyncFull = computed(() =>
-  lastSyncAt.value == null ? '' : new Date(lastSyncAt.value).toLocaleString(),
-)
-
-async function handleRescan() {
-  if (rescanning.value) return
-  rescanning.value = true
-  try {
-    await invoke<[number, number]>('rescan_stall_books')
-    lastSyncAt.value = Date.now()
-    await Promise.all([reload(), loadBaselines()])
-    await store.refresh()
-  } catch (e) {
-    error.value = String(e)
-    console.error('[StallInventoryTab] rescan failed:', e)
-  } finally {
-    rescanning.value = false
   }
 }
 
