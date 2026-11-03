@@ -73,7 +73,12 @@ The Stall Tracker has four visible tabs plus a fifth view behind a modal:
 - `src/components/StallTracker/StallSalesTab.vue` — paginated sales table + stats header.
 - `src/components/StallTracker/StallRevenueTab.vue` — pivot table (Daily / Weekly / Monthly).
 - `src/components/StallTracker/StallInventoryTab.vue` — In Stock table with tier-stack pricing, Clear-unsure eviction, and the opening-stock baseline editor.
+- `src/components/StallTracker/StallTrendsTab.vue` — sales-over-time chart (Gold/Units toggle, top-grossing and single-item modes).
 - `src/components/StallTracker/StallShopLogTab.vue` — full event log (rendered inside a teleported modal).
+
+The Sales / Revenue / Shop Log filter rows depend on two shared components: `src/components/Shared/SearchableSelect.vue` for the buyer / item / action dropdowns, and `src/components/Shared/DatePicker.vue` for the from / to date inputs. Both are documented in [shared-components.md](../../../architecture/shared-components.md).
+
+Item names are rendered via `<ItemInline>` in the item-display surfaces (Sales row, Inventory In Stock row, Shop Log row, Revenue pivot row label) so hovering an item shows its CDN tooltip with rarity / equip slot / stats, and clicking navigates to the Data Browser.
 
 ## Event Pipeline
 
