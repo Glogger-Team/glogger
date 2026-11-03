@@ -91,7 +91,11 @@ def main() -> int:
         # (The commit hook never runs --push, so amend/refine flows that
         # legitimately stack worktree tweaks on unpushed commits are
         # unaffected.)
-        masked = sorted(set(files) & set(git("diff", "--name-only", "HEAD")))
+        masked = sorted(
+            f
+            for f in set(files) & set(git("diff", "--name-only", "HEAD"))
+            if in_scope(f)
+        )
         if masked:
             print(
                 "Refusing to lint pushed Markdown with uncommitted changes "
