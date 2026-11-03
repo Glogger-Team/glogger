@@ -21,7 +21,7 @@
       <p class="text-xs text-text-secondary italic">
         <template v-if="truncatedCount > 0">
           ⚠ History is incomplete for {{ truncatedCount }} item{{ truncatedCount === 1 ? '' : 's' }} (oldest saved event {{ oldestFirstEvent }}).
-          To fix this, save older shop logs from the game Books folder, import them, or count your stock in Opening stock below.
+          To fix this, save older shop logs from the game Books folder, import them, or count your stock in Manual stock entry below.
         </template>
         <template v-else>
           Inventory is estimated from shop log events. It may be incomplete if older log data is missing.
@@ -65,21 +65,21 @@
             <span
               v-if="(row as unknown as InventoryItem).history_truncated"
               class="text-amber-400 text-[11px]"
-              :title="`History starts mid-stream (oldest event ${formatShortDate((row as unknown as InventoryItem).first_event_at)}). Count stock below to set a baseline.`">
+              :title="`History starts mid-stream (oldest event ${formatShortDate((row as unknown as InventoryItem).first_event_at)}). Count stock below to save a manual count.`">
               ⚠
             </span>
             <button
               v-if="(row as unknown as InventoryItem).baseline_at != null"
               type="button"
               class="text-text-secondary hover:text-accent-gold bg-transparent border-none cursor-pointer text-xs flex-shrink-0"
-              :title="`Recount ${(row as unknown as InventoryItem).item} — prefill Opening stock below`"
+              :title="`Recount ${(row as unknown as InventoryItem).item} — prefill Manual stock entry below`"
               @click="startRecount((row as unknown as InventoryItem))">
               ↻
             </button>
             <span
               v-if="(row as unknown as InventoryItem).baseline_at != null"
               class="text-[10px] text-text-secondary"
-              :title="`Baseline counted ${(row as unknown as InventoryItem).baseline_at}; ${(row as unknown as InventoryItem).events_since_baseline} logged event(s) replayed on top. Unlogged take-downs stay invisible — recount after restocking/delisting.`">
+              :title="`Manually counted ${(row as unknown as InventoryItem).baseline_at}; ${(row as unknown as InventoryItem).events_since_baseline} logged event(s) replayed on top. Unlogged take-downs stay invisible — recount after restocking/delisting.`">
               counted {{ formatShortDate((row as unknown as InventoryItem).baseline_at) }}<template v-if="(row as unknown as InventoryItem).events_since_baseline > 0"> · {{ (row as unknown as InventoryItem).events_since_baseline }} since</template>
             </span>
           </span>
@@ -117,9 +117,9 @@
       </DataTable>
     </div>
     <!-- Clear unsure — one click to zero-out every row whose quantity is a
-         guess (truncated history or fallback-priced). Each becomes a qty-0
-         baseline so the guess never returns; recount any item you actually
-         still stock below. -->
+         guess (truncated history or fallback-priced). Each becomes a zeroed
+         manual count so the guess never returns; recount any item you
+         actually still stock below. -->
     <div
       v-if="unsureCount > 0"
       class="flex items-center justify-between gap-2 flex-shrink-0 border border-amber-400/30 bg-amber-400/5 rounded px-3 py-2">
@@ -135,10 +135,9 @@
       </button>
     </div>
 
-    <!-- Opening-stock baseline — manual ground truth for items whose log
-         history scrolled out, and the store for Clear-unsure evictions.
-         One row per item: counted qty + current price. Re-counting replaces
-         the row; qty 0 marks the item cleared. -->
+    <!-- Manual stock entry — counted qty + price for items whose log history
+         scrolled out, and the store for Clear-unsure evictions. One row per
+         item. Re-counting replaces the row; qty 0 marks the item cleared. -->
     <div class="flex-shrink-0 border border-border-default rounded">
       <div class="flex items-center justify-between px-3 py-2 hover:bg-surface-elevated/50 transition-colors">
         <button
@@ -151,7 +150,7 @@
             ▶
           </span>
           <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
-            Opening stock ({{ baselines.length }})
+            Manual stock entry ({{ baselines.length }})
           </h4>
         </button>
         <span class="text-[10px] text-text-secondary italic hidden sm:inline">
@@ -195,7 +194,7 @@
             class="px-3 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-accent-gold/50 text-text-primary disabled:opacity-50"
             :disabled="baselineSaving || !baselineItem.trim()"
             @click="saveBaseline">
-            {{ baselineSaving ? 'Saving…' : 'Set baseline' }}
+            {{ baselineSaving ? 'Saving…' : 'Save count' }}
           </button>
         </div>
         <p
@@ -218,7 +217,7 @@
               type="button"
               class="text-text-secondary hover:text-red-400 bg-transparent border-none cursor-pointer text-xs flex-shrink-0 disabled:opacity-50"
               :disabled="baselineSaving"
-              :title="`Remove opening stock for ${b.item}`"
+              :title="`Remove manual count for ${b.item}`"
               @click="removeBaseline(b)">
               ✕
             </button>
@@ -227,7 +226,7 @@
         <p
           v-else
           class="text-[11px] text-text-secondary italic m-0">
-          No opening stock set. Count an item in your stall and enter it above — sales after that moment replay on top. Silent take-downs without a log line stay invisible until the next count or a logged removal.
+          No manual counts yet. Count an item in your stall and enter it above — sales after that moment replay on top. Silent take-downs without a log line stay invisible until the next count or a logged removal.
         </p>
       </div>
     </div>
@@ -400,7 +399,7 @@ async function clearUnsure() {
   }
 }
 
-// ── Opening-stock baselines ─────────────────────────────────────────────
+// ── Manual stock entry ──────────────────────────────────────────────────
 const baselines = ref<StallBaseline[]>([])
 const baselineOpen = ref(false)
 const baselineItem = ref('')

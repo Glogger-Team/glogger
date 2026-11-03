@@ -46,7 +46,7 @@ The Stall Tracker has four visible tabs plus a fifth view behind a modal:
 
 <img src="../../../screenshots/economics/stall-tracker/inventory.png" alt="Inventory tab — In Stock table with multi-tier prices, Clear unsure row" width="900" />
 
-*Reconstructed from the event log via per-item tier-stack replay. Multi-tier price column shows `qty × price` rows when an item is listed at multiple tiers. Rows whose quantity is a guess (mid-history ⚠ or `~` fallback-priced) roll up into a Clear-unsure row that zeroes each via a qty-0 baseline; recount anything still stocked in Opening stock below.*
+*Reconstructed from the event log via per-item tier-stack replay. Multi-tier price column shows `qty × price` rows when an item is listed at multiple tiers. Rows whose quantity is a guess (mid-history ⚠ or `~` fallback-priced) roll up into a Clear-unsure row that zeroes each via a zeroed manual count; recount anything still stocked in Manual stock entry below.*
 
 ### Shop Log modal
 
@@ -67,12 +67,12 @@ The Stall Tracker has four visible tabs plus a fifth view behind a modal:
 - `src-tauri/src/coordinator.rs` — intercepts `PlayerEvent::BookOpened { book_type: "PlayerShopLog", … }` and persists the parsed events.
 
 **Frontend (Vue/TS):**
-- `src/types/stallTracker.ts` — TypeScript mirrors of the Rust payloads (`StallEvent`, `StallStats`, revenue/inventory/timeseries shapes, baseline rows, import/export results).
+- `src/types/stallTracker.ts` — TypeScript mirrors of the Rust payloads (`StallEvent`, `StallStats`, revenue/inventory/timeseries shapes, manual count rows, import/export results).
 - `src/stores/stallTrackerStore.ts` — shared state (`stats`, `filterOptions`, `dataVersion`, `currentOwner`), listens for coordinator events.
 - `src/components/StallTracker/StallTrackerView.vue` — parent view with `TabBar`, action-row buttons, Shop Log modal.
 - `src/components/StallTracker/StallSalesTab.vue` — paginated sales table + stats header.
 - `src/components/StallTracker/StallRevenueTab.vue` — pivot table (Daily / Weekly / Monthly).
-- `src/components/StallTracker/StallInventoryTab.vue` — In Stock table with tier-stack pricing, Clear-unsure eviction, and the opening-stock baseline editor.
+- `src/components/StallTracker/StallInventoryTab.vue` — In Stock table with tier-stack pricing, Clear-unsure eviction, and the manual stock entry editor.
 - `src/components/StallTracker/StallTrendsTab.vue` — sales-over-time chart (Gold/Units toggle, top-grossing and single-item modes).
 - `src/components/StallTracker/StallShopLogTab.vue` — full event log (rendered inside a teleported modal).
 
@@ -234,9 +234,9 @@ the same item at the same price) would otherwise collapse into a single row.
 | `get_stall_revenue(params)` | Daily/weekly/monthly pivot. Returns pre-computed `periods`, `items`, `cells`, row/col totals, grand total. |
 | `get_stall_inventory(params)` | Inventory tier-stack report with per-item quantity, price tiers, period sales, and last sold. Seeds from `stall_inventory_baseline` rows. |
 | `rescan_stall_books()` | Stateless sweep of `Books/PlayerShopLog_*.txt` for the active character. Returns `(files_scanned, new_events)`. |
-| `save_stall_baseline(input)` | Upsert one opening-stock row (qty 0 stores a zero row that clears the item). Re-stamps `recorded_at` to now. |
-| `get_stall_baselines(owner)` | List opening-stock rows for the active character. |
-| `delete_stall_baseline(id, owner)` | Delete one opening-stock row by id, owner-scoped. |
+| `save_stall_baseline(input)` | Upsert one manual count row (qty 0 stores a zeroed count that clears the item). Re-stamps `recorded_at` to now. |
+| `get_stall_baselines(owner)` | List manual count rows for the active character. |
+| `delete_stall_baseline(id, owner)` | Delete one manual count row by id, owner-scoped. |
 | `get_stall_filter_options(owner)` | Distinct buyers, players, items, dates, actions for filter dropdowns. |
 | `toggle_stall_event_ignored(id, ignored)` | Soft-mute or unmute a single event. |
 | `clear_stall_events(owner)` | Delete every row for a specific character. Requires `owner`. Holds `StallOpsLock`. |
@@ -273,10 +273,10 @@ and Export + Clear data (gated on `hasData && currentOwner`).
 ### Clear unsure
 
 Guessed quantities (mid-history ⚠ rows plus `~` fallback-priced rows) roll up
-into a Clear-unsure row under the In Stock table. One click writes a qty-0
-baseline per unsure item — the zero seed supersedes pre-clear history so the
-guess never returns. Recount anything still stocked in Opening stock below
-(re-counting replaces the zero row and resumes replay from now).
+into a Clear-unsure row under the In Stock table. One click writes a zeroed
+manual count per unsure item — the zeroed count supersedes pre-clear history
+so the guess never returns. Recount anything still stocked in Manual stock
+entry below (re-counting replaces the zeroed count and resumes replay from now).
 
 ### Import
 
@@ -378,13 +378,13 @@ narrow the gap without a live `LocalPlayer:` feed:
   event is not a baseline (`added`/`visible`/`configured`), the row carries
   `history_truncated: true` (⚠ in the table, per-row oldest-event tooltip)
   and the header names the oldest event across truncated items.
-- **Opening-stock baseline** — `stall_inventory_baseline` (one row per
+- **Manual stock entry** — `stall_inventory_baseline` (one row per
   owner+item: counted qty + current price). `get_stall_inventory` seeds the
   tier replay from it and drops shop-log events at-or-before its timestamp
-  for that item. Set it by counting stock in-game (Inventory tab → Opening
-  stock); qty 0 stores a zero row that clears the item. Re-counting re-stamps `recorded_at` to now. The baseline is only as true as the last count: a delist after counting without a logged removed line stays invisible until the next count or a logged removal. Recount the whole item after restocking or delisting (the baseline is one row per item, not per tier).
+  for that item. Set it by counting stock in-game (Inventory tab → Manual
+  stock entry); qty 0 stores a zeroed count that clears the item. Re-counting re-stamps `recorded_at` to now. The count is only as true as the last count: a delist after counting without a logged removed line stays invisible until the next count or a logged removal. Recount the whole item after restocking or delisting (one count per item, not per tier).
 - **Clear unsure** — one-click eviction for the rows above: every ⚠ / `~`
-  in-stock row gets a qty-0 baseline at once. Guesses leave together;
+  in-stock row gets a zeroed manual count at once. Guesses leave together;
   recount survivors individually.
 - The parser treats entries that don't match any action regex as `"unknown"`
   (e.g., the hire-duration messages). These are excluded from the list views
