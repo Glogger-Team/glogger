@@ -1,0 +1,34 @@
+# Pre-commit config: local hooks only, zero upstream repos.
+#
+# Every entry is `repo: local` calling a mise slice task, so there is
+# nothing to pin and nothing that can drift from CI — the check list and
+# every tool version live in exactly one place (`mise.toml`), which
+# `.github/workflows/lint.yml` invokes too. Whole-suite reruns
+# (`pass_filenames: false`): the commands are repo-wide scopes
+# (scripts/, .github/), and a second per-file scope definition would be
+# new drift surface.
+
+fail_fast: true
+
+repos:
+  - repo: local
+    hooks:
+      - id: lint-fast
+        name: lint fast slices (mise)
+        entry: mise run lint:fast
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+      - id: lint-full
+        name: lint full suite (mise)
+        entry: mise run lint
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: commit-prefix
+        name: commit message prefix
+        entry: bash scripts/check-commit-msg.sh
+        language: system
+        stages: [commit-msg]

@@ -1,8 +1,11 @@
 # PR gates on PRs and main pushes: frontend type-check/build, Rust tests
 # (plus clippy `-D warnings` on all targets), plus fast local-feedback
-# linters. Rust (rustfmt) stays advisory in AGENTS.md (823 unformatted
-# spots pre-existing); markdown is a changed-files gate (all hand-maintained
-# docs except generated CHANGELOG.md) — only the
+# linters. Every tool-invocation step calls a `mise run lint:*` slice —
+# the check list and every tool version live in exactly one place
+# (`mise.toml`), which the pre-commit/pre-push hooks invoke too. Rust
+# (rustfmt) stays advisory in AGENTS.md (823 unformatted spots
+# pre-existing); markdown is a changed-files gate (all hand-maintained docs
+# except generated CHANGELOG.md) — only the
 # green gates run here. The release workflow re-runs the frontend build, Rust
 # tests, and TOS scan before bundling (its `validate` + `test` jobs);
 
@@ -34,17 +37,20 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Ruff check
-        uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
-        with:
-          src: ./scripts
-          args: check --output-format github
+      - name: Install mise and tools
+        # No third-party action (org allowlist): official installer script.
+        # `mise install` / `mise run` trust the active config automatically,
+        # so no explicit `mise trust` step.
+        run: |
+          set -euo pipefail
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          mise install
 
-      - name: Ruff format
-        uses: astral-sh/ruff-action@278981a28ce3188b1e39527901f38254bf3aac89 # v4.1.0
-        with:
-          src: ./scripts
-          args: format --check --diff
+      - name: Ruff check and format
+        # Same `mise run lint:ruff` slice the pre-commit hook runs.
+        run: mise run lint:ruff
 
   shellcheck:
     name: ShellCheck
@@ -58,24 +64,20 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: ShellCheck scripts
-        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
-        with:
-          scandir: ./scripts
-          severity: warning
+      - name: Install mise and tools
+        # No third-party action (org allowlist): official installer script.
+        run: |
+          set -euo pipefail
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          mise install
 
-      - name: ShellCheck githooks
-        # Extensionless hook files need `additional_files` — the action's
-        # default find only matches known shell extensions plus executable
-        # extensionless files, and the hooks are checked in 644. Names here
-        # are `-name *<value>` fragments, scanned unconditionally (unlike
-        # the default search they are not shebang-gated) — keep this list
-        # to exactly the two hooks.
-        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
-        with:
-          scandir: ./.githooks
-          additional_files: 'pre-push commit-msg'
-          severity: warning
+      - name: ShellCheck scripts
+        # Same `mise run lint:shell` slice the pre-commit hook runs.
+        # The old `.githooks` scan is gone with the directory; hook logic
+        # now lives in scripts/check-commit-msg.sh, inside the glob.
+        run: mise run lint:shell
 
   cargo-audit:
     name: Cargo audit (RustSec)
@@ -89,20 +91,27 @@ jobs:
         with:
           persist-credentials: false
 
-      # No toolchain-install step: ubuntu-latest ships stable Rust, and the
-      # org allowlist permits no new third-party actions. cargo-audit never
-      # compiles, so runner Rust is sufficient (release.yml keeps pinned
-      # dtolnay for the cross-platform builds that need it).
+      - name: Install mise and tools
+        # No third-party action and no toolchain-install step (org
+        # allowlist): official installer script; ubuntu-latest ships stable
+        # Rust, and cargo-audit never compiles, so runner Rust is
+        # sufficient (release.yml keeps pinned dtolnay for the
+        # cross-platform builds that need it).
+        run: |
+          set -euo pipefail
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          mise install
+
       - name: Install cargo-audit
         # Floor, not a freeze: no watcher here, so a freeze would rot silently.
         run: set -euo pipefail; cargo install cargo-audit --locked
 
       - name: Audit (fail on critical/high only)
-        run: |
-          set -euo pipefail
-          # Gate logic lives in scripts/cargo-audit-gate.py — the single source
-          # of truth shared with `mise run lint` (ignores + scoring in one place).
-          python3 scripts/cargo-audit-gate.py --summary "$GITHUB_STEP_SUMMARY"
+        # Same `mise run lint:audit` slice the pre-push hook runs (via `mise
+        # run lint`): scripts/cargo-audit-gate.py owns ignores + scoring.
+        run: mise run lint:audit
 
   yaml:
     name: YAML and Actions
@@ -116,24 +125,25 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Setup Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: "3.14"
+      - name: Install mise and tools
+        # No third-party action and no setup-python step (org allowlist):
+        # official installer script; mise provides python + yamllint +
+        # zizmor + pinact from mise.toml, same as local.
+        run: |
+          set -euo pipefail
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          mise install
 
-      - name: yamllint
-        # Floor, not a freeze: keeps a known-good minimum, still floats with
-        # upstream. No watcher here, so a freeze would rot silently.
-        run: pip install "yamllint>=1.37.1" && yamllint .github/
+      - name: YAML and Actions (yamllint + zizmor + pinact)
+        # Same `mise run lint:yaml` slice the pre-commit hook runs — pinact
+        # now gates CI too (green on HEAD; was local-only because
+        # pinact-action is uninstallable on stock runners).
+        run: mise run lint:yaml
 
-      - name: zizmor
-        uses: zizmorcore/zizmor-action@53290badfa369cb0bf7ad16342cb62c2fa47ac7b # v0.8.0
-        with:
-          inputs: .github/workflows/
-          online-audits: false
-          config: .github/zizmor.yml
-          min-severity: medium
-          advanced-security: false
+      - name: Validate pre-commit config
+        run: mise exec -- pre-commit validate-config
 
   markdown:
     name: Markdown (changed files)
@@ -150,23 +160,25 @@ jobs:
           # checkout can't diff against it.
           fetch-depth: 0
 
-      - name: Setup Node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          # Tracks latest LTS to match mise.toml `node = "lts"` locally.
-          node-version: "lts/*"
-          cache: npm
+      - name: Install mise and tools
+        # No third-party action (org allowlist): official installer script;
+        # mise provides node + python + markdownlint-cli2 from mise.toml.
+        run: |
+          set -euo pipefail
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          mise install
 
       - name: Markdown lint (changed hand-maintained docs)
-        # Floor, not a freeze: no watcher here, so a freeze would rot silently.
         # Scope lives in scripts/lint-markdown-changed.py (single source of
-        # truth with `mise run lint:all`): all *.md except CHANGELOG.md
+        # truth with `mise run lint:markdown`): all *.md except CHANGELOG.md
         # (generator-rewritten each release). Grandfathered: only changed
         # files are linted. Base is the PR base sha on pull_request, the push
         # `before` sha on main pushes (zero-sha on manual dispatch falls
         # back to HEAD~1).
-        env:
-          MARKDOWNLINT: npx --yes markdownlint-cli2@0.23
+        # Base selection is the one sanctioned invocation difference;
+        # the binary and scope logic are shared via mise + the script.
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -174,7 +186,7 @@ jobs:
           else
             BASE="${{ github.event.before }}"
           fi
-          python3 scripts/lint-markdown-changed.py --base "$BASE"
+          mise exec -- python scripts/lint-markdown-changed.py --base "$BASE"
 
   frontend:
     name: Frontend type-check and build
@@ -195,24 +207,38 @@ jobs:
           node-version: "lts/*"
           cache: npm
 
+      - name: Install mise
+        # No third-party action (org allowlist): official installer script;
+        # setup-node keeps the npm cache (mise-managed node can't restore it).
+        run: |
+          set -euo pipefail
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          mise install
+
       - name: Install frontend dependencies
         run: npm ci
 
       - name: Frontend type-check and build
-        # Would have caught the TS 7 major: vue-tsc crashes on its removed
-        # './lib/tsc' export before checking a single file.
-        run: npm run build
+        # Same `mise run lint:build` slice the pre-push hook runs (via `mise
+        # run lint`). Would have caught the TS 7 major: vue-tsc crashes on
+        # its removed './lib/tsc' export before checking a single file.
+        run: mise run lint:build
 
       - name: Grid standards
-        run: npm run check:grids
+        # Same `mise run lint:grids` slice the pre-commit hook runs.
+        run: mise run lint:grids
 
       - name: Game-interaction hard lines (TOS/CoC)
+        # Same `mise run lint:constraints` slice the pre-push hook runs.
         shell: pwsh
-        run: ./scripts/check-glogger-constraints.ps1
+        run: mise run lint:constraints
 
       - name: Review-patterns gate (decided defect shapes)
+        # Same `mise run lint:review` slice the pre-commit hook runs.
         shell: bash
-        run: bash ./scripts/check-review-patterns.sh
+        run: mise run lint:review
 
   rust-tests:
     name: Rust tests
@@ -282,10 +308,20 @@ jobs:
           path: /var/cache/apt/archives
           key: apt-${{ runner.os }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ hashFiles('.github/workflows/lint.yml') }}
 
+      - name: Install mise
+        # No third-party action (org allowlist): official installer script.
+        run: |
+          set -euo pipefail
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          mise install
+
       - name: Rust tests
-        working-directory: src-tauri
-        run: cargo test --lib
+        # Same `mise run lint:test` slice the pre-push hook runs (via `mise
+        # run lint`).
+        run: mise run lint:test
 
       - name: Clippy (deny warnings)
-        working-directory: src-tauri
-        run: cargo clippy --all-targets -- -D warnings
+        # Same `mise run lint:clippy` slice the pre-push hook runs.
+        run: mise run lint:clippy

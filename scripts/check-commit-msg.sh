@@ -3,10 +3,12 @@
 # Warn (but don't block) when a commit message doesn't start with a known
 # conventional prefix. This improves changelog generation quality.
 #
-# Known prefixes: feat, fix, impv, docs, test, build, release
+# Known prefixes: feat, fix, impv, docs, test, build
 #
-# Install: git config core.hooksPath .githooks
-# Or run:  scripts/setup-hooks.sh
+# Runs as the pre-commit `commit-prefix` hook (commit-msg stage).
+# Install: scripts/setup-hooks.sh
+#
+# Portable: POSIX sh + grep only.
 
 MSG_FILE="$1"
 FIRST_LINE="$(head -1 "$MSG_FILE")"

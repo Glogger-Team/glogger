@@ -5,10 +5,12 @@
 # (exit 1) when any prohibited artifact or API appears in the repo.
 #
 # Scope: src-tauri/*.rs (runtime code), docs/, scripts/, and the repo tree.
-# Runs in two places, so a skipped local hook can never let a violation ship:
-#   - .githooks/pre-push (local, PowerShell 5.1; GLOGGER_SKIP_CONSTRAINTS=1
-#     skips it for emergencies, loudly)
+# Runs on every push (pre-push hook via `mise run lint`, bypass loudly with
+# `git push --no-verify`), in CI lint (frontend job), and below — so a
+# skipped local hook can never let a violation ship. Not in the fast commit
+# set (tree-walk cost).
 #   - .github/workflows/release.yml -> validate job (pwsh, before any build)
+#   - .github/workflows/lint.yml -> frontend job (CI gate on every PR)
 # If a legitimate false positive appears, reword the code/comment rather than
 # weakening this list. Changes to prohibited patterns require a TOS-doc
 # change-control note in the same commit.

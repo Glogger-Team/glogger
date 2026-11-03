@@ -1,9 +1,0 @@
-#!/bin/sh
-# Pre-push: enforce game-interaction hard lines (docs/research/glogger-game-interaction-limits.md).
-# Skippable in emergencies with GLOGGER_SKIP_CONSTRAINTS=1, but never silently —
-# CI also runs the check.
-if [ -n "$GLOGGER_SKIP_CONSTRAINTS" ]; then
-  echo "[glogger] WARNING: constraint check skipped via GLOGGER_SKIP_CONSTRAINTS" >&2
-  exit 0
-fi
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& '$(git rev-parse --show-toplevel | tr -d '\r')/scripts/check-glogger-constraints.ps1'; exit \$LASTEXITCODE" || exit 1

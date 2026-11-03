@@ -15,15 +15,16 @@ exist so no future session has to re-derive them — and so code review can
 check against them mechanically.
 
 Sources of truth (re-read when this doc feels stale):
-- TOS v3.0: https://projectgorgon.com/terms.html — §5 (License Grant
+
+- TOS v3.0: <https://projectgorgon.com/terms.html> — §5 (License Grant
   prohibitions), §8 (Mods, Tools and Anti-Cheat), §4.6 (Unauthorized
   Transactions), §19 (Termination).
 - Code of Conduct v3.0 (binding, part of the TOS):
-  https://projectgorgon.com/conduct.html — §4.C (Cheating, Exploitation, and
+  <https://projectgorgon.com/conduct.html> — §4.C (Cheating, Exploitation, and
   Security Violations), §4.G (Commercial Misuse).
-- Third-party CDN data terms: https://cdn.projectgorgon.com/v486/data/
+- Third-party CDN data terms: <https://cdn.projectgorgon.com/v486/data/>
   (governs everything glogger ingests from the game-data CDN).
-- Privacy Policy v3.1: https://projectgorgon.com/privacy.html
+- Privacy Policy v3.1: <https://projectgorgon.com/privacy.html>
 
 **The one sentence:** glogger reads only what the user's own game client
 already wrote to the user's own disk, plus Elder Game's own public CDN for
@@ -120,11 +121,12 @@ the client, any automation of gameplay.
 
 ## 6. Enforcement: `scripts/check-glogger-constraints.ps1`
 
-Runs in two places, so skipping one cannot ship a violation:
+Runs on every push, in CI lint, and on every release, so skipping one cannot ship a violation:
 
-- **Every push** from a clone with the hooks installed —
-  `core.hooksPath=.githooks` (`.githooks/pre-push`; `scripts/setup-hooks.sh`
-  sets it). Opt-in per clone, so check it after a fresh clone.
+- **Every push** from a clone with the hooks installed — the pre-push hook
+  runs `mise run lint` (which includes the constraints slice);
+  `scripts/setup-hooks.sh` installs it. Opt-in per clone, so check it after
+  a fresh clone.
 - **Every release**: the `validate` job of `.github/workflows/release.yml`
   runs the scanner with `pwsh` before any platform builds, so a tag push that
   violates a hard line fails the release.
@@ -141,7 +143,8 @@ In full-compliance mode the scanner checks:
   client/network class names, protocol reader identifiers).
 
 Verified: green on the compliant repo, red on probe violations. Skippable
-only with `GLOGGER_SKIP_CONSTRAINTS=1` (prints a warning — never silent).
+only with `git push --no-verify` (the hook never runs silently — CI
+re-checks anyway).
 `Cargo.lock` is excluded from the wire-pattern scan (an unrelated
 font-decoding crate shares a name fragment); the checker script excludes
 itself (it must name the patterns it greps for). Raw log fixtures in
