@@ -2,7 +2,6 @@
 # Gated in CI (lint.yml) — float latest, same as CI's floor-not-freeze policy.
 zizmor = "latest"
 ruff = "latest"
-shellcheck = "latest"
 yamllint = "latest"
 pinact = "latest"
 # Ad-hoc use, not gated: jactionlint replaces actionlint wherever actionlint
@@ -25,13 +24,11 @@ run = [
   "npm run check:grids",
   "ruff check scripts/",
   "ruff format --check scripts/",
-  "python -c \"import glob, subprocess, sys; sys.exit(subprocess.run(['shellcheck', '-S', 'warning'] + glob.glob('scripts/*.sh') + ['.githooks/pre-push', '.githooks/commit-msg']).returncode)\"",
-  "yamllint .github/",
+  "python scripts/check-glogger-constraints.py",
+  "python scripts/check-review-patterns.py",
   "zizmor --no-online-audits --config \"{{config_root}}/.github/zizmor.yml\" --min-severity medium \"{{config_root}}/.github/workflows/\"",
   "pinact run --check",
   "python scripts/cargo-audit-gate.py",
-  "pwsh -NoProfile -File scripts/check-glogger-constraints.ps1",
-  "bash scripts/check-review-patterns.sh",
   "python -c \"import subprocess, sys; sys.exit(subprocess.run(['cargo', 'clippy', '--all-targets', '--', '-D', 'warnings'], cwd='src-tauri').returncode)\"",
 ]
 

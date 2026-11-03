@@ -173,7 +173,7 @@ Small tasks and notes that don't belong in a dedicated plan.
   - **Effort: Trivial | Impact: Nil (decision record)**
 - [ ] Tier-2 identifier rename (`SnapshotItem`, `get_snapshot_items`, `source='snapshot'`, table names) — explicitly out of scope for the tier-1 pass. A breaking IPC/DB migration; needs its own plan if ever wanted.
   - **Effort: Large | Impact: Low (cosmetic, high blast radius)**
-- [x] ~~Scoped Rust discard lint for migrations~~ — **FIXED: `scripts/check-review-patterns.sh` gates `db/migrations.rs` bodies against `let _ =` on DB handles and `filter_map(|x| x.ok())` row reads; wired into `lint.yml` + `mise run lint`.** Rustfmt stays advisory. Sanctioned exceptions: `EXISTS` guards with `.unwrap_or(false)`, serde defaults, `continue` on malformed JSON.
+- [x] ~~Scoped Rust discard lint for migrations~~ — **FIXED: `scripts/check-review-patterns.py` gates `db/migrations.rs` bodies against `let _ =` on DB handles and `filter_map(|x| x.ok())` row reads; wired into `lint.yml` + `mise run lint`.** Rustfmt stays advisory. Sanctioned exceptions: `EXISTS` guards with `.unwrap_or(false)`, serde defaults, `continue` on malformed JSON.
 
 - [x] ~~Clippy advisory baseline~~ — **FIXED this branch: all warnings resolved (110 lib + ~60 test-only), `cargo clippy --all-targets -- -D warnings` green; wired as a gate (`lint.yml:rust-tests` clippy step + `mise run lint` entry, portable `python -c` form). AGENTS.md Rust row updated (rustfmt stays advisory).**
   - **Effort: Medium (tombstone table + delete-path + backfill filter) | Impact: Low (narrow race window) — declined**

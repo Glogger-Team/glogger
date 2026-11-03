@@ -14,15 +14,15 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
-    "check:grids": "node scripts/check-grid-standards.mjs",
+    "check:grids": "python scripts/check-grid-standards.py",
     "preview": "vite preview",
     "tauri": "tauri",
-    "tauri:build": "bash scripts/release-build.sh",
+    "tauri:build": "python scripts/release-build.py",
     "tauri:build:experimental": "tauri build --config src-tauri/tauri.experimental.conf.json",
     "tauri:dev:experimental": "tauri dev --config src-tauri/tauri.experimental.conf.json",
     "version:bump": "python scripts/bump-version.py",
     "release": "python scripts/release.py",
-    "changelog": "bash scripts/generate-changelog.sh",
+    "changelog": "python scripts/generate-changelog.py",
     "survey-test": "cd src-tauri && cargo test --lib survey::replay_tests::accuracy_report -- --ignored --nocapture"
   },
   "dependencies": {

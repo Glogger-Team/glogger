@@ -46,36 +46,6 @@ jobs:
           src: ./scripts
           args: format --check --diff
 
-  shellcheck:
-    name: ShellCheck
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: ShellCheck scripts
-        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
-        with:
-          scandir: ./scripts
-          severity: warning
-
-      - name: ShellCheck githooks
-        # Extensionless hook files need `additional_files` — the action's
-        # default find only matches known shell extensions plus executable
-        # extensionless files, and the hooks are checked in 644. Names here
-        # are `-name *<value>` fragments, scanned unconditionally (unlike
-        # the default search they are not shebang-gated) — keep this list
-        # to exactly the two hooks.
-        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38 # 2.0.0
-        with:
-          scandir: ./.githooks
-          additional_files: 'pre-push commit-msg'
-          severity: warning
 
   cargo-audit:
     name: Cargo audit (RustSec)
@@ -207,12 +177,10 @@ jobs:
         run: npm run check:grids
 
       - name: Game-interaction hard lines (TOS/CoC)
-        shell: pwsh
-        run: ./scripts/check-glogger-constraints.ps1
+        run: python3 scripts/check-glogger-constraints.py
 
       - name: Review-patterns gate (decided defect shapes)
-        shell: bash
-        run: bash ./scripts/check-review-patterns.sh
+        run: python3 scripts/check-review-patterns.py
 
   rust-tests:
     name: Rust tests
