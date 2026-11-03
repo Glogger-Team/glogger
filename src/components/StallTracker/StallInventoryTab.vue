@@ -150,7 +150,7 @@
             ▶
           </span>
           <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
-            Manual stock entry ({{ baselines.length }})
+            Manual stock entry ({{ visibleBaselines.length }})
           </h4>
         </button>
         <span class="text-[10px] text-text-secondary italic hidden sm:inline">
@@ -203,10 +203,10 @@
           {{ baselineError }}
         </p>
         <ul
-          v-if="baselines.length > 0"
+          v-if="visibleBaselines.length > 0"
           class="flex flex-col gap-1 max-h-32 overflow-auto m-0 p-0 list-none">
           <li
-            v-for="b in baselines"
+            v-for="b in visibleBaselines"
             :key="b.id"
             class="flex items-center justify-between gap-2 text-xs text-text-primary bg-surface-elevated/50 rounded px-2 py-1">
             <span class="truncate">
@@ -242,6 +242,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { confirm } from '@tauri-apps/plugin-dialog'
 import { useStallTrackerStore } from '../../stores/stallTrackerStore'
 import StatCard from './StatCard.vue'
 import DataTable from '../Shared/DataTable.vue'
@@ -401,6 +402,11 @@ async function clearUnsure() {
 
 // ── Manual stock entry ──────────────────────────────────────────────────
 const baselines = ref<StallBaseline[]>([])
+/** Manual counts the user entered (qty > 0). Zeroed Clear-unsure evictions
+ * stay in the DB (they supersede pre-clear history) but are hidden here —
+ * showing them with an ✕ labeled "remove" made clearing look reversible
+ * when deleting the row actually resurrects the guess. */
+const visibleBaselines = computed(() => baselines.value.filter((b) => b.quantity > 0))
 const baselineOpen = ref(false)
 const baselineItem = ref('')
 const baselineQty = ref<number | null>(null)
@@ -486,6 +492,11 @@ async function saveBaseline() {
 
 async function removeBaseline(b: StallBaseline) {
   if (baselineSaving.value) return
+  const confirmed = await confirm(
+    `Remove the manual count for ${b.item}? The quantity will go back to the log estimate (which may be a guess again).`,
+    { title: 'Manual stock entry', kind: 'warning' },
+  )
+  if (!confirmed) return
   baselineSaving.value = true
   baselineError.value = null
   try {
