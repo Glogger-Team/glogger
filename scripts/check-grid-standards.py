@@ -98,17 +98,15 @@ def main():
             'TODO.md: no "**N instances across M files**" claim on the "Table sweep done" line \u2014 '
             "restore the census sentence or update this check (a silently missing claim would stop the drift check working)"
         )
-    elif int(claim.group(1)) != data_table_occurrences or int(
-        claim.group(2)
-    ) != len(data_table_files):
+    elif int(claim.group(1)) != data_table_occurrences or int(claim.group(2)) != len(
+        data_table_files
+    ):
         violations.append(
             f"TODO.md claims {claim.group(1)} instances across {claim.group(2)} files, "
             f"measured {data_table_occurrences} across {len(data_table_files)}"
         )
 
-    with open(
-        ROOT / "docs/architecture/ux-standards.md", encoding="utf-8"
-    ) as handle:
+    with open(ROOT / "docs/architecture/ux-standards.md", encoding="utf-8") as handle:
         ux_standards = handle.read()
     data_tables_rule = next(
         (
@@ -124,9 +122,7 @@ def main():
             "\u2014 restore it or update this check"
         )
     for file in RAW_TABLE_EXEMPT:
-        name = Path(file).name
-        if name.endswith(".vue"):
-            name = name[: -len(".vue")]
+        name = Path(file).stem
         if name not in data_tables_rule:
             violations.append(
                 f"exemption {file} is not named in the "

@@ -3,6 +3,7 @@
 
 Python port of scripts/release-build.sh (stdlib only).
 """
+
 import os
 import subprocess
 import sys

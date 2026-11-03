@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Gate: mechanically-checkable defect shapes from frozen-review/CodeRabbit rounds."""
+
 import re
 import sys
 from pathlib import Path

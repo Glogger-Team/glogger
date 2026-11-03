@@ -15,22 +15,18 @@ def main(argv: list[str]) -> int:
     d = os.path.dirname(inp)
     if not d:
         d = "."
-    base = os.path.basename(inp)
-    if base.endswith(".log"):
-        base = base[: -len(".log")]
+    base = os.path.basename(inp).removesuffix(".log")
     out = d + "/" + base + "-minimized.log"
 
-    with open(inp, "rb") as f:
-        raw = f.read()
-    original = raw.count(b"\n")
-    kept: list[bytes] = []
-    for line in raw.splitlines(keepends=True):
-        body = line[:-1] if line.endswith(b"\n") else line
-        if b"LocalPlayer:" in body and b"ProcessMusicPerformance" not in body:
-            kept.append(body + b"\n")
-    with open(out, "wb") as f:
-        f.writelines(kept)
-    minimized = len(kept)
+    original = 0
+    minimized = 0
+    with open(inp, "rb") as f, open(out, "wb") as fh:
+        for raw_line in f:
+            original += raw_line.count(b"\n")
+            body = raw_line[:-1] if raw_line.endswith(b"\n") else raw_line
+            if b"LocalPlayer:" in body and b"ProcessMusicPerformance" not in body:
+                fh.write(body + b"\n")
+                minimized += 1
     sys.stdout.buffer.write(f"Done: {original} -> {minimized} lines\n".encode())
     sys.stdout.buffer.write(f"Saved to: {out}\n".encode())
     return 0

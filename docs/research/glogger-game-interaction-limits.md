@@ -15,15 +15,16 @@ exist so no future session has to re-derive them — and so code review can
 check against them mechanically.
 
 Sources of truth (re-read when this doc feels stale):
-- TOS v3.0: https://projectgorgon.com/terms.html — §5 (License Grant
+
+- TOS v3.0: <https://projectgorgon.com/terms.html> — §5 (License Grant
   prohibitions), §8 (Mods, Tools and Anti-Cheat), §4.6 (Unauthorized
   Transactions), §19 (Termination).
 - Code of Conduct v3.0 (binding, part of the TOS):
-  https://projectgorgon.com/conduct.html — §4.C (Cheating, Exploitation, and
+  <https://projectgorgon.com/conduct.html> — §4.C (Cheating, Exploitation, and
   Security Violations), §4.G (Commercial Misuse).
-- Third-party CDN data terms: https://cdn.projectgorgon.com/v486/data/
+- Third-party CDN data terms: <https://cdn.projectgorgon.com/v486/data/>
   (governs everything glogger ingests from the game-data CDN).
-- Privacy Policy v3.1: https://projectgorgon.com/privacy.html
+- Privacy Policy v3.1: <https://projectgorgon.com/privacy.html>
 
 **The one sentence:** glogger reads only what the user's own game client
 already wrote to the user's own disk, plus Elder Game's own public CDN for

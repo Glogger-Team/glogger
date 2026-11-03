@@ -14,6 +14,7 @@ Name-map resolution: the original hardcoded
 argv (`--items-json=...`) or env (`GLOGGER_ITEMS_JSON`); a missing file is a
 clear stderr + exit 1 (never a silent empty map).
 """
+
 import json
 import math
 import os
@@ -33,7 +34,9 @@ TZ_RE_LOOSE = re.compile(r"Timezone Offset ([+\-]?\d{2}):(\d{2}):\d{2}")
 TS_RE = re.compile(r"^\[(\d{2}):(\d{2}):(\d{2})\]")
 ADD_ITEM_RE = re.compile(r"ProcessAddItem\((\w+)\((\d+)\),\s*(-?\d+),\s*(True|False)\)")
 UPDATE_CODE_RE = re.compile(r"ProcessUpdateItemCode\((\d+),\s*(\d+),\s*(True|False)\)")
-REMOVE_VAULT_RE = re.compile(r"ProcessRemoveFromStorageVault\(\d+,\s*-?\d+,\s*(\d+),\s*(\d+)\)")
+REMOVE_VAULT_RE = re.compile(
+    r"ProcessRemoveFromStorageVault\(\d+,\s*-?\d+,\s*(\d+),\s*(\d+)\)"
+)
 
 
 def parse_args(argv=None):
@@ -125,8 +128,9 @@ def pad_start(s, n):
 
 # ========== Parsing ==========
 
+
 def parse_chat_line(line):
-    line = line[:-1] if line.endswith("\r") else line
+    line = line.removesuffix("\r")
     m = CHAT_LINE_RE.match(line)
     if not m:
         return None
@@ -157,7 +161,7 @@ def detect_chat_tz(chat_lines):
 
 
 def parse_player_line(line):
-    line = line[:-1] if line.endswith("\r") else line
+    line = line.removesuffix("\r")
     ts_match = TS_RE.match(line)
     if not ts_match:
         return None
@@ -232,7 +236,12 @@ def build_player_gain_events(log_path):
                 # Genuine new stack. Seed=1, count as +1 gain (we don't yet know the real qty).
                 last_stack[ev["id"]] = 1
                 events.append(
-                    {**ev, "gain_qty": 1, "resolved_name": ev["name"], "gain_kind": "AddItem-new"}
+                    {
+                        **ev,
+                        "gain_qty": 1,
+                        "resolved_name": ev["name"],
+                        "gain_kind": "AddItem-new",
+                    }
                 )
             elif ev["is_new"] and ev["slot"] >= 0:
                 # Storage withdrawal — defer; pair with RemoveFromStorageVault below.
@@ -268,7 +277,7 @@ def build_player_gain_events(log_path):
                 events.append(
                     {
                         **ev,
-                        "gain_qty": delta if delta > 0 else 0,
+                        "gain_qty": max(0, delta),
                         "delta_signed": delta,
                         "resolved_name": name,
                         "gain_kind": gain_kind,
@@ -296,6 +305,7 @@ def build_player_gain_events(log_path):
 # Chat uses display names (e.g., "Great Phlogiston", "Master Armor Patch Kit").
 # Player.log uses internal names (e.g., "Phlogiston7", "ArmorPatchKit5").
 # Build an authoritative map from items.json.
+
 
 def load_name_map(items_json_path):
     with open(items_json_path, encoding="utf-8") as fh:
@@ -334,7 +344,10 @@ def resolve_name_map(items_json_opt):
     try:
         return load_name_map(str(p))
     except (OSError, ValueError) as e:
-        print(f"correlation-report: could not load items.json from {p}: {e}", file=sys.stderr)
+        print(
+            f"correlation-report: could not load items.json from {p}: {e}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 
@@ -346,6 +359,7 @@ def names_might_match(display_name, internal_name, display_to_internal=None):
     candidates = display_to_internal.get(display_name.lower())
     if candidates and internal_name in candidates:
         return True
+
     # Fallback heuristic for items not in the static CDN snapshot
     def norm(s):
         return re.sub(r"\d+$", "", re.sub(r"['\s\-]", "", s)).lower()
@@ -356,12 +370,11 @@ def names_might_match(display_name, internal_name, display_to_internal=None):
         return True
     if b in a and len(b) >= 4:
         return True
-    if a in b and len(a) >= 4:
-        return True
-    return False
+    return a in b and len(a) >= 4
 
 
 # ========== Correlation ==========
+
 
 def correlate_chat_with_player(
     chat_events, player_gain_events, tz_shift_secs, window_secs, display_to_internal
@@ -379,7 +392,9 @@ def correlate_chat_with_player(
     # Build candidate list per chat entry
     for cm in chat_matches:
         for i, pe in enumerate(player_gain_events):
-            if not names_might_match(cm["chat"]["item"], pe["resolved_name"], display_to_internal):
+            if not names_might_match(
+                cm["chat"]["item"], pe["resolved_name"], display_to_internal
+            ):
                 continue
             d = abs(pe["hms"] - cm["chat_utc_mod"])
             if d > 43200:
@@ -446,6 +461,7 @@ def find_subset_summing_to(items, target):
 
 # ========== Report ==========
 
+
 def rel(path_str):
     # Normalize absolute paths to repo-relative in output before comparing.
     # Node prints the argv verbatim (forward slashes); keep relative input
@@ -465,7 +481,10 @@ def run_report(chat_path, log_path, opts, display_to_internal):
     if tz is None:
         tz = detect_chat_tz(chat_lines)
     if tz is None:
-        print(f"[{os.path.basename(chat_path)}] Could not detect timezone; pass --tz=N", file=sys.stderr)
+        print(
+            f"[{os.path.basename(chat_path)}] Could not detect timezone; pass --tz=N",
+            file=sys.stderr,
+        )
         return None
     tz_shift_secs = round(-tz * 3600)
 
@@ -498,16 +517,23 @@ def run_report(chat_path, log_path, opts, display_to_internal):
             unmatched_chat.append(cm["chat"])
             continue
         total = sum(x["pe"]["gain_qty"] for x in cm["assigned"])
-        if len(cm["assigned"]) == 1 and cm["assigned"][0]["pe"]["gain_qty"] == cm["chat"]["qty"]:
+        if (
+            len(cm["assigned"]) == 1
+            and cm["assigned"][0]["pe"]["gain_qty"] == cm["chat"]["qty"]
+        ):
             exact_matches += 1
         elif total == cm["chat"]["qty"]:
             coalesced += 1
         else:
             mismatches += 1
-            mismatch_details.append({"chat": cm["chat"], "sum": total, "assignments": cm["assigned"]})
+            mismatch_details.append(
+                {"chat": cm["chat"], "sum": total, "assignments": cm["assigned"]}
+            )
 
     # Unmatched player events
-    unmatched_player = [pe for i, pe in enumerate(player_gain_events) if i not in claimed]
+    unmatched_player = [
+        pe for i, pe in enumerate(player_gain_events) if i not in claimed
+    ]
 
     chat_dir = os.path.basename(os.path.dirname(chat_path))
     header = f"\n╔══ Report: {chat_dir}/{os.path.basename(chat_path)} × {os.path.basename(log_path)}"
@@ -516,8 +542,10 @@ def run_report(chat_path, log_path, opts, display_to_internal):
     print(f"║  player path: {rel(log_path)}")
     print(f"║  timezone:    {fmt_num(tz)}h, window: ±{fmt_num(window_secs)}s")
     print("╠══ Counts")
-    print(f"║  chat [Status] \"added to inventory\" entries:  {len(chat_events)}")
-    print(f"║  chat total quantity:                          {sum(c['qty'] for c in chat_events)}")
+    print(f'║  chat [Status] "added to inventory" entries:  {len(chat_events)}')
+    print(
+        f"║  chat total quantity:                          {sum(c['qty'] for c in chat_events)}"
+    )
     print(f"║  player.log inventory gain events:            {len(player_gain_events)}")
     print("║    breakdown:")
     breakdown = {}
@@ -546,7 +574,10 @@ def run_report(chat_path, log_path, opts, display_to_internal):
         if len(unmatched_chat) > 0:
             print("\n--- Unmatched CHAT entries (no player.log candidate) ---")
             bucketed = bucket_by_item(
-                [{"item": c["item"], "qty": c["qty"], "ts": c["raw_ts"]} for c in unmatched_chat]
+                [
+                    {"item": c["item"], "qty": c["qty"], "ts": c["raw_ts"]}
+                    for c in unmatched_chat
+                ]
             )
             for item, rows in bucketed.items():
                 total_qty = sum(r["qty"] for r in rows)
@@ -556,7 +587,9 @@ def run_report(chat_path, log_path, opts, display_to_internal):
                 if len(rows) > 5:
                     print(f"    · ...and {len(rows) - 5} more")
         if len(mismatch_details) > 0:
-            print("\n--- Quantity MISMATCH (assigned best candidate with wrong qty) ---")
+            print(
+                "\n--- Quantity MISMATCH (assigned best candidate with wrong qty) ---"
+            )
             for m in mismatch_details[:20]:
                 a = " + ".join(
                     f"{x['pe']['gain_kind']}({x['pe']['resolved_name'] or '?'}:{x['pe'].get('id') or ''}, "
@@ -578,7 +611,9 @@ def run_report(chat_path, log_path, opts, display_to_internal):
                 total_qty = sum(r["gain_qty"] for r in rows)
                 print(f"  [{len(rows)}× total gain {total_qty}] {key}")
                 for r in rows[:5]:
-                    print(f"    · {r['raw_ts']} id={r.get('id') or '-'} gainQty={r['gain_qty']}")
+                    print(
+                        f"    · {r['raw_ts']} id={r.get('id') or '-'} gainQty={r['gain_qty']}"
+                    )
                 if len(rows) > 5:
                     print(f"    · ...and {len(rows) - 5} more")
 
@@ -603,6 +638,7 @@ def bucket_by_item(items):
 
 # ========== Dataset discovery ==========
 
+
 def discover_paired_datasets():
     pairs = [
         {
@@ -610,26 +646,75 @@ def discover_paired_datasets():
             "log": str(ROOT / "test_data" / "inventory" / "InventoryActions.log"),
         },
         {
-            "chat": str(ROOT / "test_data" / "surveyLogs" / "100x-serbcrystal-withring" / "ChatLog.txt"),
-            "log": str(ROOT / "test_data" / "surveyLogs" / "100x-serbcrystal-withring" / "Player.log"),
+            "chat": str(
+                ROOT
+                / "test_data"
+                / "surveyLogs"
+                / "100x-serbcrystal-withring"
+                / "ChatLog.txt"
+            ),
+            "log": str(
+                ROOT
+                / "test_data"
+                / "surveyLogs"
+                / "100x-serbcrystal-withring"
+                / "Player.log"
+            ),
         },
         {
-            "chat": str(ROOT / "test_data" / "surveyLogs" / "100x-eltmetal-ringandpick" / "ChatLog.txt"),
-            "log": str(ROOT / "test_data" / "surveyLogs" / "100x-eltmetal-ringandpick" / "Player-prev.log"),
+            "chat": str(
+                ROOT
+                / "test_data"
+                / "surveyLogs"
+                / "100x-eltmetal-ringandpick"
+                / "ChatLog.txt"
+            ),
+            "log": str(
+                ROOT
+                / "test_data"
+                / "surveyLogs"
+                / "100x-eltmetal-ringandpick"
+                / "Player-prev.log"
+            ),
         },
         {
-            "chat": str(ROOT / "test_data" / "surveyLogs" / "50x-povusmarvelous-ringandpick" / "ChatLog.txt"),
-            "log": str(ROOT / "test_data" / "surveyLogs" / "50x-povusmarvelous-ringandpick" / "Player.log"),
+            "chat": str(
+                ROOT
+                / "test_data"
+                / "surveyLogs"
+                / "50x-povusmarvelous-ringandpick"
+                / "ChatLog.txt"
+            ),
+            "log": str(
+                ROOT
+                / "test_data"
+                / "surveyLogs"
+                / "50x-povusmarvelous-ringandpick"
+                / "Player.log"
+            ),
         },
         {
-            "chat": str(ROOT / "docs" / "samples" / "chat+logCombos" / "Gazluk-Motherlodes-and-Nodes-Chat.log"),
-            "log": str(ROOT / "docs" / "samples" / "chat+logCombos" / "Gazluk-Motherlodes-and-Nodes.log"),
+            "chat": str(
+                ROOT
+                / "docs"
+                / "samples"
+                / "chat+logCombos"
+                / "Gazluk-Motherlodes-and-Nodes-Chat.log"
+            ),
+            "log": str(
+                ROOT
+                / "docs"
+                / "samples"
+                / "chat+logCombos"
+                / "Gazluk-Motherlodes-and-Nodes.log"
+            ),
         },
     ]
     return [p for p in pairs if os.path.exists(p["chat"]) and os.path.exists(p["log"])]
 
 
 # ========== Entrypoint ==========
+
 
 def main():
     # Node writes "\n" even on Windows; match it byte-for-byte.
@@ -661,14 +746,19 @@ def main():
             )
     elif len(opts["positional"]) >= 2:
         display_to_internal = resolve_name_map(opts["items_json"])
-        run_report(opts["positional"][0], opts["positional"][1], opts, display_to_internal)
+        run_report(
+            opts["positional"][0], opts["positional"][1], opts, display_to_internal
+        )
     else:
         print("Usage:", file=sys.stderr)
         print(
             "  python correlation-report.py <chat_log> <player_log> [--tz=-7] [--window=2] [--no-lists]",
             file=sys.stderr,
         )
-        print("  python correlation-report.py --all                        # run all paired datasets", file=sys.stderr)
+        print(
+            "  python correlation-report.py --all                        # run all paired datasets",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
 

@@ -6,6 +6,7 @@ Python port of scripts/backfill-releases.sh (stdlib only).
 Usage: backfill-releases.py [tags-file]
   defaults to all v* tags with no Release on Glogger-Team/glogger.
 """
+
 import json
 import os
 import re
@@ -75,7 +76,7 @@ def main(argv: list[str]) -> int:
     else:
         # Bash `read` strips only the trailing newline; a trailing \r is kept.
         with open(tags_file, encoding="utf-8", newline="") as fh:
-            tags = [line[:-1] if line.endswith("\n") else line for line in fh]
+            tags = [line.removesuffix("\n") for line in fh]
     changelog_text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
 
     count = 0

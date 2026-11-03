@@ -6,6 +6,7 @@ description: Operate the glogger canonical repo — integrate tested work into t
 # Glogger — Daily Driver & Release Pipeline
 
 ## Overview
+
 This repo (`Glogger-Team/glogger`) is the canonical home of glogger, successor of the `cprivitere/glogger-twinkleoftoes` fork of `crisp-oddio/glogger-oddio`. It owns its config, release pipeline, update channel and branch line: `main` is both the source of truth and the release branch. Upstream is an optional read-only reference (`git fetch upstream && git merge upstream/<branch>`), never a PR target.
 
 ## Quick reference

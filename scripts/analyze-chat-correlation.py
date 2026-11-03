@@ -13,6 +13,7 @@ Usage: python analyze-chat-correlation.py <chat_log> <player_log> [--tz=-7] [--w
 Chat timestamps are local time with TZ listed in the login line ("Timezone Offset -07:00:00").
 Player.log timestamps are UTC. We convert chat→UTC by adding -tz hours.
 """
+
 import math
 import os
 import re
@@ -29,7 +30,9 @@ TZ_RE = re.compile(r"Timezone Offset ([+\-]\d{2}):(\d{2}):\d{2}")
 TS_RE = re.compile(r"^\[(\d{2}):(\d{2}):(\d{2})\]")
 ADD_ITEM_RE = re.compile(r"ProcessAddItem\((\w+)\((\d+)\),\s*(-?\d+),\s*(True|False)\)")
 UPDATE_CODE_RE = re.compile(r"ProcessUpdateItemCode\((\d+),\s*(\d+),\s*(True|False)\)")
-REMOVE_VAULT_RE = re.compile(r"ProcessRemoveFromStorageVault\(\d+,\s*-?\d+,\s*(\d+),\s*(\d+)\)")
+REMOVE_VAULT_RE = re.compile(
+    r"ProcessRemoveFromStorageVault\(\d+,\s*-?\d+,\s*(\d+),\s*(\d+)\)"
+)
 
 
 def parse_args(argv):
@@ -50,7 +53,12 @@ def parse_args(argv):
             file=sys.stderr,
         )
         sys.exit(1)
-    return {"chat_path": positional[0], "log_path": positional[1], "window": window, "tz": tz}
+    return {
+        "chat_path": positional[0],
+        "log_path": positional[1],
+        "window": window,
+        "tz": tz,
+    }
 
 
 def js_parse_int(s):
@@ -92,7 +100,7 @@ def js_to_fixed_1(x):
 
 # "26-04-14 08:46:07\t[Status] Great Phlogiston x1000 added to inventory." → {ts, item, qty}
 def parse_chat_line(line):
-    line = line[:-1] if line.endswith("\r") else line
+    line = line.removesuffix("\r")
     m = CHAT_LINE_RE.match(line)
     if not m:
         return None
@@ -127,7 +135,7 @@ def detect_chat_tz(chat_lines):
 #   [HH:MM:SS] LocalPlayer: ProcessAddItem(Name(id), slot, isNew)
 #   [HH:MM:SS] LocalPlayer: ProcessUpdateItemCode(id, encoded, fromServer)
 def parse_player_line(line):
-    line = line[:-1] if line.endswith("\r") else line
+    line = line.removesuffix("\r")
     ts_match = TS_RE.match(line)
     if not ts_match:
         return None
@@ -220,7 +228,7 @@ def build_player_history(log_path):
             events.append(
                 {
                     **ev,
-                    "gain_qty": delta if delta > 0 else 0,
+                    "gain_qty": max(0, delta),
                     "delta_signed": delta,
                     "resolved_name": name,
                     "is_baseline_establish": is_baseline_establish,
@@ -252,9 +260,7 @@ def names_might_match(display_name, internal_name):
     if a == b:
         return True
     # loose containment for graded items like "ArmorPatchKit5" vs "Master Armor Patch Kit"
-    if a in b or b in a:
-        return True
-    return False
+    return a in b or b in a
 
 
 def fmt_num(value):
@@ -382,22 +388,22 @@ def main():
     print(f"Player log:  {rel(log_path)}")
     print(f"Timezone:    {fmt_num(tz)}h (chat → UTC)")
     print(f"Window:      ±{window_secs}s")
-    print("")
+    print()
     print(f"Total chat ItemGained messages: {chat_total}")
     print(f"Total chat quantity:            {chat_total_qty}")
     print(f"Total player.log gain events:   {len(gain_events)}")
-    print("")
+    print()
     print(f"Exact match (1 cand, qty ok):   {exact_match}")
     print(f"Ambiguous w/ qty match:         {qty_match_ambiguous}")
     print(f"Single cand, qty MISMATCH:      {single_mismatch}")
     print(f"Multiple cands, no qty match:   {multiple_candidates}")
     print(f"Orphan (no cand):               {orphan}")
-    print("")
+    print()
     matchable = exact_match + qty_match_ambiguous
     print(
         f"Quantity match rate: {matchable}/{chat_total} ({js_to_fixed_1((matchable / chat_total) * 100)}%)"
     )
-    print("")
+    print()
 
     if len(orphan_samples) > 0:
         print("--- Orphan samples (chat msg with no player.log candidate) ---")
@@ -409,7 +415,7 @@ def main():
                 f"  [{o['chat']['date']} {o['chat']['raw_ts']} → UTC "
                 f"~{h:02d}:{m:02d}:{s:02d}] {o['chat']['item']} x{o['chat']['qty']}"
             )
-        print("")
+        print()
 
     if len(mismatch_samples) > 0:
         print("--- Quantity mismatch samples ---")
@@ -432,7 +438,7 @@ def main():
                     f"  [{ts}] chat: {m['chat']['item']} x{m['chat']['qty']}  ||  "
                     f"{len(m['cands'])} cands: {cand_summary} (sum={m['total_gain_sum']})"
                 )
-        print("")
+        print()
 
 
 main()

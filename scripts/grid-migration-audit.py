@@ -8,6 +8,7 @@ Python port of scripts/grid-migration-audit.mjs (stdlib only).
 Usage: python scripts/grid-migration-audit.py [base-ref] [head-ref]
        (defaults: v1.3.1 — the sweep's base — and HEAD)
 """
+
 import re
 import subprocess
 import sys
@@ -151,9 +152,7 @@ def main():
                 continue
             kind = "th" if TH_RE.search(line) else "td"
             classes = re.split(r"\s+", m.group(1))
-            key = (
-                f"{fmt_num(resolve(classes, 'left'))}/{fmt_num(resolve(classes, 'top'))}"
-            )
+            key = f"{fmt_num(resolve(classes, 'left'))}/{fmt_num(resolve(classes, 'top'))}"
             bucket = combos[kind]
             bucket[key] = bucket.get(key, 0) + 1
         head = (ROOT / file).read_text(encoding="utf-8")
@@ -187,7 +186,7 @@ def main():
                 for k, n in sorted(mapping.items(), key=lambda kv: kv[1], reverse=True)
             )
 
-        mode = sorted(combos["td"].items(), key=lambda kv: kv[1], reverse=True)[0]
+        mode = max(combos["td"].items(), key=lambda kv: kv[1])
         left, top = (float(v) for v in mode[0].split("/"))
         if props and props[0].startswith("compact"):
             effective = {"left": 8, "top": 4}

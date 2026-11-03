@@ -200,6 +200,7 @@ pubkey is compiled in, so the new-key release must be installed manually once.
 - Prefixes/hook install: see `.githooks/commit-msg` and `python scripts/setup-hooks.py` (cited, not restated).
 
 ## Upstream reference path
+
 `upstream` (crisp-oddio/glogger-oddio) is a read-only reference remote.
 Absorb fixes with `git fetch upstream && git merge upstream/<branch>`; expect
 conflicts in the config/CI files this repo owns. Never open a PR against

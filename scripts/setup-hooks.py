@@ -14,7 +14,9 @@ def main() -> int:
         ["git", "-C", str(root), "config", "core.hooksPath", ".githooks"],
         check=True,
     )
-    sys.stdout.buffer.write("Git hooks configured — using .githooks/ directory.\n".encode())
+    sys.stdout.buffer.write(
+        "Git hooks configured — using .githooks/ directory.\n".encode()
+    )
     return 0
 
 

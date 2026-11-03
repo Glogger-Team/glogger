@@ -100,7 +100,8 @@ def commit_records(range_ref):
     """Yield (subject, body_lines) newest-first, skipping blank subjects."""
     hashes = run_git(["log", "--no-merges", "--no-decorate", "--format=%H", range_ref])
     if hashes.returncode != 0:
-        return
+        eprint(hashes.stderr.strip() or f"error: git log failed for range {range_ref}")
+        sys.exit(1)
     for commit in hashes.stdout.splitlines():
         if not commit:
             continue

@@ -12,6 +12,10 @@ import sys
 _TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 
 
+def _version_key(tag):
+    return tuple(int(n) for n in tag[1:].split("."))
+
+
 def main(argv: list[str]) -> int:
     repo = argv[1] if len(argv) > 1 else ""
     if not repo:
@@ -40,13 +44,17 @@ def main(argv: list[str]) -> int:
         entries = json.loads(proc.stdout) if proc.stdout.strip() else None
     except (json.JSONDecodeError, ValueError):
         entries = None
-    tag = ""
+    best = ""
     if isinstance(entries, list):
         for entry in entries:
             name = entry.get("tagName") if isinstance(entry, dict) else None
-            if isinstance(name, str) and _TAG_RE.match(name):
-                tag = name
-                break
+            if (
+                isinstance(name, str)
+                and _TAG_RE.match(name)
+                and (not best or _version_key(name) > _version_key(best))
+            ):
+                best = name
+    tag = best
     if not tag:
         sys.stderr.buffer.write(
             f"last-published-tag: no published v* release found for {repo} (or gh auth failed)\n".encode()

@@ -34,6 +34,7 @@ Owns the verbatim in-window visual-QA recipe. For release build/install routine 
 ## Dev-DB wipe (clean-room retest)
 
 When the user asks to wipe/retry, or a retest needs a known-empty baseline — NEVER on an assumption, always on request or with explicit approval:
+
 1. `taskkill /F /IM glogger.exe` (DB is file-backed + WAL; no clean shutdown needed) and confirm the process is gone.
 2. Move (never delete) `glogger.db` + `-wal` + `-shm` from `%APPDATA%\glogger.Dev\` to `db-backup-<timestamp>\` beside them. Keep `settings.json` and `data/` (CDN cache) so no re-download is needed.
 3. Relaunch per the Recipe above (flag + CDP), verify `Database initialized` + migrations clean in the terminal log.

@@ -104,6 +104,7 @@ def _src_rs_files(root: Path):
     files = [p for p in files if not _excluded(str(p))]
     return sorted(files)
 
+
 def _is_self_bytecode(path: Path) -> bool:
     # Running this script compiles its pattern literals to bytecode; like the
     # script itself, that cache names every forbidden pattern, so it shares
@@ -200,7 +201,9 @@ def main(argv=None):
     root = Path(args.root).resolve()
     violations = check(root)
     if violations:
-        print("HARD-LINE VIOLATIONS (see docs/research/glogger-game-interaction-limits.md):")
+        print(
+            "HARD-LINE VIOLATIONS (see docs/research/glogger-game-interaction-limits.md):"
+        )
         for v in violations:
             print(f"  {v}")
         return 1
