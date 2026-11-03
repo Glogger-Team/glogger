@@ -1,7 +1,7 @@
 # Documentation Index
 
-## [TODO.md](TODO.md)
-Small tasks and notes that don't belong in a dedicated plan.
+## [TODO.md](../TODO.md)
+Backlog: small tasks and notes that don't belong in a dedicated plan.
 
 ## [flatpak-build.md](flatpak-build.md)
 Building and running glogger as a Linux Flatpak: offline source generation, the manifest fixes that got it rendering, and runtime notes.

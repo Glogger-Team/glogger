@@ -79,10 +79,9 @@ count to the game's number.
   DST dates (second Sunday in March / first Sunday in November, no tz database
   dependency); the frontend reads the offset from `Intl` (`America/New_York`).
   Both are pinned to the same seven-case table (two of them DST edges) in
-  `game_state::tests::week_boundary_is_monday_midnight_eastern` and by the
-  boundary check recorded in `HANDOFF.md` session 40. Change one, change the
-  other *in the same commit* — a row that is written but filtered out (or vice
-  versa) shows wrong counts.
+  `game_state::tests::week_boundary_is_monday_midnight_eastern` (change one,
+  change the other *in the same commit* — a row that is written but filtered
+  out (or vice versa) shows wrong counts).
 - **No `ProcessDeltaFavor` replay.** `FavorChanged` handling *adds* to
   `game_state_favor.cumulative_delta`, so replaying those lines would
   double-count favor. The absolute note count is the only signal needed.

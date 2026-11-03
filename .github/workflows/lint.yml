@@ -2,7 +2,7 @@
 # (plus clippy `-D warnings` on all targets), plus fast local-feedback
 # linters. Rust (rustfmt) stays advisory in AGENTS.md (823 unformatted
 # spots pre-existing); markdown is a changed-files gate (all hand-maintained
-# docs except generated CHANGELOG.md and append-only HANDOFF*.md) — only the
+# docs except generated CHANGELOG.md) — only the
 # green gates run here. The release workflow re-runs the frontend build, Rust
 # tests, and TOS scan before bundling (its `validate` + `test` jobs);
 
@@ -161,10 +161,10 @@ jobs:
         # Floor, not a freeze: no watcher here, so a freeze would rot silently.
         # Scope lives in scripts/lint-markdown-changed.py (single source of
         # truth with `mise run lint:all`): all *.md except CHANGELOG.md
-        # (generator-rewritten each release) and HANDOFF*.md (append-only
-        # session record). Grandfathered: only changed files are linted.
-        # Base is the PR base sha on pull_request, the push `before` sha on
-        # main pushes (zero-sha on manual dispatch falls back to HEAD~1).
+        # (generator-rewritten each release). Grandfathered: only changed
+        # files are linted. Base is the PR base sha on pull_request, the push
+        # `before` sha on main pushes (zero-sha on manual dispatch falls
+        # back to HEAD~1).
         env:
           MARKDOWNLINT: npx --yes markdownlint-cli2@0.23
         run: |

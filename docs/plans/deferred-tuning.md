@@ -82,8 +82,7 @@ machine — pure tuning, no correctness bug.
 ## 3. ChatMessageList activeDay scroll reset — nextTick race
 
 **Status: superseded 2026-10-12 (Session 38, `d4b83a0` + `a54817d`).** The day-log jump rewrite
-replaced this path — see "pre-flush watchers see stale props" in that session's HANDOFF entry. Current
-shape in [ChatMessageList.vue](../../src/components/Chat/ChatMessageList.vue):
+replaced this path. Current shape in [ChatMessageList.vue](../../src/components/Chat/ChatMessageList.vue):
 
 - The `dateNav.activeDay` watcher is `{ flush: 'post' }`, so it *does* see the jump's `highlightId`
   prop, and it returns early for a highlight (the row's own scroll-into-view owns the position).
