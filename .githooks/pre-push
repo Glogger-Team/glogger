@@ -8,9 +8,10 @@
 if [ -n "$GLOGGER_SKIP_CONSTRAINTS" ]; then
   echo "[glogger] WARNING: constraint check skipped via GLOGGER_SKIP_CONSTRAINTS" >&2
   exit 0
-fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-if command -v python3 >/dev/null 2>&1; then
+# Probe with `-c ''`: `command -v` matches the Windows App Execution Alias
+# stub, whose exec then fails and would block every push.
+if python3 -c '' >/dev/null 2>&1; then
   exec python3 "$ROOT/scripts/check-glogger-constraints.py"
 else
   exec python "$ROOT/scripts/check-glogger-constraints.py"

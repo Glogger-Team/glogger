@@ -73,7 +73,7 @@ def main(argv):
     out = []
     out += ["# Changelog", ""]
     out += ["Full release history for glogger, generated from git tags."]
-    out += ["Per-release notes use the same grouping as scripts/generate-changelog.sh"]
+    out += ["Per-release notes use the same grouping as scripts/generate-changelog.py"]
     out += ["(feat: → Features, impv: → Improvements, fix: → Fixes) with humanized"]
     out += ["entries (no type prefix, hash, PR ref, or commit count)."]
     out += [

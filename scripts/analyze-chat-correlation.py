@@ -400,9 +400,8 @@ def main():
     print(f"Orphan (no cand):               {orphan}")
     print()
     matchable = exact_match + qty_match_ambiguous
-    print(
-        f"Quantity match rate: {matchable}/{chat_total} ({js_to_fixed_1((matchable / chat_total) * 100)}%)"
-    )
+    rate = (matchable / chat_total) * 100 if chat_total else float("nan")
+    print(f"Quantity match rate: {matchable}/{chat_total} ({js_to_fixed_1(rate)}%)")
     print()
 
     if len(orphan_samples) > 0:

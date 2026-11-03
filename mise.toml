@@ -26,6 +26,7 @@ run = [
   "ruff format --check scripts/",
   "python scripts/check-glogger-constraints.py",
   "python scripts/check-review-patterns.py",
+  "yamllint .github/",
   "zizmor --no-online-audits --config \"{{config_root}}/.github/zizmor.yml\" --min-severity medium \"{{config_root}}/.github/workflows/\"",
   "pinact run --check",
   "python scripts/cargo-audit-gate.py",

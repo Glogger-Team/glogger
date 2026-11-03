@@ -2,7 +2,9 @@
 # Portable entrypoint: execs python3 if present else python (a python3-only
 # shebang would fail on machines with only `python` before any fallback runs).
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-if command -v python3 >/dev/null 2>&1; then
+# Probe with `-c ''`: `command -v` matches the Windows App Execution Alias
+# stub, whose exec then fails and would block the commit.
+if python3 -c '' >/dev/null 2>&1; then
   exec python3 "$ROOT/.githooks/commit-msg.py" "$@"
 else
   exec python "$ROOT/.githooks/commit-msg.py" "$@"

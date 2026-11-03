@@ -18,7 +18,7 @@ PREFIX_RE = re.compile(r"^(feat|fix|impv|docs|test|build)(\(.*\))?!?:")
 
 def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(newline="\n")
+        sys.stdout.reconfigure(encoding="utf-8", newline="\n")
     msg_file = Path(sys.argv[1]) if len(sys.argv) > 1 else None
     if msg_file is None:
         print("usage: commit-msg <msg-file>", file=sys.stderr)
@@ -34,17 +34,17 @@ def main() -> int:
     if PREFIX_RE.match(first):
         return 0
 
-    print("")
+    print()
     print("  ⚠  Commit message has no conventional prefix.")
     print("     Expected: feat|fix|impv|docs|test|build")
     print("     Example:  fix: correct scroll behavior on gourmand screen")
     print("     Write the subject for end users (what changed in the app), not the process (round N, CodeRabbit, backlog batch, SYNC_PAT).")
     print("     Example:  fix: StallTracker counts match after login without LocalPlayer sections")
-    print("")
+    print()
     print(f"     Your message: {first}")
-    print("")
+    print()
     print("  Committing anyway — this is just a warning to help changelog quality.")
-    print("")
+    print()
 
     return 0
 

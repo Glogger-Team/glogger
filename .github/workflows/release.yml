@@ -12,8 +12,10 @@ name: Release
 # hook — see docs/research/glogger-game-interaction-limits.md), so a skipped or
 # uninstalled local hook cannot let a TOS/CoC violation reach a release.
 #
-# release (scripts/generate-changelog.py, based via
+# The build job generates the release notes from the commits since the last
+# published release (scripts/generate-changelog.py, based via
 # scripts/last-published-tag.py). No committed RELEASE_NOTES.md, no version
+# commits — the pushed tag is the version record.
 #
 # workflow_dispatch rebuilds the identical matrix for an existing ref with
 # `publish` left false, so the pipeline can be smoke-tested (all three

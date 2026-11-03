@@ -119,11 +119,12 @@ def fmt_num(value):
 
 
 def main():
-    # Node writes "\n" even on Windows; match it byte-for-byte.
+    # Node writes "\n" even on Windows; match it byte-for-byte. encoding=utf-8:
+    # the header/rows print →/×/— which cp1252 pipes cannot encode.
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(newline="\n")
+        sys.stdout.reconfigure(encoding="utf-8", newline="\n")
     if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(newline="\n")
+        sys.stderr.reconfigure(encoding="utf-8", newline="\n")
     changed = [
         f
         for f in git(

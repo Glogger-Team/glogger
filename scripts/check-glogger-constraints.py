@@ -10,7 +10,7 @@ import re
 import sys
 from pathlib import Path
 
-EXCLUDED_DIR = re.compile(r"[/\\](\.git|node_modules|target|dist)[/\\]")
+EXCLUDED_DIRS = {".git", "node_modules", "target", "dist"}
 
 FORBIDDEN_PATTERNS = [
     r"OpenProcess\s*\(",
@@ -84,8 +84,8 @@ DEFAULT_ROOT = HERE.parent.parent
 LIMITS_DOC = Path("docs", "research", "glogger-game-interaction-limits.md")
 
 
-def _excluded(path_str: str) -> bool:
-    return EXCLUDED_DIR.search(path_str) is not None
+def _excluded(path: Path) -> bool:
+    return any(part in EXCLUDED_DIRS for part in path.parts)
 
 
 def _read_lines(path: Path):
@@ -101,7 +101,7 @@ def _src_rs_files(root: Path):
     if not src.is_dir():
         return []
     files = [p for p in src.rglob("*.rs") if p.is_file()]
-    files = [p for p in files if not _excluded(str(p))]
+    files = [p for p in files if not _excluded(p)]
     return sorted(files)
 
 
@@ -124,7 +124,7 @@ def _repo_files(root: Path, allowlist: set):
     out = []
     for p in files:
         s = str(p)
-        if _excluded(s):
+        if _excluded(p):
             continue
         if s in allowlist:
             continue
