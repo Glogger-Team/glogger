@@ -157,7 +157,7 @@ Frozen-review + CodeRabbit rounds on the `todo-burndown` series (22 commits, ~ha
 Before committing, lint every file type you changed and fix what the linter reports — local feedback first, not CI. Tools live in `mise.toml` (`mise install` fetches them); run from the repo root:
 
 - `mise run lint` — the blocking set (CI `lint.yml` gates runnable locally, plus `npm run build` + `check:grids` + `check-glogger-constraints.ps1`).
-- `mise run lint:all` — `lint` plus advisory rustfmt and the changed-files markdown gate.
+- `mise run lint:all` — `lint` plus advisory rustfmt.
 
 | File type | Linter | Covered by |
 | --------- | ------ | ---------- |
