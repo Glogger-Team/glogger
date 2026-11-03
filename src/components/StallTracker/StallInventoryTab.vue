@@ -365,6 +365,13 @@ const fallbackCount = computed(() =>
     ? result.value.items.filter((i) => i.quantity > 0 && i.fallback_priced_qty > 0).length
     : 0,
 )
+const oldestFirstEvent = computed(() => {
+  const dates = truncatedItems.value
+    .map((i) => i.first_event_at)
+    .filter((d): d is string => d != null)
+    .sort()
+  return dates.length > 0 ? formatShortDate(dates[0]) : '—'
+})
 
 /** Rows whose quantity is a guess: truncated history, or fallback-priced
  * (in-stock only — a sold-out item has qty 0 regardless of its price). */
