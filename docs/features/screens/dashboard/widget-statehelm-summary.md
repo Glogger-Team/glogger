@@ -1,10 +1,11 @@
-> **DARK until `LocalPlayer:` lines recur (hidden 2026-11-03)** — removed from `DASHBOARD_WIDGETS`; the component file is retained as a dark-component spec. Re-adding the registry entry + import restores it.
-
 # Widget: Statehelm Gifting
+
+> **DARK until `LocalPlayer:` lines recur (hidden 2026-11-03)** — removed from `DASHBOARD_WIDGETS`; the component file is retained as a dark-component spec. Re-adding the registry entry + import restores it.
 
 **ID:** `statehelm-summary` | **Default size:** Medium | **Component:** `widgets/StatehelmSummaryWidget.vue`
 
 Skill-driven summary of weekly Statehelm gift progress:
+
 - Header: total gifts given / max possible + weekly reset countdown
 - Progress bar (gold fill)
 - **Combat** section: the NPCs for the **2 currently equipped** combat skills plus
@@ -14,7 +15,7 @@ Skill-driven summary of weekly Statehelm gift progress:
 - Each row shows `NpcInline` (hoverable), the driving skill name (a ✦ marks an
   equipped skill), and gift dots: filled (gold) for given, empty (dim) for remaining.
 
-### Selection logic (`useStatehelmTracker`)
+## Selection logic (`useStatehelmTracker`)
 
 - **Skill ranking** is by **base level** (highest first), over the player's own skills.
 - **Combat vs non-combat** comes from the CDN `combat` flag per skill.
