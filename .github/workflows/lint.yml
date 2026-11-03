@@ -149,7 +149,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
+          # Tracks latest LTS to match mise.toml `node = "lts"` locally.
+          node-version: "lts/*"
           cache: npm
 
       - name: Markdown lint (hand-maintained docs only)
@@ -171,7 +172,8 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: "24"
+          # Tracks latest LTS to match mise.toml `node = "lts"` locally.
+          node-version: "lts/*"
           cache: npm
 
       - name: Install frontend dependencies
