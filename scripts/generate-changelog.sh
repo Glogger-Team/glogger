@@ -87,15 +87,25 @@ humanize_entry() {
 # notes line; squash bodies yield one per `* type:` bullet). Bash keeps
 # range resolution, humanize_entry rendering, and section grouping.
 # Requires python3 with a JSON module: entries are parsed with a small
-# python3 one-liner (no jq dependency). Falls back to no entries when
-# python3 is unavailable — the range then reports no user-facing changes.
+# python3 one-liner (no jq dependency). A missing python3 keeps the old
+# intentional fallback (no entries); a present classifier that fails exits
+# nonzero instead of publishing incomplete notes.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-mapfile -t CLASSIFIED < <(git log --no-merges -z --format=%B "$RANGE" 2>/dev/null | python3 "$SCRIPT_DIR/release_notes.py" --batch 2>/dev/null)
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "warning: python3 not found; changelog entries omitted" >&2
+  CLASSIFIED=()
+else
+  if ! CLASSIFIED_RAW="$(git log --no-merges -z --format=%B "$RANGE" 2>/dev/null | python3 "$SCRIPT_DIR/release_notes.py" --batch)"; then
+    echo "error: release_notes.py --batch failed; refusing to publish incomplete notes" >&2
+    exit 1
+  fi
+  mapfile -t CLASSIFIED <<< "$CLASSIFIED_RAW"
+fi
 # mapfile splits on newline: each JSON object is one line, aligned 1:1 with
-# the NUL-separated records (empty records filtered on both sides). The
-# render loop below uses --no-merges too: merge subjects (`Merge ...`)
-# are excluded on both sides so the index never desyncs (merges carry no
-# section by definition).
+# the NUL-separated records (blank records yield empty-entry objects, so
+# the positional index holds). The render loop below uses --no-merges too:
+# merge subjects (`Merge ...`) are excluded on both sides so the index never
+# desyncs (merges carry no section by definition).
 idx=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue

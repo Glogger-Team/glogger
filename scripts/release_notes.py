@@ -25,10 +25,10 @@ import sys
 
 BREAKING_RE = re.compile(r"BREAKING[ -]CHANGE")
 SUBJECT_RE = re.compile(
-    r"^(feat|fix|impv|docs|test|build|chore|release)(\([^)]*\))?!?:"
+    r"^(feat|fix|impv|docs|test|build|chore|release)(\([^)]*\))?(!)?:"
 )
 BULLET_RE = re.compile(
-    r"^\s*\*\s*(feat|fix|impv|docs|test|build|chore|release)(\([^)]*\))?!?:"
+    r"^\s*\*\s*(feat|fix|impv|docs|test|build|chore|release)(\([^)]*\))?(!)?:"
 )
 SQUASH_RE = re.compile(r"\(#\d+\)\s*$")
 MERGE_RE = re.compile(r"^Merge ")
@@ -45,9 +45,9 @@ def classify_subject(subject):
     if not m:
         return ("patch", "none")
     ctype = m.group(1)
-    # SUBJECT_RE ends with `!?:` — the breaking marker lives in the prefix
-    # part before the colon.
-    breaking = "!" in m.group(0).split(":")[0]
+    # Group 3 is the `!` immediately before the colon — a `!` inside the
+    # scope (e.g. `feat(wow!)`) must not trigger a major bump.
+    breaking = m.group(3) is not None
     if breaking:
         section = ctype if ctype in NOTES_TYPES else "none"
         return ("major", section)
@@ -84,7 +84,7 @@ def classify_record(subject, body_lines):
             if not m:
                 continue
             ctype = m.group(1)
-            breaking = "!" in m.group(0).split(":")[0]
+            breaking = m.group(3) is not None
             # NOTE: bare BREAKING CHANGE footers are hoisted above (all-lines
             # scan); testing BREAKING_RE.match on a `* ...` line here could
             # never match, so the old branch was dead.
@@ -167,7 +167,12 @@ def main():
     # entries is one per notes line (squash bodies yield one per bullet).
     if len(sys.argv) > 1 and sys.argv[1] == "--batch":
         data = sys.stdin.read()
-        records = [r for r in data.split("\0") if r.strip()]
+        # Preserve blank records as empty-entry objects: the bash reader
+        # indexes positionally, and --oneline still emits a hash line for
+        # an empty-message commit. Only the trailing split sentinel is dropped.
+        records = data.split("\0")
+        if records and records[-1] == "":
+            records.pop()
         for record in records:
             lines = record.splitlines()
             subject = lines[0] if lines else ""
@@ -265,6 +270,9 @@ def run_tests():
         # the SUBJECT_RE extension beyond old MAJOR_RE's six types).
         ("chore!: drop support", [], "major", []),
         ("release!: rebuild all", [], "major", []),
+        # `!` inside the scope is not a breaking marker (group 3 only).
+        ("feat(wow!): add thing", [], "minor", ["feat"]),
+        ("fix(api:v2): scoped colon", [], "patch", ["fix"]),
     ]
     failures = 0
     for subject, body, want_bump, want_sections in cases:
