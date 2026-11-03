@@ -26,7 +26,6 @@ import HoplologyWidget from "./widgets/HoplologyWidget.vue";
 import VendorCouncilWidget from "./widgets/VendorCouncilWidget.vue";
 import RouletteWidget from "./widgets/RouletteWidget.vue";
 import ArenaWidget from "./widgets/ArenaWidget.vue";
-// import StatehelmSummaryWidget from "./widgets/StatehelmSummaryWidget.vue"; // DARK until LocalPlayer: lines recur (hidden 2026-11-03)
 export type WidgetSize = "small" | "medium" | "large";
 
 export interface DashboardWidget {
