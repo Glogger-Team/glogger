@@ -81,72 +81,52 @@ humanize_entry() {
   fi
 }
 
-# Squash-merge subjects (`... (#NN)`) carry no conventional prefix; their
-# bodies embed the PR's original `* type:` commits. Classify those bullets
-# the same way next-version.py does, so a squashed feature still lands in
-# the notes (subject line kept as the entry label fallback is the bullet).
-classify_squash_body() {
-  local hash="$1"
-  # Process substitution, not a pipe: `| while` runs in a subshell and the
-  # array appends would be lost when it exits.
-  while IFS= read -r bline; do
-    local entry=""
-    case "$bline" in
-      '*'[[:space:]]feat:*|'*'[[:space:]]feat'('*')'*:*|'*'[[:space:]]feat'!'*:*)
-        entry="feature"
-        ;;
-      '*'[[:space:]]impv:*|'*'[[:space:]]impv'('*')'*:*|'*'[[:space:]]impv'!'*:*)
-        entry="improvement"
-        ;;
-      '*'[[:space:]]fix:*|'*'[[:space:]]fix'('*')'*:*|'*'[[:space:]]fix'!'*:*)
-        entry="fix"
-        ;;
-    esac
-    if [ -n "$entry" ]; then
-      # Strip the leading bullet; humanize the conventional line as the entry.
-      local text="${bline#*\* }"
-      local cleaned
-      cleaned="$(humanize_entry "$text")"
-      case "$entry" in
-        feature) features+=("- ${cleaned}") ;;
-        improvement) improvements+=("- ${cleaned}") ;;
-        fix) fixes+=("- ${cleaned}") ;;
-      esac
-    fi
-  done < <(git log -1 --format=%B "$hash" 2>/dev/null)
-}
-
+# Classification lives in scripts/release_notes.py (shared with
+# next-version.py). One Python invocation emits one JSON object per commit
+# record (`{"bump": ..., "entries": [{"section", "text"}]}` — one entry per
+# notes line; squash bodies yield one per `* type:` bullet). Bash keeps
+# range resolution, humanize_entry rendering, and section grouping.
+# Requires python3 with a JSON module: entries are parsed with a small
+# python3 one-liner (no jq dependency). A missing python3 keeps the old
+# intentional fallback (no entries); a present classifier that fails exits
+# nonzero instead of publishing incomplete notes.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "warning: python3 not found; changelog entries omitted" >&2
+  CLASSIFIED=()
+else
+  if ! CLASSIFIED_RAW="$(git log --no-merges -z --format=%B "$RANGE" 2>/dev/null | python3 "$SCRIPT_DIR/release_notes.py" --batch)"; then
+    echo "error: release_notes.py --batch failed; refusing to publish incomplete notes" >&2
+    exit 1
+  fi
+  mapfile -t CLASSIFIED <<< "$CLASSIFIED_RAW"
+fi
+# mapfile splits on newline: each JSON object is one line, aligned 1:1 with
+# the NUL-separated records (blank records yield empty-entry objects, so
+# the positional index holds). The render loop below uses --no-merges too:
+# merge subjects (`Merge ...`) are excluded on both sides so the index never
+# desyncs (merges carry no section by definition).
+idx=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue
-
-  # Extract short hash and message
-  HASH="${line%% *}"
-  MSG="${line#* }"
-
-  cleaned=""
-  case "$MSG" in
-    feat:*|feat!:*|feat\(*:*)
-      cleaned="$(humanize_entry "$MSG")"
-      features+=("- ${cleaned}")
-      ;;
-    fix:*|fix!:*|fix\(*:*)
-      cleaned="$(humanize_entry "$MSG")"
-      fixes+=("- ${cleaned}")
-      ;;
-    impv:*|impv!:*|impv\(*:*)
-      cleaned="$(humanize_entry "$MSG")"
-      improvements+=("- ${cleaned}")
-      ;;
-    *)
-      # Squash merges carry the PR's commits in the body, not the subject:
-      # classify `* type:` bullets so squashed features still land in the
-      # notes. Non-squash subjects stay excluded as before.
-      case "$MSG" in
-        *'(#'*[0-9]*')') classify_squash_body "$HASH" ;;
-      esac
-      ;;
-  esac
-done < <(git log --oneline --no-decorate "$RANGE" 2>/dev/null)
+  entry_json="${CLASSIFIED[$idx]:-}"
+  idx=$((idx + 1))
+  [ -z "$entry_json" ] && continue
+  # entries TSV: one `section\ttext` line per notes entry.
+  while IFS=$'\t' read -r section text; do
+    case "$section" in
+      feat|impv|fix) ;;
+      *) continue ;;
+    esac
+    [ -z "$text" ] && continue
+    cleaned="$(humanize_entry "$text")"
+    case "$section" in
+      feat) features+=("- ${cleaned}") ;;
+      impv) improvements+=("- ${cleaned}") ;;
+      fix) fixes+=("- ${cleaned}") ;;
+    esac
+  done < <(python3 -c 'import json,sys; [print(e["section"]+"\t"+e["text"]) for e in json.loads(sys.argv[1]).get("entries",[])]' "$entry_json" 2>/dev/null)
+done < <(git log --oneline --no-merges --no-decorate "$RANGE" 2>/dev/null)
 
 if [ ${#features[@]} -gt 0 ]; then
   echo "### Features"

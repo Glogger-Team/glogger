@@ -7,14 +7,14 @@ Resolution order, first hit wins:
   3. newest ancestor-of-HEAD lightweight/annotated tag matching
      ^v\\d+\\.\\d+\\.\\d+$ (max by semver tuple)
 
-Bump rule over `git log --no-merges <base>..HEAD` records (subject + body):
-major on a `!:` conventional-commit marker or a BREAKING[ -]CHANGE body
-line; elif any `feat:` subject or squash-body bullet -> minor; else patch.
-Squash merges (`... (#NN)`) carry no prefix in the subject, but GitHub
-embeds the PR's original `* type:` commits in the squash body — only
-squash records classify by body bullets, so prose examples in a normal
-commit body can't false-trigger.
-Empty ranges suggest base+patch with a stderr warning.
+Bump rule over `git log --no-merges <base>..HEAD` records via
+scripts/release_notes.py (the shared classifier — one regex set, two
+outputs: bump kind + notes section). Major on a `!:` marker or a
+BREAKING[ -]CHANGE body line; elif any `feat:` subject or squash-body
+bullet -> minor; else patch. Squash merges (`... (#NN)`) carry no prefix
+in the subject, but GitHub embeds the PR's original `* type:` commits in
+the squash body — only squash records classify by body bullets, so prose
+examples in a normal commit body can't false-trigger.
 
 Usage:
     python scripts/next-version.py [base-tag]
@@ -30,17 +30,11 @@ import sys
 from pathlib import Path
 
 TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
-BREAKING_RE = re.compile(r"BREAKING[ -]CHANGE")
-MAJOR_RE = re.compile(r"(feat|fix|impv|docs|test|build)(\([^)]*\))?!:")
-MINOR_RE = re.compile(r"feat(\([^)]*\))?:")
-# Squash-body bullets (`* feat: ...`, `* fix!: ...`) carry the PR's original
-# conventional prefixes; match them anywhere in the line.
-BULLET_MAJOR_RE = re.compile(r"^\s*\*\s*(feat|fix|impv|docs|test|build)(\([^)]*\))?!:")
-BULLET_MINOR_RE = re.compile(r"^\s*\*\s*feat(\([^)]*\))?:")
-# Squash-merge subjects end in the PR number (`... (#NN)`). Only squash
-# records classify by body bullets — normal commits classify by subject
-# alone, so prose examples in a docs/test body can't false-trigger.
-SQUASH_RE = re.compile(r"\(#\d+\)\s*$")
+
+# Classification lives in scripts/release_notes.py (shared with
+# generate-changelog.sh). Imported, not duplicated.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from release_notes import bump_for_records
 
 
 def run_git(args, cwd=None):
@@ -128,28 +122,11 @@ def bump_kind(root, base):
     if not records:
         print(f"warning: no commits since {base}", file=sys.stderr)
         return "patch"
+    parsed = []
     for record in records:
         lines = record.splitlines()
-        subject = lines[0] if lines else ""
-        if MAJOR_RE.match(subject):
-            return "major"
-        if any(BREAKING_RE.match(line) for line in lines[1:]):
-            return "major"
-        if SQUASH_RE.search(subject) and any(
-            BULLET_MAJOR_RE.match(line) for line in lines[1:]
-        ):
-            return "major"
-    for record in records:
-        lines = record.splitlines()
-        if lines and MINOR_RE.match(lines[0]):
-            return "minor"
-        if (
-            lines
-            and SQUASH_RE.search(lines[0])
-            and any(BULLET_MINOR_RE.match(line) for line in lines[1:])
-        ):
-            return "minor"
-    return "patch"
+        parsed.append((lines[0] if lines else "", lines[1:]))
+    return bump_for_records(parsed)
 
 
 def main():
