@@ -1210,9 +1210,9 @@ pub struct StallBaseline {
     pub note: Option<String>,
 }
 
-/// Upsert one baseline row for the active character. `quantity == 0` deletes
-/// the row instead (counted to zero = no opening stock) and returns None;
-/// negative quantities are rejected, never stored.
+/// Upsert one baseline row for the active character. `quantity == 0` stores a
+/// zero row (counted to zero = item cleared) and returns it; negative
+/// quantities are rejected, never stored.
 #[tauri::command]
 pub fn save_stall_baseline(
     db: State<'_, DbPool>,
@@ -1224,7 +1224,7 @@ pub fn save_stall_baseline(
     save_stall_baseline_internal(&conn, &input)
 }
 
-/// Validated upsert/delete behind `save_stall_baseline`. Takes a plain
+/// Validated upsert behind `save_stall_baseline`. Takes a plain
 /// `Connection` so tests exercise the real SQL without a Tauri `State`.
 fn save_stall_baseline_internal(
     conn: &rusqlite::Connection,
@@ -1248,14 +1248,10 @@ fn save_stall_baseline_internal(
         }
     }
 
-    if quantity == 0 {
-        conn.execute(
-            "DELETE FROM stall_inventory_baseline WHERE owner = ?1 AND item = ?2",
-            rusqlite::params![owner, item],
-        )
-        .map_err(|e| format!("Baseline delete failed: {e}"))?;
-        return Ok(None);
-    }
+    // qty 0 stores a zero row (not a DELETE): the zero seed makes the
+    // aggregator drop all older events for the item and report quantity 0,
+    // which is how Clear-unsure evicts guessed stock. `recorded_at` still
+    // stamps now so only pre-clear history is superseded.
 
     // `recorded_at` stamps every upsert with now (localtime, matching the
     // column default): a re-count supersedes history up to *now*, not up to
@@ -1567,14 +1563,17 @@ mod tests {
     }
 
     #[test]
-    fn baseline_zero_quantity_deletes_row() {
+    fn baseline_zero_quantity_stores_zero_row() {
         let db = baseline_pool();
         let conn = db.get_write().expect("write conn");
         save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 5)).expect("save");
-        let deleted =
+        // qty 0 = cleared: stored as a zero row (not deleted) so the
+        // aggregator supersedes pre-clear history for the item.
+        let cleared =
             save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 0))
-                .expect("zero-out");
-        assert!(deleted.is_none());
+                .expect("zero-out")
+                .expect("zero row stored");
+        assert_eq!(cleared.quantity, 0);
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM stall_inventory_baseline WHERE owner = 'Deradon'",
@@ -1582,7 +1581,7 @@ mod tests {
                 |r| r.get(0),
             )
             .expect("count");
-        assert_eq!(count, 0);
+        assert_eq!(count, 1);
     }
 
     #[test]

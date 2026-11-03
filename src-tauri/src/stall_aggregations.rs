@@ -502,8 +502,10 @@ pub fn aggregate_inventory(
 /// Baseline seed rows: opening stock counted in-game. Each seeds one priced
 /// tier dated at `recorded_at`, so shop-log events after that timestamp replay
 /// on top. Events at-or-before the baseline for the same item are dropped —
-/// the baseline supersedes scrolled-out history. Rows with `quantity <= 0`
-/// are ignored (use the UI clear for removals).
+/// the baseline supersedes scrolled-out history. A `quantity == 0` seed
+/// (Clear-unsure eviction) still registers its timestamp: no tier is pushed,
+/// but older events drop out and the item reports quantity 0 with
+/// `baseline_at` set. Negative quantities are caller error — skipped.
 #[derive(Debug, Clone)]
 pub struct BaselineSeed {
     pub item: String,
@@ -527,7 +529,7 @@ pub fn aggregate_inventory_with_baselines(
     let mut baseline_at: BTreeMap<String, String> = BTreeMap::new();
     let mut by_item: BTreeMap<String, ItemState> = BTreeMap::new();
     for b in &baselines {
-        if b.quantity <= 0 || b.recorded_at.len() < 10 || b.item.is_empty() {
+        if b.quantity < 0 || b.recorded_at.len() < 10 || b.item.is_empty() {
             continue;
         }
         // Latest baseline per item wins when duplicates arrive.
@@ -541,12 +543,16 @@ pub fn aggregate_inventory_with_baselines(
         baseline_at.insert(b.item.clone(), b.recorded_at.clone());
         let state = by_item.entry(b.item.clone()).or_default();
         state.tiers.clear();
-        state.tiers.push(PriceTier {
-            qty: b.quantity,
-            price: b.price_unit,
-        });
-        if b.price_unit.is_some() {
-            state.last_known_price = b.price_unit;
+        // qty 0 = cleared: no tier seeded, but the timestamp registers so
+        // older events drop out below and the item reports quantity 0.
+        if b.quantity > 0 {
+            state.tiers.push(PriceTier {
+                qty: b.quantity,
+                price: b.price_unit,
+            });
+            if b.price_unit.is_some() {
+                state.last_known_price = b.price_unit;
+            }
         }
         state.first_action = Some("baseline".to_string());
         state.first_event_at = Some(b.recorded_at.clone());
@@ -562,7 +568,7 @@ pub fn aggregate_inventory_with_baselines(
     // Baselines included so a baseline-only item still anchors the window.
     let mut date_set: BTreeMap<String, ()> = BTreeMap::new();
     for b in &baselines {
-        if b.quantity > 0 && b.recorded_at.len() >= 10 && !b.item.is_empty() {
+        if b.quantity >= 0 && b.recorded_at.len() >= 10 && !b.item.is_empty() {
             date_set.insert(b.recorded_at[..10].to_string(), ());
         }
     }
@@ -1906,6 +1912,33 @@ mod tests {
         assert_eq!(item.quantity, 4);
         assert_eq!(item.period_sold, 1);
         assert_eq!(item.events_since_baseline, 1);
+    }
+
+    #[test]
+    fn inventory_zero_baseline_evicts_item() {
+        // Clear-unsure writes qty 0: pre-clear sales drop out, quantity
+        // reports 0, and the row keeps baseline provenance (not truncated).
+        let events = vec![
+            inv("bought", "Guessed Bridle", "2026-04-12 10:00:00", 2, Some(4500.0)),
+            inv("bought", "Guessed Bridle", "2026-04-14 10:00:00", 1, Some(4500.0)),
+        ];
+        let r = aggregate_inventory_with_baselines(
+            events,
+            7,
+            vec![BaselineSeed {
+                item: "Guessed Bridle".into(),
+                quantity: 0,
+                price_unit: None,
+                recorded_at: "2026-04-13 09:00:00".into(),
+            }],
+        );
+        let item = r.items.iter().find(|i| i.item == "Guessed Bridle").expect("cleared row present");
+        assert_eq!(item.quantity, 0);
+        assert!(item.price_tiers.is_empty());
+        assert!(!item.history_truncated);
+        assert_eq!(item.baseline_at.as_deref(), Some("2026-04-13 09:00:00"));
+        // Only the post-clear sale counts toward period metrics.
+        assert_eq!(item.period_sold, 1);
     }
 
     #[test]

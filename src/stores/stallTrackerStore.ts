@@ -34,7 +34,33 @@ export const useStallTrackerStore = defineStore('stallTracker', () => {
     actions: [],
   })
   const dataVersion = ref(0)
-
+  /** Epoch ms of the last successful manual `rescan_stall_books` from the
+   * parent action row. Tabs read this for the "Synced <label>" display —
+   * it lives in the store (not the action row) so it survives tab switches
+   * and HMR remounts of the parent view. */
+  const lastSyncedAt = ref<number | null>(null)
+  // Reactive clock so the relative label ages ("just now" → "2m ago")
+  // without waiting for the next rescan. 30s cadence matches the Books
+  // watcher; minute-granular display never needs per-second wakeups.
+  // No cleanup: Pinia stores are session singletons (same as gameStateStore's
+  // _clockInterval and updateStore's poller).
+  const nowMs = ref(Date.now())
+  if (typeof window !== 'undefined') {
+    setInterval(() => {
+      nowMs.value = Date.now()
+    }, 30_000)
+  }
+  const lastSyncedLabel = computed(() => {
+    if (lastSyncedAt.value == null) return ''
+    void nowMs.value
+    const secs = Math.max(0, Math.round((Date.now() - lastSyncedAt.value) / 1000))
+    if (secs < 60) return 'just now'
+    if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
+    return `${Math.floor(secs / 3600)}h ago`
+  })
+  const lastSyncedFull = computed(() =>
+    lastSyncedAt.value == null ? '' : new Date(lastSyncedAt.value).toLocaleString(),
+  )
   // Per-method request tokens. Every loadStats / loadFilterOptions call
   // captures the current token and the owner at issue time; on resume after
   // await, the response is discarded if either the token was superseded or
@@ -198,5 +224,8 @@ export const useStallTrackerStore = defineStore('stallTracker', () => {
     toggleIgnored,
     clearAll,
     refresh,
+    lastSyncedAt,
+    lastSyncedLabel,
+    lastSyncedFull,
   }
 })

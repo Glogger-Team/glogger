@@ -20,31 +20,26 @@
     <div class="flex items-center justify-between flex-wrap gap-2 flex-shrink-0">
       <p class="text-xs text-text-secondary italic">
         <template v-if="truncatedCount > 0">
-          ⚠ {{ truncatedCount }} item{{ truncatedCount === 1 ? '' : 's' }} start mid-history (oldest event {{ oldestFirstEvent }}).
-          Open older shop logs (or Import them) — or count stock below to set a baseline.
+          <button
+            type="button"
+            class="bg-transparent border-none p-0 cursor-pointer text-inherit italic underline decoration-dotted underline-offset-2"
+            :title="truncatedItems.map((i) => i.item).join(', ')"
+            @click="showTruncatedList = !showTruncatedList">
+            ⚠ History is incomplete for {{ truncatedCount }} item{{ truncatedCount === 1 ? '' : 's' }} (oldest saved event {{ oldestFirstEvent }}).
+          </button>
+          To fix this, save older shop logs from the game Books folder, import them, or count your stock in Manual stock entry below.
+          <span v-if="showTruncatedList" class="block not-italic mt-1">
+            {{ truncatedItems.map((i) => i.item).join(', ') }}
+          </span>
         </template>
         <template v-else>
           Inventory is estimated from shop log events. It may be incomplete if older log data is missing.
         </template>
         <template v-if="fallbackCount > 0">
-          {{ fallbackCount }} item{{ fallbackCount === 1 ? '' : 's' }} priced at last sale (never listed at a visible price).
+          {{ fallbackCount }} item{{ fallbackCount === 1 ? '' : 's' }} {{ fallbackCount === 1 ? 'shows' : 'show' }} the last sale price (no listing price found).
         </template>
       </p>
       <div class="flex items-center gap-2">
-        <button
-          type="button"
-          class="px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-accent-gold/50 text-text-primary disabled:opacity-50"
-          :disabled="loading || rescanning"
-          :title="store.currentOwner ? 'Re-read the game\'s Books folder for new shop logs' : 'Set an active character first'"
-          @click="handleRescan">
-          {{ rescanning ? 'Checking…' : 'Check for new logs' }}
-        </button>
-        <span
-          v-if="lastSyncLabel"
-          class="text-[11px] text-text-secondary"
-          :title="`Last synced ${lastSyncFull}`">
-          Synced {{ lastSyncLabel }}
-        </span>
         <label class="flex items-center gap-2 text-xs text-text-secondary">
           Sales period
           <select
@@ -79,21 +74,21 @@
             <span
               v-if="(row as unknown as InventoryItem).history_truncated"
               class="text-amber-400 text-[11px]"
-              :title="`History starts mid-stream (oldest event ${formatShortDate((row as unknown as InventoryItem).first_event_at)}). Count stock below to set a baseline.`">
+              :title="`History starts mid-stream (oldest event ${formatShortDate((row as unknown as InventoryItem).first_event_at)}). Count stock below to save a manual count.`">
               ⚠
             </span>
             <button
               v-if="(row as unknown as InventoryItem).baseline_at != null"
               type="button"
               class="text-text-secondary hover:text-accent-gold bg-transparent border-none cursor-pointer text-xs flex-shrink-0"
-              :title="`Recount ${(row as unknown as InventoryItem).item} — prefill Opening stock below`"
+              :title="`Recount ${(row as unknown as InventoryItem).item} — prefill Manual stock entry below`"
               @click="startRecount((row as unknown as InventoryItem))">
               ↻
             </button>
             <span
               v-if="(row as unknown as InventoryItem).baseline_at != null"
               class="text-[10px] text-text-secondary"
-              :title="`Baseline counted ${(row as unknown as InventoryItem).baseline_at}; ${(row as unknown as InventoryItem).events_since_baseline} logged event(s) replayed on top. Unlogged take-downs stay invisible — recount after restocking/delisting.`">
+              :title="`Manually counted ${(row as unknown as InventoryItem).baseline_at}; ${(row as unknown as InventoryItem).events_since_baseline} logged event(s) replayed on top. Unlogged take-downs stay invisible — recount after restocking/delisting.`">
               counted {{ formatShortDate((row as unknown as InventoryItem).baseline_at) }}<template v-if="(row as unknown as InventoryItem).events_since_baseline > 0"> · {{ (row as unknown as InventoryItem).events_since_baseline }} since</template>
             </span>
           </span>
@@ -130,74 +125,28 @@
         </template>
       </DataTable>
     </div>
-
-    <!-- Recently Sold Out collapsible — custom (not AccordionSection) so the
-         window dropdown can be a sibling of the toggle button rather than
-         nested inside it (a <select> inside a <button> would be invalid HTML
-         and the click handlers fight each other). -->
+    <!-- Clear unsure — one click to zero-out every row whose quantity is a
+         guess (truncated history or fallback-priced). Each becomes a zeroed
+         manual count so the guess never returns; recount any item you
+         actually still stock below. -->
     <div
-      v-if="result"
-      class="flex-shrink-0 border border-surface-elevated rounded">
-      <div class="flex items-center justify-between px-3 py-2 hover:bg-surface-elevated/50 transition-colors">
-        <button
-          type="button"
-          class="flex items-center gap-2 bg-transparent border-none cursor-pointer text-left flex-1"
-          @click="soldOutOpen = !soldOutOpen">
-          <span
-            class="text-text-secondary text-xs transition-transform"
-            :class="{ 'rotate-90': soldOutOpen }">
-            ▶
-          </span>
-          <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
-            Recently Sold Out ({{ recentlySoldOut.length }})
-          </h4>
-        </button>
-        <label class="flex items-center gap-1 text-[10px] text-text-secondary">
-          Window
-          <select
-            v-model.number="soldOutDays"
-            class="bg-surface-elevated border border-border-default rounded px-1.5 py-0.5 text-[10px] text-text-primary focus:outline-none focus:border-accent-gold/50">
-            <option :value="1">1 day</option>
-            <option :value="3">3 days</option>
-            <option :value="7">7 days</option>
-            <option :value="14">14 days</option>
-          </select>
-        </label>
-      </div>
-      <div
-        v-show="soldOutOpen"
-        class="px-3 pb-3 max-h-64 overflow-auto">
-        <DataTable
-          :columns="soldOutColumns"
-          :rows="(sortedRecentlySoldOut as unknown as Record<string, unknown>[])"
-          :row-key="(row) => String(row.item)"
-          :sort-key="soldOutSortBy"
-          :sort-dir="soldOutSortDir"
-          :hoverable="true"
-          compact
-          empty-text="Nothing has sold out in the selected window."
-          empty-hint=""
-          :row-class="soldOutRowClass"
-          @sort="handleSoldOutSort">
-          <template #cell-item="{ value }">
-            <ItemInline :reference="(value as string)" />
-          </template>
-          <template #cell-last_known_price="{ value }">
-            {{ formatLastPrice(value as number | null) }}
-          </template>
-          <template #cell-avg_per_day="{ value }">
-            {{ (value as number).toFixed(1) }}
-          </template>
-          <template #cell-last_activity_at="{ value }">
-            <span class="text-text-secondary whitespace-nowrap">{{ formatShortDate(value as string | null) }}</span>
-          </template>
-        </DataTable>
-      </div>
+      v-if="unsureCount > 0"
+      class="flex items-center justify-between gap-2 flex-shrink-0 border border-amber-400/30 bg-amber-400/5 rounded px-3 py-2">
+      <p class="text-xs text-text-secondary italic m-0">
+        {{ unsureCount }} item{{ unsureCount === 1 ? '' : 's' }} {{ unsureCount === 1 ? 'has' : 'have' }} guessed {{ unsureCount === 1 ? 'quantity' : 'quantities' }} (mid-history or last-sale priced).
+      </p>
+      <button
+        type="button"
+        class="px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-red-500/50 hover:text-red-400 text-text-primary disabled:opacity-50 flex-shrink-0"
+        :disabled="clearingUnsure || loading"
+        @click="clearUnsure">
+        {{ clearingUnsure ? 'Clearing…' : `Clear unsure (${unsureCount})` }}
+      </button>
     </div>
 
-    <!-- Opening-stock baseline — manual ground truth for items whose log
-         history scrolled out. One row per item: counted qty + current price.
-         Re-counting replaces the row; qty 0 deletes it. -->
+    <!-- Manual stock entry — counted qty + price for items whose log history
+         scrolled out, and the store for Clear-unsure evictions. One row per
+         item. Re-counting replaces the row; qty 0 marks the item cleared. -->
     <div class="flex-shrink-0 border border-border-default rounded">
       <div class="flex items-center justify-between px-3 py-2 hover:bg-surface-elevated/50 transition-colors">
         <button
@@ -210,11 +159,11 @@
             ▶
           </span>
           <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
-            Opening stock ({{ baselines.length }})
+            Manual stock entry ({{ visibleBaselines.length }})
           </h4>
         </button>
         <span class="text-[10px] text-text-secondary italic hidden sm:inline">
-          Counted in-game — true as of your last count. Recount the whole item after restocking or delisting (one count per item, not per tier).
+          Enter what is in your stall now. Count all price tiers as one number. Count again after you restock or remove items.
         </span>
       </div>
       <div
@@ -254,7 +203,7 @@
             class="px-3 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-accent-gold/50 text-text-primary disabled:opacity-50"
             :disabled="baselineSaving || !baselineItem.trim()"
             @click="saveBaseline">
-            {{ baselineSaving ? 'Saving…' : 'Set baseline' }}
+            {{ baselineSaving ? 'Saving…' : 'Save count' }}
           </button>
         </div>
         <p
@@ -263,10 +212,10 @@
           {{ baselineError }}
         </p>
         <ul
-          v-if="baselines.length > 0"
+          v-if="visibleBaselines.length > 0"
           class="flex flex-col gap-1 max-h-32 overflow-auto m-0 p-0 list-none">
           <li
-            v-for="b in baselines"
+            v-for="b in visibleBaselines"
             :key="b.id"
             class="flex items-center justify-between gap-2 text-xs text-text-primary bg-surface-elevated/50 rounded px-2 py-1">
             <span class="truncate">
@@ -277,7 +226,7 @@
               type="button"
               class="text-text-secondary hover:text-red-400 bg-transparent border-none cursor-pointer text-xs flex-shrink-0 disabled:opacity-50"
               :disabled="baselineSaving"
-              :title="`Remove opening stock for ${b.item}`"
+              :title="`Remove manual count for ${b.item}`"
               @click="removeBaseline(b)">
               ✕
             </button>
@@ -286,7 +235,7 @@
         <p
           v-else
           class="text-[11px] text-text-secondary italic m-0">
-          No opening stock set. Count an item in your stall and enter it above — sales after that moment replay on top. Silent take-downs without a log line stay invisible until the next count or a logged removal.
+          No manual counts yet. Count an item in your stall and enter it above — sales after that moment replay on top. Silent take-downs without a log line stay invisible until the next count or a logged removal.
         </p>
       </div>
     </div>
@@ -302,6 +251,7 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { confirm } from '@tauri-apps/plugin-dialog'
 import { useStallTrackerStore } from '../../stores/stallTrackerStore'
 import StatCard from './StatCard.vue'
 import DataTable from '../Shared/DataTable.vue'
@@ -340,17 +290,7 @@ const inStockColumns = [
   { key: 'last_activity_at', label: 'LAST', sortable: true, align: 'right' as const },
 ]
 
-const soldOutColumns = [
-  { key: 'item', label: 'ITEM', sortable: true },
-  { key: 'last_known_price', label: 'LAST PRICE', sortable: true, numeric: true },
-  { key: 'period_sold', label: 'SOLD', sortable: true, numeric: true },
-  { key: 'avg_per_day', label: 'AVG/DAY', sortable: true, numeric: true },
-  { key: 'last_activity_at', label: 'LAST ACTIVITY', sortable: true, align: 'right' as const },
-]
-
 const periodDays = ref<number>(7)
-const soldOutDays = ref<number>(3)
-const soldOutOpen = ref<boolean>(false)
 
 // Frontend-only sorting for the In Stock table. Inventory is computed in
 // Rust by `aggregate_inventory` and returned all-at-once (item count is
@@ -366,18 +306,6 @@ type InventorySortKey =
   | 'last_activity_at'
 const sortBy = ref<InventorySortKey>('item')
 const sortDir = ref<'asc' | 'desc'>('asc')
-
-// Recently Sold Out has its own independent sort state — different default
-// (most recently sold out first) and a different column set (LAST PRICE
-// instead of QTY/EST. VALUE since sold-out items have neither).
-type SoldOutSortKey =
-  | 'item'
-  | 'last_known_price'
-  | 'period_sold'
-  | 'avg_per_day'
-  | 'last_activity_at'
-const soldOutSortBy = ref<SoldOutSortKey>('last_activity_at')
-const soldOutSortDir = ref<'asc' | 'desc'>('desc')
 
 const result = ref<InventoryResult | null>(null)
 const loading = ref(false)
@@ -414,46 +342,6 @@ function handleInStockSort(payload: { key: string; dir: 'asc' | 'desc' }) {
   sortDir.value = payload.dir
 }
 
-const sortedRecentlySoldOut = computed<InventoryItem[]>(() => {
-  const items = [...recentlySoldOut.value]
-  const dir = soldOutSortDir.value === 'asc' ? 1 : -1
-  items.sort((a, b) => {
-    const va = a[soldOutSortBy.value]
-    const vb = b[soldOutSortBy.value]
-    if (typeof va === 'string' && typeof vb === 'string') {
-      return va.localeCompare(vb) * dir
-    }
-    if (va === null && vb === null) return 0
-    if (va === null) return 1
-    if (vb === null) return -1
-    return ((va as number) - (vb as number)) * dir
-  })
-  return items
-})
-
-function handleSoldOutSort(payload: { key: string; dir: 'asc' | 'desc' }) {
-  soldOutSortBy.value = payload.key as SoldOutSortKey
-  soldOutSortDir.value = payload.dir
-}
-
-function soldOutRowClass(): string {
-  return 'opacity-60 hover:opacity-100'
-}
-
-/** Recently-sold-out: items with quantity 0 whose last activity falls within
- * the most recent N **distinct active dates** (not calendar days). The
- * backend exposes `active_dates` newest-first specifically so we can slice
- * here without recomputing the window — see plan 10.2. */
-const recentlySoldOut = computed<InventoryItem[]>(() => {
-  if (!result.value) return []
-  const windowDates = new Set(result.value.active_dates.slice(0, soldOutDays.value))
-  return result.value.items.filter((item) => {
-    if (item.quantity > 0) return false
-    if (!item.last_activity_at) return false
-    return windowDates.has(item.last_activity_at.slice(0, 10))
-  })
-})
-
 function buildParams(): StallInventoryParams {
   return {
     owner: store.currentOwner,
@@ -462,9 +350,13 @@ function buildParams(): StallInventoryParams {
 }
 
 // ── Inventory health signals ────────────────────────────────────────────
-/** Items shown whose log history starts mid-stream (no baseline `added`). */
+/** In-stock rows whose log history starts mid-stream (no baseline `added`).
+ * Sold-out rows (qty 0) are excluded: the table only shows in-stock items,
+ * so the warning count always matches a visible ⚠ flag. */
 const truncatedItems = computed<InventoryItem[]>(() =>
-  result.value ? result.value.items.filter((i) => i.history_truncated) : [],
+  result.value
+    ? result.value.items.filter((i) => i.quantity > 0 && i.history_truncated)
+    : [],
 )
 const truncatedCount = computed(() => truncatedItems.value.length)
 /** Items priced at `last_known_price` because no priced tier survived. */
@@ -481,41 +373,60 @@ const oldestFirstEvent = computed(() => {
   return dates.length > 0 ? formatShortDate(dates[0]) : '—'
 })
 
-// ── Manual "Check for new logs" ─────────────────────────────────────────
-// Same `rescan_stall_books` command as the parent action row — surfaced here
-// because the 30s Books-watcher cadence is the pane's update path now that
-// the live Player.log trigger is dark.
-const rescanning = ref(false)
-const lastSyncAt = ref<number | null>(null)
-const lastSyncLabel = computed(() => {
-  if (lastSyncAt.value == null) return ''
-  const secs = Math.max(0, Math.round((Date.now() - lastSyncAt.value) / 1000))
-  if (secs < 60) return 'just now'
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`
-  return `${Math.floor(secs / 3600)}h ago`
-})
-const lastSyncFull = computed(() =>
-  lastSyncAt.value == null ? '' : new Date(lastSyncAt.value).toLocaleString(),
+/** Rows whose quantity is a guess: truncated history, or fallback-priced
+ * (in-stock only — a sold-out item has qty 0 regardless of its price). */
+const unsureItems = computed<InventoryItem[]>(() =>
+  result.value
+    ? result.value.items.filter(
+        (i) => i.quantity > 0 && (i.history_truncated || i.fallback_priced_qty > 0),
+      )
+    : [],
 )
+const unsureCount = computed(() => unsureItems.value.length)
+const clearingUnsure = ref(false)
 
-async function handleRescan() {
-  if (rescanning.value) return
-  rescanning.value = true
+/** Zero-out every unsure row via a qty-0 baseline each. Sequential invokes
+ * (not Promise.all): each save is one write-pool checkout and the set is
+ * small (<100 rows), so serialization is cheap and avoids pool contention. */
+async function clearUnsure() {
+  // Snapshot the owner: a character switch mid-loop must not write char A's
+  // unsure items as qty-0 rows under char B (same shape as the store's
+  // ownerAtCall guard — abort when the active character moves on).
+  const owner = store.currentOwner
+  const targets = [...unsureItems.value]
+  if (!owner || clearingUnsure.value || targets.length === 0) return
+  clearingUnsure.value = true
   try {
-    await invoke<[number, number]>('rescan_stall_books')
-    lastSyncAt.value = Date.now()
+    for (const item of targets) {
+      if (store.currentOwner !== owner) break
+      await invoke('save_stall_baseline', {
+        input: {
+          owner,
+          item: item.item,
+          quantity: 0,
+          priceUnit: null,
+          note: null,
+        } satisfies StallBaselineInput,
+      })
+    }
     await Promise.all([reload(), loadBaselines()])
     await store.refresh()
   } catch (e) {
     error.value = String(e)
-    console.error('[StallInventoryTab] rescan failed:', e)
+    console.error('[StallInventoryTab] clearUnsure failed:', e)
   } finally {
-    rescanning.value = false
+    clearingUnsure.value = false
   }
 }
 
-// ── Opening-stock baselines ─────────────────────────────────────────────
+// ── Manual stock entry ──────────────────────────────────────────────────
 const baselines = ref<StallBaseline[]>([])
+/** Manual counts the user entered (qty > 0). Zeroed Clear-unsure evictions
+ * stay in the DB (they supersede pre-clear history) but are hidden here —
+ * showing them with an ✕ labeled "remove" made clearing look reversible
+ * when deleting the row actually resurrects the guess. */
+const visibleBaselines = computed(() => baselines.value.filter((b) => b.quantity > 0))
+const showTruncatedList = ref(false)
 const baselineOpen = ref(false)
 const baselineItem = ref('')
 const baselineQty = ref<number | null>(null)
@@ -553,13 +464,13 @@ async function saveBaseline() {
   if (!store.currentOwner || !item || baselineSaving.value) return
   // `v-model.number` yields `''` (not null) when the field is cleared —
   // without this, `'' < 0` / `'' > 1000000` are both false and
-  // `Math.floor('')` is 0, silently deleting the baseline for that item.
+  // `Math.floor('')` is 0, silently clearing the item.
   if (typeof baselineQty.value !== 'number' || !Number.isFinite(baselineQty.value)) {
-    baselineError.value = 'Enter a quantity 0–1000000 (0 removes the baseline).'
+    baselineError.value = 'Enter a quantity 0–1000000 (0 clears the item).'
     return
   }
   if (baselineQty.value < 0 || baselineQty.value > 1000000) {
-    baselineError.value = 'Quantity must be 0–1000000 (0 removes the baseline).'
+    baselineError.value = 'Quantity must be 0–1000000 (0 clears the item).'
     return
   }
   // A cleared Price field is unpriced (null), not invalid: `v-model.number`
@@ -601,6 +512,11 @@ async function saveBaseline() {
 
 async function removeBaseline(b: StallBaseline) {
   if (baselineSaving.value) return
+  const confirmed = await confirm(
+    `Remove the manual count for ${b.item}? The quantity will go back to the log estimate (which may be a guess again).`,
+    { title: 'Manual stock entry', kind: 'warning' },
+  )
+  if (!confirmed) return
   baselineSaving.value = true
   baselineError.value = null
   try {
@@ -649,13 +565,6 @@ function formatPriceTier(tier: PriceTier): string {
   return formatGold(Math.round(tier.price))
 }
 
-/** Recently Sold Out reads the dedicated `last_known_price` field — survives
- * the sellout collapse where `price_tiers` becomes empty. */
-function formatLastPrice(price: number | null): string {
-  if (price === null) return '—'
-  return formatGold(Math.round(price))
-}
-
 function formatShortDate(iso: string | null): string {
   if (!iso) return '—'
   // event_at is "YYYY-MM-DD HH:MM:SS"; render the date part as "Apr 13".
@@ -674,8 +583,7 @@ watch(
   () => store.currentOwner,
   () => {
     periodDays.value = 7
-    soldOutDays.value = 3
-    soldOutOpen.value = false
+    showTruncatedList.value = false
     baselineOpen.value = false
     baselineError.value = null
     void reload()

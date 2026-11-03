@@ -15,9 +15,9 @@ Small tasks and notes that don't belong in a dedicated plan.
   - **Effort: Medium for Phase 1 (plot tracker) | Impact: High**
   - **Blocked portion:** whole Phase 1 sits behind the `LocalPlayer: Process` fast-path gate (`player_event_parser.rs:1257-1262`) — the current client emits zero such lines, so any `garden_plots` table would stay empty. No code this batch; un-blocks when lines recur.
 
-
 - [ ] Product decisions (from 10/21 update-notes triage; each needs a yes/no, no code until decided): rename-orphan history on Rename-Golem/server-merge (character tables key on `(character, server)`, no rename path); "no stall rented" vs "rented, zero sales" indistinguishable (no stall-rental table); No-Resell flag has no item-model counterpart (`vendor_prices` dead); Angling Perfect Catches as a new loot signal (nothing parses angling).
   - **Blocked portion:** Angling Perfect Catches needs a new `LocalPlayer:` signal — no angling lines exist and the current client emits zero `LocalPlayer:` lines at all (fast-path gate `player_event_parser.rs:1257-1262`); un-blocks when lines recur. Rename-orphan, stall-rental, No-Resell stay actionable.
+
 ## Post-10/21 client: Player.log emits zero game events — LocalPlayer: pipeline blind (added 2026-10-26; needs scoping, then investigation)
 
 - [x] ~~Player.log game-event outage triage~~ — **TRIAGED 2026-10-26: verdicts above; survey manual-framing split to next item; dark-state UI + cheap polling remain.**
@@ -85,8 +85,8 @@ Small tasks and notes that don't belong in a dedicated plan.
 
 - [ ] Ingestion architecture: no shared schema contract for Tauri event payloads (no specta/ts-rs/typeshare). Coordinator is a 3927-line manual dispatch hub; history tables exist per-domain except `game_state_*`. The outage re-source design belongs here.
   - **Effort: Medium | Impact: Medium (reliability)**
-+
-- [ ] UI/UX standardization: Table sweep done — **33 instances across 29 files** (`ux-standards.md` checklist owns it; was 35 — batch-1 removed the MarketView stall-observations table and the orphan LiveInventoryTab table). Remaining: heading-class standardization (`typography-audit.md`), color Tier 3 cleanup (`color-standards.md`).
+
+- [ ] UI/UX standardization: Table sweep done — **32 instances across 29 files** (`ux-standards.md` checklist owns it; was 35 — batch-1 removed the MarketView stall-observations table and the orphan LiveInventoryTab table; stall inventory rework removed the Recently Sold Out table). Remaining: heading-class standardization (`typography-audit.md`), color Tier 3 cleanup (`color-standards.md`).
   - **Effort: Medium (iterative) | Impact: Medium**
 
 ---
@@ -160,7 +160,7 @@ Small tasks and notes that don't belong in a dedicated plan.
 
 ## Review backlog (from PR #54 frozen-review + CodeRabbit rounds; tracked, not punted)
 
- - [x] ~~`loadAllCharacterItems` unkeyed cache~~ — **FIXED this branch: server key (`allCharacterItemsServer`) + generation guard (`fetchAllCharacterItems` re-reads on same-server invalidation, no rescan) + reset on imports + null-server guard (clears cache).**
+- [x] ~~`loadAllCharacterItems` unkeyed cache~~ — **FIXED this branch: server key (`allCharacterItemsServer`) + generation guard (`fetchAllCharacterItems` re-reads on same-server invalidation, no rescan) + reset on imports + null-server guard (clears cache).**
 - [x] ~~Ordinal-order divergence guard~~ — **DONE 2026-11-01: per-group file-vs-stored count guard in both ordinal paths (live `inventory_commands.rs`, one-shot `migrations.rs` v81) — divergent groups skipped with `eprintln`, surviving groups stay aligned; `duplicate_import_backfill_skips_divergent_group` regression test. No `debug_assert` (would trip in debug test builds); detection = skip + log. Full suite 791 green.**
   - **Effort: Small | Impact: Low (latent misattribution)**
 - [x] ~~Multihit manual-use coverage~~ — **DONE 2026-11-01: `test_record_manual_use_multihit_queues_for_mining_adopt` (pending-use queue + node open + chain + `PendingLoot`); full suite 791 green.**
@@ -176,9 +176,10 @@ Small tasks and notes that don't belong in a dedicated plan.
 - [x] ~~Scoped Rust discard lint for migrations~~ — **FIXED: `scripts/check-review-patterns.sh` gates `db/migrations.rs` bodies against `let _ =` on DB handles and `filter_map(|x| x.ok())` row reads; wired into `lint.yml` + `mise run lint`.** Rustfmt stays advisory. Sanctioned exceptions: `EXISTS` guards with `.unwrap_or(false)`, serde defaults, `continue` on malformed JSON.
 
 - [x] ~~Clippy advisory baseline~~ — **FIXED this branch: all warnings resolved (110 lib + ~60 test-only), `cargo clippy --all-targets -- -D warnings` green; wired as a gate (`lint.yml:rust-tests` clippy step + `mise run lint` entry, portable `python -c` form). AGENTS.md Rust row updated (rustfmt stays advisory).**
-- [ ] Backfill restores deleted characters — DECIDED 2026-10-28: no tombstones. Delete clears DB rows only; report files survive on disk, so any backfill (`import_all_inventory_for_server`, `import_reports_for_server`) reimports a deleted character's reports. The invalidation retry avoids it (re-reads only, `characterStore.ts:520-538`), but every other backfill caller still restores. Accepted as pre-existing behavior; revisit only if users report ghost restores.
   - **Effort: Medium (tombstone table + delete-path + backfill filter) | Impact: Low (narrow race window) — declined**
+
 ## Small fixes (verified open)
+
 - [x] ~~Roulette number CHECK~~ — **FIXED 2026-10-26: migration v77 (table rebuild per v38 precedent, out-of-range rows purged, `CHECK (number BETWEEN 0 AND 36)`); `record_roulette_result` rejects >36, backfill skips bad rows.**
 - [x] ~~NpcResolve case-insensitive match~~ — **FIXED 2026-10-26: `COLLATE NOCASE` + trim at both sites; mixed-case test.**
 - [x] ~~Trip-router nits~~ — **FIXED 2026-10-26: case-insensitive `casino_portal`, unresolved-name `eprintln`, `AreaDesert2` friendly name, `AreaCaves1`→Eltibule-dungeon relabel, score-`1`/monster-skip docs, `trip-routing.md` refresh.**

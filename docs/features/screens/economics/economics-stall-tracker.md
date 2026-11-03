@@ -32,25 +32,25 @@ The Stall Tracker has four visible tabs plus a fifth view behind a modal:
 
 ### Sales tab
 
-<img src="../../../screenshots/economics/stall-tracker/sales.png" alt="Sales tab — stats header, filter row, paginated sortable table" width="900" />
+![Sales tab — stats header, filter row, paginated sortable table](../../../screenshots/economics/stall-tracker/sales.png)
 
 *The default landing surface. Stats header recomputes from the filtered set, not just the loaded page. Sortable on every column. The `⊘` / `○` toggle in the first column mutes a row from aggregations (still visible greyed-out in the list).*
 
 ### Revenue tab
 
-<img src="../../../screenshots/economics/stall-tracker/revenue.png" alt="Revenue pivot — items as rows, dates as columns, sticky frozen corner" width="900" />
+![Revenue pivot — items as rows, dates as columns, sticky frozen corner](../../../screenshots/economics/stall-tracker/revenue.png)
 
 *Pivot with items × periods. Daily / Weekly / Monthly granularity toggle. Periods display newest-first so today is the leftmost column after the sticky Total. Items column and Total column are both sticky-left (frozen-corner pattern).*
 
 ### Inventory tab
 
-<img src="../../../screenshots/economics/stall-tracker/inventory.png" alt="Inventory tab — In Stock table with multi-tier prices, Recently Sold Out collapsible" width="900" />
+![Inventory tab — In Stock table with multi-tier prices, Clear unsure row](../../../screenshots/economics/stall-tracker/inventory.png)
 
-*Reconstructed from the event log via per-item tier-stack replay. Multi-tier price column shows `qty × price` rows when an item is listed at multiple tiers. The Recently Sold Out collapsible at the bottom uses a separate window dropdown and the dedicated `last_known_price` field so prices survive the tier-stack collapse.*
+*Reconstructed from the event log via per-item tier-stack replay. Multi-tier price column shows `qty × price` rows when an item is listed at multiple tiers. Rows whose quantity is a guess (mid-history ⚠ or `~` fallback-priced) roll up into a Clear-unsure row that zeroes each via a zeroed manual count; recount anything still stocked in Manual stock entry below.*
 
 ### Shop Log modal
 
-<img src="../../../screenshots/economics/stall-tracker/shop-log.png" alt="Shop Log modal — all action types with colored badges" width="900" />
+![Shop Log modal — all action types with colored badges](../../../screenshots/economics/stall-tracker/shop-log.png)
 
 *Maintenance view, lazy-mounted on first open. Shows all seven action buckets including the unparseable `unknown` bucket. Each action gets a distinct color tint (green=bought, blue=added, red=removed, amber=configured, cyan=visible, gold=collected). Sortable on every column. The modal persists its filter/sort/scroll state across close/reopen within the session.*
 
@@ -59,6 +59,7 @@ The Stall Tracker has four visible tabs plus a fifth view behind a modal:
 ### Files
 
 **Backend (Rust):**
+
 - `src-tauri/src/shop_log_parser.rs` — regex parser: splits book content into entries, extracts fields per action type, assigns stable indices, detects owner.
 - `src-tauri/src/stall_year_resolver.rs` — resolves the game's year-less `"Mon Apr 13 14:29"` timestamps into ISO 8601 by walking forward through the entries and handling year-boundary crossings.
 - `src-tauri/src/stall_aggregations.rs` — pure aggregation logic for Revenue pivot and Inventory tier-stack reconstruction. No DB access.
@@ -67,22 +68,23 @@ The Stall Tracker has four visible tabs plus a fifth view behind a modal:
 - `src-tauri/src/coordinator.rs` — intercepts `PlayerEvent::BookOpened { book_type: "PlayerShopLog", … }` and persists the parsed events.
 
 **Frontend (Vue/TS):**
-- `src/types/stallTracker.ts` — TypeScript mirrors of the Rust payloads (`StallEvent`, `StallStats`, revenue/inventory/timeseries shapes, baseline rows, import/export results).
+
+- `src/types/stallTracker.ts` — TypeScript mirrors of the Rust payloads (`StallEvent`, `StallStats`, revenue/inventory/timeseries shapes, manual count rows, import/export results).
 - `src/stores/stallTrackerStore.ts` — shared state (`stats`, `filterOptions`, `dataVersion`, `currentOwner`), listens for coordinator events.
 - `src/components/StallTracker/StallTrackerView.vue` — parent view with `TabBar`, action-row buttons, Shop Log modal.
 - `src/components/StallTracker/StallSalesTab.vue` — paginated sales table + stats header.
 - `src/components/StallTracker/StallRevenueTab.vue` — pivot table (Daily / Weekly / Monthly).
-- `src/components/StallTracker/StallInventoryTab.vue` — In Stock + Recently Sold Out tables + opening-stock baseline editor.
+- `src/components/StallTracker/StallInventoryTab.vue` — In Stock table with tier-stack pricing, Clear-unsure eviction, and the manual stock entry editor.
 - `src/components/StallTracker/StallTrendsTab.vue` — sales-over-time chart (Gold/Units toggle, top-grossing and single-item modes).
 - `src/components/StallTracker/StallShopLogTab.vue` — full event log (rendered inside a teleported modal).
 
 The Sales / Revenue / Shop Log filter rows depend on two shared components: `src/components/Shared/SearchableSelect.vue` for the buyer / item / action dropdowns, and `src/components/Shared/DatePicker.vue` for the from / to date inputs. Both are documented in [shared-components.md](../../../architecture/shared-components.md).
 
-Item names are rendered via `<ItemInline>` in all five item-display surfaces (Sales row, Inventory In Stock row, Inventory Recently Sold Out row, Shop Log row, Revenue pivot row label) so hovering an item shows its CDN tooltip with rarity / equip slot / stats, and clicking navigates to the Data Browser.
+Item names are rendered via `<ItemInline>` in the item-display surfaces (Sales row, Inventory In Stock row, Shop Log row, Revenue pivot row label) so hovering an item shows its CDN tooltip with rarity / equip slot / stats, and clicking navigates to the Data Browser.
 
 ## Event Pipeline
 
-```
+```text
 Game writes <game_data>/Books/PlayerShopLog_*.txt per opened shop log
     │
     ├─► live path (Player.log ProcessBook → coordinator ingest_shop_log)
@@ -110,14 +112,14 @@ Game writes <game_data>/Books/PlayerShopLog_*.txt per opened shop log
 The Books-directory watcher is the live source today; the Player.log
 `ProcessBook` path is wired but dark (no `LocalPlayer:` lines since the
 10/21 client update). **Chat.log is not involved** — unlike Surveying,
-stall events never need cross-log correction. A manual "Check for new
-logs" command (`rescan_stall_books`) re-runs the same ingest statelessly
+stall events never need cross-log correction. A manual Refresh command
+(`rescan_stall_books`) re-runs the same ingest statelessly
 (INSERT OR IGNORE dedup) for users who just opened their log in-game.
 
 ## Shop Log Parsing
 
 A `PlayerShopLog` book's content is a `\n\n`-separated list of entries, each
-prefixed with a `Day Mon DD HH:MM - ` timestamp. Six action types are
+prefixed with a `Day Mon DD HH:MM -` timestamp. Six action types are
 recognized; a seventh bucket (`unknown`) captures anything that doesn't match so
 nothing is silently dropped.
 
@@ -234,9 +236,9 @@ the same item at the same price) would otherwise collapse into a single row.
 | `get_stall_revenue(params)` | Daily/weekly/monthly pivot. Returns pre-computed `periods`, `items`, `cells`, row/col totals, grand total. |
 | `get_stall_inventory(params)` | Inventory tier-stack report with per-item quantity, price tiers, period sales, and last sold. Seeds from `stall_inventory_baseline` rows. |
 | `rescan_stall_books()` | Stateless sweep of `Books/PlayerShopLog_*.txt` for the active character. Returns `(files_scanned, new_events)`. |
-| `save_stall_baseline(input)` | Upsert one opening-stock row (qty 0 deletes). Re-stamps `recorded_at` to now. |
-| `get_stall_baselines(owner)` | List opening-stock rows for the active character. |
-| `delete_stall_baseline(id, owner)` | Delete one opening-stock row by id, owner-scoped. |
+| `save_stall_baseline(input)` | Upsert one manual count row (qty 0 stores a zeroed count that clears the item). Re-stamps `recorded_at` to now. |
+| `get_stall_baselines(owner)` | List manual count rows for the active character. |
+| `delete_stall_baseline(id, owner)` | Delete one manual count row by id, owner-scoped. |
 | `get_stall_filter_options(owner)` | Distinct buyers, players, items, dates, actions for filter dropdowns. |
 | `toggle_stall_event_ignored(id, ignored)` | Soft-mute or unmute a single event. |
 | `clear_stall_events(owner)` | Delete every row for a specific character. Requires `owner`. Holds `StallOpsLock`. |
@@ -265,15 +267,22 @@ instead of leaking cross-character data.
 ## Operations
 
 The action row in the parent view exposes five buttons: Shop Log (gated on
-`hasData`), Check for new logs (always available; re-runs the Books sweep
-statelessly), Import (always available so a fresh character can bootstrap
-from an exported book), and Export + Clear data (gated on
-`hasData && currentOwner`). The Inventory tab repeats Check for new logs
-beside its sales-period dropdown.
+`hasData`), Refresh (always available; re-runs the Books sweep
+statelessly, with a Synced relative-time label stamped on success), Import
+(always available so a fresh character can bootstrap from an exported book),
+and Export + Clear data (gated on `hasData && currentOwner`).
+
+### Clear unsure
+
+Guessed quantities (mid-history ⚠ rows plus `~` fallback-priced rows) roll up
+into a Clear-unsure row under the In Stock table. One click writes a zeroed
+manual count per unsure item — the zeroed count supersedes pre-clear history
+so the guess never returns. Recount anything still stocked in Manual stock
+entry below (re-counting replaces the zeroed count and resumes replay from now).
 
 ### Import
 
-<img src="../../../screenshots/economics/stall-tracker/import.png" alt="Import flow — multi-file picker, per-owner result tally" width="900" />
+![Import flow — multi-file picker, per-owner result tally](../../../screenshots/economics/stall-tracker/import.png)
 
 *Multi-file `.txt` picker. Each file is parsed and persisted in its own
 transaction, so a single malformed file in a 5-file batch doesn't lose the
@@ -283,7 +292,7 @@ explicitly names any failed files.*
 
 ### Export
 
-<img src="../../../screenshots/economics/stall-tracker/export.png" alt="Export flow — directory picker, per-date file output" width="900" />
+![Export flow — directory picker, per-date file output](../../../screenshots/economics/stall-tracker/export.png)
 
 *Directory picker. Writes one file per `(owner, date)` in the exact in-game
 book format so any exported file is re-importable and produces identical
@@ -291,7 +300,7 @@ rows (the UNIQUE key + INSERT OR IGNORE makes the round-trip a no-op).*
 
 ### Clear data
 
-<img src="../../../screenshots/economics/stall-tracker/clear-data.png" alt="Clear data confirmation — names character, recommends Export first" width="900" />
+![Clear data confirmation — names character, recommends Export first](../../../screenshots/economics/stall-tracker/clear-data.png)
 
 *Native warning dialog that names the active character explicitly and
 recommends Export first, since in-game shop log books only hold recent
@@ -346,10 +355,9 @@ Stall Tracker follows the app-wide time standards defined in
   use this column.
 - **Display format** — the Sales and Shop Log tabs display the raw
   `event_timestamp` (the game's own format) since users are already trained on
-  it and no conversion adds clarity. The Inventory tab's `LAST` (In Stock)
-  and `LAST ACTIVITY` (Recently Sold Out) columns slice the first 10 chars
-  of `last_activity_at` and render them as `"Apr 13"`. `last_sold_at` is
-  computed per item but has no dedicated column in either table.
+  it and no conversion adds clarity. The Inventory tab's `LAST` column slices
+  the first 10 chars of `last_activity_at` and renders it as `"Apr 13"`.
+  `last_sold_at` is computed per item but has no dedicated column.
 - **Revenue year suffix** — when `aggregate_revenue` detects that the dataset
   spans multiple calendar years, daily and weekly period labels get a year
   suffix (`"Apr 13 2026"`) so same-label collisions can't happen. Single-year
@@ -360,7 +368,7 @@ Stall Tracker follows the app-wide time standards defined in
 
 ### Inventory accuracy
 
-Reconstruction is only as accurate as the shop log history. Three mechanisms
+Reconstruction is only as accurate as the shop log history. Four mechanisms
 narrow the gap without a live `LocalPlayer:` feed:
 
 - **Fallback pricing** — stock added but never made visible/configured (or
@@ -372,12 +380,14 @@ narrow the gap without a live `LocalPlayer:` feed:
   event is not a baseline (`added`/`visible`/`configured`), the row carries
   `history_truncated: true` (⚠ in the table, per-row oldest-event tooltip)
   and the header names the oldest event across truncated items.
-- **Opening-stock baseline** — `stall_inventory_baseline` (one row per
+- **Manual stock entry** — `stall_inventory_baseline` (one row per
   owner+item: counted qty + current price). `get_stall_inventory` seeds the
   tier replay from it and drops shop-log events at-or-before its timestamp
-  for that item. Set it by counting stock in-game (Inventory tab → Opening
-  stock); qty 0 deletes the row. Re-counting re-stamps `recorded_at` to now. The baseline is only as true as the last count: a delist after counting without a logged removed line stays invisible until the next count or a logged removal. Recount the whole item after restocking or delisting (the baseline is one row per item, not per tier).
-
+  for that item. Set it by counting stock in-game (Inventory tab → Manual
+  stock entry); qty 0 stores a zeroed count that clears the item. Re-counting re-stamps `recorded_at` to now. The count is only as true as the last count: a delist after counting without a logged removed line stays invisible until the next count or a logged removal. Recount the whole item after restocking or delisting (one count per item, not per tier).
+- **Clear unsure** — one-click eviction for the rows above: every ⚠ / `~`
+  in-stock row gets a zeroed manual count at once. Guesses leave together;
+  recount survivors individually.
 - The parser treats entries that don't match any action regex as `"unknown"`
   (e.g., the hire-duration messages). These are excluded from the list views
   and from every aggregation. A future improvement could parse the hire
