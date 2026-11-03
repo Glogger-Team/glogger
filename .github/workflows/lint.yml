@@ -163,7 +163,7 @@ jobs:
         # truth with `mise run lint:all`): all *.md except CHANGELOG.md
         # (generator-rewritten each release) and HANDOFF*.md (append-only
         # session record). Grandfathered: only changed files are linted.
-        # Base is the PR merge-base on pull_request, the push `before` sha on
+        # Base is the PR base sha on pull_request, the push `before` sha on
         # main pushes (zero-sha on manual dispatch falls back to HEAD~1).
         env:
           MARKDOWNLINT: npx --yes markdownlint-cli2@0.23

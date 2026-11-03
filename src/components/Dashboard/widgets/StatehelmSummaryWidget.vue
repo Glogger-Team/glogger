@@ -1,3 +1,4 @@
+<!-- DARK until LocalPlayer: lines recur (hidden 2026-11-03) -->
 <template>
   <div class="flex flex-col gap-3">
     <div v-if="loading" class="flex flex-col gap-3">
