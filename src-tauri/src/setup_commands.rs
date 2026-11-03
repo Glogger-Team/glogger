@@ -751,9 +751,12 @@ fn rename_character_on_write_conn(
     // discoveries follow the rename instead of orphaning under the old name.
     // Ambiguity guard: `user_characters` is (name, server)-keyed, so the
     // same name can exist on another server. The UPDATEs below match on the
-    // bare name — move only when no other row uses the old name and none
-    // already uses the new name on another server (that would merge two
-    // characters' owner rows into one label, un-undoable inside the tx).
+    // bare name — refuse loudly when another row uses the old name or
+    // already uses the new name on another server (moving would merge two
+    // characters' owner rows into one label, un-undoable inside the tx; a
+    // different destination cannot fix a shared old name, so a silent
+    // partial move is worse than an error). The Err returns through the
+    // open tx, which drops without committing — nothing moves.
     let name_shared: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM user_characters WHERE character_name = ?1 OR (character_name = ?2 AND server_name <> ?3)",
@@ -761,7 +764,12 @@ fn rename_character_on_write_conn(
             |row| row.get(0),
         )
         .map_err(|e| format!("Query failed: {e}"))?;
-    if new_character_name != character_name && name_shared == 0 {
+    if new_character_name != character_name && name_shared > 0 {
+        return Err(
+            "cannot rename: stall and brewing history is ambiguous across servers under this name".to_string(),
+        );
+    }
+    if new_character_name != character_name {
         for (table, column) in [
             ("stall_events", "owner"),
             ("stall_inventory_baseline", "owner"),
@@ -1595,21 +1603,31 @@ mod tests {
     }
 
     #[test]
-    fn rename_character_skips_owner_rows_when_name_shared_across_servers() {
+    fn rename_character_refuses_when_name_shared_across_servers() {
         const ALT_SERVER: &str = "OtherServer";
         let mut conn = fresh_db();
         seed_character(&conn, CHAR);
         // Same name on a second server: the (name, server) identity is
-        // distinct, but the owner labels are name-only.
+        // distinct, but the owner labels are name-only — moving them would
+        // steal the other server's stall/brewing rows into the new label.
         conn.execute(
             "INSERT INTO user_characters (character_name,server_name,source) VALUES (?1,?2,'manual')",
             rusqlite::params![CHAR, ALT_SERVER],
         )
         .unwrap();
-        // The scoped rename succeeds (identities are distinct) but the
-        // name-only owner rows must stay put — moving them would steal the
-        // other server's stall/brewing rows into the new label.
-        rename_character_on_write_conn(&mut conn, CHAR, SERVER, "RenamedMe", SERVER).unwrap();
+        let err = rename_character_on_write_conn(&mut conn, CHAR, SERVER, "RenamedMe", SERVER)
+            .unwrap_err();
+        assert!(err.contains("ambiguous"), "unexpected error: {err}");
+        // Nothing moved: the open tx dropped without committing — scoped
+        // rows and owner rows all stay under the old name (both servers).
+        let kept_identities: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM user_characters WHERE character_name = ?1",
+                rusqlite::params![CHAR],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept_identities, 2);
         for (table, column) in [
             ("stall_events", "owner"),
             ("stall_inventory_baseline", "owner"),
@@ -1624,7 +1642,5 @@ mod tests {
                 .unwrap();
             assert_eq!(kept, 1, "{table} owner rows must stay under the shared name");
         }
-        // The (name, server)-scoped rows still moved.
-        assert_eq!(count(&conn, "user_characters", "RenamedMe"), 1);
     }
 }
