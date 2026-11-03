@@ -45,9 +45,9 @@ run = [
   "git diff -w --stat HEAD",
 ]
 [tasks."lint:all"]
-description = "lint plus advisory checks (rustfmt, markdown)"
+description = "lint plus advisory rustfmt and the changed-files markdown gate"
 depends = ["lint"]
 run = [
   "cd src-tauri && cargo fmt -- --check",
-  "markdownlint-cli2 --config .markdownlint-cli2.json \"AGENTS.md\" \"README.md\" \"SECURITY.md\" \"CONTRIBUTING.md\"",
+  "python scripts/lint-markdown-changed.py",
 ]
