@@ -149,7 +149,7 @@ Frozen-review + CodeRabbit rounds on the `todo-burndown` series (22 commits, ~ha
 Before committing, lint every file type you changed and fix what the linter reports — local feedback first, not CI. Tools live in `mise.toml` (`mise install` fetches them); run from the repo root:
 
 - `mise run lint` — the blocking set (CI `lint.yml` gates runnable locally, plus `npm run build` + `check:grids` + `check-glogger-constraints.ps1`).
-- `mise run lint:all` — `lint` plus advisory (rustfmt, markdown).
+- `mise run lint:all` — `lint` plus advisory rustfmt and the changed-files markdown gate.
 
 | File type | Linter | Covered by |
 | --------- | ------ | ---------- |
@@ -162,7 +162,7 @@ Before committing, lint every file type you changed and fix what the linter repo
 | YAML / Workflows (`.yml`) | yamllint + zizmor medium+ (config `.github/zizmor.yml`) + pinact (SHA pins + version comments) | `lint` → `yamllint .github/`, `zizmor --no-online-audits --config .github/zizmor.yml --min-severity medium .github/workflows/`, `pinact run --check` (CI runs yamllint + zizmor only — `pinact-action` is uninstallable on stock runners (aqua bootstrap `command is not found`, v3.0.1, 2026-10-25), so the pin check is local-only via mise; use `jactionlint` ad-hoc wherever actionlint would be called — never actionlint; its cache-poisoning rule can't ignore accepted drift) |
 | Rust (`.rs`) | rustfmt (advisory, 823 unformatted spots pre-existing) + clippy (gated, zero warnings) | `lint` → clippy `-D warnings` entry (`lint.yml:rust-tests` runs `cargo clippy --all-targets -- -D warnings`); `lint:all` → from `src-tauri/`: `cargo fmt -- --check` (report, don't gate) |
  | Rust deps (`Cargo.lock`) | cargo-audit, gated (critical/high only, CVSS ≥ 7.0; unscored advisories block unless OSV confirms unrated-for-all-locked-versions) | `lint` → `python scripts/cargo-audit-gate.py` (needs `cargo install cargo-audit --locked`; single source of truth shared with CI `lint.yml: cargo-audit` — inline CVSS vector first, OSV max-score fallback per locked version; partial OSV failure with no blocking score fails closed; `--ignore <RUSTSEC-id>` only with justification, documented in the script) |
-| Markdown (`.md`) | markdownlint-cli2 (opt-in, not gated: 6k+ pre-existing) | `lint:all` → `markdownlint-cli2 --config .markdownlint-cli2.json` on hand-maintained docs (same four files CI checks); `--fix "**/*.md"` when ready |
+| Markdown (`.md`) | markdownlint-cli2 (changed-files gate: all hand-maintained docs; `CHANGELOG.md` + `HANDOFF*.md` excluded as generated/append-only) | `mise run lint:all` → `python scripts/lint-markdown-changed.py` (same scope as CI `lint.yml: markdown`); full-tree cleanup: `markdownlint-cli2 --fix --config .markdownlint-cli2.json "**/*.md" "!CHANGELOG.md" "!HANDOFF*.md"` |
 | PowerShell (`.ps1`) | PSScriptAnalyzer (pending install, opt-in) | not in mise — `Install-Module PSScriptAnalyzer`, then `Invoke-ScriptAnalyzer -Path scripts -Recurse` |
 
 Not installed, add only if wanted: stylelint (CSS), eslint-plugin-jsonc (JSON validity), `gasa` (no mise package). Formatters are a separate job from lint: `cargo fmt`, `ruff format` (prettier is not configured).
@@ -191,3 +191,17 @@ Not installed, add only if wanted: stylelint (CSS), eslint-plugin-jsonc (JSON va
 - **Bare `gh` commands may hit the wrong repo**: `gh` follows the per-clone default, which a fresh clone may resolve elsewhere — so bare `gh release view` can read the wrong repo's releases. Check with `gh repo set-default --view`; pin with `gh repo set-default Glogger-Team/glogger` (per-clone, not committed). Scripts MUST NOT rely on the default: pass `-R/--repo` explicitly (CI uses `${{ github.repository }}`).
 - **CI `startup_failure` with 0 jobs: stop and ask for the error text.** When a workflow run shows `startup_failure` with no jobs and no retrievable logs, the error text lives only in the Actions UI banner (the check-suite API confirms the conclusion but exposes `total_count: 0` check-runs; `gh run view --log` returns "log not found"; the `skill://gh` reference has no path to it). Do NOT bisect, toggle repo/org Actions settings, or push debug branches — that burns runs and risks real config for an unknown cause. Stop, report the run URL, and ask the user to paste the banner text from the run page.
 - **Release caches stay on, poison-narrowed**: `setup-node` `cache: npm` + `Swatinem/rust-cache` are kept (linux build is ~30 min without them). Safety comes from narrowing writers, not dropping caches: `rust-cache` gets `save-if: ${{ github.event_name == 'push' }}` so dispatched smoke tests restore but never save (only tag pushes write what releases read); no `pull_request` trigger exists so no untrusted run can poison either cache. `npm ci` (frozen lockfile) is the npm integrity anchor. Signing secrets stay repo-level (`TAURI_SIGNING_PRIVATE_KEY[_PASSWORD]`): environment-scoping them would require re-entering values nobody has on hand, and buys nothing here — a job that names an environment still sees repo-level secrets, so the split adds a second copy to rotate, not a narrower audience.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for Glogger-Team/glogger. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-label vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `GLOSSARY.md` + `docs/adr/`. See `docs/agents/domain.md`.

@@ -1,8 +1,9 @@
 # PR gates on PRs and main pushes: frontend type-check/build, Rust tests
 # (plus clippy `-D warnings` on all targets), plus fast local-feedback
-# linters. Rust (rustfmt) and markdown stay advisory in AGENTS.md (823
-# unformatted spots, 6k+ markdown findings pre-existing) — only the green
-# gates run here. The release workflow re-runs the frontend build, Rust
+# linters. Rust (rustfmt) stays advisory in AGENTS.md (823 unformatted
+# spots pre-existing); markdown is a changed-files gate (all hand-maintained
+# docs except generated CHANGELOG.md and append-only HANDOFF*.md) — only the
+# green gates run here. The release workflow re-runs the frontend build, Rust
 # tests, and TOS scan before bundling (its `validate` + `test` jobs);
 
 name: Lint
@@ -135,7 +136,7 @@ jobs:
           advanced-security: false
 
   markdown:
-    name: Markdown (opt-in)
+    name: Markdown (changed files)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -145,6 +146,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Changed-files gating needs the base commit; default depth-1
+          # checkout can't diff against it.
+          fetch-depth: 0
 
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -153,9 +157,24 @@ jobs:
           node-version: "lts/*"
           cache: npm
 
-      - name: Markdown lint (hand-maintained docs only)
+      - name: Markdown lint (changed hand-maintained docs)
         # Floor, not a freeze: no watcher here, so a freeze would rot silently.
-        run: npx --yes markdownlint-cli2@0.23 --config .markdownlint-cli2.json "AGENTS.md" "README.md" "SECURITY.md" "CONTRIBUTING.md"
+        # Scope lives in scripts/lint-markdown-changed.py (single source of
+        # truth with `mise run lint:all`): all *.md except CHANGELOG.md
+        # (generator-rewritten each release) and HANDOFF*.md (append-only
+        # session record). Grandfathered: only changed files are linted.
+        # Base is the PR merge-base on pull_request, the push `before` sha on
+        # main pushes (zero-sha on manual dispatch falls back to HEAD~1).
+        env:
+          MARKDOWNLINT: npx --yes markdownlint-cli2@0.23
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          python3 scripts/lint-markdown-changed.py --base "$BASE"
 
   frontend:
     name: Frontend type-check and build
