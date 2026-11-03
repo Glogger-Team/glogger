@@ -64,7 +64,11 @@ def classify_record(subject, body_lines):
     sections is a list (squash bodies can yield several bullets; normal
     commits yield zero or one). Merge subjects yield ([patch], []).
     """
-    if MERGE_RE.match(subject):
+    # `--no-merges` already excludes true merge commits; a single-parent
+    # commit can still start with "Merge " (e.g. `Merge login (#42)`).
+    # Only take the early return for non-squash records — squash bodies
+    # classify by bullets regardless of the subject wording.
+    if MERGE_RE.match(subject) and not SQUASH_RE.search(subject):
         return ("patch", [])
     subj_bump, subj_section = classify_subject(subject)
     if SQUASH_RE.search(subject):
@@ -216,6 +220,15 @@ def run_tests():
         ("docs: explain semver", ["example: BREAKING CHANGE is rare"], "patch", []),
         ("Merge pull request #60 from x/y", [], "patch", []),
         ("Merge branch 'main' into feature/x", [], "patch", []),
+        # "Merge "-prefixed squash subjects still classify by body bullets
+        # (`--no-merges` only excludes true merge commits).
+        ("Merge login (#42)", ["* feat: inner feature"], "minor", ["feat"]),
+        (
+            "Merge login (#42)",
+            ["* fix: inner fix", "BREAKING CHANGE: api removed"],
+            "major",
+            ["fix"],
+        ),
         ("unprefixed subject", [], "patch", []),
         ("release: v1.0", [], "patch", []),
         # Squash bodies.
