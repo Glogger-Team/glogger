@@ -386,7 +386,9 @@ narrow the gap without a live `LocalPlayer:` feed:
   in-stock row gets a zeroed manual count at once. Guesses leave together;
   recount survivors individually.
 - The parser treats entries that don't match any action regex as `"unknown"`.
-  These are excluded from the list views and from every aggregation. Stall
-  hire payments parse as `hired` (owner, hire fee in `price_total`) — they
-  surface in the Shop Log list so "rented, zero sales" is distinguishable
-  from "never rented", but stay out of every sales/inventory aggregation.
+  These are hidden from the default Shop Log view and excluded from every
+  aggregation, but remain available via the action filter (select `unknown`
+  to surface them). Stall hire payments parse as `hired` (owner, hire fee in
+  `price_total`) — they surface in the Shop Log list so "rented, zero sales"
+  is distinguishable from "never rented", but stay out of every
+  sales/inventory aggregation.
