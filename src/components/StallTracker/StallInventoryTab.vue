@@ -31,12 +31,6 @@
         </template>
       </p>
       <div class="flex items-center gap-2">
-        <span
-          v-if="store.lastSyncedAt != null"
-          class="text-[11px] text-text-secondary"
-          :title="`Last synced ${store.lastSyncedFull}`">
-          Synced {{ store.lastSyncedLabel }}
-        </span>
         <label class="flex items-center gap-2 text-xs text-text-secondary">
           Sales period
           <select
