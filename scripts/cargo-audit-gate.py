@@ -21,15 +21,10 @@ from pathlib import Path
 THRESHOLD = 7.0
 
 # Documented ignores (re-evaluate if bundle formats change):
-# RUSTSEC-2026-0367/0368/0369 (zip 4.6.1 via tauri-plugin-updater):
-# zip extraction is unreachable — the updater endpoint serves
-# NSIS/DMG/AppImage only (updaterJsonPreferNsis), never zips.
-# No patched 4.x exists; updater hasn't migrated to zip 9.
-IGNORED_ADVISORIES = [
-    "RUSTSEC-2026-0367",
-    "RUSTSEC-2026-0368",
-    "RUSTSEC-2026-0369",
-]
+# None active. RUSTSEC-2026-0367/0368/0369/0429 (zip 4.6.1 via
+# tauri-plugin-updater) were removed 2026-11-02: updater 2.14.1 migrated
+# to zip 9 and the full update consolidated zip 4.x out of Cargo.lock.
+IGNORED_ADVISORIES = []
 
 
 def cvss_base(vector):
