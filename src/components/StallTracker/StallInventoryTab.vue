@@ -20,14 +20,14 @@
     <div class="flex items-center justify-between flex-wrap gap-2 flex-shrink-0">
       <p class="text-xs text-text-secondary italic">
         <template v-if="truncatedCount > 0">
-          ⚠ {{ truncatedCount }} item{{ truncatedCount === 1 ? '' : 's' }} start mid-history (oldest event {{ oldestFirstEvent }}).
-          Open older shop logs (or Import them) — or count stock below to set a baseline.
+          ⚠ History is incomplete for {{ truncatedCount }} item{{ truncatedCount === 1 ? '' : 's' }} (oldest saved event {{ oldestFirstEvent }}).
+          To fix this, open older shop logs in-game, import them, or count your stock in Opening stock below.
         </template>
         <template v-else>
           Inventory is estimated from shop log events. It may be incomplete if older log data is missing.
         </template>
         <template v-if="fallbackCount > 0">
-          {{ fallbackCount }} item{{ fallbackCount === 1 ? '' : 's' }} priced at last sale (never listed at a visible price).
+          {{ fallbackCount }} item{{ fallbackCount === 1 ? '' : 's' }} {{ fallbackCount === 1 ? 'shows' : 'show' }} the last sale price (no listing price found).
         </template>
       </p>
       <div class="flex items-center gap-2">
