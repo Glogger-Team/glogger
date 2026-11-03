@@ -2,9 +2,8 @@
 """Lint changed hand-maintained Markdown files with markdownlint-cli2.
 
 Scope (single source of truth shared by CI `lint.yml: markdown` and local
-`mise run lint:all`): every `*.md` EXCEPT generated/append-only logs —
-`CHANGELOG.md` (rewritten by `npm run changelog` each release) and
-`HANDOFF*.md` (append-only session record, never revised).
+`mise run lint:all`): every `*.md` EXCEPT the generated changelog —
+`CHANGELOG.md` (rewritten by `npm run changelog` each release).
 
 Grandfathering: only changed files are linted; pre-existing findings in
 untouched files stay out of scope until the full `--fix` cleanup pass. CI
@@ -16,7 +15,7 @@ The linter command defaults to `markdownlint-cli2` from PATH; override
 with `MARKDOWNLINT` (CI uses `npx --yes markdownlint-cli2@0.23` — floor,
 not a freeze, matching lint.yml policy). Full-tree cleanup (not gated):
 `markdownlint-cli2 --fix --config .markdownlint-cli2.json "**/*.md"
-"!CHANGELOG.md" "!HANDOFF*.md"`.
+"!CHANGELOG.md"`.
 """
 
 import argparse
@@ -30,9 +29,7 @@ def in_scope(path: str) -> bool:
     if not path.endswith(".md"):
         return False
     base = path.replace("\\", "/").rsplit("/", 1)[-1]
-    if base == "CHANGELOG.md":
-        return False
-    return not base.startswith("HANDOFF")
+    return base != "CHANGELOG.md"
 
 
 def git(*args: str) -> list[str]:

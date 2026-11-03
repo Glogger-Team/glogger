@@ -1,9 +1,11 @@
 # Documentation Index
 
-## [TODO.md](TODO.md)
-Small tasks and notes that don't belong in a dedicated plan.
+## [TODO.md](../TODO.md)
+
+Backlog: small tasks and notes that don't belong in a dedicated plan.
 
 ## [flatpak-build.md](flatpak-build.md)
+
 Building and running glogger as a Linux Flatpak: offline source generation, the manifest fixes that got it rendering, and runtime notes.
 
 ---
@@ -59,6 +61,7 @@ Cross-cutting feature documentation not tied to a single screen.
 Per-screen documentation organized by view.
 
 ### Dashboard
+
 - [dashboard.md](features/screens/dashboard.md) — Dashboard screen: widget registry, 6-column grid, drag-to-reorder, settings pane.
   - [widget-status.md](features/screens/dashboard/widget-status.md) — Status widget: weather, combat/mount, effects, currencies.
   - [widget-skill-tracking.md](features/screens/dashboard/widget-skill-tracking.md) — Live Skill Tracking widget: session XP gains.
@@ -77,6 +80,7 @@ Per-screen documentation organized by view.
   - [widget-trip-planner.md](features/screens/dashboard/widget-trip-planner.md) — Trip Planner widget: zone-to-zone route planner with teleport-aware solver.
 
 ### Character
+
 - [character.md](features/screens/character.md) — Character screen: architecture, component hierarchy, data sources.
   - [character-skills.md](features/screens/character/character-skills.md) — Skills tab: two-panel layout, tracked skills, XP progression, CDN enrichment.
   - [character-stats.md](features/screens/character/character-stats.md) — Stats tab: character report import, report management.
@@ -88,12 +92,14 @@ Per-screen documentation organized by view.
   - Account tab: server-wide aggregate view (wealth, inventory, skills across all characters). Uses `AggregateView.vue` from Dashboard components.
 
 ### Inventory
+
 - [inventory.md](features/screens/inventory.md) — Inventory screen: architecture, component hierarchy, vault capacity models.
   - [inventory-live.md](features/screens/inventory/inventory-live.md) — Live Inventory tab: real-time tracking from player log.
   - [inventory-snapshots.md](features/screens/inventory/inventory-snapshots.md) — Storage reports tab: point-in-time browsing from Export Storage as JSON (Settings → VIP).
   - [inventory-vaults.md](features/screens/inventory/inventory-vaults.md) — Storage Vault Database tab: area-grouped vault browser with capacity tracking.
 
 ### Crafting
+
 - [crafting.md](features/screens/crafting.md) — Crafting screen: architecture, component hierarchy, shared commands, design decisions.
   - [crafting-quickcalc.md](features/screens/crafting/crafting-quickcalc.md) — Quick Calculator tab.
   - [crafting-projects.md](features/screens/crafting/crafting-projects.md) — Projects tab: material breakdown, pickup list, shopping list, live crafting detection.
@@ -107,6 +113,7 @@ Per-screen documentation organized by view.
   - [crafting-brewery.md](features/screens/crafting/crafting-brewery.md) — Brewery tab: brewing discovery journal, per-player effect mapping, ingredient matrix.
 
 ### Economics
+
 - [economics.md](features/screens/economics.md) — Economics screen: architecture, component hierarchy, market/farming/surveying.
   - [economics-market.md](features/screens/economics/economics-market.md) — Market Prices tab: player-maintained price database.
   - [economics-farming.md](features/screens/economics/economics-farming.md) — Farming tab: session-based profitability tracking.
@@ -114,6 +121,7 @@ Per-screen documentation organized by view.
   - [economics-stall-tracker.md](features/screens/economics/economics-stall-tracker.md) — Stall Tracker: shop log parsing, sales/revenue/inventory analytics from PlayerShopLog books.
 
 ### Chat Logs
+
 - [chat.md](features/screens/chat.md) — Chat Logs screen: architecture, FTS search, item linking, shared components.
   - [chat-channels.md](features/screens/chat/chat-channels.md) — Channels tab: public/custom channel browser.
   - [chat-tells.md](features/screens/chat/chat-tells.md) — Tells tab: direct message conversations.
@@ -122,6 +130,7 @@ Per-screen documentation organized by view.
   - [chat-watchwords.md](features/screens/chat/chat-watchwords.md) — Watchwords tab: rule-based alerts and notifications.
 
 ### Data Browser
+
 - [data-browser.md](features/screens/data-browser.md) — Data Browser overlay: architecture, layout, sidebar tabs (History/Favorites/Pinned), shared patterns, search/filter summary.
   - [data-browser-items.md](features/screens/data-browser/data-browser-items.md) — Items tab.
   - [data-browser-skills.md](features/screens/data-browser/data-browser-skills.md) — Skills tab.
@@ -136,12 +145,15 @@ Per-screen documentation organized by view.
   - [data-browser-titles.md](features/screens/data-browser/data-browser-titles.md) — Titles tab.
 
 ### Search
+
 - [search.md](features/screens/search.md) — Unified search: Scryfall-inspired structured query syntax, quick search overlay (Ctrl+F), dedicated search page, 14 searchable categories, relevance scoring.
 
 ### Settings
+
 - [settings.md](features/screens/settings.md) — Settings screen: tabbed configuration for general, chat logs, user data, game data, advanced, and dev tools.
 
 ### Help
+
 - [help.md](features/screens/help.md) — Help screen: tabbed reference hub with About, setup guide, changelog (GitHub releases), known issues, and PG News.
 
 ## Plans
