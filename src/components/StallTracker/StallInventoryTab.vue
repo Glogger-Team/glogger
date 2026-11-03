@@ -130,74 +130,29 @@
         </template>
       </DataTable>
     </div>
-
-    <!-- Recently Sold Out collapsible — custom (not AccordionSection) so the
-         window dropdown can be a sibling of the toggle button rather than
-         nested inside it (a <select> inside a <button> would be invalid HTML
-         and the click handlers fight each other). -->
+    <!-- Clear unsure — one click to zero-out every row whose quantity is a
+         guess (truncated history or fallback-priced). Each becomes a qty-0
+         baseline so the guess never returns; recount any item you actually
+         still stock below. -->
     <div
-      v-if="result"
-      class="flex-shrink-0 border border-surface-elevated rounded">
-      <div class="flex items-center justify-between px-3 py-2 hover:bg-surface-elevated/50 transition-colors">
-        <button
-          type="button"
-          class="flex items-center gap-2 bg-transparent border-none cursor-pointer text-left flex-1"
-          @click="soldOutOpen = !soldOutOpen">
-          <span
-            class="text-text-secondary text-xs transition-transform"
-            :class="{ 'rotate-90': soldOutOpen }">
-            ▶
-          </span>
-          <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
-            Recently Sold Out ({{ recentlySoldOut.length }})
-          </h4>
-        </button>
-        <label class="flex items-center gap-1 text-[10px] text-text-secondary">
-          Window
-          <select
-            v-model.number="soldOutDays"
-            class="bg-surface-elevated border border-border-default rounded px-1.5 py-0.5 text-[10px] text-text-primary focus:outline-none focus:border-accent-gold/50">
-            <option :value="1">1 day</option>
-            <option :value="3">3 days</option>
-            <option :value="7">7 days</option>
-            <option :value="14">14 days</option>
-          </select>
-        </label>
-      </div>
-      <div
-        v-show="soldOutOpen"
-        class="px-3 pb-3 max-h-64 overflow-auto">
-        <DataTable
-          :columns="soldOutColumns"
-          :rows="(sortedRecentlySoldOut as unknown as Record<string, unknown>[])"
-          :row-key="(row) => String(row.item)"
-          :sort-key="soldOutSortBy"
-          :sort-dir="soldOutSortDir"
-          :hoverable="true"
-          compact
-          empty-text="Nothing has sold out in the selected window."
-          empty-hint=""
-          :row-class="soldOutRowClass"
-          @sort="handleSoldOutSort">
-          <template #cell-item="{ value }">
-            <ItemInline :reference="(value as string)" />
-          </template>
-          <template #cell-last_known_price="{ value }">
-            {{ formatLastPrice(value as number | null) }}
-          </template>
-          <template #cell-avg_per_day="{ value }">
-            {{ (value as number).toFixed(1) }}
-          </template>
-          <template #cell-last_activity_at="{ value }">
-            <span class="text-text-secondary whitespace-nowrap">{{ formatShortDate(value as string | null) }}</span>
-          </template>
-        </DataTable>
-      </div>
+      v-if="unsureCount > 0"
+      class="flex items-center justify-between gap-2 flex-shrink-0 border border-amber-400/30 bg-amber-400/5 rounded px-3 py-2">
+      <p class="text-xs text-text-secondary italic m-0">
+        {{ unsureCount }} item{{ unsureCount === 1 ? '' : 's' }} {{ unsureCount === 1 ? 'has' : 'have' }} guessed {{ unsureCount === 1 ? 'quantity' : 'quantities' }} (mid-history or last-sale priced).
+      </p>
+      <button
+        type="button"
+        class="px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-red-500/50 hover:text-red-400 text-text-primary disabled:opacity-50 flex-shrink-0"
+        :disabled="clearingUnsure || loading"
+        @click="clearUnsure">
+        {{ clearingUnsure ? 'Clearing…' : `Clear unsure (${unsureCount})` }}
+      </button>
     </div>
 
     <!-- Opening-stock baseline — manual ground truth for items whose log
-         history scrolled out. One row per item: counted qty + current price.
-         Re-counting replaces the row; qty 0 deletes it. -->
+         history scrolled out, and the store for Clear-unsure evictions.
+         One row per item: counted qty + current price. Re-counting replaces
+         the row; qty 0 marks the item cleared. -->
     <div class="flex-shrink-0 border border-border-default rounded">
       <div class="flex items-center justify-between px-3 py-2 hover:bg-surface-elevated/50 transition-colors">
         <button
@@ -340,17 +295,7 @@ const inStockColumns = [
   { key: 'last_activity_at', label: 'LAST', sortable: true, align: 'right' as const },
 ]
 
-const soldOutColumns = [
-  { key: 'item', label: 'ITEM', sortable: true },
-  { key: 'last_known_price', label: 'LAST PRICE', sortable: true, numeric: true },
-  { key: 'period_sold', label: 'SOLD', sortable: true, numeric: true },
-  { key: 'avg_per_day', label: 'AVG/DAY', sortable: true, numeric: true },
-  { key: 'last_activity_at', label: 'LAST ACTIVITY', sortable: true, align: 'right' as const },
-]
-
 const periodDays = ref<number>(7)
-const soldOutDays = ref<number>(3)
-const soldOutOpen = ref<boolean>(false)
 
 // Frontend-only sorting for the In Stock table. Inventory is computed in
 // Rust by `aggregate_inventory` and returned all-at-once (item count is
@@ -366,18 +311,6 @@ type InventorySortKey =
   | 'last_activity_at'
 const sortBy = ref<InventorySortKey>('item')
 const sortDir = ref<'asc' | 'desc'>('asc')
-
-// Recently Sold Out has its own independent sort state — different default
-// (most recently sold out first) and a different column set (LAST PRICE
-// instead of QTY/EST. VALUE since sold-out items have neither).
-type SoldOutSortKey =
-  | 'item'
-  | 'last_known_price'
-  | 'period_sold'
-  | 'avg_per_day'
-  | 'last_activity_at'
-const soldOutSortBy = ref<SoldOutSortKey>('last_activity_at')
-const soldOutSortDir = ref<'asc' | 'desc'>('desc')
 
 const result = ref<InventoryResult | null>(null)
 const loading = ref(false)
@@ -414,46 +347,6 @@ function handleInStockSort(payload: { key: string; dir: 'asc' | 'desc' }) {
   sortDir.value = payload.dir
 }
 
-const sortedRecentlySoldOut = computed<InventoryItem[]>(() => {
-  const items = [...recentlySoldOut.value]
-  const dir = soldOutSortDir.value === 'asc' ? 1 : -1
-  items.sort((a, b) => {
-    const va = a[soldOutSortBy.value]
-    const vb = b[soldOutSortBy.value]
-    if (typeof va === 'string' && typeof vb === 'string') {
-      return va.localeCompare(vb) * dir
-    }
-    if (va === null && vb === null) return 0
-    if (va === null) return 1
-    if (vb === null) return -1
-    return ((va as number) - (vb as number)) * dir
-  })
-  return items
-})
-
-function handleSoldOutSort(payload: { key: string; dir: 'asc' | 'desc' }) {
-  soldOutSortBy.value = payload.key as SoldOutSortKey
-  soldOutSortDir.value = payload.dir
-}
-
-function soldOutRowClass(): string {
-  return 'opacity-60 hover:opacity-100'
-}
-
-/** Recently-sold-out: items with quantity 0 whose last activity falls within
- * the most recent N **distinct active dates** (not calendar days). The
- * backend exposes `active_dates` newest-first specifically so we can slice
- * here without recomputing the window — see plan 10.2. */
-const recentlySoldOut = computed<InventoryItem[]>(() => {
-  if (!result.value) return []
-  const windowDates = new Set(result.value.active_dates.slice(0, soldOutDays.value))
-  return result.value.items.filter((item) => {
-    if (item.quantity > 0) return false
-    if (!item.last_activity_at) return false
-    return windowDates.has(item.last_activity_at.slice(0, 10))
-  })
-})
-
 function buildParams(): StallInventoryParams {
   return {
     owner: store.currentOwner,
@@ -480,6 +373,46 @@ const oldestFirstEvent = computed(() => {
     .sort()
   return dates.length > 0 ? formatShortDate(dates[0]) : '—'
 })
+
+/** Rows whose quantity is a guess: truncated history, or fallback-priced
+ * (in-stock only — a sold-out item has qty 0 regardless of its price). */
+const unsureItems = computed<InventoryItem[]>(() =>
+  result.value
+    ? result.value.items.filter(
+        (i) => i.quantity > 0 && (i.history_truncated || i.fallback_priced_qty > 0),
+      )
+    : [],
+)
+const unsureCount = computed(() => unsureItems.value.length)
+const clearingUnsure = ref(false)
+
+/** Zero-out every unsure row via a qty-0 baseline each. Sequential invokes
+ * (not Promise.all): each save is one write-pool checkout and the set is
+ * small (<100 rows), so serialization is cheap and avoids pool contention. */
+async function clearUnsure() {
+  if (!store.currentOwner || clearingUnsure.value || unsureItems.value.length === 0) return
+  clearingUnsure.value = true
+  try {
+    for (const item of unsureItems.value) {
+      await invoke('save_stall_baseline', {
+        input: {
+          owner: store.currentOwner,
+          item: item.item,
+          quantity: 0,
+          priceUnit: null,
+          note: null,
+        } satisfies StallBaselineInput,
+      })
+    }
+    await Promise.all([reload(), loadBaselines()])
+    await store.refresh()
+  } catch (e) {
+    error.value = String(e)
+    console.error('[StallInventoryTab] clearUnsure failed:', e)
+  } finally {
+    clearingUnsure.value = false
+  }
+}
 
 // ── Manual "Check for new logs" ─────────────────────────────────────────
 // Same `rescan_stall_books` command as the parent action row — surfaced here
@@ -553,13 +486,13 @@ async function saveBaseline() {
   if (!store.currentOwner || !item || baselineSaving.value) return
   // `v-model.number` yields `''` (not null) when the field is cleared —
   // without this, `'' < 0` / `'' > 1000000` are both false and
-  // `Math.floor('')` is 0, silently deleting the baseline for that item.
+  // `Math.floor('')` is 0, silently clearing the item.
   if (typeof baselineQty.value !== 'number' || !Number.isFinite(baselineQty.value)) {
-    baselineError.value = 'Enter a quantity 0–1000000 (0 removes the baseline).'
+    baselineError.value = 'Enter a quantity 0–1000000 (0 clears the item).'
     return
   }
   if (baselineQty.value < 0 || baselineQty.value > 1000000) {
-    baselineError.value = 'Quantity must be 0–1000000 (0 removes the baseline).'
+    baselineError.value = 'Quantity must be 0–1000000 (0 clears the item).'
     return
   }
   // A cleared Price field is unpriced (null), not invalid: `v-model.number`
@@ -649,13 +582,6 @@ function formatPriceTier(tier: PriceTier): string {
   return formatGold(Math.round(tier.price))
 }
 
-/** Recently Sold Out reads the dedicated `last_known_price` field — survives
- * the sellout collapse where `price_tiers` becomes empty. */
-function formatLastPrice(price: number | null): string {
-  if (price === null) return '—'
-  return formatGold(Math.round(price))
-}
-
 function formatShortDate(iso: string | null): string {
   if (!iso) return '—'
   // event_at is "YYYY-MM-DD HH:MM:SS"; render the date part as "Apr 13".
@@ -674,8 +600,6 @@ watch(
   () => store.currentOwner,
   () => {
     periodDays.value = 7
-    soldOutDays.value = 3
-    soldOutOpen.value = false
     baselineOpen.value = false
     baselineError.value = null
     void reload()

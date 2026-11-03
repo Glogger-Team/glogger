@@ -122,8 +122,8 @@ export interface InventoryItem {
   avg_per_day: number;
   last_sold_at: string | null;
   last_activity_at: string | null;
-  /** Most recent priced event seen for this item — survives the sellout
-   * collapse so Recently Sold Out can still display a last price. */
+  /** Most recent priced event seen for this item. Feeds the `~` fallback
+   * price when no priced tier survived (added-but-never-priced stock). */
   last_known_price: number | null;
   /** Units priced at `last_known_price` because no priced tier survived
    * (added-but-never-priced stock). 0 when every unit has a real price. */
@@ -166,8 +166,8 @@ export interface StallBaseline {
   recordedAt: string;
   note: string | null;
 }
-
-/** Input for `save_stall_baseline`. `quantity: 0` deletes the row. */
+/** Input for `save_stall_baseline`. `quantity: 0` stores a zero row that
+ * clears the item (supersedes pre-clear history). */
 export interface StallBaselineInput {
   owner?: string | null;
   item?: string | null;
