@@ -389,13 +389,19 @@ const clearingUnsure = ref(false)
  * (not Promise.all): each save is one write-pool checkout and the set is
  * small (<100 rows), so serialization is cheap and avoids pool contention. */
 async function clearUnsure() {
-  if (!store.currentOwner || clearingUnsure.value || unsureItems.value.length === 0) return
+  // Snapshot the owner: a character switch mid-loop must not write char A's
+  // unsure items as qty-0 rows under char B (same shape as the store's
+  // ownerAtCall guard — abort when the active character moves on).
+  const owner = store.currentOwner
+  const targets = [...unsureItems.value]
+  if (!owner || clearingUnsure.value || targets.length === 0) return
   clearingUnsure.value = true
   try {
-    for (const item of unsureItems.value) {
+    for (const item of targets) {
+      if (store.currentOwner !== owner) break
       await invoke('save_stall_baseline', {
         input: {
-          owner: store.currentOwner,
+          owner,
           item: item.item,
           quantity: 0,
           priceUnit: null,

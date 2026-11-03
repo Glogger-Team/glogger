@@ -1224,7 +1224,7 @@ pub fn save_stall_baseline(
     save_stall_baseline_internal(&conn, &input)
 }
 
-/// Validated upsert/delete behind `save_stall_baseline`. Takes a plain
+/// Validated upsert behind `save_stall_baseline`. Takes a plain
 /// `Connection` so tests exercise the real SQL without a Tauri `State`.
 fn save_stall_baseline_internal(
     conn: &rusqlite::Connection,
