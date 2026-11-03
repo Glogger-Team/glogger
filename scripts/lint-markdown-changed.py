@@ -10,8 +10,9 @@ untouched files stay out of scope until the full `--fix` cleanup pass. CI
 passes `--base <sha>` (PR base or push `before`; an all-zero sha, as on
 manual dispatch, falls back to `HEAD~1`). A local run with no `--base`
 lints staged + unstaged + untracked files PLUS files changed in unpushed
-commits (diff of `merge-base @{u} HEAD` to `HEAD`; no upstream, e.g. a
-never-pushed branch, falls back to worktree files only). The unpushed half
+commits: base is `merge-base HEAD @{u}`, falling back to `merge-base HEAD
+origin/HEAD` (covers `git push -u` on a fresh branch with no upstream
+yet); when neither ref resolves, worktree files only. The unpushed half
 is what makes the pre-push hook meaningful on a clean tree: with worktree
 files alone, committed-but-unpushed Markdown would pass unchecked locally
 (CI would still catch it via `--base`).
@@ -57,17 +58,22 @@ def main() -> int:
         files += git("ls-files", "--others", "--exclude-standard")
         # Unpushed commits: invisible to the worktree diff above, but
         # exactly what the pre-push hook must check on a clean tree.
-        try:
-            upstream_base = subprocess.run(
-                ["git", "merge-base", "HEAD", "@{u}"],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.strip()
+        # Two-tier base: the upstream when set, else the remote default
+        # (covers `git push -u` on a fresh branch). Neither resolvable —
+        # worktree files only.
+        for base_ref in ("@{u}", "origin/HEAD"):
+            try:
+                upstream_base = subprocess.run(
+                    ["git", "merge-base", "HEAD", base_ref],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip()
+            except subprocess.CalledProcessError:
+                continue
             if upstream_base:
                 files += git("diff", "--name-only", upstream_base, "HEAD")
-        except subprocess.CalledProcessError:
-            pass  # no upstream (never-pushed branch): worktree files only
+                break
     else:
         base = args.base
         if base.strip("0") == "":
