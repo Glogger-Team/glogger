@@ -26,7 +26,7 @@ import HoplologyWidget from "./widgets/HoplologyWidget.vue";
 import VendorCouncilWidget from "./widgets/VendorCouncilWidget.vue";
 import RouletteWidget from "./widgets/RouletteWidget.vue";
 import ArenaWidget from "./widgets/ArenaWidget.vue";
-import StatehelmSummaryWidget from "./widgets/StatehelmSummaryWidget.vue";
+// import StatehelmSummaryWidget from "./widgets/StatehelmSummaryWidget.vue"; // DARK until LocalPlayer: lines recur (hidden 2026-11-03)
 export type WidgetSize = "small" | "medium" | "large";
 
 export interface DashboardWidget {
@@ -118,14 +118,7 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     defaultSize: "small",
   },
   // Statehelm: weekly gift counts are Player.log-only (dark on the current
-  // client) but the summary stays useful for favor tiers/snapshots — keep
-  // the widget; the per-NPC gift rows simply stay at 0/x until counts return.
-  {
-    id: "statehelm-summary",
-    name: "Statehelm",
-    component: StatehelmSummaryWidget,
-    defaultSize: "medium",
-  },
+  // client) — removed from the registry until LocalPlayer: lines recur.
   {
     id: "watchword-detections",
     name: "Watchword Alerts",
