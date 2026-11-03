@@ -5,14 +5,14 @@ description: Live-smoke the glogger desktop app over WebView2 CDP — launch wit
 
 # Glogger Live Smoke
 
-Owns the verbatim in-window visual-QA recipe. For release build/install routine see `skill://glogger-release`; for TOS hard-line patterns see `scripts/check-glogger-constraints.ps1`; for grid exemption semantics see `scripts/check-grid-standards.mjs` (cited, never restated here).
+Owns the verbatim in-window visual-QA recipe. For release build/install routine see `skill://glogger-release`; for TOS hard-line patterns see `scripts/check-glogger-constraints.py`; for grid exemption semantics see `scripts/check-grid-standards.py` (cited, never restated here).
 
 ## Gate rows (measure once in parent, paste into briefs, never re-derive)
 
 1. `npm run build` (`vue-tsc --noEmit && vite build`)
 2. `cd src-tauri && cargo test --lib` (with exact count)
 3. `npm run check:grids`
-4. `pwsh scripts/check-glogger-constraints.ps1`
+4. `python scripts/check-glogger-constraints.py`
 
 ## Recipe
 
