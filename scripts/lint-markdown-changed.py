@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Lint changed hand-maintained Markdown files with markdownlint-cli2.
 
 Scope (single source of truth shared by CI `lint.yml: markdown` and local
