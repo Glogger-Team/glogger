@@ -18,10 +18,18 @@
 
     <!-- Sales period dropdown + estimation note -->
     <div class="flex items-center justify-between flex-wrap gap-2 flex-shrink-0">
-      <p class="text-xs text-text-secondary italic">
         <template v-if="truncatedCount > 0">
-          ⚠ History is incomplete for {{ truncatedCount }} item{{ truncatedCount === 1 ? '' : 's' }} (oldest saved event {{ oldestFirstEvent }}).
+          <button
+            type="button"
+            class="bg-transparent border-none p-0 cursor-pointer text-inherit italic underline decoration-dotted underline-offset-2"
+            :title="truncatedItems.map((i) => i.item).join(', ')"
+            @click="showTruncatedList = !showTruncatedList">
+            ⚠ History is incomplete for {{ truncatedCount }} item{{ truncatedCount === 1 ? '' : 's' }} (oldest saved event {{ oldestFirstEvent }}).
+          </button>
           To fix this, save older shop logs from the game Books folder, import them, or count your stock in Manual stock entry below.
+          <span v-if="showTruncatedList" class="block not-italic mt-1">
+            {{ truncatedItems.map((i) => i.item).join(', ') }}
+          </span>
         </template>
         <template v-else>
           Inventory is estimated from shop log events. It may be incomplete if older log data is missing.
@@ -407,6 +415,7 @@ const baselines = ref<StallBaseline[]>([])
  * showing them with an ✕ labeled "remove" made clearing look reversible
  * when deleting the row actually resurrects the guess. */
 const visibleBaselines = computed(() => baselines.value.filter((b) => b.quantity > 0))
+const showTruncatedList = ref(false)
 const baselineOpen = ref(false)
 const baselineItem = ref('')
 const baselineQty = ref<number | null>(null)
@@ -563,6 +572,7 @@ watch(
   () => store.currentOwner,
   () => {
     periodDays.value = 7
+    showTruncatedList.value = false
     baselineOpen.value = false
     baselineError.value = null
     void reload()
