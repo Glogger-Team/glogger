@@ -22,6 +22,7 @@ The dashboard is built on a registry-driven widget system:
 ### Persistence
 
 Widget order and visibility are stored in `viewPreferences['dashboard']` via `useViewPrefs`:
+
 - `cardOrder: string[]` — widget IDs in display order
 - `hiddenCards: string[]` — widget IDs that are hidden
 
@@ -30,12 +31,14 @@ New widgets (added in code updates) automatically append to the end of the card 
 ### Files
 
 **Core:**
+
 - `src/components/Dashboard/DashboardView.vue` — main container with registry-driven grid
 - `src/components/Dashboard/DashboardCard.vue` — shared card wrapper (title bar, config popover)
 - `src/components/Dashboard/DashboardSettingsPane.vue` — right pane with widget visibility toggles
 - `src/components/Dashboard/dashboardWidgets.ts` — widget registry and size class definitions
 
 **Shared components used by widgets:**
+
 - `src/components/Dashboard/ActivityFeed.vue` — reusable activity feed (used by 4 feed widgets)
 - `src/components/Dashboard/ContextBar.vue` — time, moon phase, weather, currencies
 - `src/components/Dashboard/ContextBarConfig.vue` — config panel for Status widget section toggles
@@ -47,13 +50,14 @@ New widgets (added in code updates) automatically append to the end of the card 
 Self-contained components that bind store data to shared components. Each is a thin wrapper.
 
 **Stores:**
+
 - `gameStateStore` — live session data (skills, inventory, activity feeds, world state, currencies)
 - `settingsStore` — watch rules (for Watchword Alerts widget)
-- `useStatehelmTracker` composable — gift tracking (for Statehelm Gifting widget)
+- `useStatehelmTracker` composable — gift tracking (for Statehelm Gifting widget; DARK with it)
 
 ### Component Hierarchy
 
-```
+```text
 DashboardView.vue
 ├── PaneLayout (screen-key="dashboard", right pane: "Widgets")
 │   ├── Center: responsive CSS grid
@@ -80,7 +84,7 @@ Each widget is documented in its own file under `dashboard/`:
 | [Notes](dashboard/widget-notes.md) | Medium | Personal checklist (localStorage) |
 
 | [Critical Resources](dashboard/widget-critical-resources.md) | Medium | Tracked item quantities |
-| [Statehelm Gifting](dashboard/widget-statehelm-summary.md) | Medium | Weekly gift progress summary |
+| [Statehelm Gifting](dashboard/widget-statehelm-summary.md) *(DARK — unregistered)* | Medium | Weekly gift progress summary |
 | [Watchword Alerts](dashboard/widget-watchword-alerts.md) | Medium | Recent watchword match feed |
 | [Recipe Items](dashboard/widget-recipe-items.md) | Medium | Recipe scrolls/skill books in inventory, classified by learnability |
 | Gift Watcher | Medium | Monitors inventory for items matching watched NPCs' gift preferences |
@@ -98,9 +102,11 @@ Each widget is documented in its own file under `dashboard/`:
 
 1. Create a component in `src/components/Dashboard/widgets/`. It should be self-contained — import its own stores and bind its own data. No props from the parent.
 2. Add a registry entry to `dashboardWidgets.ts`:
+
    ```ts
    { id: 'my-widget', name: 'My Widget', component: MyWidget, defaultSize: 'medium' }
    ```
+
 3. The widget automatically appears on new users' dashboards. Existing users see it appended to their card order.
 4. To add per-widget configuration, use the `config` slot on `DashboardCard` — the gear icon only appears when this slot is provided.
 
