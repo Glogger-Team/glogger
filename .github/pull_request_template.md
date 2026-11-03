@@ -17,4 +17,4 @@ Brief description of what this PR does and why.
 
 Any additional context for reviewers.
 
-<!-- CodeRabbit D-gate: keep as draft + no `review-ready` label until A+B+C are green. D entry = mark Ready for review then add `review-ready` label, or (while still draft) comment `@coderabbitai full review` alone on its line (`drafts: false` skips labeled drafts). Re-checks = `@coderabbitai review`. Stage C follows the pinned upstream code-review URL and stage D follows `skill://autofix`; see AGENTS.md stage order. -->
+<!-- CodeRabbit D-gate: bot is silent by default (enabled:false, no auto-incremental, drafts skipped) — ordinary pushes never trigger it. D entry = `@coderabbitai full review` alone on its line (first D / reset); re-checks = `@coderabbitai review`. Stage C follows the pinned upstream code-review URL and stage D fixes follow `skill://autofix`; see AGENTS.md stage order. -->

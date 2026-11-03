@@ -1,7 +1,6 @@
 reviews:
   auto_review:
     enabled: false
-    labels: ["review-ready"]
     description_keyword: ""
     auto_incremental_review: false
     auto_pause_after_reviewed_commits: 1
