@@ -590,10 +590,11 @@ fn delete_character_on_write_conn(
 /// `SCOPED_TABLES`) plus the parent rows whose children CASCADE or are
 /// re-resolved by id (`character_snapshots`, `character_item_snapshots` —
 /// the surviving survey/death/kill children follow their parents, which are
-/// renamed in place). Not covered, same as delete: unscoped singletons and
-/// tables (`game_state_weather`/`moon`, `arena_*`), `stall_events` (stall
-/// label, not a character), and `brewing_discoveries.character` (shape
-/// unverified).
+/// renamed in place). Name-only owner rows (`stall_events.owner`,
+/// `stall_inventory_baseline.owner`, `brewing_discoveries.character`) move on
+/// a name change (a server-only move leaves them — owner has no server
+/// column). Not covered, same as delete: unscoped singletons and tables
+/// (`game_state_weather`/`moon`, `arena_*`).
 ///
 /// Fails when the source identity has no `user_characters` row or the target
 /// identity already exists (UNIQUE guard against merging two histories).
@@ -739,6 +740,24 @@ fn rename_character_on_write_conn(
         ],
     )
     .map_err(|e| format!("Rename failed: {e}"))?;
+    // Owner/name-scoped rows (no server column): the stall owner label and
+    // the brewing `character` column are character-name-only, so only a
+    // name change moves them — a server-only move leaves them in place.
+    // Covered so the Stall Tracker (owner = active character) and brewing
+    // discoveries follow the rename instead of orphaning under the old name.
+    if new_character_name != character_name {
+        for (table, column) in [
+            ("stall_events", "owner"),
+            ("stall_inventory_baseline", "owner"),
+            ("brewing_discoveries", "character"),
+        ] {
+            conn.execute(
+                &format!("UPDATE {table} SET {column} = ?1 WHERE {column} = ?2"),
+                rusqlite::params![new_character_name, character_name],
+            )
+            .map_err(|e| format!("Rename failed: {e}"))?;
+        }
+    }
 
     conn.commit()
         .map_err(|e| format!("Failed to commit transaction: {e}"))?;
@@ -1340,6 +1359,25 @@ mod tests {
             rusqlite::params![who, SERVER],
         )
         .unwrap();
+        // Owner/name-scoped rows: stall owner label + brewing character.
+        // UNIQUE(event_timestamp, raw_message, entry_index) forces a
+        // per-character raw_message.
+        let stall_msg = format!("{who} bought Sword");
+        conn.execute(
+            "INSERT INTO stall_events (event_timestamp,log_timestamp,log_title,action,player,owner,raw_message) VALUES ('2026-01-01','t','T','bought',?1,?1,?2)",
+            rusqlite::params![who, stall_msg],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO stall_inventory_baseline (owner,item,quantity,recorded_at) VALUES (?1,'Sword',1,'2026-01-01')",
+            rusqlite::params![who],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO brewing_discoveries (character,recipe_id,ingredient_ids,power,power_tier,first_seen_at,last_seen_at) VALUES (?1,1,'[]','P',1,'2026-01-01','2026-01-01')",
+            rusqlite::params![who],
+        )
+        .unwrap();
         // Snapshot family + children.
         conn.execute(
             "INSERT INTO character_snapshots (character_name,server_name,snapshot_timestamp,raw_json) VALUES (?1,?2,'2026-01-01','{}')",
@@ -1496,6 +1534,29 @@ mod tests {
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
                 .unwrap();
             assert_eq!(total, 2, "child table {table} should keep renamed + {OTHER} rows");
+        }
+        // Owner/name-scoped rows follow the name change.
+        for (table, column, old, new) in [
+            ("stall_events", "owner", CHAR, NEW),
+            ("stall_inventory_baseline", "owner", CHAR, NEW),
+            ("brewing_discoveries", "character", CHAR, NEW),
+        ] {
+            let old_n: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?1"),
+                    rusqlite::params![old],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let new_n: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?1"),
+                    rusqlite::params![new],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(old_n, 0, "{table} still has {old} rows");
+            assert_eq!(new_n, 1, "{table} lost renamed rows");
         }
     }
 

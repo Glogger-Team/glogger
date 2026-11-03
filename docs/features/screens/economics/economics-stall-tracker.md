@@ -210,7 +210,7 @@ import command treats it as "owner if known, else fall back." Do not treat
 | item | TEXT | Nullable (`collected`/`hired` have no item). |
 | quantity | INTEGER | Defaults to 1. |
 | price_unit | REAL | Price per unit (possibly fractional for `per N > 1` entries). |
-| price_total | INTEGER | Total price for `bought` and `collected`. |
+| price_total | INTEGER | Total price for `bought` and `collected`; hire fee for `hired`. |
 | raw_message | TEXT | Exact in-game phrasing, used for export round-trip. |
 | entry_index | INTEGER | Position within the book (oldest = 0). Stable across re-opens. |
 | ignored | INTEGER | 0/1 soft-mute flag. Excluded from all aggregations. |

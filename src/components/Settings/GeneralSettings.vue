@@ -273,11 +273,11 @@
             </datalist>
             <button
               class="btn btn-primary text-xs px-2 py-1"
-              :disabled="!renameName.trim() || !renameServer.trim() || renameBusy"
+              :disabled="!renameName.trim() || !renameServer.trim() || renameBusy || isUnchangedRename"
               @click="doRename">
               {{ renameBusy ? 'Renaming…' : 'Rename' }}
             </button>
-            <button class="btn btn-secondary text-xs px-2 py-1" @click="cancelRename">
+            <button class="btn btn-secondary text-xs px-2 py-1" :disabled="renameBusy" @click="cancelRename">
               Cancel
             </button>
           </div>
@@ -534,6 +534,13 @@ function isActive(char: UserCharacter): boolean {
     && char.server_name === settingsStore.settings.activeServerName;
 }
 
+const isUnchangedRename = computed(() => {
+  const target = renameTarget.value;
+  return !!target
+    && renameName.value.trim() === target.character_name
+    && renameServer.value.trim() === target.server_name;
+});
+
 async function loadCharacters() {
   try {
     characters.value = await invoke<UserCharacter[]>("get_user_characters");
@@ -562,7 +569,13 @@ async function doRename() {
   const target = renameTarget.value;
   const newName = renameName.value.trim();
   const newServer = renameServer.value.trim();
+  // Same-identity submit is a backend no-op — close the form instead of
+  // churning caches and flashing a Rename-X-to-X success line.
   if (!target || !newName || !newServer || renameBusy.value) return;
+  if (newName === target.character_name && newServer === target.server_name) {
+    cancelRename();
+    return;
+  }
   renameBusy.value = true;
   renameError.value = "";
   renameDone.value = "";
