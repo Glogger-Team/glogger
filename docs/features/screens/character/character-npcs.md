@@ -207,9 +207,7 @@ These are hardcoded in `useFavorTiers.ts` and used for progress estimation in th
 
 ## Data We Cannot Show
 
-Some player questions can't be answered with currently available CDN/log data:
-
-- **What do NPCs sell?** — Available in the Data Browser via vendor_prices CDN table, but not yet shown in the Character NPC detail panel
+- **What do NPCs sell?** — Available in the Data Browser via the `sources_items.json` Vendor/Barter index, but not yet shown in the Character NPC detail panel
 - **Specific barter items** — Barter service exists but item specifics aren't in CDN
 - **Hangout activities** — Not in current CDN NPC data
 - **Exact favor values** — We track cumulative deltas and tier but not absolute numerical favor

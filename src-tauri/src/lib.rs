@@ -232,7 +232,7 @@ use settings::{
 use setup_commands::{
     complete_setup, delete_character, get_user_characters, import_all_inventory_for_server,
     import_latest_inventory_for_character, import_latest_report_for_character,
-    import_reports_for_server, save_user_character, scan_reports_for_characters,
+    import_reports_for_server, rename_character, save_user_character, scan_reports_for_characters,
     set_active_character, validate_game_data_path,
 };
 use trip_router::plan_trip;
@@ -869,6 +869,7 @@ pub fn run() {
             get_user_characters,
             set_active_character,
             delete_character,
+            rename_character,
             complete_setup,
             import_latest_report_for_character,
             import_latest_inventory_for_character,

@@ -230,14 +230,76 @@
         </p>
       </div>
     </div>
+    <div class="settings-section">
+      <h3>Characters</h3>
+
+      <div v-if="characters.length === 0" class="text-sm text-text-muted">
+        No characters yet — add one from the character picker in the header.
+      </div>
+      <div v-else class="space-y-2">
+        <div
+          v-for="char in characters"
+          :key="`${char.character_name}-${char.server_name}`"
+          class="flex items-center gap-2 text-sm">
+          <span class="font-medium text-text-primary">{{ char.character_name }}</span>
+          <span class="text-text-muted">{{ char.server_name }}</span>
+          <span v-if="isActive(char)" class="text-xs text-accent-gold">(active)</span>
+          <button
+            v-if="!renameTarget || renameTarget.character_name !== char.character_name || renameTarget.server_name !== char.server_name"
+            class="btn btn-secondary text-xs px-2 py-1 ml-auto"
+            @click="startRename(char)">
+            Rename / move
+          </button>
+        </div>
+        <div v-if="renameTarget" class="p-2 space-y-2 border border-border-default rounded">
+          <p class="text-sm text-text-primary m-0">
+            Rename <strong>{{ renameTarget.character_name }}</strong>
+            <span class="text-text-muted">({{ renameTarget.server_name }})</span> — all history moves with it.
+          </p>
+          <div class="flex gap-2">
+            <input
+              v-model="renameName"
+              placeholder="New character name"
+              class="input flex-1 text-sm"
+              @keydown.enter="doRename" />
+            <input
+              v-model="renameServer"
+              placeholder="New server"
+              list="rename-server-suggestions"
+              class="input flex-1 text-sm"
+              @keydown.enter="doRename" />
+            <datalist id="rename-server-suggestions">
+              <option v-for="s in serverList" :key="s" :value="s" />
+            </datalist>
+            <button
+              class="btn btn-primary text-xs px-2 py-1"
+              :disabled="!renameName.trim() || !renameServer.trim() || renameBusy"
+              @click="doRename">
+              {{ renameBusy ? 'Renaming…' : 'Rename' }}
+            </button>
+            <button class="btn btn-secondary text-xs px-2 py-1" @click="cancelRename">
+              Cancel
+            </button>
+          </div>
+          <p v-if="renameError" class="error-box m-0">{{ renameError }}</p>
+        </div>
+        <p v-if="renameDone" class="success-box m-0">{{ renameDone }}</p>
+      </div>
+      <p class="mt-2 text-text-muted text-xs leading-relaxed">
+        Renaming (or server-moving) a character carries all of its history — reports, skills, favor, survey sessions, kills, everything keyed to the character — to the new name. Deletion stays in the header character picker.
+      </p>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { useGameStateStore } from "../../stores/gameStateStore";
+import { useCharacterStore } from "../../stores/characterStore";
+import type { UserCharacter } from "../../stores/startupStore";
 
 const settingsStore = useSettingsStore();
 const pathStatus = ref("");
@@ -253,6 +315,17 @@ const autoIngestPlayerPrev = ref(settingsStore.settings.autoIngestPlayerPrev);
 const archiveRetentionDays = ref(settingsStore.settings.playerLogArchiveRetentionDays);
 const archiveMaxFiles = ref(settingsStore.settings.playerLogArchiveMaxFiles);
 const archiveMaxMb = ref(settingsStore.settings.playerLogArchiveMaxMb);
+
+const gameStateStore = useGameStateStore();
+const characterStore = useCharacterStore();
+const characters = ref<UserCharacter[]>([]);
+const serverList = ref<string[]>([]);
+const renameTarget = ref<UserCharacter | null>(null);
+const renameName = ref("");
+const renameServer = ref("");
+const renameBusy = ref(false);
+const renameError = ref("");
+const renameDone = ref("");
 
 const timestampOptions = [
   { value: 'local' as const, label: 'Local Time' },
@@ -455,4 +528,77 @@ function handleHourFormatChange(value: boolean) {
   use24Hour.value = value;
   settingsStore.updateSettings({ use24HourTime: value });
 }
+
+function isActive(char: UserCharacter): boolean {
+  return char.character_name === settingsStore.settings.activeCharacterName
+    && char.server_name === settingsStore.settings.activeServerName;
+}
+
+async function loadCharacters() {
+  try {
+    characters.value = await invoke<UserCharacter[]>("get_user_characters");
+    serverList.value = await invoke<string[]>("get_server_list");
+  } catch (e) {
+    console.error("Failed to load user characters:", e);
+  }
+}
+
+function startRename(char: UserCharacter) {
+  renameTarget.value = char;
+  renameName.value = char.character_name;
+  renameServer.value = char.server_name;
+  renameError.value = "";
+  renameDone.value = "";
+}
+
+function cancelRename() {
+  renameTarget.value = null;
+  renameName.value = "";
+  renameServer.value = "";
+  renameError.value = "";
+}
+
+async function doRename() {
+  const target = renameTarget.value;
+  const newName = renameName.value.trim();
+  const newServer = renameServer.value.trim();
+  if (!target || !newName || !newServer || renameBusy.value) return;
+  renameBusy.value = true;
+  renameError.value = "";
+  renameDone.value = "";
+  try {
+    await invoke("rename_character", {
+      characterName: target.character_name,
+      serverName: target.server_name,
+      newCharacterName: newName,
+      newServerName: newServer,
+    });
+    // Same cache invalidation as delete (rows moved identity, not gone):
+    // clear cross-character caches + bump generations so in-flight loads
+    // drop stale results. Active identity followed the rename backend-side.
+    if (isActive(target)) {
+      settingsStore.settings.activeCharacterName = newName;
+      settingsStore.settings.activeServerName = newServer;
+    }
+    characterStore.allCharacterItems = [];
+    characterStore.allCharacterItemsLoaded = false;
+    characterStore.allCharacterItemsGeneration++;
+    characterStore.allCharacterWorkOrders = [];
+    characterStore.allCharacterWorkOrdersLoaded = false;
+    characterStore.allCharacterWorkOrdersGeneration++;
+    gameStateStore.resetSessionSkills();
+    gameStateStore.clearLiveInventory();
+    await gameStateStore.loadAll();
+    characterStore.initForActiveCharacter();
+    renameDone.value = `Renamed ${target.character_name} (${target.server_name}) to ${newName} (${newServer}) — all history moved.`;
+    renameTarget.value = null;
+    await loadCharacters();
+  } catch (e) {
+    renameError.value = e instanceof Error ? e.message : String(e);
+  } finally {
+    renameBusy.value = false;
+  }
+}
+
+onMounted(loadCharacters);
 </script>

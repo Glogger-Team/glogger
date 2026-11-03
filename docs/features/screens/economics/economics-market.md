@@ -48,11 +48,11 @@ Six options controlling how item values are calculated app-wide:
 - `export_market_values() → String` (JSON)
 - `import_market_values(json_data, strategy) → ImportResult`
 
-## Stall Price Observations — removed (batch-1, 2026-10-30)
+## Stall Price Observations — dropped (migration v86, 2026-11-04)
 
 The experimental stall-price surface (capture panel, auto-detected purchase
 sentinels, OCR scan, `get/record/update/delete_stall_price_observation`
-commands, tooltip "Last seen" line) was stripped from the live app. Table
-`stall_price_observations` (migration V68) and existing rows are retained.
-Re-introduction (capture panel + OCR + purchase-sentinel fill-in) stays a
-backlog item pending a reliable stall-browsing signal.
+commands, tooltip "Last seen" line) was stripped from the live app in batch-1
+(2026-10-30), and its table + rows were dropped — no writer or reader had
+remained. Re-introduction needs the capture path (and table) rebuilt from
+scratch, pending a reliable stall-browsing signal.

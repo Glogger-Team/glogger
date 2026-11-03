@@ -138,7 +138,7 @@ const columns = [
 const toBackendKey: Record<string, string> = { event_timestamp: 'event_at' }
 const toDisplayKey: Record<string, string> = { event_at: 'event_timestamp' }
 
-/** All seven action buckets, including `unknown` so the maintenance view can
+/** All eight action buckets, including `unknown` so the maintenance view can
  * surface unparseable entries (Sales tab hides them by default). */
 const actionOptions: string[] = [
   'bought',
@@ -147,6 +147,7 @@ const actionOptions: string[] = [
   'configured',
   'visible',
   'collected',
+  'hired',
   'unknown',
 ]
 
@@ -294,6 +295,8 @@ function actionBadgeClass(action: string): string {
       return 'bg-cyan-500/15 text-cyan-400'
     case 'collected':
       return 'bg-accent-gold/15 text-accent-gold'
+    case 'hired':
+      return 'bg-purple-500/15 text-purple-400'
     default:
       return 'bg-surface-elevated text-text-secondary'
   }

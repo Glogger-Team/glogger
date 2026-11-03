@@ -1,10 +1,10 @@
 /// Parses the body of a `PlayerShopLog` book (delivered via `ProcessBook`)
 /// into structured stall events, ready for persistence by the Stall Tracker.
 ///
-/// Six action types are recognized (`bought`, `added`, `removed`, `configured`,
-/// `visible`, `collected`); anything that doesn't match lands in `unknown` so
-/// nothing is silently dropped. The module is pure — no DB, no I/O — so the
-/// parser can be exhaustively unit tested.
+/// Seven action types are recognized (`bought`, `added`, `removed`, `configured`,
+/// `visible`, `collected`, `hired`); anything that doesn't match lands in
+/// `unknown` so nothing is silently dropped. The module is pure — no DB, no
+/// I/O — so the parser can be exhaustively unit tested.
 use crate::stall_year_resolver;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -61,6 +61,13 @@ static COLLECTED_RE: Lazy<Regex> = Lazy::new(|| {
         .unwrap()
 });
 
+/// `Deradon paid 5000 Councils to hire a stall for 24 hours`
+static HIRED_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^(?P<player>.+?) paid (?P<total>\d+) Councils to hire a stall for (?P<hours>\d+) hours?")
+        .unwrap()
+});
+
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShopLogEntry {
     pub entry_index: i64,
@@ -81,7 +88,7 @@ pub struct ShopLog {
     pub title: String,
     pub entries: Vec<ShopLogEntry>,
     /// Advisory owner hint derived from the first owner-only action
-    /// (`added`, `removed`, `configured`, `visible`, `collected`). Used ONLY
+    /// (`added`, `removed`, `configured`, `visible`, `collected`, `hired`). Used ONLY
     /// by the Import command to distinguish friend-file / alt-file /
     /// bought-only cases. The live-tailing coordinator path ignores this
     /// and stamps the active character as owner instead (the game only lets
@@ -148,7 +155,7 @@ pub fn parse_shop_log(title: &str, content: &str, log_timestamp: &str, base_year
         .find(|e| {
             matches!(
                 e.action.as_str(),
-                "added" | "removed" | "configured" | "visible" | "collected"
+                "added" | "removed" | "configured" | "visible" | "collected" | "hired"
             )
         })
         .map(|e| e.player.clone());
@@ -274,6 +281,16 @@ fn parse_entry(entry_index: i64, timestamp: &str, message: &str) -> ShopLogEntry
         entry.quantity = 1;
         return entry;
     }
+
+    if let Some(c) = HIRED_RE.captures(message) {
+        let total: i64 = c["total"].parse().unwrap_or(0);
+        entry.action = "hired".into();
+        entry.player = c["player"].to_string();
+        entry.price_total = Some(total);
+        entry.quantity = 1;
+        return entry;
+    }
+
 
     entry
 }
@@ -468,14 +485,27 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_unknown_falls_through() {
-        // Hire-duration message that doesn't match any action regex.
+    fn test_parse_hired_records_payment() {
         let e = single("Deradon paid 5000 Councils to hire a stall for 24 hours");
+        assert_eq!(e.action, "hired");
+        assert_eq!(e.player, "Deradon");
+        assert_eq!(e.price_total, Some(5000));
+        assert_eq!(e.item, None);
+    }
+
+    #[test]
+    fn test_hired_counts_as_owner_hint() {
+        // Hire-only book still identifies the owner — no items needed.
+        let log = parse_shop_log("x", "Mon Apr 13 09:00 - Deradon paid 5000 Councils to hire a stall for 24 hours", "t", 2026);
+        assert_eq!(log.owner.as_deref(), Some("Deradon"));
+    }
+
+
+    #[test]
+    fn test_parse_unknown_falls_through() {
+        // Genuinely unparseable lines still land in `unknown`.
+        let e = single("Deradon did something mysterious at the stall");
         assert_eq!(e.action, "unknown");
-        assert_eq!(
-            e.raw_message,
-            "Deradon paid 5000 Councils to hire a stall for 24 hours"
-        );
     }
 
     #[test]

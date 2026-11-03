@@ -457,6 +457,15 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 84)?;
     }
 
+    if current_version < 85 {
+        migration_v85_drop_vendor_prices(conn)?;
+        super::record_migration(conn, 85)?;
+    }
+
+    if current_version < 86 {
+        migration_v86_drop_stall_price_observations(conn)?;
+        super::record_migration(conn, 86)?;
+    }
 
     tx.commit()?;
     Ok(())
@@ -768,7 +777,6 @@ fn migration_v82_purge_placeholder_characters(conn: &Connection) -> Result<()> {
         "player_messages",
         "player_milking_log",
         "player_pooping_log",
-        "stall_price_observations",
         "survey_uses",
         "survey_sessions",
         "tracked_skills",
@@ -990,6 +998,42 @@ fn migration_v84_stall_inventory_baseline(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_stall_baseline_owner
             ON stall_inventory_baseline(owner);",
+    )?;
+    Ok(())
+}
+
+/// Migration V85: drop the dead `vendor_prices` table (decision 2026-11-03).
+///
+/// Created in the v1 baseline as a CDN vendor-price cache, but nothing ever
+/// wrote to it (no writer, no seed, no backfill — sole repo hit is the
+/// CREATE TABLE) and nothing ever read from it. The live vendor path prices
+/// from the in-memory `vendor_items_by_npc` index (`sources_items.json`
+/// Vendor/Barter entries, `value x 1.5`) instead, so the table was
+/// unreachable ballast. Archived plans/docs that cited it as a live table
+/// are corrected in the same change.
+fn migration_v85_drop_vendor_prices(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS vendor_prices;
+         DROP INDEX IF EXISTS idx_vendor_prices_item;
+         DROP INDEX IF EXISTS idx_vendor_prices_npc;",
+    )?;
+    Ok(())
+}
+
+/// Migration V86: drop the dead `stall_price_observations` table (decision 2026-11-04).
+///
+/// Created in v68 for the OCR stall-price capture surface, stripped from the
+/// live app in batch-1 (2026-10-30: capture panel, OCR stack, purchase
+/// sentinels, all commands gone). No writer or reader has remained since —
+/// the table and its rows were unreachable ballast, retained only pending
+/// this decision. Re-introduction needs the capture path rebuilt, not these
+/// rows. Also removed from `admin_commands::PURGE_TABLES`.
+fn migration_v86_drop_stall_price_observations(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS stall_price_observations;
+         DROP INDEX IF EXISTS idx_spo_item;
+         DROP INDEX IF EXISTS idx_spo_observed;
+         DROP INDEX IF EXISTS idx_spo_stall;",
     )?;
     Ok(())
 }
@@ -4248,13 +4292,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            84,
+            86,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 84);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 86);
     }
 
     #[test]
@@ -4383,7 +4427,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 84, "migration chain head");
+        assert_eq!(head, 86, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -4438,7 +4482,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 84, "migration chain head");
+        assert_eq!(head, 86, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -4478,6 +4522,49 @@ mod tests {
             )
             .unwrap();
         assert_eq!(aligned2, Some(true), "second run preserves aligned values");
+    }
+
+    #[test]
+    fn migration_v85_drops_dead_vendor_prices() {
+        // v1 baseline created the table, nothing ever wrote to or read from
+        // it — v85 drops it and its two indices. Idempotent on DBs where it
+        // is already gone.
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        for name in ["vendor_prices", "idx_vendor_prices_item", "idx_vendor_prices_npc"] {
+            let n: i64 = c
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                    rusqlite::params![name],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "{name} should be gone after v85");
+        }
+    }
+
+    #[test]
+    fn migration_v86_drops_dead_stall_price_observations() {
+        // v68 created the table for the OCR capture surface, batch-1 stripped
+        // every writer/reader — v86 drops it and its three indices.
+        // Idempotent on DBs where it is already gone.
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        for name in [
+            "stall_price_observations",
+            "idx_spo_item",
+            "idx_spo_observed",
+            "idx_spo_stall",
+        ] {
+            let n: i64 = c
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                    rusqlite::params![name],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "{name} should be gone after v86");
+        }
     }
 
     #[test]
