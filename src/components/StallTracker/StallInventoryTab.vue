@@ -21,7 +21,7 @@
       <p class="text-xs text-text-secondary italic">
         <template v-if="truncatedCount > 0">
           ⚠ History is incomplete for {{ truncatedCount }} item{{ truncatedCount === 1 ? '' : 's' }} (oldest saved event {{ oldestFirstEvent }}).
-          To fix this, open older shop logs in-game, import them, or count your stock in Opening stock below.
+          To fix this, save older shop logs from the game Books folder, import them, or count your stock in Opening stock below.
         </template>
         <template v-else>
           Inventory is estimated from shop log events. It may be incomplete if older log data is missing.
