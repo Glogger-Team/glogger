@@ -43,6 +43,14 @@ description = "Changed-files markdown gate: worktree files + unpushed commits (c
 # scripts/lint-markdown-changed.py.
 run = ["python scripts/lint-markdown-changed.py"]
 
+[tasks."lint:markdown-push"]
+description = "Pre-push Markdown: unpushed-commit files only, fail on staged overlap (push/full slice)"
+# --push reads worktree bytes, so any file that differs between HEAD and
+# the worktree would mask the committed content being pushed. Fail closed
+# listing those files instead. Commit-hook (lint:fast) path never runs
+# this, so amend/refine flows are unaffected.
+run = ["python scripts/lint-markdown-changed.py --push"]
+
 [tasks."lint:grids"]
 description = "Grid standards census (commit-fast slice; node: builtins only, no install needed)"
 run = ["npm run check:grids"]
@@ -89,6 +97,7 @@ description = "Blocking lint gates (CI lint.yml set, runnable locally)"
 # depends list (pure reads, no tree mutation).
 run = [
   "mise run lint:fast",
+  "mise run lint:markdown-push",
   "mise run lint:build",
   "mise run lint:clippy",
   "mise run lint:test",
