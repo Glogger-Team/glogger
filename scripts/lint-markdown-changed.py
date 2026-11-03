@@ -104,7 +104,8 @@ def main() -> int:
         # unaffected.)
         masked = sorted(
             f
-            for f in set(files) & set(git("diff", "--name-only", "HEAD"))
+            for f in set(files)
+            & set(git("diff", "--name-only", "--no-renames", "HEAD"))
             if in_scope(f)
         )
         if masked:
