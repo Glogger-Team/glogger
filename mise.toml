@@ -34,10 +34,12 @@ run = [
 ]
 
 [tasks."lint:markdown"]
-description = "Changed-files markdown gate, worktree mode (commit-fast slice)"
+description = "Changed-files markdown gate: worktree files + unpushed commits (commit-fast slice)"
 # Commit/push hooks invoke with no --base: the script lints staged +
-# unstaged + untracked files. CI passes --base explicitly (PR base / push
-# before) — the one sanctioned invocation difference, scope logic stays in
+# unstaged + untracked files plus files changed in unpushed commits (the
+# latter is what makes the pre-push hook meaningful on a clean tree). CI
+# passes --base explicitly (PR base / push `before`) — the one sanctioned
+# invocation difference, scope logic stays in
 # scripts/lint-markdown-changed.py.
 run = ["python scripts/lint-markdown-changed.py"]
 

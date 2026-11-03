@@ -2,18 +2,22 @@
 """Lint changed hand-maintained Markdown files with markdownlint-cli2.
 
 Scope (single source of truth shared by CI `lint.yml: markdown` and local
-`mise run lint:all`): every `*.md` EXCEPT the generated changelog —
+`mise run lint:markdown`): every `*.md` EXCEPT the generated changelog —
 `CHANGELOG.md` (rewritten by `npm run changelog` each release).
 
 Grandfathering: only changed files are linted; pre-existing findings in
 untouched files stay out of scope until the full `--fix` cleanup pass. CI
 passes `--base <sha>` (PR base or push `before`; an all-zero sha, as on
 manual dispatch, falls back to `HEAD~1`). A local run with no `--base`
-lints staged + unstaged + untracked files.
+lints staged + unstaged + untracked files PLUS files changed in unpushed
+commits (diff of `merge-base @{u} HEAD` to `HEAD`; no upstream, e.g. a
+never-pushed branch, falls back to worktree files only). The unpushed half
+is what makes the pre-push hook meaningful on a clean tree: with worktree
+files alone, committed-but-unpushed Markdown would pass unchecked locally
+(CI would still catch it via `--base`).
 
 The linter command defaults to `markdownlint-cli2` from PATH; override
-with `MARKDOWNLINT` (CI uses `npx --yes markdownlint-cli2@0.23` — floor,
-not a freeze, matching lint.yml policy). Full-tree cleanup (not gated):
+with `MARKDOWNLINT`. Full-tree cleanup (not gated):
 `markdownlint-cli2 --fix --config .markdownlint-cli2.json "**/*.md"
 "!CHANGELOG.md"`.
 """
@@ -51,6 +55,19 @@ def main() -> int:
     if args.base is None:
         files = git("diff", "--name-only", "HEAD")
         files += git("ls-files", "--others", "--exclude-standard")
+        # Unpushed commits: invisible to the worktree diff above, but
+        # exactly what the pre-push hook must check on a clean tree.
+        try:
+            upstream_base = subprocess.run(
+                ["git", "merge-base", "HEAD", "@{u}"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            if upstream_base:
+                files += git("diff", "--name-only", upstream_base, "HEAD")
+        except subprocess.CalledProcessError:
+            pass  # no upstream (never-pushed branch): worktree files only
     else:
         base = args.base
         if base.strip("0") == "":
