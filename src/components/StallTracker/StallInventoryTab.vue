@@ -18,6 +18,7 @@
 
     <!-- Sales period dropdown + estimation note -->
     <div class="flex items-center justify-between flex-wrap gap-2 flex-shrink-0">
+      <p class="text-xs text-text-secondary italic">
         <template v-if="truncatedCount > 0">
           <button
             type="button"
