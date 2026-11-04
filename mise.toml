@@ -69,6 +69,14 @@ description = "Lint-parity drift guard: hook/docs refs resolve, TODO location co
 # location contract — the stringly-typed seams the parity work left behind.
 run = ["bash scripts/check-lint-parity.sh"]
 
+[tasks."lint:parity-push"]
+description = "Pre-push parity: fail on worktree divergence in config sources (push/full slice)"
+# --push fails closed listing source files that differ worktree-vs-HEAD
+# (the checks read worktree bytes but certify the pushed revision).
+# Commit-hook path never runs this: config edits are legitimately
+# divergent at commit time.
+run = ["bash scripts/check-lint-parity.sh --push"]
+
 [tasks."lint:build"]
 description = "Frontend type-check and build (push/full slice)"
 run = ["npm run build"]
@@ -108,6 +116,7 @@ description = "Blocking lint gates (CI lint.yml set, runnable locally)"
 run = [
   "mise run lint:fast",
   "mise run lint:markdown-push",
+  "mise run lint:parity-push",
   "mise run lint:build",
   "mise run lint:clippy",
   "mise run lint:test",
