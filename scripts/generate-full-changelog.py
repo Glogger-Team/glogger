@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Generate the full CHANGELOG.md from every v<semver> tag to HEAD.
 Ranges use scripts/generate-changelog.py grouping (feat:/impv:/fix:) with
 humanized entries (type prefix stripped, scope kept as `Scope: …`, no hash,

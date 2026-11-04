@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Generate release notes from git commits since a base tag (normally the last
 *published* release — see scripts/last-published-tag.py; basing notes on
 the nearest tag orphans the commits of any tag whose Release run failed).
