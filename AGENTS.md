@@ -161,7 +161,7 @@ Before committing, lint every file type you changed and fix what the linter repo
 | File type | Linter | Covered by |
 | --------- | ------ | ---------- |
 | TS/Vue/JS (`.ts`, `.vue`) | vue-tsc (gated today); eslint (pending `npm i -D`) | `lint` → `npm run build` |
-|TOS/CoC hard lines|`python scripts/check-glogger-constraints.py`|Game-interaction limits gate: local pre-push hook (install per clone: `scripts/setup-hooks.sh`) + the release workflow's `validate` job|
+|TOS/CoC hard lines|`python scripts/check-glogger-constraints.py`|Game-interaction limits gate: local pre-push hook (install per clone: `scripts/setup-hooks.sh`, via pre-commit) + the release workflow's `validate` job|
 | TOS/CoC | game-interaction limits gate (gated, pre-push hook) | `lint` → `python scripts/check-glogger-constraints.py` |
 | Review patterns | decided defect shapes from review rounds (gated) | `lint` → `python scripts/check-review-patterns.py` (migration discard check today; cache-guard + UPDATE-scope stay on the pre-commit checklist — need multi-line context grep can't do) |
 | Python (`.py`) | ruff check + format --check (gated in CI) | `lint` → `ruff check scripts/`, `ruff format --check scripts/` |

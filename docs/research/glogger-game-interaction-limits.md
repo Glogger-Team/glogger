@@ -125,8 +125,8 @@ Runs on every push, in CI lint, and on every release, so skipping one cannot shi
 
 - **Every push** from a clone with the hooks installed — the pre-push hook
   runs `mise run lint` (which includes the constraints slice);
-  `scripts/setup-hooks.sh` installs it. Opt-in per clone, so check it after
-  a fresh clone.
+  `scripts/setup-hooks.sh` (via pre-commit) installs it. Opt-in per clone,
+  so check it after a fresh clone.
 - **Every release**: the `validate` job of `.github/workflows/release.yml`
   runs the scanner with `python3` before any platform builds, so a tag push that
   violates a hard line fails the release.

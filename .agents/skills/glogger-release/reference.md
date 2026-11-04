@@ -99,9 +99,9 @@ the tag to exist on `origin`). The `validate` job also runs the
 game-interaction hard-line scanner
 (`scripts/check-glogger-constraints.py`, `python3` — TOS prose lives in
 `docs/research/glogger-game-interaction-limits.md`), so a TOS/CoC violation fails
-the release — the same scanner runs in the pre-push hook (`mise run lint`),
-which is opt-in per clone (install: `scripts/setup-hooks.sh`; it blocks a
-violating push, `git push --no-verify` bypasses it loudly, CI re-checks anyway).
+the release — the same scanner runs in the pre-push hook (install per clone:
+`scripts/setup-hooks.sh`, via pre-commit; it blocks a violating push,
+`git push --no-verify` bypasses it loudly, CI re-checks anyway).
 
 ### When a release fails
 
@@ -197,7 +197,7 @@ pubkey is compiled in, so the new-key release must be installed manually once.
 - `src-tauri/Cargo.toml` shows a phantom CRLF-only diff in `git status` —
   leave it uncommitted (permanent known artifact).
 - npm only (Node 24); no bun/yarn/pnpm.
-- Prefixes/hook install: see `scripts/check-commit-msg.py` and `scripts/setup-hooks.sh` (cited, not restated).
+- Prefixes/hook install: see `scripts/check-commit-msg.py` and `scripts/setup-hooks.sh` (pre-commit; cited, not restated).
 
 ## Upstream reference path
 

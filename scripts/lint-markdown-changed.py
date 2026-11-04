@@ -93,8 +93,12 @@ def main() -> int:
     if args.push:
         base = unpushed_base()
         if base is None:
-            print("No upstream or remote default; nothing pushed to check.")
-            return 0
+            print(
+                "Cannot determine pushed range: no upstream and no "
+                "origin/HEAD. Push once with -u, then push again.",
+                file=sys.stderr,
+            )
+            return 1
         files = git("diff", "--name-only", base, "HEAD")
         # Worktree content masks committed content for these files: the
         # linter reads the worktree, but the push ships HEAD. Fail closed
