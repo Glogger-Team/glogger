@@ -777,6 +777,7 @@ fn migration_v82_purge_placeholder_characters(conn: &Connection) -> Result<()> {
         "player_messages",
         "player_milking_log",
         "player_pooping_log",
+        "stall_price_observations",
         "survey_uses",
         "survey_sessions",
         "tracked_skills",
