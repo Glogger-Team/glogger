@@ -20,7 +20,7 @@ set -eu
 fail=0
 
 if [ "${1:-}" = "--push" ]; then
-  diverged=$(git diff --name-only HEAD -- .pre-commit-config.yaml AGENTS.md mise.toml TODO.md docs/TODO.md docs/index.md scripts/check-grid-standards.mjs README.md .github/workflows/lint.yml)
+  diverged=$(git diff --name-only HEAD -- .pre-commit-config.yaml AGENTS.md mise.toml TODO.md docs/TODO.md docs/index.md scripts/check-grid-standards.py README.md .github/workflows/lint.yml)
   if [ -n "$diverged" ]; then
     echo "lint-parity: refusing to lint pushed config with uncommitted changes (worktree bytes would mask the committed revision):" >&2
     printf '%s\n' "$diverged" | sed 's/^/  /' >&2

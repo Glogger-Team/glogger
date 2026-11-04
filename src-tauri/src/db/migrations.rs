@@ -471,6 +471,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         migration_v87_reclassify_hire_events(conn)?;
         super::record_migration(conn, 87)?;
     }
+
+    if current_version < 88 {
+        migration_v88_stamp_hire_owner(conn)?;
+        super::record_migration(conn, 88)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1075,6 +1080,43 @@ fn migration_v87_reclassify_hire_events(conn: &Connection) -> Result<()> {
                 price_total = CAST(substr(raw_message, instr(raw_message, ' paid ') + 6) AS INTEGER)
          WHERE action = 'unknown'
            AND raw_message LIKE '% paid % Councils to hire a stall for %'",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Migration V88: stamp the owner on legacy hire rows that lack one.
+///
+/// Hire lines (`<player> paid <N> Councils to hire a stall for <H> hours`)
+/// are owner-only by game mechanics — you can only hire your own stall —
+/// and the parser already derives the book-level owner hint from them
+/// (`shop_log_parser.rs`: `hired` sits in the owner-action hint set). But
+/// v87 only repaired `action`/`player`/`price_total`, and rows written
+/// before the owner was stamped carry `owner IS NULL`, which hides them
+/// from every owner-scoped query (`build_filter_where` requires a
+/// non-empty owner). Copy `player` into the missing `owner`; the
+/// `owner IS NULL` predicate makes re-runs a no-op, and the `player != ''`
+/// guard leaves degenerate rows untouched.
+fn migration_v88_stamp_hire_owner(conn: &Connection) -> Result<()> {
+    // Same minimal-fixture guard as v87 (roulette v77 synthetic DB has
+    // no `stall_events`): skip instead of failing. Real DBs always carry
+    // it (created in v23, long before v88 can run).
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stall_events')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE stall_events
+            SET owner = player
+         WHERE action = 'hired'
+           AND owner IS NULL
+           AND player != ''",
         [],
     )?;
     Ok(())
@@ -4334,13 +4376,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            87,
+            88,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 87);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 88);
     }
 
     #[test]
@@ -4469,7 +4511,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 87, "migration chain head");
+        assert_eq!(head, 88, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -4524,7 +4566,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 87, "migration chain head");
+        assert_eq!(head, 88, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -4662,6 +4704,69 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1, "re-run must not duplicate or widen");
+    }
+    #[test]
+    fn migration_v88_stamps_hire_owner() {
+        // Pre-owner-era hire rows carry `owner IS NULL`, which hides them
+        // from every owner-scoped query. v88 stamps `owner = player`
+        // (you can only hire your own stall); non-hire NULL-owner rows
+        // and already-owned hires stay untouched; re-run is a no-op.
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        c.execute_batch(
+            "INSERT INTO stall_events
+                (event_timestamp, event_at, log_timestamp, log_title,
+                 action, player, owner, item, quantity,
+                 price_unit, price_total, raw_message, entry_index)
+             VALUES
+                ('2026-01-01T00:00:00', NULL, 'ts', 'title',
+                 'hired', 'Deradon', NULL, NULL, 1,
+                 NULL, 5000, 'Deradon paid 5000 Councils to hire a stall for 24 hours', 0),
+                ('2026-01-02T00:00:00', NULL, 'ts', 'title',
+                 'hired', 'MrBonq', 'SomebodyElse', NULL, 1,
+                 NULL, 5000, 'MrBonq paid 5000 Councils to hire a stall for 24 hours', 0),
+                ('2026-01-03T00:00:00', NULL, 'ts', 'title',
+                 'bought', 'MrBonq', NULL, 'Nice Saddle', 1,
+                 4000.0, 4000, 'MrBonq bought Nice Saddle at a cost of 4000 per 1 = 4000', 0);",
+        )
+        .unwrap();
+        migration_v88_stamp_hire_owner(&c).unwrap();
+        let owner: Option<String> = c
+            .query_row(
+                "SELECT owner FROM stall_events
+                 WHERE raw_message LIKE 'Deradon paid %'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(owner.as_deref(), Some("Deradon"), "hire row gains its owner");
+        let kept: Option<String> = c
+            .query_row(
+                "SELECT owner FROM stall_events
+                 WHERE raw_message LIKE 'MrBonq paid %'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept.as_deref(), Some("SomebodyElse"), "stamped hire row untouched");
+        let bought: Option<String> = c
+            .query_row(
+                "SELECT owner FROM stall_events WHERE action = 'bought'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bought, None, "non-hire NULL-owner row stays NULL");
+        // Idempotent: second run changes nothing.
+        migration_v88_stamp_hire_owner(&c).unwrap();
+        let n: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM stall_events WHERE owner IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "re-run must not stamp anything new");
     }
 
     #[test]
