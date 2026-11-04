@@ -2,10 +2,9 @@
 name = "glogger"
 version = "1.11.0"
 description = "Project: Gorgon Log Watcher and Data Tracker"
-authors = ["Daniel"]
 license = "GPL-3.0"
 repository = "https://github.com/Glogger-Team/glogger"
-edition = "2021"
+edition = "2024"
 
 [lib]
 name = "glogger_lib"
@@ -40,11 +39,3 @@ strip = true
 tauri-plugin-window-state = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
-
-[target.'cfg(windows)'.dependencies]
-# GDI window capture for the stall price OCR scanner (Phase B).
-windows = { version = "0.62", features = [
-    "Win32_Foundation",
-    "Win32_Graphics_Gdi",
-    "Win32_UI_WindowsAndMessaging",
-] }

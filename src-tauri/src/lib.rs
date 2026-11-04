@@ -672,11 +672,11 @@ pub fn run() {
                                     startup_log!("CDN v{} already persisted to database, skipping", data.version);
                                 } else {
                                     cdn_commands::emit_startup_detail(&app_handle, 0, "Saving to database...");
-                                    if let Err(e) = db::cdn_persistence::persist_cdn_data(&mut conn, &data) {
+                                    match db::cdn_persistence::persist_cdn_data(&mut conn, &data) { Err(e) => {
                                         startup_log!("Failed to persist CDN data to database: {e}");
-                                    } else {
+                                    } _ => {
                                         startup_log!("CDN data persisted to database");
-                                    }
+                                    }}
                                 }
                             }
                         }

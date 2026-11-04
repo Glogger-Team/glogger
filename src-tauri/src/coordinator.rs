@@ -882,7 +882,7 @@ impl DataIngestCoordinator {
         /// Flush helper — persists accumulated events in a single DB transaction,
         /// then emits batches to the frontend. Resets state after flush.
         macro_rules! flush_batches {
-            ($self:expr, $pe:expr, $dom:expr, $start:expr) => {
+            ($self:expr_2021, $pe:expr_2021, $dom:expr_2021, $start:expr_2021) => {
                 if !$pe.is_empty() {
                     // Persist all accumulated events in a single SQLite transaction
                     let result = $self.game_state.process_events_batch(&$pe, &$self.db_pool);

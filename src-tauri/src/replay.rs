@@ -365,7 +365,7 @@ fn run_replay(
     /// Flush accumulated player events and domain updates to the frontend.
     /// Yields briefly after each flush so the message queue can drain.
     macro_rules! flush_batches {
-        ($app:expr, $gs:expr, $pe:expr, $dom:expr, $start:expr, $emits:expr, $last_yield:expr) => {
+        ($app:expr_2021, $gs:expr_2021, $pe:expr_2021, $dom:expr_2021, $start:expr_2021, $emits:expr_2021, $last_yield:expr_2021) => {
             if !$pe.is_empty() {
                 let batch_result = $gs.process_events_batch(&$pe, &db);
                 $dom.extend(batch_result.domains_updated);
