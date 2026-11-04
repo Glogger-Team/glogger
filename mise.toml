@@ -22,8 +22,11 @@ description = "Ruff check + format on scripts/ (commit-fast slice)"
 run = ["ruff check scripts/", "ruff format --check scripts/"]
 
 [tasks."lint:shell"]
-description = "ShellCheck on scripts/*.sh at warning severity (commit-fast slice)"
-run = ["python -c \"import glob, subprocess, sys; sys.exit(subprocess.run(['shellcheck', '-S', 'warning'] + glob.glob('scripts/*.sh')).returncode)\""]
+description = "ShellCheck on scripts/*.sh at warning severity + commit-msg hook self-test (commit-fast slice)"
+run = [
+  "python -c \"import glob, subprocess, sys; sys.exit(subprocess.run(['shellcheck', '-S', 'warning'] + glob.glob('scripts/*.sh')).returncode)\"",
+  "bash scripts/check-commit-msg.sh --self-test",
+]
 
 [tasks."lint:yaml"]
 description = "yamllint + zizmor + pinact on .github/ (commit-fast slice)"
@@ -59,6 +62,21 @@ run = ["npm run check:grids"]
 description = "Review-patterns gate: decided defect shapes (commit-fast slice)"
 run = ["bash scripts/check-review-patterns.sh"]
 
+[tasks."lint:parity"]
+description = "Lint-parity drift guard: hook/docs refs resolve, TODO location contract, fast-set weight (commit-fast slice)"
+# Fails closed on drift between mise.toml (single source of truth),
+# .pre-commit-config.yaml entries, AGENTS.md mentions, and the TODO.md
+# location contract — the stringly-typed seams the parity work left behind.
+run = ["bash scripts/check-lint-parity.sh"]
+
+[tasks."lint:parity-push"]
+description = "Pre-push parity: fail on worktree divergence in config sources (push/full slice)"
+# --push fails closed listing source files that differ worktree-vs-HEAD
+# (the checks read worktree bytes but certify the pushed revision).
+# Commit-hook path never runs this: config edits are legitimately
+# divergent at commit time.
+run = ["bash scripts/check-lint-parity.sh --push"]
+
 [tasks."lint:build"]
 description = "Frontend type-check and build (push/full slice)"
 run = ["npm run build"]
@@ -83,7 +101,7 @@ run = ["pwsh -NoProfile -File scripts/check-glogger-constraints.ps1"]
 
 [tasks."lint:fast"]
 description = "Commit stage: seconds-scale checks, no build/test/network"
-depends = ["lint:ruff", "lint:shell", "lint:yaml", "lint:markdown", "lint:grids", "lint:review"]
+depends = ["lint:ruff", "lint:shell", "lint:yaml", "lint:markdown", "lint:grids", "lint:review", "lint:parity"]
 
 [tasks.lint]
 description = "Blocking lint gates (CI lint.yml set, runnable locally)"
@@ -98,6 +116,7 @@ description = "Blocking lint gates (CI lint.yml set, runnable locally)"
 run = [
   "mise run lint:fast",
   "mise run lint:markdown-push",
+  "mise run lint:parity-push",
   "mise run lint:build",
   "mise run lint:clippy",
   "mise run lint:test",
