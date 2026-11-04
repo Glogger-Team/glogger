@@ -86,9 +86,11 @@ fi
 # 4. lint:fast membership matches its contract: the commit stage must
 #    stay free of build/test/network-weight slices (the pre-commit hook
 #    budget is seconds). New heavy slices belong in `lint`, not `lint:fast`.
-#    `lint:markdown-push` is denied for a different reason: its --push
-#    mode rejects worktree overlap, which is legitimate at commit time
-#    (amend/refine flows) and only meaningful at push time.
+#    `lint:typecheck` is denied too: vue-tsc takes tens of seconds, so it
+#    is push-weight, not commit-weight. `lint:markdown-push` is denied for
+#    a different reason: its --push mode rejects worktree overlap, which is
+#    legitimate at commit time (amend/refine flows) and only meaningful at
+#    push time.
 [ -r mise.toml ] || { echo "lint-parity: cannot read mise.toml" >&2; exit 2; }
 # Isolate the stanza body only: the sed range is inclusive of the next
 # `[` header, whose own quoted task name would false-positive. awk is
@@ -96,7 +98,7 @@ fi
 block=$(awk '/\[tasks\."lint:fast"\]/{f=1;next} /^\[/{f=0} f' mise.toml)
 [ -n "$block" ] || { echo "lint-parity: lint:fast stanza missing or empty in mise.toml" >&2; exit 2; }
 fast=$(printf '%s\n' "$block" | grep -oE "['\"]lint:[a-z0-9-]+['\"]" | tr -d "\"'" || true)
-for heavy in lint:build lint:clippy lint:test lint:audit lint:constraints lint:markdown-push; do
+for heavy in lint:build lint:typecheck lint:clippy lint:test lint:audit lint:constraints lint:markdown-push; do
   printf '%s\n' "$fast" | grep -qxF "$heavy" \
     && { echo "lint-parity: heavy slice '$heavy' in lint:fast (commit stage must stay seconds-scale)"; fail=1; } || true
 done

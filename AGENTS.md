@@ -60,7 +60,7 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 ## Work isolation (herdr outer, omp inner)
 
 - **One feature = one herdr worktree = one omp main session.** `herdr worktree create --branch feature/<name>` (existing branch → checkout, else created from `--base`/HEAD under `<worktrees.directory>/<repo>/<branch-slug>`), launch omp in that checkout, never in the `main` checkout. Close with `herdr worktree remove` (runs `git worktree remove`, never deletes the branch). Grouped worktrees are normal workspaces (own tabs/panes); closing the parent row closes the group but not the checkouts.
-- **Inside the worktree, main plans then fans out file-disjoint implementation workers with `isolated: true`.** Shared checkout is the default — concurrent writers interleave — so say `isolated workspaces` explicitly and give each worker disjoint files; main integrates, resolves conflicts, verifies, commits. Overlapping patches still conflict at merge even when isolated.
+- **Fresh worktree setup:** each herdr worktree needs its own `node_modules` — run `npm install` once per new checkout (lockfile-pinned, ~10s; `npm run build`/`typecheck` fail without it). `cargo`/`mise` state is shared via the home dir, only npm is per-checkout.
 - **Required omp settings (this box):** `task.isolation.enabled true`, `isolation.backend auto` (resolves to ProjFS here — `prjflt` running — else `rcopy`; `block-clone` is ReFS-only, dead on NTFS), `task.isolation.merge patch`, `task.isolation.apply true`. Needs a git repo; unavailable in plan mode; not a security sandbox (workers keep tools/network/creds, only checkout edits are separated). Isolated workers are non-revivable after teardown — keep assignments self-contained, follow up in main.
 - **Review is `/skill:frozen-review`, report-only.** Parent measures the fact rows once (`npm run build`, `cargo test --lib` + count, `npm run check:grids`, `python scripts/check-glogger-constraints.py`, freeze state) and pastes frozen hunks into each brief; reviewers run **non-isolated, read-only** (`scout`/`reviewer`), never re-run `git diff` or a fact row. Only the behaviour slice may live-smoke (CDP recipe). One fix batch next turn, then gates only, then a bare re-ask reviews the delta; marker `review-last` is local, never pushed.
 
@@ -155,12 +155,11 @@ Frozen-review + CodeRabbit rounds on the `todo-burndown` series (22 commits, ~ha
 
 Before committing, lint every file type you changed and fix what the linter reports — local feedback first, not CI. Tools live in `mise.toml` (`mise install` fetches them); run from the repo root:
 
-- `mise run lint` — the blocking set (CI `lint.yml` gates runnable locally, slices run via `mise run lint:*`).
-- `mise run lint:all` — `lint` plus advisory rustfmt.
+- `mise run lint` — the blocking set (CI `lint.yml` gates runnable locally, slices run via `mise run lint:*`). Skips only the full vite bundle (`lint:build`, CI-only — push runs `lint:typecheck` instead).
 
 | File type | Linter | Covered by |
 | --------- | ------ | ---------- |
-| TS/Vue/JS (`.ts`, `.vue`) | vue-tsc (gated today); eslint (pending `npm i -D`) | `lint` → `npm run build` |
+| TS/Vue/JS (`.ts`, `.vue`) | vue-tsc (gated today); eslint (pending `npm i -D`) | push → `lint:typecheck` (`npm run typecheck`, no bundle); CI adds `lint:build` (`npm run build`) |
 |TOS/CoC hard lines|`python scripts/check-glogger-constraints.py`|Game-interaction limits gate: local pre-push hook (install per clone: `scripts/setup-hooks.sh`, via pre-commit) + the release workflow's `validate` job|
 | TOS/CoC | game-interaction limits gate (gated, pre-push hook) | `lint` → `python scripts/check-glogger-constraints.py` |
 | Review patterns | decided defect shapes from review rounds (gated) | `lint` → `python scripts/check-review-patterns.py` (migration discard check today; cache-guard + UPDATE-scope stay on the pre-commit checklist — need multi-line context grep can't do) |
