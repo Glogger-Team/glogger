@@ -1123,11 +1123,15 @@ export const useGameStateStore = defineStore('gameState', () => {
 
   // ── DB Actions ────────────────────────────────────────────────────────
 
-  /** Load all game state domains from the database for the active character+server */
-  async function loadAll() {
+  /** Load all game state domains from the database for the active character+server.
+   * Returns true when the full load completed, false when skipped (no
+   * identity) or when any domain invoke failed — callers that need to
+   * distinguish stale from fresh (e.g. post-rename refresh) check this
+   * instead of assuming the store now reflects the active identity. */
+  async function loadAll(): Promise<boolean> {
     const characterName = getCharacterName()
     const serverName = getServerName()
-    if (!characterName || !serverName) return
+    if (!characterName || !serverName) return false
 
     loading.value = true
     try {
@@ -1174,9 +1178,11 @@ export const useGameStateStore = defineStore('gameState', () => {
       }
     } catch (e) {
       console.error('[gameStateStore] Failed to load game state:', e)
+      return false
     } finally {
       loading.value = false
     }
+    return true
   }
 
   /** Refresh a single domain after a game-state-updated notification */

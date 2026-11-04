@@ -609,13 +609,17 @@ async function doRename() {
     characterStore.allCharacterWorkOrdersGeneration++;
     if (wasActive) {
       // The DB rename already committed — a refresh failure must not
-      // masquerade as a failed rename (the form would show the old,
-      // now-nonexistent identity and a retry would fail confusingly).
+      // masquerade as a failed rename. loadAll reports false when it
+      // skipped or failed internally (it logs and swallows), so check
+      // the status and warn instead of showing stale state as fresh.
       try {
         gameStateStore.resetSessionSkills();
         gameStateStore.clearLiveInventory();
-        await gameStateStore.loadAll();
+        const loaded = await gameStateStore.loadAll();
         characterStore.initForActiveCharacter();
+        if (!loaded) {
+          throw new Error('game state reload did not complete');
+        }
       } catch (refreshErr) {
         console.error("Rename committed but state refresh failed:", refreshErr);
         renameWarn.value = `Renamed, but reloading game state failed: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)} — switch characters to refresh.`;
