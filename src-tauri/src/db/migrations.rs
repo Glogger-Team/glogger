@@ -467,6 +467,10 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 86)?;
     }
 
+    if current_version < 87 {
+        migration_v87_reclassify_hire_events(conn)?;
+        super::record_migration(conn, 87)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1035,6 +1039,37 @@ fn migration_v86_drop_stall_price_observations(conn: &Connection) -> Result<()> 
          DROP INDEX IF EXISTS idx_spo_item;
          DROP INDEX IF EXISTS idx_spo_observed;
          DROP INDEX IF EXISTS idx_spo_stall;",
+    )?;
+    Ok(())
+}
+/// Migration V87: reclassify legacy hire rows stored as `unknown`.
+///
+/// Hire lines (`<player> paid <N> Councils to hire a stall for <H> hours`)
+/// parsed as `unknown` before the `hired` action existed
+/// (`shop_log_parser.rs::HIRED_RE`). The `stall_events` UNIQUE key excludes
+/// `action` and inserts are `OR IGNORE`, so rescan never updates those rows
+/// — they stay invisible to the `hired` filter. Match `raw_message` against
+/// the hire shape and flip only `action`, preserving every other column.
+/// Idempotent: the `action = 'unknown'` predicate skips already-migrated rows.
+fn migration_v87_reclassify_hire_events(conn: &Connection) -> Result<()> {
+    // Minimal fixtures (e.g. the roulette v77 test) seed a late
+    // `schema_migrations` version without the early tables — skip instead
+    // of failing (same shape as v82/v83). Real DBs always carry
+    // `stall_events` (created in v23, long before v87 can run).
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stall_events')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE stall_events SET action = 'hired'
+         WHERE action = 'unknown' AND raw_message LIKE '% to hire a stall for %'",
+        [],
     )?;
     Ok(())
 }
@@ -4293,13 +4328,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            86,
+            87,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 86);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 87);
     }
 
     #[test]
@@ -4428,7 +4463,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 86, "migration chain head");
+        assert_eq!(head, 87, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -4474,8 +4509,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 86 (full chain
-        // through the v85/v86 drops). Repair: a
+        // Chain wiring: full run_migrations head must be 87 (full chain
+        // through the v85/v86 drops + v87 hire reclassification). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -4483,7 +4518,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 86, "migration chain head");
+        assert_eq!(head, 87, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -4566,6 +4601,57 @@ mod tests {
                 .unwrap();
             assert_eq!(n, 0, "{name} should be gone after v86");
         }
+    }
+    #[test]
+    fn migration_v87_reclassifies_legacy_hire_rows() {
+        // Pre-hired-era rows landed as `unknown`; the UNIQUE key excludes
+        // `action`, so rescan never fixes them. v87 flips only `action`,
+        // preserving every other column; re-run is a no-op.
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        c.execute_batch(
+            "INSERT INTO stall_events
+                (event_timestamp, event_at, log_timestamp, log_title,
+                 action, player, owner, item, quantity,
+                 price_unit, price_total, raw_message, entry_index)
+             VALUES
+                ('2026-01-01T00:00:00', NULL, 'ts', 'title',
+                 'unknown', 'Deradon', 'Deradon', NULL, 1,
+                 NULL, 5000, 'Deradon paid 5000 Councils to hire a stall for 24 hours', 0),
+                ('2026-01-02T00:00:00', NULL, 'ts', 'title',
+                 'unknown', 'MrBonq', 'MrBonq', 'Nice Saddle', 1,
+                 4000.0, 4000, 'MrBonq bought Nice Saddle at a cost of 4000 per 1 = 4000', 0);",
+        )
+        .unwrap();
+        migration_v87_reclassify_hire_events(&c).unwrap();
+        let action: String = c
+            .query_row(
+                "SELECT action FROM stall_events WHERE player = 'Deradon'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(action, "hired", "legacy hire row should flip to hired");
+        let (kept_action, kept_item, kept_price): (String, Option<String>, Option<i64>) = c
+            .query_row(
+                "SELECT action, item, price_total FROM stall_events WHERE player = 'MrBonq'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(kept_action, "unknown", "non-hire row must stay unknown");
+        assert_eq!(kept_item.as_deref(), Some("Nice Saddle"), "item preserved");
+        assert_eq!(kept_price, Some(4000), "price preserved");
+        // Idempotent: second run changes nothing.
+        migration_v87_reclassify_hire_events(&c).unwrap();
+        let n: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM stall_events WHERE action = 'hired'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "re-run must not duplicate or widen");
     }
 
     #[test]

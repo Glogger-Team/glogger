@@ -99,7 +99,7 @@ All of the above "derivable" data is confirmed available in CDN. Here's exactly 
 | Gift favor tiers | `NpcInfo.gift_favor_tiers` (ItemGifts in CDN) | e.g., `["CloseFriends", "BestFriends", "LikeFamily", "SoulMates"]` |
 | Training | `TrainingService.skills[]` + `unlocks[]` at favor tiers | Already shown in NPC detail services section |
 | Barter | `BarterService` with `AdditionalUnlocks[]` | Available in services, limited detail on actual barter items |
-| Items they sell | `sources_items.json` Vendor/Barter entries (in-memory `vendor_items_by_npc` index, `value × 1.5`) | NPC sell prices shown in the Data Browser; the old `vendor_prices` SQL table was dead (no readers/writers) and dropped in migration v85 |
+| Items they sell | `sources_items.json` Vendor/Barter entries (in-memory `vendor_items_by_npc` index, `ceil(value × 1.5)`) | NPC sell prices shown in the Data Browser; the old `vendor_prices` SQL table was dead (no readers/writers) and dropped in migration v85 |
 | NPC Quests | `QuestData.FavorNpc` field matches NPC key | Format: `"AreaName/NPC_Key"` — cross-reference available |
 | Quest favor rewards | `QuestData.Reward_Favor` | Numeric favor reward per quest |
 | Repeatable quests | `QuestData.ReuseTime_Minutes` / `ReuseTime_Days` | Fields exist — quests with these are repeatable |
@@ -209,7 +209,7 @@ The vendor purchase gold display on item tooltips requires the new vendor gold t
 
 **Vendor gold reset timer:** The `VendorGoldChanged` event gives us `current_gold` and `max_gold` but **no timer information**. The log does not appear to expose the actual reset timestamp. Our best-guess approach (recording when gold first drops below max, then adding 168 hours) is likely the only option. **Caveat:** If the player wasn't running glogger when they first sold to the vendor, our timer will be wrong. We should show this as "estimated" with appropriate caveats in the UI.
 
-**Item sell prices:** Yes. NPC sell prices come from `sources_items.json` Vendor/Barter entries (the in-memory `vendor_items_by_npc` index, `value × 1.5`). The Data Browser's `NpcBrowser.vue` already displays a vendor inventory table with item names and sell prices. (The old `vendor_prices` SQL table was dead — no readers or writers — and was dropped in migration v85.)
+**Item sell prices:** Yes. NPC sell prices come from `sources_items.json` Vendor/Barter entries (the in-memory `vendor_items_by_npc` index, `ceil(value × 1.5)`). The Data Browser's `NpcBrowser.vue` already displays a vendor inventory table with item names and sell prices. (The old `vendor_prices` SQL table was dead — no readers or writers — and was dropped in migration v85.)
 
 **Barter option details:** Partially. The `BarterService` type has a `Favor` requirement and `AdditionalUnlocks` (favor tiers where more barter options open up), but **not the actual barter recipes** (what items you trade for what). The specific "trade 5 of X for 1 of Y" details don't appear in the NPC CDN data we currently parse. There may be a separate CDN file for barter recipes, or this data may be embedded in the raw JSON (`NpcInfo.raw_json`) under a field we're not extracting. **Status: Needs CDN raw JSON investigation.**
 

@@ -30,7 +30,7 @@ Small tasks and notes that don't belong in a dedicated plan.
   - **Unblocks:** the Skillbook autowatchwords prerequisite (Larger Efforts — its audit names the missing `snapshot_skill_abilities` table explicitly), an honest "Hide unlearned abilities" in `AbilityPickerDialog.vue:52` (currently a `level <= skill level` proxy, `:246-248`), and a true "My abilities" filter in `ModBrowser.vue:16` (currently scoped to the build's assigned bars).
   - **Effort: Trivial (inventory half landed; only deliberate `IngredientItemTypeIds` omission remains) | Impact: Low (closes the report audit)**
 
-## Waiting on richer character reports (report-only, no log path)
+## Waiting on richer character reports or other non-log sources (no log path)
 
 - [ ] Current gear display — no source flags what's worn (log path was nameless appearance keys; Character report path can't distinguish worn from carried; appearance-only view built and reverted).
   - **Unblocks when:** a report/VIP flag or per-slot item-identity field for equipped items lands in the Character export. **Effort: unknown | Impact: Medium**
