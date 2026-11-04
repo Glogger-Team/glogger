@@ -142,6 +142,11 @@ jobs:
         # Same `mise run lint:yaml` slice the pre-commit hook runs — pinact
         # now gates CI too (green on HEAD; was local-only because
         # pinact-action is uninstallable on stock runners).
+        # GITHUB_TOKEN keeps pinact's tag-lookup API calls authenticated
+        # (5k/hr vs 60/hr anonymous — the anonymous pool exhausts on busy
+        # repos). Local runs stay tokenless; CI-only difference.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: mise run lint:yaml
 
       - name: Lint-parity drift guard
