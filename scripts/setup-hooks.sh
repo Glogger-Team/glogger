@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 #
-# Point git to the project's .githooks directory so commit-msg (and any
-# future hooks) are picked up automatically.
+# Install the project's pre-commit hooks (pre-commit + pre-push + commit-msg
+# stages, defined in .pre-commit-config.yaml) via the mise-provided runner.
+# Idempotent: safe to re-run. Skipped-locally work is never silent — CI runs
+# the same mise tasks, and `git commit/push --no-verify` bypasses loudly.
 #
 # Usage: ./scripts/setup-hooks.sh
 
@@ -9,5 +11,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-git -C "$ROOT" config core.hooksPath .githooks
-echo "Git hooks configured — using .githooks/ directory."
+# Clean up the pre-framework layout: .githooks/ no longer exists.
+if [ "$(git -C "$ROOT" config --get core.hooksPath || true)" = ".githooks" ]; then
+  git -C "$ROOT" config --unset core.hooksPath
+  echo "Removed legacy core.hooksPath=.githooks."
+fi
+
+mise exec -- pre-commit install --hook-type pre-commit --hook-type pre-push --hook-type commit-msg
+echo "pre-commit hooks installed."

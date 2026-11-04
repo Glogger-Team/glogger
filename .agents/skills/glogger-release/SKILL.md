@@ -6,6 +6,7 @@ description: Operate the glogger canonical repo — integrate tested work into t
 # Glogger — Daily Driver & Release Pipeline
 
 ## Overview
+
 This repo (`Glogger-Team/glogger`) is the canonical home of glogger, successor of the `cprivitere/glogger-twinkleoftoes` fork of `crisp-oddio/glogger-oddio`. It owns its config, release pipeline, update channel and branch line: `main` is both the source of truth and the release branch. Upstream is an optional read-only reference (`git fetch upstream && git merge upstream/<branch>`), never a PR target.
 
 ## Quick reference
@@ -26,7 +27,7 @@ This repo (`Glogger-Team/glogger`) is the canonical home of glogger, successor o
 ## Decision rules
 
 - **Which profile is the user running?** Window title: `glogger v<ver>` = the installed daily driver (appdata `glogger.Release`, data persists forever). `EXPERIMENTAL` = sandbox that re-seeds from the Release dir on each version bump — never treat its data as valuable. `DEV` = `npm run tauri dev` scratch DB (`glogger.Dev`).
-- **Where does new work live?** Committed work goes on `main` in logical chunks (prefix list owned by `.githooks/commit-msg`).
+- **Where does new work live?** Committed work goes on `main` in logical chunks (prefix list owned by `scripts/check-commit-msg.sh`).
 - **Upstream is a reference remote:** absorb upstream fixes with `git fetch upstream && git merge upstream/<branch>`. Expect conflicts in the config/CI files this repo owns (`tauri.conf.json` updater block, `tauri.release.conf.json`, `scripts/*`, `.github/workflows/release.yml`, `AGENTS.md`) — resolve toward this repo's values. Never open a PR against `crisp-oddio/glogger-oddio`.
 - **DB safety:** copy DBs only when the source app is closed; copy `glogger.db` + `-wal` + `-shm` together; verify with count-diff (`words_of_power`, `character_resuscitations`). Migrations are upward-only — never open a newer-schema DB with an older build.
 
@@ -63,7 +64,7 @@ If the Release DB drifts stale: close ALL gloggers, copy the four files into `%A
 
 ## Known hazards (this machine, Windows)
 
-- Hooks are **opt-in per clone**: `scripts/setup-hooks.sh` sets `core.hooksPath=.githooks`. Pre-push runs the hard-line scanner (`scripts/check-glogger-constraints.ps1` owns the machine patterns; TOS prose in `docs/research/glogger-game-interaction-limits.md`) and blocks a violating push; release `validate` re-checks.
+- Hooks are **opt-in per clone**: `scripts/setup-hooks.sh` installs the pre-commit/pre-push/commit-msg stages. Pre-push runs the full `mise run lint` (the hard-line scanner `scripts/check-glogger-constraints.ps1` owns the machine patterns; TOS prose in `docs/research/glogger-game-interaction-limits.md` is one slice) and blocks a violating push; CI lint + release `validate` re-check.
 
 - PowerShell 5.1 mangles `git commit -m` here-strings with double quotes → `git commit -F <file>`.
 - `src-tauri/Cargo.toml` phantom CRLF diff in `git status` — leave uncommitted.
