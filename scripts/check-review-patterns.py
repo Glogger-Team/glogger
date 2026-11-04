@@ -26,10 +26,13 @@ FINDING_LET_DISCARD = (
 
 def read_body(root: Path) -> str:
     path = root / "src-tauri" / "src" / "db" / "migrations.rs"
+    # migrations.rs is CRLF: strip \r too or the ^...$ anchor never matches
+    # and the gate scans the test module the awk excludes (latent until a
+    # test-module shape trips a pattern — fixture at 4371 lives pre-anchor).
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     out = []
     for line in lines:
-        if re.match(r"^mod tests \{$", line.rstrip("\n")):
+        if re.match(r"^mod tests \{$", line.rstrip("\r\n")):
             break
         out.append(line)
     return "".join(out)

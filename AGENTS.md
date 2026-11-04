@@ -50,7 +50,6 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 | Frontend build + typecheck | `npm run build` | `vue-tsc --noEmit && vite build` |
 | Rust check | `cd src-tauri && cargo check` | Faster feedback |
 | Rust tests | `cd src-tauri && cargo test --lib` | Count reported per run; all fast except `#[ignore]`-gated suites |
-|TOS/CoC hard lines|`python scripts/check-glogger-constraints.py`|Game-interaction limits gate: local pre-push hook (install per clone: `scripts/setup-hooks.sh`) + the release workflow's `validate` job|
 |Grid standards|`npm run check:grids`|Raw-`<table>`/census/exemption gate (`scripts/check-grid-standards.py` owns the machine list) — run it when touching a table or the census, and hand its output to a review round (see *Code review loop*)|
 | Full Rust tests | `cd src-tauri && cargo test` | No `src-tauri/tests/` dir exists; everything is in-lib |
 | Survey replay | `npm run survey-test` | `--ignored` accuracy report, minutes-scale, needs `test_data/` + `docs/CDN-full-examples/` |

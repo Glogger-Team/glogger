@@ -87,6 +87,8 @@ def main(argv):
     if not latest:
         out += ["## Unreleased", ""]
         out += [changelog_tail("", "HEAD").rstrip("\n")]
+        # Piped (no command substitution): the tail's trailing blank line
+        # survives, then the explicit `echo ""` adds one more.
         out += ["", ""]
     else:
         counted = run_git(["rev-list", "--count", f"{latest}..HEAD"])

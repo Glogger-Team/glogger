@@ -92,7 +92,7 @@ fi
 [ -r mise.toml ] || { echo "lint-parity: cannot read mise.toml" >&2; exit 2; }
 # Isolate the stanza body only: the sed range is inclusive of the next
 # `[` header, whose own quoted task name would false-positive. awk is
-# already a repo-blessed portable (check-review-patterns.sh).
+# already a repo-blessed portable (check-review-patterns.py).
 block=$(awk '/\[tasks\."lint:fast"\]/{f=1;next} /^\[/{f=0} f' mise.toml)
 [ -n "$block" ] || { echo "lint-parity: lint:fast stanza missing or empty in mise.toml" >&2; exit 2; }
 fast=$(printf '%s\n' "$block" | grep -oE "['\"]lint:[a-z0-9-]+['\"]" | tr -d "\"'" || true)

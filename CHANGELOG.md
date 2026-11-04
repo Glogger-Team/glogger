@@ -1,7 +1,7 @@
 # Changelog
 
 Full release history for glogger, generated from git tags.
-Per-release notes use the same grouping as scripts/generate-changelog.sh
+Per-release notes use the same grouping as scripts/generate-changelog.py
 (feat: → Features, impv: → Improvements, fix: → Fixes) with humanized
 entries (no type prefix, hash, PR ref, or commit count).
 Releases that predate the commit-prefix convention list all commit subjects.

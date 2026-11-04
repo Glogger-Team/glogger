@@ -55,7 +55,7 @@ description = "Pre-push Markdown: unpushed-commit files only, fail on staged ove
 run = ["python scripts/lint-markdown-changed.py --push"]
 
 [tasks."lint:grids"]
-description = "Grid standards census (commit-fast slice; node: builtins only, no install needed)"
+description = "Grid standards census (commit-fast slice; python stdlib only, no install needed)"
 run = ["npm run check:grids"]
 
 [tasks."lint:review"]
