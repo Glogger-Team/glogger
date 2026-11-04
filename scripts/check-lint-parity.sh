@@ -85,7 +85,8 @@ fi
 
 # 4. lint:fast membership matches its contract: the commit stage must
 #    stay free of build/test/network-weight slices (the pre-commit hook
-#    budget is seconds). New heavy slices belong in `lint`, not `lint:fast`.
+#    budget is seconds). New heavy slices belong in `lint` (push set) or
+#    `lint:full` (full gate), not `lint:fast`.
 #    `lint:typecheck` is denied too: vue-tsc takes tens of seconds, so it
 #    is push-weight, not commit-weight. `lint:markdown-push` is denied for
 #    a different reason: its --push mode rejects worktree overlap, which is

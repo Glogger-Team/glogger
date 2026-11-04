@@ -64,7 +64,7 @@ If the Release DB drifts stale: close ALL gloggers, copy the four files into `%A
 
 ## Known hazards (this machine, Windows)
 
-- Hooks are **opt-in per clone**: `scripts/setup-hooks.sh` (via pre-commit) installs the pre-commit/pre-push/commit-msg stages. Pre-push runs the full `mise run lint` (the hard-line scanner `scripts/check-glogger-constraints.py` owns the machine patterns; TOS prose in `docs/research/glogger-game-interaction-limits.md` is one slice) and blocks a violating push; CI lint + release `validate` re-check.
+- Hooks are **opt-in per clone**: `scripts/setup-hooks.sh` (via pre-commit) installs the pre-commit/pre-push/commit-msg stages. Pre-push runs `mise run lint` (push set: fast slices + typecheck + clippy; test/audit/constraints moved to manual `mise run lint:full` + CI) and blocks a failing push; the hard-line scanner `scripts/check-glogger-constraints.py` owns the machine patterns (TOS prose in `docs/research/glogger-game-interaction-limits.md` is one slice); CI lint + release `validate` re-check.
 
 - PowerShell 5.1 mangles `git commit -m` here-strings with double quotes → `git commit -F <file>`.
 - `src-tauri/Cargo.toml` phantom CRLF diff in `git status` — leave uncommitted.

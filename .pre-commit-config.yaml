@@ -21,7 +21,7 @@ repos:
         always_run: true
         stages: [pre-commit]
       - id: lint-full
-        name: lint full suite (mise)
+        name: lint push set (mise)
         entry: mise run lint
         language: system
         pass_filenames: false

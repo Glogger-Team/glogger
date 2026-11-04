@@ -121,12 +121,13 @@ the client, any automation of gameplay.
 
 ## 6. Enforcement: `scripts/check-glogger-constraints.py`
 
-Runs on every push, in CI lint, and on every release, so skipping one cannot ship a violation:
+Runs in the full gate, in CI lint, and on every release, so skipping one cannot ship a violation:
 
-- **Every push** from a clone with the hooks installed — the pre-push hook
-  runs `mise run lint` (which includes the constraints slice);
-  `scripts/setup-hooks.sh` (via pre-commit) installs it. Opt-in per clone,
-  so check it after a fresh clone.
+- **Manual stage A** (`mise run lint:full`) and **CI lint** — the constraints
+  slice runs in both; the pre-push hook (`mise run lint`) no longer includes
+  it (push set is fast slices + typecheck + clippy). Hooks are opt-in per
+  clone via `scripts/setup-hooks.sh` (pre-commit) — check them after a fresh
+  clone.
 - **Every release**: the `validate` job of `.github/workflows/release.yml`
   runs the scanner with `python3` before any platform builds, so a tag push that
   violates a hard line fails the release.
