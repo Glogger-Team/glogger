@@ -50,7 +50,7 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 | Frontend build + typecheck | `npm run build` | `vue-tsc --noEmit && vite build` |
 | Rust check | `cd src-tauri && cargo check` | Faster feedback |
 | Rust tests | `cd src-tauri && cargo test --lib` | Count reported per run; all fast except `#[ignore]`-gated suites |
-|TOS/CoC hard lines|`python scripts/check-glogger-constraints.py`|Game-interaction limits gate: local pre-push hook (install per clone: `python scripts/setup-hooks.py`) + the release workflow's `validate` job|
+|TOS/CoC hard lines|`python scripts/check-glogger-constraints.py`|Game-interaction limits gate: local pre-push hook (install per clone: `scripts/setup-hooks.sh`) + the release workflow's `validate` job|
 |Grid standards|`npm run check:grids`|Raw-`<table>`/census/exemption gate (`scripts/check-grid-standards.py` owns the machine list) — run it when touching a table or the census, and hand its output to a review round (see *Code review loop*)|
 | Full Rust tests | `cd src-tauri && cargo test` | No `src-tauri/tests/` dir exists; everything is in-lib |
 | Survey replay | `npm run survey-test` | `--ignored` accuracy report, minutes-scale, needs `test_data/` + `docs/CDN-full-examples/` |
@@ -162,7 +162,7 @@ Before committing, lint every file type you changed and fix what the linter repo
 | File type | Linter | Covered by |
 | --------- | ------ | ---------- |
 | TS/Vue/JS (`.ts`, `.vue`) | vue-tsc (gated today); eslint (pending `npm i -D`) | `lint` → `npm run build` |
-| Grids | grid standards census (gated) | `lint` → `npm run check:grids` |
+|TOS/CoC hard lines|`python scripts/check-glogger-constraints.py`|Game-interaction limits gate: local pre-push hook (install per clone: `scripts/setup-hooks.sh`) + the release workflow's `validate` job|
 | TOS/CoC | game-interaction limits gate (gated, pre-push hook) | `lint` → `python scripts/check-glogger-constraints.py` |
 | Review patterns | decided defect shapes from review rounds (gated) | `lint` → `python scripts/check-review-patterns.py` (migration discard check today; cache-guard + UPDATE-scope stay on the pre-commit checklist — need multi-line context grep can't do) |
 | Python (`.py`) | ruff check + format --check (gated in CI) | `lint` → `ruff check scripts/`, `ruff format --check scripts/` |
