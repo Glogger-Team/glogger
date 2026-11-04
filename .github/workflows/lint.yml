@@ -75,8 +75,8 @@ jobs:
 
       - name: ShellCheck scripts
         # Same `mise run lint:shell` slice the pre-commit hook runs.
-        # The old `.githooks` scan is gone with the directory; hook logic
-        # now lives in scripts/check-commit-msg.sh, inside the glob.
+        # The old `.githooks` scan is gone with the directory; the commit-msg
+        # hook is now scripts/check-commit-msg.py (warning-only, not shellcheck-scanned).
         run: mise run lint:shell
 
   cargo-audit:
@@ -147,7 +147,6 @@ jobs:
         # `mise run lint:fast`): hook/docs refs resolve, TODO location
         # contract holds, fast-set stays seconds-scale.
         run: mise run lint:parity
-
       - name: Validate pre-commit config
         run: mise exec -- pre-commit validate-config
 

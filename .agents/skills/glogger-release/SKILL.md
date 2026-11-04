@@ -27,7 +27,7 @@ This repo (`Glogger-Team/glogger`) is the canonical home of glogger, successor o
 ## Decision rules
 
 - **Which profile is the user running?** Window title: `glogger v<ver>` = the installed daily driver (appdata `glogger.Release`, data persists forever). `EXPERIMENTAL` = sandbox that re-seeds from the Release dir on each version bump — never treat its data as valuable. `DEV` = `npm run tauri dev` scratch DB (`glogger.Dev`).
-- **Where does new work live?** Committed work goes on `main` in logical chunks (prefix list owned by `scripts/check-commit-msg.sh`).
+- **Where does new work live?** Committed work goes on `main` in logical chunks (prefix list owned by `scripts/check-commit-msg.py`).
 - **Upstream is a reference remote:** absorb upstream fixes with `git fetch upstream && git merge upstream/<branch>`. Expect conflicts in the config/CI files this repo owns (`tauri.conf.json` updater block, `tauri.release.conf.json`, `scripts/*`, `.github/workflows/release.yml`, `AGENTS.md`) — resolve toward this repo's values. Never open a PR against `crisp-oddio/glogger-oddio`.
 - **DB safety:** copy DBs only when the source app is closed; copy `glogger.db` + `-wal` + `-shm` together; verify with count-diff (`words_of_power`, `character_resuscitations`). Migrations are upward-only — never open a newer-schema DB with an older build.
 
@@ -64,14 +64,14 @@ If the Release DB drifts stale: close ALL gloggers, copy the four files into `%A
 
 ## Known hazards (this machine, Windows)
 
-- Hooks are **opt-in per clone**: `scripts/setup-hooks.sh` installs the pre-commit/pre-push/commit-msg stages. Pre-push runs the full `mise run lint` (the hard-line scanner `scripts/check-glogger-constraints.ps1` owns the machine patterns; TOS prose in `docs/research/glogger-game-interaction-limits.md` is one slice) and blocks a violating push; CI lint + release `validate` re-check.
+- Hooks are **opt-in per clone**: `scripts/setup-hooks.sh` (via pre-commit) installs the pre-commit/pre-push/commit-msg stages. Pre-push runs the full `mise run lint` (the hard-line scanner `scripts/check-glogger-constraints.py` owns the machine patterns; TOS prose in `docs/research/glogger-game-interaction-limits.md` is one slice) and blocks a violating push; CI lint + release `validate` re-check.
 
 - PowerShell 5.1 mangles `git commit -m` here-strings with double quotes → `git commit -F <file>`.
 - `src-tauri/Cargo.toml` phantom CRLF diff in `git status` — leave uncommitted.
 - npm only (Node 24). No bun/yarn/pnpm.
 - Do not run two glogger instances against the same data dir simultaneously.
 - `version:bump` does NOT wipe the daily-driver data; it DOES wipe Experimental data — that's by design.
-- Updater signing (`bundle.createUpdaterArtifacts: true` in `tauri.conf.json`): a build **fails** without `TAURI_SIGNING_PRIVATE_KEY`, but `npm run tauri:build` runs `scripts/release-build.sh`, which injects a `createUpdaterArtifacts:false` override when the variable is unset — so local builds stay unsigned and working. Never publish an unsigned build: the channel job hard-fails when a platform's `.sig` is missing.
+- Updater signing (`bundle.createUpdaterArtifacts: true` in `tauri.conf.json`): a build **fails** without `TAURI_SIGNING_PRIVATE_KEY`, but `npm run tauri:build` runs `scripts/release-build.py`, which injects a `createUpdaterArtifacts:false` override when the variable is unset — so local builds stay unsigned and working. Never publish an unsigned build: the channel job hard-fails when a platform's `.sig` is missing.
 - **Auto-update correctness:** the `pubkey` in `src-tauri/tauri.conf.json` must be the public half of the repo's `TAURI_SIGNING_PRIVATE_KEY` secret, and the endpoint must stay the `updater-latest` channel tag. If either drifts, every update is silently rejected (`check()` succeeds, install fails verification) — see *Auto-update & signing* in `reference.md`.
 
 ## Deep reference

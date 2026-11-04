@@ -70,8 +70,8 @@ Run it on `main` with a clean, up-to-date tree. It creates and pushes one
 annotated tag — nothing is committed. CI (`.github/workflows/release.yml`)
 does the rest: syncs the tag version into the build workspaces, generates the
 notes from the commits since the last *published* release
-(`scripts/generate-changelog.sh`, based via
-`scripts/last-published-tag.sh`), builds the **signed** `glogger.Release`
+(`scripts/generate-changelog.py`, based via
+`scripts/last-published-tag.py`), builds the **signed** `glogger.Release`
 bundles on three runners via tauri-action direct mode — creating the GitHub
 Release under default tauri-action asset names (Windows NSIS, macOS aarch64,
 Linux) — then the single-writer channel job waits for all three platforms'
@@ -84,7 +84,7 @@ a draft under the tag; the next attempt is a new version tag — the previous
 tag is left behind, never retagged. The release body opens with the channel
 line, then the generated notes, then a
 Flatpak follow-up sentence, the attribution paragraph, and the macOS unsigned
-footnote; the same notes go into `latest.json.notes`. The prefix list in `scripts/check-commit-msg.sh`
+footnote; the same notes go into `latest.json.notes`. The prefix list in `scripts/check-commit-msg.py`
 drives the notes — put anything a user should read about in a
 prefix the notes include. A dry run of the same matrix without publishing:
 
@@ -97,11 +97,11 @@ The pipeline refuses to publish a tag that is not `v<semver>`, or any release
 whose per-platform `.sig` is missing (dispatch publishes additionally require
 the tag to exist on `origin`). The `validate` job also runs the
 game-interaction hard-line scanner
-(`scripts/check-glogger-constraints.ps1`, `pwsh` — TOS prose lives in
+(`scripts/check-glogger-constraints.py`, `python3` — TOS prose lives in
 `docs/research/glogger-game-interaction-limits.md`), so a TOS/CoC violation fails
-the release — the same scanner runs in the pre-push hook (`mise run lint`),
-which is opt-in per clone (install: `scripts/setup-hooks.sh`; it blocks a
-violating push, `git push --no-verify` bypasses it loudly, CI re-checks anyway).
+the release — the same scanner runs in the pre-push hook (install per clone:
+`scripts/setup-hooks.sh`, via pre-commit; it blocks a violating push,
+`git push --no-verify` bypasses it loudly, CI re-checks anyway).
 
 ### When a release fails
 
@@ -160,7 +160,7 @@ reports an update, the install fails at signature verification):
 1. `tauri.conf.json`'s `plugins.updater.pubkey` == public half of the secret.
 2. The endpoint stays the `updater-latest` tag.
 
-Local builds are **unsigned** by design (`scripts/release-build.sh` adds a
+Local builds are **unsigned** by design (`scripts/release-build.py` adds a
 `createUpdaterArtifacts:false` override when no key is in the environment) —
 that is harmless, because the updater verifies the artifact it *downloads*, not
 the running binary. For a signed local build:
@@ -197,14 +197,14 @@ pubkey is compiled in, so the new-key release must be installed manually once.
 - `src-tauri/Cargo.toml` shows a phantom CRLF-only diff in `git status` —
   leave it uncommitted (permanent known artifact).
 - npm only (Node 24); no bun/yarn/pnpm.
-- Prefixes/hook install: see `scripts/check-commit-msg.sh` and `scripts/setup-hooks.sh` (cited, not restated).
+- Prefixes/hook install: see `scripts/check-commit-msg.py` and `scripts/setup-hooks.sh` (pre-commit; cited, not restated).
 
 ## Upstream reference path
 
 `upstream` (crisp-oddio/glogger-oddio) is a read-only reference remote.
 Absorb fixes with `git fetch upstream && git merge upstream/<branch>`; expect
 conflicts in the config/CI files this repo owns. Never open a PR against
-upstream. Enforcement: `scripts/check-glogger-constraints.ps1` runs in the pre-push hook (`mise run lint`) — the script owns the machine patterns.
+upstream. Enforcement: `scripts/check-glogger-constraints.py` runs in the pre-push hook (`mise run lint`) — the script owns the machine patterns.
 
 ## Credit lines (release bodies + README)
 

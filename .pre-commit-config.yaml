@@ -29,6 +29,6 @@ repos:
         stages: [pre-push]
       - id: commit-prefix
         name: commit message prefix
-        entry: bash scripts/check-commit-msg.sh
+        entry: python scripts/check-commit-msg.py
         language: system
         stages: [commit-msg]

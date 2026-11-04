@@ -25,7 +25,7 @@ run = ["ruff check scripts/", "ruff format --check scripts/"]
 description = "ShellCheck on scripts/*.sh at warning severity + commit-msg hook self-test (commit-fast slice)"
 run = [
   "python -c \"import glob, subprocess, sys; sys.exit(subprocess.run(['shellcheck', '-S', 'warning'] + glob.glob('scripts/*.sh')).returncode)\"",
-  "bash scripts/check-commit-msg.sh --self-test",
+  "python scripts/check-commit-msg.py --self-test",
 ]
 
 [tasks."lint:yaml"]
@@ -55,12 +55,12 @@ description = "Pre-push Markdown: unpushed-commit files only, fail on staged ove
 run = ["python scripts/lint-markdown-changed.py --push"]
 
 [tasks."lint:grids"]
-description = "Grid standards census (commit-fast slice; node: builtins only, no install needed)"
+description = "Grid standards census (commit-fast slice; python stdlib only, no install needed)"
 run = ["npm run check:grids"]
 
 [tasks."lint:review"]
 description = "Review-patterns gate: decided defect shapes (commit-fast slice)"
-run = ["bash scripts/check-review-patterns.sh"]
+run = ["python scripts/check-review-patterns.py"]
 
 [tasks."lint:parity"]
 description = "Lint-parity drift guard: hook/docs refs resolve, TODO location contract, fast-set weight (commit-fast slice)"
@@ -97,7 +97,7 @@ run = ["python scripts/cargo-audit-gate.py"]
 
 [tasks."lint:constraints"]
 description = "Game-interaction hard lines (push/full slice)"
-run = ["pwsh -NoProfile -File scripts/check-glogger-constraints.ps1"]
+run = ["python scripts/check-glogger-constraints.py"]
 
 [tasks."lint:fast"]
 description = "Commit stage: seconds-scale checks, no build/test/network"

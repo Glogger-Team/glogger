@@ -32,7 +32,7 @@ from pathlib import Path
 TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
 
 # Classification lives in scripts/release_notes.py (shared with
-# generate-changelog.sh). Imported, not duplicated.
+# generate-changelog.py). Imported, not duplicated.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from release_notes import bump_for_records
 

@@ -58,7 +58,7 @@ third-party tools. Everything else about the game is off-limits.
 | Module integrity | **NEVER** patch/modify/replace files in the game install directory | Grep: game-install paths on write sides — zero hits |
 | Input automation | **NEVER** synthesize input into the game (`SendInput`/`keybd_event`/`PostMessage` to the game) | Same grep list |
 
-No release merges without a green `scripts/check-glogger-constraints.ps1`
+No release merges without a green `scripts/check-glogger-constraints.py`
 (§6).
 
 ## 3. What we DO allow
@@ -119,16 +119,16 @@ Explicitly off this list (rejected, do not propose): packet-level anything,
 protocol analysis of the game's network traffic, binary/memory analysis of
 the client, any automation of gameplay.
 
-## 6. Enforcement: `scripts/check-glogger-constraints.ps1`
+## 6. Enforcement: `scripts/check-glogger-constraints.py`
 
 Runs on every push, in CI lint, and on every release, so skipping one cannot ship a violation:
 
 - **Every push** from a clone with the hooks installed — the pre-push hook
   runs `mise run lint` (which includes the constraints slice);
-  `scripts/setup-hooks.sh` installs it. Opt-in per clone, so check it after
-  a fresh clone.
+  `scripts/setup-hooks.sh` (via pre-commit) installs it. Opt-in per clone,
+  so check it after a fresh clone.
 - **Every release**: the `validate` job of `.github/workflows/release.yml`
-  runs the scanner with `pwsh` before any platform builds, so a tag push that
+  runs the scanner with `python3` before any platform builds, so a tag push that
   violates a hard line fails the release.
 
 In full-compliance mode the scanner checks:

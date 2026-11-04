@@ -20,7 +20,7 @@ set -eu
 fail=0
 
 if [ "${1:-}" = "--push" ]; then
-  diverged=$(git diff --name-only HEAD -- .pre-commit-config.yaml AGENTS.md mise.toml TODO.md docs/TODO.md docs/index.md scripts/check-grid-standards.mjs)
+  diverged=$(git diff --name-only HEAD -- .pre-commit-config.yaml AGENTS.md mise.toml TODO.md docs/TODO.md docs/index.md scripts/check-grid-standards.py)
   if [ -n "$diverged" ]; then
     echo "lint-parity: refusing to lint pushed config with uncommitted changes (worktree bytes would mask the committed revision):" >&2
     printf '%s\n' "$diverged" | sed 's/^/  /' >&2
@@ -60,22 +60,22 @@ for m in $mentions; do
     || { echo "lint-parity: AGENTS.md names '$m', not defined in mise.toml"; fail=1; }
 done
 
-# 3. TODO.md location contract: check-grid-standards.mjs reads it off
+# 3. TODO.md location contract: check-grid-standards.py reads it off
 #    disk (join(ROOT, 'TODO.md')) and docs/index.md links it — both must
 #    agree with the file that actually exists.
 if [ -f TODO.md ] && [ -f docs/TODO.md ]; then
   echo "lint-parity: TODO.md exists at both root and docs/ — pick one"
   fail=1
 elif [ -f TODO.md ]; then
-  grep -q "join(ROOT, 'TODO.md')" scripts/check-grid-standards.mjs \
-    || { echo "lint-parity: root TODO.md exists but check-grid-standards.mjs reads elsewhere"; fail=1; }
+  grep -qE "join\(ROOT, 'TODO\.md'\)|ROOT / \"TODO\.md\"" scripts/check-grid-standards.py \
+    || { echo "lint-parity: root TODO.md exists but check-grid-standards.py reads elsewhere"; fail=1; }
   grep -q '](\.\./TODO\.md)' docs/index.md \
     || { echo "lint-parity: root TODO.md exists but docs/index.md links elsewhere"; fail=1; }
-  grep -rn "docs/TODO\.md" AGENTS.md README.md docs/index.md scripts/check-grid-standards.mjs .github/workflows/lint.yml mise.toml .pre-commit-config.yaml 2>/dev/null \
+  grep -rn "docs/TODO\.md" AGENTS.md README.md docs/index.md scripts/check-grid-standards.py .github/workflows/lint.yml mise.toml .pre-commit-config.yaml 2>/dev/null \
     && { echo "lint-parity: stale docs/TODO.md pointer survives the root move"; fail=1; } || true
 elif [ -f docs/TODO.md ]; then
-  grep -q "join(ROOT, 'docs/TODO.md')" scripts/check-grid-standards.mjs \
-    || { echo "lint-parity: docs/TODO.md exists but check-grid-standards.mjs reads elsewhere"; fail=1; }
+  grep -qE "join\(ROOT, 'docs/TODO\.md'\)|ROOT / \"docs\" / \"TODO\.md\"" scripts/check-grid-standards.py \
+    || { echo "lint-parity: docs/TODO.md exists but check-grid-standards.py reads elsewhere"; fail=1; }
   grep -q '](TODO\.md)' docs/index.md \
     || { echo "lint-parity: docs/TODO.md exists but docs/index.md links elsewhere"; fail=1; }
 else
@@ -92,7 +92,7 @@ fi
 [ -r mise.toml ] || { echo "lint-parity: cannot read mise.toml" >&2; exit 2; }
 # Isolate the stanza body only: the sed range is inclusive of the next
 # `[` header, whose own quoted task name would false-positive. awk is
-# already a repo-blessed portable (check-review-patterns.sh).
+# already a repo-blessed portable (check-review-patterns.py).
 block=$(awk '/\[tasks\."lint:fast"\]/{f=1;next} /^\[/{f=0} f' mise.toml)
 [ -n "$block" ] || { echo "lint-parity: lint:fast stanza missing or empty in mise.toml" >&2; exit 2; }
 fast=$(printf '%s\n' "$block" | grep -oE "['\"]lint:[a-z0-9-]+['\"]" | tr -d "\"'" || true)

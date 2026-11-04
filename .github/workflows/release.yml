@@ -8,15 +8,14 @@ name: Release
 # stable while the asset behind it is replaced on every release).
 #
 # The validate job also runs the game-interaction hard-line scanner
-# (scripts/check-glogger-constraints.ps1, the same gate as the local pre-push
+# (scripts/check-glogger-constraints.py, the same gate as the local pre-push
 # hook — see docs/research/glogger-game-interaction-limits.md), so a skipped or
 # uninstalled local hook cannot let a TOS/CoC violation reach a release.
 #
-# release (scripts/generate-changelog.sh, based via
-# scripts/last-published-tag.sh). No committed RELEASE_NOTES.md, no version
-# commits — the pushed tag is the version record. The build job composes the
-# notes into the GitHub Release body and the channel job embeds them in
-# latest.json's `notes`.
+# The build job generates the release notes from the commits since the last
+# published release (scripts/generate-changelog.py, based via
+# scripts/last-published-tag.py). No committed RELEASE_NOTES.md, no version
+# commits — the pushed tag is the version record.
 #
 # workflow_dispatch rebuilds the identical matrix for an existing ref with
 # `publish` left false, so the pipeline can be smoke-tested (all three
@@ -126,8 +125,7 @@ jobs:
           echo "building $TAG from $REF_VALUE"
 
       - name: Game-interaction hard lines (TOS/CoC)
-        shell: pwsh
-        run: ./scripts/check-glogger-constraints.ps1
+        run: python3 scripts/check-glogger-constraints.py
 
       - name: Generate release notes
         shell: bash
@@ -140,10 +138,10 @@ jobs:
           # release's notes must still cover its commits. Checked out at the
           # new tag, so probe HEAD^ first — plain HEAD would resolve the new
           # tag itself as its own base.
-          PREV_TAG=$(bash scripts/last-published-tag.sh "$REPO" 2>/dev/null || git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ 2>/dev/null || git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || echo "")
+          PREV_TAG=$(python3 scripts/last-published-tag.py "$REPO" 2>/dev/null || git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ 2>/dev/null || git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || echo "")
           echo "notes base: ${PREV_TAG:-the initial release}"
           mkdir -p release-notes
-          bash scripts/generate-changelog.sh "$PREV_TAG" HEAD > release-notes/NOTES.md
+          python3 scripts/generate-changelog.py "$PREV_TAG" HEAD > release-notes/NOTES.md
           cat release-notes/NOTES.md
 
       - name: Upload release notes

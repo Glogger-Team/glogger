@@ -5,14 +5,14 @@ description: Live-smoke the glogger desktop app over WebView2 CDP — launch wit
 
 # Glogger Live Smoke
 
-Owns the verbatim in-window visual-QA recipe. For release build/install routine see `skill://glogger-release`; for TOS hard-line patterns see `scripts/check-glogger-constraints.ps1`; for grid exemption semantics see `scripts/check-grid-standards.mjs` (cited, never restated here).
+Owns the verbatim in-window visual-QA recipe. For release build/install routine see `skill://glogger-release`; for TOS hard-line patterns see `scripts/check-glogger-constraints.py`; for grid exemption semantics see `scripts/check-grid-standards.py` (cited, never restated here).
 
 ## Gate rows (measure once in parent, paste into briefs, never re-derive)
 
 1. `npm run build` (`vue-tsc --noEmit && vite build`)
 2. `cd src-tauri && cargo test --lib` (with exact count)
 3. `npm run check:grids`
-4. `pwsh scripts/check-glogger-constraints.ps1`
+4. `python scripts/check-glogger-constraints.py`
 
 ## Recipe
 
@@ -34,6 +34,7 @@ Owns the verbatim in-window visual-QA recipe. For release build/install routine 
 ## Dev-DB wipe (clean-room retest)
 
 When the user asks to wipe/retry, or a retest needs a known-empty baseline — NEVER on an assumption, always on request or with explicit approval:
+
 1. `taskkill /F /IM glogger.exe` (DB is file-backed + WAL; no clean shutdown needed) and confirm the process is gone.
 2. Move (never delete) `glogger.db` + `-wal` + `-shm` from `%APPDATA%\glogger.Dev\` to `db-backup-<timestamp>\` beside them. Keep `settings.json` and `data/` (CDN cache) so no re-download is needed.
 3. Relaunch per the Recipe above (flag + CDP), verify `Database initialized` + migrations clean in the terminal log.

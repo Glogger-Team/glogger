@@ -1,6 +1,6 @@
 """Single source of truth for conventional-commit classification.
 
-Shared by scripts/next-version.py (bump) and scripts/generate-changelog.sh
+Shared by scripts/next-version.py (bump) and scripts/generate-changelog.py
 (notes) so the two can never drift again. Stdlib only.
 
 One regex set, two outputs per commit:
@@ -165,15 +165,13 @@ def bump_for_records(records):
 
 
 def main():
-    # Batch mode for generate-changelog.sh: read NUL-separated %B records
+    # Batch mode for generate-changelog.py: read NUL-separated %B records
     # on stdin, emit one JSON object per record on stdout:
     # {"bump": ..., "entries": [{"section": ..., "text": ...}]}.
     # entries is one per notes line (squash bodies yield one per bullet).
     if len(sys.argv) > 1 and sys.argv[1] == "--batch":
         data = sys.stdin.read()
         # Preserve blank records as empty-entry objects: the bash reader
-        # indexes positionally, and --oneline still emits a hash line for
-        # an empty-message commit. Only the trailing split sentinel is dropped.
         records = data.split("\0")
         if records and records[-1] == "":
             records.pop()
