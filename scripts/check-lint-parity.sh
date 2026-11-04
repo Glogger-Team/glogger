@@ -18,7 +18,8 @@ fail=0
 tasks=$(mise tasks --name-only 2>/dev/null) \
   || { echo "lint-parity: mise tasks --name-only failed" >&2; exit 2; }
 [ -n "$tasks" ] || { echo "lint-parity: empty mise task list" >&2; exit 2; }
-refs=$(grep -oE 'mise run [a-z0-9:.-]+' .pre-commit-config.yaml 2>/dev/null | sed 's/^mise run //') \
+[ -r .pre-commit-config.yaml ] || { echo "lint-parity: cannot read .pre-commit-config.yaml" >&2; exit 2; }
+refs=$(grep -oE 'mise run [a-z0-9:.-]+' .pre-commit-config.yaml | sed 's/^mise run //') \
   || { echo "lint-parity: failed to read .pre-commit-config.yaml refs" >&2; exit 2; }
 for ref in $refs; do
   printf '%s\n' "$tasks" | grep -qxF "$ref" \
@@ -27,8 +28,8 @@ done
 
 # 2. Every lint:* slice named in AGENTS.md's Linting table resolves too.
 #    (Same seam, second consumer: task renames must land in docs as well.)
-mentions=$(sed -n '/^## Linting/,/^## /p' AGENTS.md 2>/dev/null | grep -oE 'lint:[a-z-]+') \
-  || { echo "lint-parity: failed to read AGENTS.md Linting section" >&2; exit 2; }
+[ -r AGENTS.md ] || { echo "lint-parity: cannot read AGENTS.md" >&2; exit 2; }
+mentions=$(sed -n '/^## Linting/,/^## /p' AGENTS.md | grep -oE 'lint:[a-z-]+' || true)
 for m in $mentions; do
   printf '%s\n' "$tasks" | grep -qxF "$m" \
     || { echo "lint-parity: AGENTS.md names '$m', not defined in mise.toml"; fail=1; }
@@ -60,8 +61,10 @@ fi
 # 4. lint:fast membership matches its contract: the commit stage must
 #    stay free of build/test/network-weight slices (the pre-commit hook
 #    budget is seconds). New heavy slices belong in `lint`, not `lint:fast`.
-fast=$(sed -n '/\[tasks\."lint:fast"\]/,/^\[/p' mise.toml | grep -oE '"lint:[a-z-]+"' | tr -d '"') \
-  || { echo "lint-parity: failed to read lint:fast deps" >&2; exit 2; }
+[ -r mise.toml ] || { echo "lint-parity: cannot read mise.toml" >&2; exit 2; }
+block=$(sed -n '/\[tasks\."lint:fast"\]/,/^\[/p' mise.toml)
+[ -n "$block" ] || { echo "lint-parity: lint:fast stanza missing in mise.toml" >&2; exit 2; }
+fast=$(printf '%s\n' "$block" | grep -oE '"lint:[a-z-]+"' | tr -d '"')
 for heavy in lint:build lint:clippy lint:test lint:audit lint:constraints; do
   printf '%s\n' "$fast" | grep -qxF "$heavy" \
     && { echo "lint-parity: heavy slice '$heavy' in lint:fast (commit stage must stay seconds-scale)"; fail=1; } || true
