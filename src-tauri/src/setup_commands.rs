@@ -593,8 +593,9 @@ fn delete_character_on_write_conn(
 /// renamed in place). Name-only owner rows (`stall_events.owner`,
 /// `stall_inventory_baseline.owner`, `brewing_discoveries.character`) move on
 /// a name change (a server-only move leaves them — owner has no server
-/// column). Not covered, same as delete: unscoped singletons and tables
-/// (`game_state_weather`/`moon`, `arena_*`).
+/// column). Build-planner presets follow via their `Name@Server`
+/// `character_id` key. Not covered, same as delete: unscoped singletons
+/// and tables (`game_state_weather`/`moon`, `arena_*`).
 ///
 /// Fails when the source identity has no `user_characters` row or the target
 /// identity already exists (UNIQUE guard against merging two histories).
@@ -807,6 +808,19 @@ fn rename_character_on_write_conn(
             .map_err(|e| format!("Rename failed: {e}"))?;
         }
     }
+    // Build-planner presets: keyed by the `Name@Server` identity string the
+    // frontend builds in `buildPlannerStore.getCharacterId()`, stored
+    // opaquely backend-side. A server-only move changes the key too, so
+    // this follows unconditionally — unlike the name-only owner rows above.
+    // Exact string match: no parsing, immune to `@` inside names.
+    conn.execute(
+        "UPDATE build_presets SET character_id = ?1 WHERE character_id = ?2",
+        rusqlite::params![
+            format!("{new_character_name}@{new_server_name}"),
+            format!("{character_name}@{server_name}")
+        ],
+    )
+    .map_err(|e| format!("Rename failed: {e}"))?;
 
     conn.commit()
         .map_err(|e| format!("Failed to commit transaction: {e}"))?;
@@ -1427,6 +1441,12 @@ mod tests {
             rusqlite::params![who],
         )
         .unwrap();
+        // Build-planner preset keyed by the frontend's `Name@Server` identity.
+        conn.execute(
+            "INSERT INTO build_presets (character_id,name) VALUES (?1,'Preset')",
+            rusqlite::params![format!("{who}@{SERVER}")],
+        )
+        .unwrap();
         // Snapshot family + children.
         conn.execute(
             "INSERT INTO character_snapshots (character_name,server_name,snapshot_timestamp,raw_json) VALUES (?1,?2,'2026-01-01','{}')",
@@ -1606,6 +1626,21 @@ mod tests {
                 .unwrap();
             assert_eq!(old_n, 0, "{table} still has {old} rows");
             assert_eq!(new_n, 1, "{table} lost renamed rows");
+        }
+        // Build-planner presets follow via their `Name@Server` key —
+        // including OTHER's preset staying put.
+        let old_id = format!("{CHAR}@{SERVER}");
+        let new_id = format!("{NEW}@{SERVER}");
+        let other_id = format!("{OTHER}@{SERVER}");
+        for (id, want) in [(&old_id, 0), (&new_id, 1), (&other_id, 1)] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM build_presets WHERE character_id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, want, "build_presets {id} count wrong");
         }
     }
 
