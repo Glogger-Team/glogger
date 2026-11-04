@@ -16,12 +16,14 @@ A player-maintained price database for tracking market values of items. Used thr
 ## Price Modes
 
 Toggle between two modes (via Settings):
+
 - **Universal** — prices apply across all servers (`server="*"`)
 - **Per-Server** — prices scoped to the active server
 
 ## Valuation Modes
 
 Six options controlling how item values are calculated app-wide:
+
 1. Highest of market or vendor
 2. Market price only
 3. Vendor price only
