@@ -808,6 +808,26 @@ fn rename_character_on_write_conn(
             .map_err(|e| format!("Rename failed: {e}"))?;
         }
     }
+    // Retained-preset guard: delete leaves `build_presets` behind (it only
+    // clears (character_name, server_name)-scoped rows, and presets are
+    // keyed by the opaque `Name@Server` string), so a deleted character's
+    // presets can outlive its `user_characters` row. Merging the renamed
+    // presets into a destination key that already holds presets would mix
+    // two characters' builds under one label. Refuse while the tx is open —
+    // nothing commits. Unchanged-key early-returns never reach here.
+    let new_id = format!("{new_character_name}@{new_server_name}");
+    let retained_presets: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM build_presets WHERE character_id = ?1",
+            rusqlite::params![new_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Query failed: {e}"))?;
+    if retained_presets > 0 {
+        return Err(format!(
+            "cannot rename: build_presets still holds history under {new_id} (delete leaves presets behind)"
+        ));
+    }
     // Build-planner presets: keyed by the `Name@Server` identity string the
     // frontend builds in `buildPlannerStore.getCharacterId()`, stored
     // opaquely backend-side. A server-only move changes the key too, so
@@ -1732,5 +1752,34 @@ mod tests {
                 .unwrap();
             assert_eq!(kept, 1, "{table} owner rows must stay under {CHAR}");
         }
+    }
+
+    #[test]
+    fn rename_character_refuses_target_with_retained_presets() {
+        let mut conn = fresh_db();
+        seed_character(&conn, CHAR);
+        // Destination holds ONLY a retained preset — no owner rows, no
+        // user_characters row (pure delete-leftover shape for the preset
+        // key, so the preset guard is the one that fires).
+        conn.execute(
+            "INSERT INTO build_presets (character_id,name) VALUES (?1,'Preset')",
+            rusqlite::params![format!("{OTHER}@{SERVER}")],
+        )
+        .unwrap();
+        // Renaming CHAR into OTHER would merge CHAR's preset with OTHER's
+        // retained preset under one key. Refuse instead.
+        let err = rename_character_on_write_conn(&mut conn, CHAR, SERVER, OTHER, SERVER)
+            .unwrap_err();
+        assert!(err.contains("build_presets"), "unexpected error: {err}");
+        // Nothing moved: scoped rows, owner rows, and presets stay under CHAR.
+        assert_eq!(count(&conn, "user_characters", CHAR), 1);
+        let kept: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM build_presets WHERE character_id = ?1",
+                rusqlite::params![format!("{CHAR}@{SERVER}")],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 1, "preset must stay under {CHAR}");
     }
 }
