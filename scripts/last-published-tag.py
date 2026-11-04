@@ -41,6 +41,7 @@ def main(argv: list[str]) -> int:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         entries = json.loads(proc.stdout) if proc.stdout.strip() else None

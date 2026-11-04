@@ -55,8 +55,14 @@ def parse_args(argv=None):
             no_lists = True
         elif a.startswith("--window="):
             window = js_parse_int(a[len("--window=") :])
+            if isinstance(window, float) and math.isnan(window):
+                print("error: --window must be a number", file=sys.stderr)
+                sys.exit(1)
         elif a.startswith("--tz="):
             tz = js_parse_float(a[len("--tz=") :])
+            if isinstance(tz, float) and math.isnan(tz):
+                print("error: --tz must be a number", file=sys.stderr)
+                sys.exit(1)
         elif a.startswith("--items-json="):
             items_json = a[len("--items-json=") :]
         else:
@@ -719,9 +725,9 @@ def discover_paired_datasets():
 def main():
     # Node writes "\n" even on Windows; match it byte-for-byte.
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(newline="\n")
+        sys.stdout.reconfigure(encoding="utf-8", newline="\n")
     if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(newline="\n")
+        sys.stderr.reconfigure(encoding="utf-8", newline="\n")
     opts = parse_args()
 
     if opts["all"]:

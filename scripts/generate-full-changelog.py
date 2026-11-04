@@ -30,6 +30,7 @@ def run_git(args, cwd=None):
         cwd=cwd,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
 

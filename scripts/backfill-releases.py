@@ -38,6 +38,7 @@ def _missing_tags() -> list[str]:
         cwd=ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     all_tags = sorted(
         (line for line in proc.stdout.splitlines() if line), key=_version_key
@@ -48,6 +49,7 @@ def _missing_tags() -> list[str]:
         cwd=ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     existing = {entry["tagName"] for entry in json.loads(proc.stdout or "[]")}
     return [tag for tag in all_tags if tag not in existing]
@@ -116,6 +118,7 @@ def main(argv: list[str]) -> int:
                 cwd=ROOT,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
             )
             with open(LOG_PATH, "a", encoding="utf-8") as log:
                 if proc.stdout:

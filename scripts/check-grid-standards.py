@@ -51,9 +51,9 @@ def posix(path):
 def main():
     # Node writes "\n" even on Windows; match it byte-for-byte.
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(newline="\n")
+        sys.stdout.reconfigure(encoding="utf-8", newline="\n")
     if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(newline="\n")
+        sys.stderr.reconfigure(encoding="utf-8", newline="\n")
     violations = []
     raw_table_files = []
     raw_table_occurrences = 0

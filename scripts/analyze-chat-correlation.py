@@ -42,8 +42,14 @@ def parse_args(argv):
     for a in argv:
         if a.startswith("--window="):
             window = js_parse_int(a[9:])
+            if isinstance(window, float) and math.isnan(window):
+                print("error: --window must be a number", file=sys.stderr)
+                sys.exit(1)
         elif a.startswith("--tz="):
             window_tz = js_parse_float(a[5:])
+            if isinstance(window_tz, float) and math.isnan(window_tz):
+                print("error: --tz must be a number", file=sys.stderr)
+                sys.exit(1)
             tz = window_tz
         else:
             positional.append(a)
@@ -285,9 +291,9 @@ def rel(path_str):
 def main():
     # Node writes "\n" even on Windows; match it byte-for-byte.
     if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(newline="\n")
+        sys.stdout.reconfigure(encoding="utf-8", newline="\n")
     if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(newline="\n")
+        sys.stderr.reconfigure(encoding="utf-8", newline="\n")
     args = parse_args(sys.argv[1:])
     chat_path = args["chat_path"]
     log_path = args["log_path"]
