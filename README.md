@@ -160,7 +160,7 @@ cd src-tauri && cargo test --lib
 Before committing, lint what you changed (see `AGENTS.md` → `## Linting` for the per-file-type commands). Fast local gates:
 
 ```bash
-npm run build                                    # TS/Vue typecheck
+npm run typecheck                                # TS/Vue typecheck, no bundle (CI runs the full npm run build)
 mise x ruff -- ruff check scripts/               # Python (also: ruff format --check scripts/)
 shellcheck -S warning scripts/*.sh               # Shell (setup-hooks.sh via pre-commit — full table in AGENTS.md)
 mise x yamllint -- yamllint .github/             # YAML / workflows (full table in AGENTS.md)

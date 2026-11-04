@@ -1,13 +1,15 @@
 # PR gates on PRs and main pushes: frontend type-check/build, Rust tests
 # (plus clippy `-D warnings` on all targets), plus fast local-feedback
-# linters. Every tool-invocation step calls a `mise run lint:*` slice —
-# the check list and every tool version live in exactly one place
-# (`mise.toml`), which the pre-commit/pre-push hooks invoke too. Rust
-# (rustfmt) stays advisory in AGENTS.md (823 unformatted spots
-# pre-existing); markdown is a changed-files gate (all hand-maintained docs
-# except generated CHANGELOG.md) — only the
-# green gates run here. The release workflow re-runs the frontend build, Rust
-# tests, and TOS scan before bundling (its `validate` + `test` jobs);
+# linters. CI calls each `mise run lint:*` slice individually (the check
+# list and every tool version live in exactly one place (`mise.toml`));
+# local hooks call the `lint` / `lint:fast` entrypoints, which skip only
+# the full vite bundle (`lint:build` — CI-only, too slow for push; push
+# runs `lint:typecheck` instead). Rust (rustfmt) stays advisory in
+# AGENTS.md (823 unformatted spots pre-existing); markdown is a
+# changed-files gate (all hand-maintained docs except generated
+# CHANGELOG.md) — only the green gates run here. The release workflow
+# re-runs the frontend build, Rust tests, and TOS scan before bundling
+# (its `validate` + `test` jobs);
 
 name: Lint
 
@@ -226,8 +228,9 @@ jobs:
         run: npm ci
 
       - name: Frontend type-check and build
-        # Same `mise run lint:build` slice the pre-push hook runs (via `mise
-        # run lint`). Would have caught the TS 7 major: vue-tsc crashes on
+        # CI-only `mise run lint:build` slice (full vite bundle — too slow
+        # for the pre-push hook, which runs `lint:typecheck` instead via
+        # `mise run lint`). Would have caught the TS 7 major: vue-tsc crashes on
         # its removed './lib/tsc' export before checking a single file.
         run: mise run lint:build
 
