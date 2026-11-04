@@ -156,7 +156,7 @@ def main():
             key = f"{fmt_num(resolve(classes, 'left'))}/{fmt_num(resolve(classes, 'top'))}"
             bucket = combos[kind]
             bucket[key] = bucket.get(key, 0) + 1
-        head = (ROOT / file).read_text(encoding="utf-8")
+        head = git("show", f"{HEAD}:{file}")
         if not DATATABLE_RE.search(head):
             continue
         if len(combos["td"]) == 0:

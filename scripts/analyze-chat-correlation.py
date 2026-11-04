@@ -47,7 +47,9 @@ def parse_args(argv):
                 sys.exit(1)
         elif a.startswith("--tz="):
             window_tz = js_parse_float(a[5:])
-            if isinstance(window_tz, float) and math.isnan(window_tz):
+            if isinstance(window_tz, float) and (
+                not math.isfinite(window_tz) or not math.isfinite(window_tz * 3600)
+            ):
                 print("error: --tz must be a number", file=sys.stderr)
                 sys.exit(1)
             tz = window_tz

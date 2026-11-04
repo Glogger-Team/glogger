@@ -151,6 +151,10 @@ def check(root: Path):
         violations.append(f"{kind} at {path}:{line}: {text}")
 
     src_files = _src_rs_files(root)
+    if not src_files:
+        # No Rust sources under src-tauri/: nothing was actually checked
+        # (empty dir or wrong root). Fail closed, never bless a vacuous pass.
+        raise GateReadError(str(root), OSError("no repository sources found"))
     src_lines = {p: _read_lines(p) for p in src_files}
 
     for pat in FORBIDDEN_PATTERNS:

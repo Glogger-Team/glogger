@@ -29,6 +29,9 @@ def main(argv: list[str]) -> int:
                 minimized += 1
     sys.stdout.buffer.write(f"Done: {original} -> {minimized} lines\n".encode())
     sys.stdout.buffer.write(f"Saved to: {out}\n".encode())
+    if minimized == 0:
+        sys.stderr.write("minimize-player-log: no LocalPlayer lines retained\n")
+        return 1
     return 0
 
 

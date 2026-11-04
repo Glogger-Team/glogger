@@ -60,7 +60,9 @@ def parse_args(argv=None):
                 sys.exit(1)
         elif a.startswith("--tz="):
             tz = js_parse_float(a[len("--tz=") :])
-            if isinstance(tz, float) and math.isnan(tz):
+            if isinstance(tz, float) and (
+                not math.isfinite(tz) or not math.isfinite(tz * 3600)
+            ):
                 print("error: --tz must be a number", file=sys.stderr)
                 sys.exit(1)
         elif a.startswith("--items-json="):
@@ -336,8 +338,6 @@ def resolve_name_map(items_json_opt):
     # relative paths against the repo root.
     if items_json_opt:
         p = Path(items_json_opt)
-        if not p.is_absolute():
-            p = ROOT / p
     else:
         p = Path(DEFAULT_ITEMS_JSON)
     if not p.is_file():

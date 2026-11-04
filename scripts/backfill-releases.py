@@ -111,6 +111,7 @@ def main(argv: list[str]) -> int:
                     title,
                     "--notes-file",
                     notes_file,
+                    "--verify-tag",
                     "-R",
                     REPO,
                 ],
@@ -141,7 +142,7 @@ def main(argv: list[str]) -> int:
             except OSError:
                 pass
     print(f"Created: {count}, failed/skipped: {failed}")
-    return 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
