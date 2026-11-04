@@ -27,7 +27,7 @@ This repo (`Glogger-Team/glogger`) is the canonical home of glogger, successor o
 ## Decision rules
 
 - **Which profile is the user running?** Window title: `glogger v<ver>` = the installed daily driver (appdata `glogger.Release`, data persists forever). `EXPERIMENTAL` = sandbox that re-seeds from the Release dir on each version bump — never treat its data as valuable. `DEV` = `npm run tauri dev` scratch DB (`glogger.Dev`).
-- **Where does new work live?** Committed work goes on `main` in logical chunks (prefix list owned by `scripts/check-commit-msg.sh`).
+- **Where does new work live?** Committed work goes on `main` in logical chunks (prefix list owned by `scripts/check-commit-msg.py`).
 - **Upstream is a reference remote:** absorb upstream fixes with `git fetch upstream && git merge upstream/<branch>`. Expect conflicts in the config/CI files this repo owns (`tauri.conf.json` updater block, `tauri.release.conf.json`, `scripts/*`, `.github/workflows/release.yml`, `AGENTS.md`) — resolve toward this repo's values. Never open a PR against `crisp-oddio/glogger-oddio`.
 - **DB safety:** copy DBs only when the source app is closed; copy `glogger.db` + `-wal` + `-shm` together; verify with count-diff (`words_of_power`, `character_resuscitations`). Migrations are upward-only — never open a newer-schema DB with an older build.
 

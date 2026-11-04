@@ -84,7 +84,7 @@ a draft under the tag; the next attempt is a new version tag — the previous
 tag is left behind, never retagged. The release body opens with the channel
 line, then the generated notes, then a
 Flatpak follow-up sentence, the attribution paragraph, and the macOS unsigned
-footnote; the same notes go into `latest.json.notes`. The prefix list in `scripts/check-commit-msg.sh`
+footnote; the same notes go into `latest.json.notes`. The prefix list in `scripts/check-commit-msg.py`
 drives the notes — put anything a user should read about in a
 prefix the notes include. A dry run of the same matrix without publishing:
 

@@ -128,8 +128,8 @@ def _is_self_bytecode(path: Path) -> bool:
 def _repo_files(root: Path, allowlist: set):
     try:
         files = [p for p in root.rglob("*") if p.is_file()]
-    except OSError:
-        return []
+    except OSError as exc:
+        raise GateReadError(str(root), exc)
     out = []
     for p in files:
         s = str(p)

@@ -4,7 +4,6 @@ conventional prefix. This improves changelog generation quality.
 
 Known prefixes: feat, fix, impv, docs, test, build, release
 
-Install: git config core.hooksPath .githooks
 Install: scripts/setup-hooks.sh (pre-commit commit-prefix hook)
 """
 
