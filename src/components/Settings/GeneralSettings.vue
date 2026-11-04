@@ -590,7 +590,10 @@ async function doRename() {
     // Same cache invalidation as delete (rows moved identity, not gone):
     // clear cross-character caches + bump generations so in-flight loads
     // drop stale results. Active identity followed the rename backend-side.
-    if (isActive(target)) {
+    // Session reload only when the renamed character is active — renaming
+    // an idle alt must not wipe the live session view.
+    const wasActive = isActive(target);
+    if (wasActive) {
       settingsStore.settings.activeCharacterName = newName;
       settingsStore.settings.activeServerName = newServer;
     }
@@ -600,11 +603,13 @@ async function doRename() {
     characterStore.allCharacterWorkOrders = [];
     characterStore.allCharacterWorkOrdersLoaded = false;
     characterStore.allCharacterWorkOrdersGeneration++;
-    gameStateStore.resetSessionSkills();
-    gameStateStore.clearLiveInventory();
-    await gameStateStore.loadAll();
-    characterStore.initForActiveCharacter();
-    renameDone.value = `Renamed ${target.character_name} (${target.server_name}) to ${newName} (${newServer}) — all history moved.`;
+    if (wasActive) {
+      gameStateStore.resetSessionSkills();
+      gameStateStore.clearLiveInventory();
+      await gameStateStore.loadAll();
+      characterStore.initForActiveCharacter();
+    }
+    renameDone.value = `Renamed ${target.character_name} (${target.server_name}) to ${newName} (${newServer}) — all history moved. Note: old export files (Reports/Character_${target.character_name}_*.json) still name the old character — remove or re-export them, or the next report scan will recreate the old identity.`;
     renameTarget.value = null;
     await loadCharacters();
   } catch (e) {
