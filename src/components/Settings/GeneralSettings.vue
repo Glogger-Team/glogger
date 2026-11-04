@@ -285,6 +285,7 @@
           <p v-if="renameError" class="error-box m-0">{{ renameError }}</p>
         </div>
         <p v-if="renameDone" class="success-box m-0">{{ renameDone }}</p>
+        <p v-if="renameWarn" class="info-box m-0">{{ renameWarn }}</p>
       </div>
       <p class="mt-2 text-text-muted text-xs leading-relaxed">
         Renaming (or server-moving) a character carries all of its history — reports, skills, favor, survey sessions, kills, everything keyed to the character — to the new name. Deletion stays in the header character picker.
@@ -327,6 +328,7 @@ const renameServer = ref("");
 const renameBusy = ref(false);
 const renameError = ref("");
 const renameDone = ref("");
+const renameWarn = ref("");
 
 const timestampOptions = [
   { value: 'local' as const, label: 'Local Time' },
@@ -557,6 +559,7 @@ function startRename(char: UserCharacter) {
   renameServer.value = char.server_name;
   renameError.value = "";
   renameDone.value = "";
+  renameWarn.value = "";
 }
 
 function cancelRename() {
@@ -580,6 +583,7 @@ async function doRename() {
   renameBusy.value = true;
   renameError.value = "";
   renameDone.value = "";
+  renameWarn.value = "";
   try {
     await invoke("rename_character", {
       characterName: target.character_name,
@@ -614,7 +618,7 @@ async function doRename() {
         characterStore.initForActiveCharacter();
       } catch (refreshErr) {
         console.error("Rename committed but state refresh failed:", refreshErr);
-        renameError.value = `Renamed, but reloading game state failed: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)} — switch characters to refresh.`;
+        renameWarn.value = `Renamed, but reloading game state failed: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)} — switch characters to refresh.`;
       }
     }
     renameDone.value = `Renamed ${target.character_name} (${target.server_name}) to ${newName} (${newServer}) — all history moved. Note: old export files (Reports/Character_${target.character_name}_*.json) still name the old character — remove or re-export them, or the next report scan will recreate the old identity.`;
