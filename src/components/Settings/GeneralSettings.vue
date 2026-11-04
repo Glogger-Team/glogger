@@ -247,6 +247,7 @@
           <button
             v-if="!renameTarget || renameTarget.character_name !== char.character_name || renameTarget.server_name !== char.server_name"
             class="btn btn-secondary text-xs px-2 py-1 ml-auto"
+            :disabled="renameBusy"
             @click="startRename(char)">
             Rename / move
           </button>

@@ -175,8 +175,8 @@ character. The source of that owner depends on the ingest path:
   own `PlayerShopLog` book, so the active character is the book owner by
   definition. The coordinator does not parse the owner out of the book body.
 - **Import** — the parser advisory-detects an owner by scanning for the first
-  **owner action** (`added`, `removed`, `configured`, `visible`, `collected`)
-  — actions only a stall owner can perform. This hint lets the import
+  **owner action** (`added`, `removed`, `configured`, `visible`, `collected`, `hired`)
+  — actions only a stall owner can perform (a hire-only book still identifies its owner). This hint lets the import
   command distinguish three cases:
   1. **Book owner matches active character** — normal import, stamp with the
      parsed owner.
