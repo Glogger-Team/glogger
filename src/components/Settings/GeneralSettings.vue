@@ -604,10 +604,18 @@ async function doRename() {
     characterStore.allCharacterWorkOrdersLoaded = false;
     characterStore.allCharacterWorkOrdersGeneration++;
     if (wasActive) {
-      gameStateStore.resetSessionSkills();
-      gameStateStore.clearLiveInventory();
-      await gameStateStore.loadAll();
-      characterStore.initForActiveCharacter();
+      // The DB rename already committed — a refresh failure must not
+      // masquerade as a failed rename (the form would show the old,
+      // now-nonexistent identity and a retry would fail confusingly).
+      try {
+        gameStateStore.resetSessionSkills();
+        gameStateStore.clearLiveInventory();
+        await gameStateStore.loadAll();
+        characterStore.initForActiveCharacter();
+      } catch (refreshErr) {
+        console.error("Rename committed but state refresh failed:", refreshErr);
+        renameError.value = `Renamed, but reloading game state failed: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)} — switch characters to refresh.`;
+      }
     }
     renameDone.value = `Renamed ${target.character_name} (${target.server_name}) to ${newName} (${newServer}) — all history moved. Note: old export files (Reports/Character_${target.character_name}_*.json) still name the old character — remove or re-export them, or the next report scan will recreate the old identity.`;
     renameTarget.value = null;
