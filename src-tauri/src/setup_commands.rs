@@ -769,6 +769,31 @@ fn rename_character_on_write_conn(
             "cannot rename: stall and brewing history is ambiguous across servers under this name".to_string(),
         );
     }
+    // Retained-history guard: delete deliberately leaves name-only owner
+    // rows behind (owner is a stall label, not a character), so a deleted
+    // character's stall/brewing rows can outlive its `user_characters` row.
+    // Renaming into such a name would merge two characters' histories under
+    // one label. Refuse while the tx is open — nothing commits.
+    if new_character_name != character_name {
+        for (table, column) in [
+            ("stall_events", "owner"),
+            ("stall_inventory_baseline", "owner"),
+            ("brewing_discoveries", "character"),
+        ] {
+            let retained: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?1"),
+                    rusqlite::params![new_character_name],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("Query failed: {e}"))?;
+            if retained > 0 {
+                return Err(format!(
+                    "cannot rename: {table} still holds history under {new_character_name} (delete leaves owner rows behind)"
+                ));
+            }
+        }
+    }
     if new_character_name != character_name {
         for (table, column) in [
             ("stall_events", "owner"),
@@ -1641,6 +1666,36 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(kept, 1, "{table} owner rows must stay under the shared name");
+        }
+    }
+
+    #[test]
+    fn rename_character_refuses_target_with_retained_owner_history() {
+        let mut conn = fresh_db();
+        seed_character(&conn, CHAR);
+        seed_character(&conn, OTHER);
+        // Delete OTHER: scoped rows go, but the owner-label rows stay behind.
+        delete_character_on_write_conn(&mut conn, OTHER, SERVER).unwrap();
+        // Renaming CHAR into OTHER's freed name would merge CHAR's owner
+        // rows with OTHER's retained stall/brewing rows. Refuse instead.
+        let err = rename_character_on_write_conn(&mut conn, CHAR, SERVER, OTHER, SERVER)
+            .unwrap_err();
+        assert!(err.contains("still holds history"), "unexpected error: {err}");
+        // Nothing moved: scoped rows and owner rows all stay under CHAR.
+        assert_eq!(count(&conn, "user_characters", CHAR), 1);
+        for (table, column) in [
+            ("stall_events", "owner"),
+            ("stall_inventory_baseline", "owner"),
+            ("brewing_discoveries", "character"),
+        ] {
+            let kept: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?1"),
+                    rusqlite::params![CHAR],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(kept, 1, "{table} owner rows must stay under {CHAR}");
         }
     }
 }
