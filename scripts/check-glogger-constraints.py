@@ -12,6 +12,11 @@ from pathlib import Path
 
 EXCLUDED_DIRS = {".git", "node_modules", "target", "dist"}
 
+
+class GateReadError(Exception):
+    """A selected file could not be read — fail closed, never skip silent."""
+
+
 FORBIDDEN_PATTERNS = [
     r"OpenProcess\s*\(",
     r"WriteProcessMemory",
@@ -84,16 +89,20 @@ DEFAULT_ROOT = HERE.parent.parent
 LIMITS_DOC = Path("docs", "research", "glogger-game-interaction-limits.md")
 
 
-def _excluded(path: Path) -> bool:
-    return any(part in EXCLUDED_DIRS for part in path.parts)
+def _excluded(path: Path, root: Path) -> bool:
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return True
+    return any(part in EXCLUDED_DIRS for part in rel.parts)
 
 
 def _read_lines(path: Path):
     try:
         with open(path, "r", encoding="utf-8", errors="ignore") as fh:
             return fh.read().splitlines()
-    except OSError:
-        return []
+    except OSError as exc:
+        raise GateReadError(str(path), exc)
 
 
 def _src_rs_files(root: Path):
@@ -101,7 +110,7 @@ def _src_rs_files(root: Path):
     if not src.is_dir():
         return []
     files = [p for p in src.rglob("*.rs") if p.is_file()]
-    files = [p for p in files if not _excluded(p)]
+    files = [p for p in files if not _excluded(p, root)]
     return sorted(files)
 
 
@@ -124,7 +133,7 @@ def _repo_files(root: Path, allowlist: set):
     out = []
     for p in files:
         s = str(p)
-        if _excluded(p):
+        if _excluded(p, root):
             continue
         if s in allowlist:
             continue
@@ -199,7 +208,11 @@ def main(argv=None):
     parser.add_argument("--root", default=str(DEFAULT_ROOT))
     args = parser.parse_args(argv)
     root = Path(args.root).resolve()
-    violations = check(root)
+    try:
+        violations = check(root)
+    except GateReadError as exc:
+        print(f"constraints: failed to read {exc} — failing closed", file=sys.stderr)
+        return 2
     if violations:
         print(
             "HARD-LINE VIOLATIONS (see docs/research/glogger-game-interaction-limits.md):"
