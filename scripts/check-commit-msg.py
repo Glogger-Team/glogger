@@ -15,7 +15,50 @@ MERGE_RE = re.compile(r"^(Merge |release:)", re.IGNORECASE)
 PREFIX_RE = re.compile(r"^(feat|fix|impv|docs|test|build)(\(.*\))?!?:")
 
 
+def self_test() -> int:
+    import subprocess
+    import tempfile
+
+    cases = [
+        ("fix: correct scroll behavior", "silent"),
+        ("feat(api)!: breaking change", "silent"),
+        ("impv(scope): tidy", "silent"),
+        ("Merge branch 'x' into y", "silent"),
+        ("release: cut v1.2.3", "silent"),
+        ("no prefix here", "warn"),
+        ("chore: not a known prefix", "warn"),
+    ]
+    passed = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for message, expect in cases:
+            msg = Path(tmp) / "msg"
+            msg.write_text(message + "\n", encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, __file__, str(msg)],
+                capture_output=True,
+                check=False,
+                text=True,
+            )
+            if proc.returncode != 0:
+                print(
+                    f"self-test FAIL: {message!r} exited {proc.returncode} (must always exit 0)"
+                )
+                continue
+            warned = bool(proc.stdout.strip())
+            if (expect == "silent") == warned:
+                print(f"self-test FAIL: {message!r} warned={warned}, expected {expect}")
+                continue
+            passed += 1
+    print(f"commit-msg self-test: {passed}/{len(cases)} passed")
+    return 0 if passed == len(cases) else 1
+
+
 def main() -> int:
+    # Self-test: `python scripts/check-commit-msg.py --self-test` (wired
+    # into `mise run lint:shell`). Pins the warn-but-never-block contract:
+    # every path exits 0, prefixed/exempt messages stay silent, unprefixed warn.
+    if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
+        return self_test()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", newline="\n")
     msg_file = Path(sys.argv[1]) if len(sys.argv) > 1 else None

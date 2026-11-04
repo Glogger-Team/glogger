@@ -142,6 +142,11 @@ jobs:
         # pinact-action is uninstallable on stock runners).
         run: mise run lint:yaml
 
+      - name: Lint-parity drift guard
+        # Same `mise run lint:parity` slice the pre-commit hook runs (via
+        # `mise run lint:fast`): hook/docs refs resolve, TODO location
+        # contract holds, fast-set stays seconds-scale.
+        run: mise run lint:parity
       - name: Validate pre-commit config
         run: mise exec -- pre-commit validate-config
 
