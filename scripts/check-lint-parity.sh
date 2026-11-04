@@ -25,6 +25,14 @@ for ref in $refs; do
   printf '%s\n' "$tasks" | grep -qxF "$ref" \
     || { echo "lint-parity: .pre-commit-config.yaml calls 'mise run $ref', not defined in mise.toml"; fail=1; }
 done
+# The hook contract itself, not just whatever refs happen to be present:
+# these entry IDs must call these tasks, so swapping an entry to a
+# non-mise command fails closed instead of passing on the survivors.
+for want in "lint-fast:lint:fast" "lint-full:lint"; do
+  id=${want%%:*}; task=${want#*:}
+  grep -A3 "id: $id\$" .pre-commit-config.yaml | grep -q "entry: mise run $task\$" \
+    || { echo "lint-parity: pre-commit hook '$id' must call 'mise run $task'"; fail=1; }
+done
 
 # 2. Every lint:* slice named in AGENTS.md's Linting table resolves too.
 #    (Same seam, second consumer: task renames must land in docs as well.)
@@ -61,11 +69,14 @@ fi
 # 4. lint:fast membership matches its contract: the commit stage must
 #    stay free of build/test/network-weight slices (the pre-commit hook
 #    budget is seconds). New heavy slices belong in `lint`, not `lint:fast`.
+#    `lint:markdown-push` is denied for a different reason: its --push
+#    mode rejects worktree overlap, which is legitimate at commit time
+#    (amend/refine flows) and only meaningful at push time.
 [ -r mise.toml ] || { echo "lint-parity: cannot read mise.toml" >&2; exit 2; }
 block=$(sed -n '/\[tasks\."lint:fast"\]/,/^\[/p' mise.toml)
 [ -n "$block" ] || { echo "lint-parity: lint:fast stanza missing in mise.toml" >&2; exit 2; }
 fast=$(printf '%s\n' "$block" | grep -oE '"lint:[a-z-]+"' | tr -d '"')
-for heavy in lint:build lint:clippy lint:test lint:audit lint:constraints; do
+for heavy in lint:build lint:clippy lint:test lint:audit lint:constraints lint:markdown-push; do
   printf '%s\n' "$fast" | grep -qxF "$heavy" \
     && { echo "lint-parity: heavy slice '$heavy' in lint:fast (commit stage must stay seconds-scale)"; fail=1; } || true
 done
