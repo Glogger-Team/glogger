@@ -386,7 +386,10 @@ fn apply_webkit_dmabuf_workaround() {
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some() {
         return;
     }
-    std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    // SAFETY: single-threaded startup before any thread reads this var.
+    unsafe {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
