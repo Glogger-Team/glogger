@@ -175,7 +175,6 @@ def check(root: Path):
 
     allowlist = {
         str(HERE),
-        str(root / "scripts" / "check-glogger-constraints.ps1"),
         str(root / "scripts" / "check-glogger-constraints.py"),
         str(root / LIMITS_DOC),
     }
