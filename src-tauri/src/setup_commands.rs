@@ -1773,6 +1773,7 @@ mod tests {
         assert!(err.contains("build_presets"), "unexpected error: {err}");
         // Nothing moved: scoped rows, owner rows, and presets stay under CHAR.
         assert_eq!(count(&conn, "user_characters", CHAR), 1);
+        assert_eq!(count(&conn, "game_state_skills", CHAR), 1, "scoped rows must roll back");
         let kept: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM build_presets WHERE character_id = ?1",
@@ -1781,5 +1782,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kept, 1, "preset must stay under {CHAR}");
+        let kept_owner: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM stall_events WHERE owner = ?1",
+                rusqlite::params![CHAR],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept_owner, 1, "owner rows must roll back");
     }
 }
