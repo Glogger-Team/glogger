@@ -84,8 +84,8 @@ a draft under the tag; the next attempt is a new version tag — the previous
 tag is left behind, never retagged. The release body opens with the channel
 line, then the generated notes, then a
 Flatpak follow-up sentence, the attribution paragraph, and the macOS unsigned
-footnote; the same notes go into `latest.json.notes`. The `.githooks/commit-msg`
-prefix list drives the notes — put anything a user should read about in a
+footnote; the same notes go into `latest.json.notes`. The prefix list in `scripts/check-commit-msg.sh`
+drives the notes — put anything a user should read about in a
 prefix the notes include. A dry run of the same matrix without publishing:
 
 ```bash
@@ -99,9 +99,9 @@ the tag to exist on `origin`). The `validate` job also runs the
 game-interaction hard-line scanner
 (`scripts/check-glogger-constraints.py`, `python3` — TOS prose lives in
 `docs/research/glogger-game-interaction-limits.md`), so a TOS/CoC violation fails
-the release — the same scanner runs from `.githooks/pre-push`, which is
-opt-in per clone (install: `python scripts/setup-hooks.py`; it blocks a violating
-push, `GLOGGER_SKIP_CONSTRAINTS=1` bypasses it loudly, CI re-checks anyway).
+the release — the same scanner runs in the pre-push hook (`mise run lint`),
+which is opt-in per clone (install: `scripts/setup-hooks.sh`; it blocks a
+violating push, `git push --no-verify` bypasses it loudly, CI re-checks anyway).
 
 ### When a release fails
 
@@ -197,14 +197,14 @@ pubkey is compiled in, so the new-key release must be installed manually once.
 - `src-tauri/Cargo.toml` shows a phantom CRLF-only diff in `git status` —
   leave it uncommitted (permanent known artifact).
 - npm only (Node 24); no bun/yarn/pnpm.
-- Prefixes/hook install: see `.githooks/commit-msg` and `python scripts/setup-hooks.py` (cited, not restated).
+- Prefixes/hook install: see `scripts/check-commit-msg.py` and `scripts/setup-hooks.sh` (cited, not restated).
 
 ## Upstream reference path
 
 `upstream` (crisp-oddio/glogger-oddio) is a read-only reference remote.
 Absorb fixes with `git fetch upstream && git merge upstream/<branch>`; expect
 conflicts in the config/CI files this repo owns. Never open a PR against
-upstream. Enforcement: `scripts/check-glogger-constraints.py` runs from `.githooks/pre-push` — the script owns the machine patterns.
+upstream. Enforcement: `scripts/check-glogger-constraints.py` runs in the pre-push hook (`mise run lint`) — the script owns the machine patterns.
 
 ## Credit lines (release bodies + README)
 

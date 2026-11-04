@@ -2,8 +2,11 @@
 # Gated in CI (lint.yml) — float latest, same as CI's floor-not-freeze policy.
 zizmor = "latest"
 ruff = "latest"
+shellcheck = "latest"
 yamllint = "latest"
 pinact = "latest"
+# Hook runner only — its version never affects lint results.
+"pipx:pre-commit" = "latest"
 # Ad-hoc use, not gated: jactionlint replaces actionlint wherever actionlint
 # would be called (actionlint's cache-poisoning rule can't ignore accepted drift).
 jactionlint = "latest"
@@ -14,23 +17,92 @@ node = "lts"
 # Runtime for scripts/cargo-audit-gate.py (CI uses runner python3).
 python = "latest"
 
-[tasks.lint]
-description = "Blocking lint gates (CI lint.yml set, runnable locally)"
-# Array form: each entry runs separately. A multi-line string runs as one
-# cmd.exe script, where invoking the npm .cmd shim without `call` swallows
-# every line after it.
+[tasks."lint:ruff"]
+description = "Ruff check + format on scripts/ (commit-fast slice)"
+run = ["ruff check scripts/", "ruff format --check scripts/"]
+
+[tasks."lint:shell"]
+description = "ShellCheck on scripts/*.sh at warning severity (commit-fast slice)"
+run = ["python -c \"import glob, subprocess, sys; sys.exit(subprocess.run(['shellcheck', '-S', 'warning'] + glob.glob('scripts/*.sh')).returncode)\""]
+
+[tasks."lint:yaml"]
+description = "yamllint + zizmor + pinact on .github/ (commit-fast slice)"
 run = [
-  "npm run build",
-  "npm run check:grids",
-  "ruff check scripts/",
-  "ruff format --check scripts/",
-  "python scripts/check-glogger-constraints.py",
-  "python scripts/check-review-patterns.py",
   "yamllint .github/",
   "zizmor --no-online-audits --config \"{{config_root}}/.github/zizmor.yml\" --min-severity medium \"{{config_root}}/.github/workflows/\"",
   "pinact run --check",
-  "python scripts/cargo-audit-gate.py",
-  "python -c \"import subprocess, sys; sys.exit(subprocess.run(['cargo', 'clippy', '--all-targets', '--', '-D', 'warnings'], cwd='src-tauri').returncode)\"",
+]
+
+[tasks."lint:markdown"]
+description = "Changed-files markdown gate: worktree files + unpushed commits (commit-fast slice)"
+# Commit/push hooks invoke with no --base: the script lints staged +
+# unstaged + untracked files plus files changed in unpushed commits (the
+# latter is what makes the pre-push hook meaningful on a clean tree). CI
+# passes --base explicitly (PR base / push `before`) — the one sanctioned
+# invocation difference, scope logic stays in
+# scripts/lint-markdown-changed.py.
+run = ["python scripts/lint-markdown-changed.py"]
+
+[tasks."lint:markdown-push"]
+description = "Pre-push Markdown: unpushed-commit files only, fail on staged overlap (push/full slice)"
+# --push reads worktree bytes, so any file that differs between HEAD and
+# the worktree would mask the committed content being pushed. Fail closed
+# listing those files instead. Commit-hook (lint:fast) path never runs
+# this, so amend/refine flows are unaffected.
+run = ["python scripts/lint-markdown-changed.py --push"]
+
+[tasks."lint:grids"]
+description = "Grid standards census (commit-fast slice; node: builtins only, no install needed)"
+run = ["npm run check:grids"]
+
+[tasks."lint:review"]
+description = "Review-patterns gate: decided defect shapes (commit-fast slice)"
+run = ["python scripts/check-review-patterns.py"]
+
+[tasks."lint:build"]
+description = "Frontend type-check and build (push/full slice)"
+run = ["npm run build"]
+
+[tasks."lint:clippy"]
+description = "Clippy deny-warnings on all targets (push/full slice)"
+dir = "src-tauri"
+run = ["cargo clippy --all-targets -- -D warnings"]
+
+[tasks."lint:test"]
+description = "Rust unit tests (push/full slice; mirrors lint.yml rust-tests job)"
+dir = "src-tauri"
+run = ["cargo test --lib"]
+
+[tasks."lint:audit"]
+description = "Fail-closed cargo-audit gate (push/full slice; logic in scripts/cargo-audit-gate.py)"
+run = ["python scripts/cargo-audit-gate.py"]
+
+[tasks."lint:constraints"]
+description = "Game-interaction hard lines (push/full slice)"
+run = ["python scripts/check-glogger-constraints.py"]
+
+[tasks."lint:fast"]
+description = "Commit stage: seconds-scale checks, no build/test/network"
+depends = ["lint:ruff", "lint:shell", "lint:yaml", "lint:markdown", "lint:grids", "lint:review"]
+
+[tasks.lint]
+description = "Blocking lint gates (CI lint.yml set, runnable locally)"
+# Single entrypoint CI and the pre-push hook both call: lint:fast slices
+# plus the push/full slices. Adding a check means adding it to one slice
+# task above; it lands everywhere with no second list to update.
+# Sequential array (NOT depends): depends lists run in parallel, and
+# lint:test / lint:clippy compiling into src-tauri/target races
+# lint:constraints' tree walk (missing-dir read error). Array entries run
+# in order — same shape as the old `lint` task. lint:fast stays a parallel
+# depends list (pure reads, no tree mutation).
+run = [
+  "mise run lint:fast",
+  "mise run lint:markdown-push",
+  "mise run lint:build",
+  "mise run lint:clippy",
+  "mise run lint:test",
+  "mise run lint:audit",
+  "mise run lint:constraints",
 ]
 
 [tasks.review-local]
@@ -43,9 +115,8 @@ run = [
   "git diff -w --stat HEAD",
 ]
 [tasks."lint:all"]
-description = "lint plus advisory rustfmt and the changed-files markdown gate"
+description = "lint plus advisory rustfmt"
 depends = ["lint"]
 run = [
   "cd src-tauri && cargo fmt -- --check || true",
-  "python scripts/lint-markdown-changed.py",
 ]

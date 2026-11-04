@@ -121,11 +121,12 @@ the client, any automation of gameplay.
 
 ## 6. Enforcement: `scripts/check-glogger-constraints.py`
 
-Runs in two places, so skipping one cannot ship a violation:
+Runs on every push, in CI lint, and on every release, so skipping one cannot ship a violation:
 
-- **Every push** from a clone with the hooks installed —
-  `core.hooksPath=.githooks` (`.githooks/pre-push`; `python scripts/setup-hooks.py`
-  sets it). Opt-in per clone, so check it after a fresh clone.
+- **Every push** from a clone with the hooks installed — the pre-push hook
+  runs `mise run lint` (which includes the constraints slice);
+  `scripts/setup-hooks.sh` installs it. Opt-in per clone, so check it after
+  a fresh clone.
 - **Every release**: the `validate` job of `.github/workflows/release.yml`
   runs the scanner with `python3` before any platform builds, so a tag push that
   violates a hard line fails the release.
@@ -142,7 +143,8 @@ In full-compliance mode the scanner checks:
   client/network class names, protocol reader identifiers).
 
 Verified: green on the compliant repo, red on probe violations. Skippable
-only with `GLOGGER_SKIP_CONSTRAINTS=1` (prints a warning — never silent).
+only with `git push --no-verify` (the hook never runs silently — CI
+re-checks anyway).
 `Cargo.lock` is excluded from the wire-pattern scan (an unrelated
 font-decoding crate shares a name fragment); the checker script excludes
 itself (it must name the patterns it greps for). Raw log fixtures in

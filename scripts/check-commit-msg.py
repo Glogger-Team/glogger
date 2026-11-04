@@ -5,7 +5,7 @@ conventional prefix. This improves changelog generation quality.
 Known prefixes: feat, fix, impv, docs, test, build, release
 
 Install: git config core.hooksPath .githooks
-Or run:  python scripts/setup-hooks.py
+Install: scripts/setup-hooks.sh (pre-commit commit-prefix hook)
 """
 
 import re
@@ -38,8 +38,12 @@ def main() -> int:
     print("  ⚠  Commit message has no conventional prefix.")
     print("     Expected: feat|fix|impv|docs|test|build")
     print("     Example:  fix: correct scroll behavior on gourmand screen")
-    print("     Write the subject for end users (what changed in the app), not the process (round N, CodeRabbit, backlog batch, SYNC_PAT).")
-    print("     Example:  fix: StallTracker counts match after login without LocalPlayer sections")
+    print(
+        "     Write the subject for end users (what changed in the app), not the process (round N, CodeRabbit, backlog batch, SYNC_PAT)."
+    )
+    print(
+        "     Example:  fix: StallTracker counts match after login without LocalPlayer sections"
+    )
     print()
     print(f"     Your message: {first}")
     print()
