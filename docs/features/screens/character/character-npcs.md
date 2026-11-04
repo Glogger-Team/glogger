@@ -6,7 +6,7 @@ The NPCs screen shows all NPCs a character has interacted with, their favor rela
 
 ## Layout
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │  CharacterName · ServerName      Known NPCs: 87  Above Neutral: 34│
 ├──────────────────────────────────┬──────────────────────────────┤
@@ -56,6 +56,7 @@ The screen merges three data sources into a unified NPC list:
 | `gameDataStore.npcsByKey` (CDN) | Always (after CDN load) | Name, area, description, services, preferences |
 
 **Merge logic:**
+
 - Start with all NPCs from the report (these are NPCs the player has met)
 - Add any game-state-only NPCs (discovered this session, not yet in a report)
 - Enrich each with CDN data from `gameDataStore.npcsByKey`
@@ -72,19 +73,23 @@ Top-level screen component. Manages selected NPC state and provides the summary 
 Left sidebar (w-80) with the full NPC list.
 
 **Grouping options:**
+
 - **By Favor Tier** (default) — groups from Soul Mates down to Despised
 - **By Area** — groups by NPC location (alphabetical)
 - **None** — flat list
 
 **Sorting options:**
+
 - **Favor** (default, descending) — highest favor first
 - **Name** (alphabetical)
 
 **Filters:**
+
 - Text filter on NPC name, area, or favor tier
 - Hide neutral — hides NPCs at Neutral favor
 
 **Each row shows:**
+
 - NPC display name
 - Area (small, truncated)
 - Live data indicator dot (gold) if game state favor differs from the report
@@ -97,6 +102,7 @@ Groups are collapsible with sticky headers showing group name and count.
 Right panel composing the header and section sub-components. Shows header with NPC name, area (via `AreaInline`), and description. Falls back gracefully when CDN data is unavailable (shows only favor info).
 
 Sections displayed in order:
+
 1. Header (name, area, description)
 2. NpcFavorSection (tier ladder + progress)
 3. NpcVendorSection (gold status, timer, last sell) — only if NPC has a store service
@@ -110,6 +116,7 @@ Sections displayed in order:
 ### NpcFavorSection (`src/components/Character/NpcDetailSections/NpcFavorSection.vue`)
 
 Visual favor tier ladder showing all tiers from Soul Mates to Despised:
+
 - Current tier highlighted with gold accent
 - Tiers at or below current shown as unlocked (check mark)
 - Tiers above shown as locked (dimmed, with points required to reach)
@@ -132,6 +139,7 @@ Service types are defined in `src/types/npcServices.ts` as a discriminated union
 ### NpcPreferencesSection (`src/components/Character/NpcDetailSections/NpcPreferencesSection.vue`)
 
 Gift preferences sorted by preference value (highest first). Each row shows:
+
 - Desire badge (Love = red, Like = green, Hate = red/dark)
 - Item name or keyword description
 - Numeric preference value (+/-)
@@ -141,6 +149,7 @@ Also shows which favor tiers unlock gifting (from `gift_favor_tiers` array).
 ### NpcVendorSection (`src/components/Character/NpcDetailSections/NpcVendorSection.vue`)
 
 Shows vendor gold status for NPCs with a store service:
+
 - Gold available vs max with color coding (green when high, yellow when low, red when empty)
 - Estimated reset timer (168h from `vendor_gold_timer_start`, labeled as estimated)
 - Last sell relative timestamp
@@ -150,6 +159,7 @@ Shows vendor gold status for NPCs with a store service:
 ### NpcStorageSection (`src/components/Character/NpcDetailSections/NpcStorageSection.vue`)
 
 Shows storage usage for NPCs with a storage service:
+
 - Slots used / unlocked at current favor tier with percentage
 - Maximum possible slots at Soul Mates tier
 - List of stored items with ItemInline components and stack counts
@@ -158,6 +168,7 @@ Shows storage usage for NPCs with a storage service:
 ### NpcInventoryGiftsSection (`src/components/Character/NpcDetailSections/NpcInventoryGiftsSection.vue`)
 
 Cross-references player inventory with NPC gift preferences:
+
 - Lists items in inventory matching Love/Like preferences
 - Shows quantity owned, desire badge, and preference value per item
 - Estimated total favor from gifting all matching items
@@ -166,6 +177,7 @@ Cross-references player inventory with NPC gift preferences:
 ### NpcQuestsSection (`src/components/Character/NpcDetailSections/NpcQuestsSection.vue`)
 
 Shows quests associated with the NPC via `gameDataStore.getQuestsForNpc()`:
+
 - Quest names via QuestInline component
 - Repeatable indicator for quests with `ReuseTime_Minutes` or `ReuseTime_Days`
 - Favor reward amounts
@@ -178,6 +190,7 @@ This component is shared between the Character NPC screen and the Data Browser N
 ### useFavorTiers (`src/composables/useFavorTiers.ts`)
 
 Extracted favor tier logic shared across all NPC components:
+
 - `FAVOR_TIERS` — ordered array (Soul Mates → Despised)
 - `favorColor(tier)` — text color class
 - `favorBadgeClasses(tier)` — bg + border + text classes for badges
@@ -207,14 +220,13 @@ These are hardcoded in `useFavorTiers.ts` and used for progress estimation in th
 
 ## Data We Cannot Show
 
-Some player questions can't be answered with currently available CDN/log data:
-
-- **What do NPCs sell?** — Available in the Data Browser via vendor_prices CDN table, but not yet shown in the Character NPC detail panel
+- **What do NPCs sell?** — Available in the Data Browser via the `sources_items.json` Vendor/Barter index, but not yet shown in the Character NPC detail panel
 - **Specific barter items** — Barter service exists but item specifics aren't in CDN
 - **Hangout activities** — Not in current CDN NPC data
 - **Exact favor values** — We track cumulative deltas and tier but not absolute numerical favor
 
 Previously missing data that is now available:
+
 - **Council pool / reset timing** — Vendor gold tracked via `game_state_vendor` table; estimated 168h reset timer shown in NpcVendorSection. Users can also manually set vendor gold via the Edit button.
 - **Quest/task associations** — Precomputed NPC-quest index in gameDataStore; shown in NpcQuestsSection
 - **Storage contents** — Tracked in `game_state_storage`; shown in NpcStorageSection
@@ -222,6 +234,7 @@ Previously missing data that is now available:
 ## NPC Card Features
 
 The `NpcCard` component (`src/components/Shared/NPC/NpcCard.vue`) displays a compact summary of an NPC in the card grid:
+
 - NPC name (via `NpcInline`) with pin-to-shelf button and favor badge
 - **Area/zone** — displays the NPC's `area_friendly_name` via `AreaInline` (clickable)
 - Gift tracking dots (when enabled)

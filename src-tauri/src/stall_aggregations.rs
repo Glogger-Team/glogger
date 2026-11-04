@@ -1141,8 +1141,9 @@ mod tests {
         qty: i64,
         price: Option<f64>,
     ) -> InventoryEvent {
-        // Mirrors the real DB: only `bought` (and `collected`, irrelevant for
-        // inventory) carry a `price_total`. Other actions leave it NULL.
+        // Mirrors the real DB: `bought` carries a `price_total`; `collected`
+        // and `hired` carry one too but never reach inventory (NULL item).
+        // Other actions leave it NULL.
         let price_total = if action == "bought" {
             price.map(|p| (p * qty as f64) as i64)
         } else {

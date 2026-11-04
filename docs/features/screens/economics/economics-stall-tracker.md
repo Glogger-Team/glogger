@@ -51,8 +51,7 @@ The Stall Tracker has four visible tabs plus a fifth view behind a modal:
 ### Shop Log modal
 
 ![Shop Log modal — all action types with colored badges](../../../screenshots/economics/stall-tracker/shop-log.png)
-
-*Maintenance view, lazy-mounted on first open. Shows all seven action buckets including the unparseable `unknown` bucket. Each action gets a distinct color tint (green=bought, blue=added, red=removed, amber=configured, cyan=visible, gold=collected). Sortable on every column. The modal persists its filter/sort/scroll state across close/reopen within the session.*
+*Maintenance view, lazy-mounted on first open. Shows all eight action buckets including the unparseable `unknown` bucket. Each action gets a distinct color tint (green=bought, blue=added, red=removed, amber=configured, cyan=visible, gold=collected, purple=hired). Sortable on every column. The modal persists its filter/sort/scroll state across close/reopen within the session.*
 
 ## Architecture
 
@@ -116,11 +115,9 @@ stall events never need cross-log correction. A manual Refresh command
 (`rescan_stall_books`) re-runs the same ingest statelessly
 (INSERT OR IGNORE dedup) for users who just opened their log in-game.
 
-## Shop Log Parsing
-
 A `PlayerShopLog` book's content is a `\n\n`-separated list of entries, each
-prefixed with a `Day Mon DD HH:MM -` timestamp. Six action types are
-recognized; a seventh bucket (`unknown`) captures anything that doesn't match so
+prefixed with a `Day Mon DD HH:MM -` timestamp. Seven action types are
+recognized; an eighth bucket (`unknown`) captures anything that doesn't match so
 nothing is silently dropped.
 
 | Action | Example line | Fields parsed |
@@ -132,6 +129,7 @@ nothing is silently dropped.
 | `configured` | `Deradon configured Barley Seedsx36 to cost 3000 per 2.` | player (owner), item, quantity, price_unit |
 | `visible` | `Deradon made Nice Saddle visible in shop at a cost of 4000 per 1` | player (owner), item, quantity, price_unit |
 | `collected` | `Deradon collected 30500 Councils from customer purchases` | player (owner), price_total |
+| `hired` | `Deradon paid 5000 Councils to hire a stall for 24 hours` | player (owner), price_total (hire fee) |
 
 ### Entry Index Stability
 
@@ -177,8 +175,8 @@ character. The source of that owner depends on the ingest path:
   own `PlayerShopLog` book, so the active character is the book owner by
   definition. The coordinator does not parse the owner out of the book body.
 - **Import** — the parser advisory-detects an owner by scanning for the first
-  **owner action** (`added`, `removed`, `configured`, `visible`, `collected`)
-  — actions only a stall owner can perform. This hint lets the import
+  **owner action** (`added`, `removed`, `configured`, `visible`, `collected`, `hired`)
+  — actions only a stall owner can perform (a hire-only book still identifies its owner). This hint lets the import
   command distinguish three cases:
   1. **Book owner matches active character** — normal import, stamp with the
      parsed owner.
@@ -206,14 +204,13 @@ import command treats it as "owner if known, else fall back." Do not treat
 | event_timestamp | TEXT | Raw game format `"Mon Apr 13 14:29"`. Preserved for round-trip export. |
 | event_at | TEXT | Real ISO 8601 `"YYYY-MM-DD HH:MM:SS"`. All time-range queries use this column. |
 | log_timestamp | TEXT | Timestamp when the book was opened. `"imported"` / `"seeded"` for synthetic rows. |
-| log_title | TEXT | `"Today's Shop Logs"`, `"Yesterday's Shop Logs"`, `"Imported"`, `"Seeded"`. |
-| action | TEXT | One of the six action types plus `"unknown"`. |
+| action | TEXT | One of the seven action types plus `"unknown"`. |
 | player | TEXT | Buyer for `bought`, owner for everything else. |
 | owner | TEXT | The character that owns this row's data. Every read/mutation scopes on this. |
-| item | TEXT | Nullable (`collected` has no item). |
+| item | TEXT | Nullable (`collected`/`hired` have no item). |
 | quantity | INTEGER | Defaults to 1. |
 | price_unit | REAL | Price per unit (possibly fractional for `per N > 1` entries). |
-| price_total | INTEGER | Total price for `bought` and `collected`. |
+| price_total | INTEGER | Total price for `bought` and `collected`; hire fee for `hired`. |
 | raw_message | TEXT | Exact in-game phrasing, used for export round-trip. |
 | entry_index | INTEGER | Position within the book (oldest = 0). Stable across re-opens. |
 | ignored | INTEGER | 0/1 soft-mute flag. Excluded from all aggregations. |
@@ -388,7 +385,10 @@ narrow the gap without a live `LocalPlayer:` feed:
 - **Clear unsure** — one-click eviction for the rows above: every ⚠ / `~`
   in-stock row gets a zeroed manual count at once. Guesses leave together;
   recount survivors individually.
-- The parser treats entries that don't match any action regex as `"unknown"`
-  (e.g., the hire-duration messages). These are excluded from the list views
-  and from every aggregation. A future improvement could parse the hire
-  messages to surface stall maintenance costs.
+- The parser treats entries that don't match any action regex as `"unknown"`.
+  These are hidden from the default Shop Log view and excluded from every
+  aggregation, but remain available via the action filter (select `unknown`
+  to surface them). Stall hire payments parse as `hired` (owner, hire fee in
+  `price_total`) — they surface in the Shop Log list so "rented, zero sales"
+  is distinguishable from "never rented", but stay out of every
+  sales/inventory aggregation.

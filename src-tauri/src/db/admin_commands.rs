@@ -208,7 +208,6 @@ const PURGE_TABLES: &[(&str, &str)] = &[
     ("event_log", "created_at"),
     ("item_transactions", "timestamp"),
     ("chat_messages", "timestamp"),
-    ("stall_price_observations", "observed_at"),
 ];
 
 /// Logical-size of the database in bytes (page_count × page_size).

@@ -457,7 +457,25 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 84)?;
     }
 
+    if current_version < 85 {
+        migration_v85_drop_vendor_prices(conn)?;
+        super::record_migration(conn, 85)?;
+    }
 
+    if current_version < 86 {
+        migration_v86_drop_stall_price_observations(conn)?;
+        super::record_migration(conn, 86)?;
+    }
+
+    if current_version < 87 {
+        migration_v87_reclassify_hire_events(conn)?;
+        super::record_migration(conn, 87)?;
+    }
+
+    if current_version < 88 {
+        migration_v88_stamp_hire_owner(conn)?;
+        super::record_migration(conn, 88)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -990,6 +1008,118 @@ fn migration_v84_stall_inventory_baseline(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_stall_baseline_owner
             ON stall_inventory_baseline(owner);",
+    )?;
+    Ok(())
+}
+
+/// Migration V85: drop the dead `vendor_prices` table (decision 2026-11-03).
+///
+/// Created in the v1 baseline as a CDN vendor-price cache, but nothing ever
+/// wrote to it (no writer, no seed, no backfill — sole repo hit is the
+/// CREATE TABLE) and nothing ever read from it. The live vendor path prices
+/// from the in-memory `vendor_items_by_npc` index (`sources_items.json`
+/// Vendor/Barter entries, `value x 1.5`) instead, so the table was
+/// unreachable ballast. Archived plans/docs that cited it as a live table
+/// are corrected in the same change.
+fn migration_v85_drop_vendor_prices(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS vendor_prices;
+         DROP INDEX IF EXISTS idx_vendor_prices_item;
+         DROP INDEX IF EXISTS idx_vendor_prices_npc;",
+    )?;
+    Ok(())
+}
+
+/// Migration V86: drop the dead `stall_price_observations` table (decision 2026-11-04).
+///
+/// Created in v68 for the OCR stall-price capture surface, stripped from the
+/// live app in batch-1 (2026-10-30: capture panel, OCR stack, purchase
+/// sentinels, all commands gone). No writer or reader has remained since —
+/// the table and its rows were unreachable ballast, retained only pending
+/// this decision. Re-introduction needs the capture path rebuilt, not these
+/// rows. Also removed from `admin_commands::PURGE_TABLES`.
+fn migration_v86_drop_stall_price_observations(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS stall_price_observations;
+         DROP INDEX IF EXISTS idx_spo_item;
+         DROP INDEX IF EXISTS idx_spo_observed;
+         DROP INDEX IF EXISTS idx_spo_stall;",
+    )?;
+    Ok(())
+}
+/// Migration V87: reclassify legacy hire rows stored as `unknown`.
+///
+/// Hire lines (`<player> paid <N> Councils to hire a stall for <H> hours`)
+/// parsed as `unknown` before the `hired` action existed
+/// (`shop_log_parser.rs::HIRED_RE`): `player` stayed empty and `price_total`
+/// NULL. The `stall_events` UNIQUE key excludes `action` and inserts are
+/// `OR IGNORE`, so rescan never updates those rows — they stay invisible to
+/// the `hired` filter with a blank player and no fee. Match `raw_message`
+/// against the hire shape and backfill `action` + `player` + `price_total`,
+/// preserving every other column. Idempotent: the `action = 'unknown'`
+/// predicate skips already-migrated rows.
+fn migration_v87_reclassify_hire_events(conn: &Connection) -> Result<()> {
+    // Minimal fixtures (e.g. the roulette v77 test) seed a late
+    // `schema_migrations` version without the early tables — skip instead
+    // of failing (same shape as v82/v83). Real DBs always carry
+    // `stall_events` (created in v23, long before v87 can run).
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stall_events')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE stall_events
+            SET action = 'hired',
+                player = substr(raw_message, 1, instr(raw_message, ' paid ') - 1),
+                price_total = CAST(substr(raw_message, instr(raw_message, ' paid ') + 6) AS INTEGER)
+         WHERE action = 'unknown'
+           AND raw_message LIKE '% paid % Councils to hire a stall for %'",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Migration V88: stamp the owner on legacy hire rows that lack one.
+///
+/// Hire lines (`<player> paid <N> Councils to hire a stall for <H> hours`)
+/// are owner-only by game mechanics — you can only hire your own stall —
+/// and the parser already derives the book-level owner hint from them
+/// (`shop_log_parser.rs`: `hired` sits in the owner-action hint set). But
+/// v87 only repaired `action`/`player`/`price_total`, and legacy hire rows
+/// can carry a missing (`NULL`) or mismatched owner: pre-owner books fell
+/// back to the active character at import, which may not have been the
+/// shopkeeper. Such rows hide under the wrong label (or none) in every
+/// owner-scoped query (`build_filter_where` requires a non-empty owner).
+/// Copy `player` into the wrong `owner`; `IS NOT` treats NULL as
+/// mismatched, so re-runs converge and then touch zero rows. The
+/// `player != ''` guard leaves degenerate rows untouched.
+fn migration_v88_stamp_hire_owner(conn: &Connection) -> Result<()> {
+    // Same minimal-fixture guard as v87 (roulette v77 synthetic DB has
+    // no `stall_events`): skip instead of failing. Real DBs always carry
+    // it (created in v23, long before v88 can run).
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stall_events')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE stall_events
+            SET owner = player
+         WHERE action = 'hired'
+           AND owner IS NOT player
+           AND player != ''",
+        [],
     )?;
     Ok(())
 }
@@ -4248,13 +4378,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            84,
+            88,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 84);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 88);
     }
 
     #[test]
@@ -4377,13 +4507,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 82) plus the purge itself on the three aggregate source tables.
+        // 86) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 84, "migration chain head");
+        assert_eq!(head, 88, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -4429,8 +4559,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 84 (v83 repair +
-        // v84 baseline table). Repair: a
+        // Chain wiring: full run_migrations head must be 87 (full chain
+        // through the v85/v86 drops + v87 hire reclassification). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -4438,7 +4568,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 84, "migration chain head");
+        assert_eq!(head, 88, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -4478,6 +4608,168 @@ mod tests {
             )
             .unwrap();
         assert_eq!(aligned2, Some(true), "second run preserves aligned values");
+    }
+
+    #[test]
+    fn migration_v85_drops_dead_vendor_prices() {
+        // v1 baseline created the table, nothing ever wrote to or read from
+        // it — v85 drops it and its two indices. Idempotent on DBs where it
+        // is already gone.
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        for name in ["vendor_prices", "idx_vendor_prices_item", "idx_vendor_prices_npc"] {
+            let n: i64 = c
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                    rusqlite::params![name],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "{name} should be gone after v85");
+        }
+    }
+
+    #[test]
+    fn migration_v86_drops_dead_stall_price_observations() {
+        // v68 created the table for the OCR capture surface, batch-1 stripped
+        // every writer/reader — v86 drops it and its three indices.
+        // Idempotent on DBs where it is already gone.
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        for name in [
+            "stall_price_observations",
+            "idx_spo_item",
+            "idx_spo_observed",
+            "idx_spo_stall",
+        ] {
+            let n: i64 = c
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = ?1",
+                    rusqlite::params![name],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "{name} should be gone after v86");
+        }
+    }
+    #[test]
+    fn migration_v87_reclassifies_legacy_hire_rows() {
+        // Pre-hired-era rows landed as `unknown` with empty `player` and
+        // NULL `price_total`; the UNIQUE key excludes `action`, so rescan
+        // never fixes them. v87 backfills all three columns from
+        // `raw_message`; re-run is a no-op.
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        c.execute_batch(
+            "INSERT INTO stall_events
+                (event_timestamp, event_at, log_timestamp, log_title,
+                 action, player, owner, item, quantity,
+                 price_unit, price_total, raw_message, entry_index)
+             VALUES
+                ('2026-01-01T00:00:00', NULL, 'ts', 'title',
+                 'unknown', '', 'Deradon', NULL, 1,
+                 NULL, NULL, 'Deradon paid 5000 Councils to hire a stall for 24 hours', 0),
+                ('2026-01-02T00:00:00', NULL, 'ts', 'title',
+                 'unknown', 'MrBonq', 'MrBonq', 'Nice Saddle', 1,
+                 4000.0, 4000, 'MrBonq bought Nice Saddle at a cost of 4000 per 1 = 4000', 0);",
+        )
+        .unwrap();
+        migration_v87_reclassify_hire_events(&c).unwrap();
+        let (action, player, price): (String, String, Option<i64>) = c
+            .query_row(
+                "SELECT action, player, price_total FROM stall_events
+                 WHERE raw_message LIKE 'Deradon paid %'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(action, "hired", "legacy hire row should flip to hired");
+        assert_eq!(player, "Deradon", "player backfilled from raw_message");
+        assert_eq!(price, Some(5000), "fee backfilled from raw_message");
+        let (kept_action, kept_item, kept_price): (String, Option<String>, Option<i64>) = c
+            .query_row(
+                "SELECT action, item, price_total FROM stall_events WHERE player = 'MrBonq'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(kept_action, "unknown", "non-hire row must stay unknown");
+        assert_eq!(kept_item.as_deref(), Some("Nice Saddle"), "item preserved");
+        assert_eq!(kept_price, Some(4000), "price preserved");
+        // Idempotent: second run changes nothing.
+        migration_v87_reclassify_hire_events(&c).unwrap();
+        let n: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM stall_events WHERE action = 'hired'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "re-run must not duplicate or widen");
+    }
+    #[test]
+    fn migration_v88_stamps_hire_owner() {
+        // Pre-owner-era hire rows carry `owner IS NULL`, and legacy imports
+        // could stamp the wrong active character — both hide the fee under
+        // the wrong label (or none) in owner-scoped queries. v88 stamps
+        // `owner = player` (you can only hire your own stall); non-hire
+        // NULL-owner rows stay untouched; re-run is a no-op.
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        c.execute_batch(
+            "INSERT INTO stall_events
+                (event_timestamp, event_at, log_timestamp, log_title,
+                 action, player, owner, item, quantity,
+                 price_unit, price_total, raw_message, entry_index)
+             VALUES
+                ('2026-01-01T00:00:00', NULL, 'ts', 'title',
+                 'hired', 'Deradon', NULL, NULL, 1,
+                 NULL, 5000, 'Deradon paid 5000 Councils to hire a stall for 24 hours', 0),
+                ('2026-01-02T00:00:00', NULL, 'ts', 'title',
+                 'hired', 'MrBonq', 'SomebodyElse', NULL, 1,
+                 NULL, 5000, 'MrBonq paid 5000 Councils to hire a stall for 24 hours', 0),
+                ('2026-01-03T00:00:00', NULL, 'ts', 'title',
+                 'bought', 'MrBonq', NULL, 'Nice Saddle', 1,
+                 4000.0, 4000, 'MrBonq bought Nice Saddle at a cost of 4000 per 1 = 4000', 0);",
+        )
+        .unwrap();
+        migration_v88_stamp_hire_owner(&c).unwrap();
+        let owner: Option<String> = c
+            .query_row(
+                "SELECT owner FROM stall_events
+                 WHERE raw_message LIKE 'Deradon paid %'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(owner.as_deref(), Some("Deradon"), "hire row gains its owner");
+        let kept: Option<String> = c
+            .query_row(
+                "SELECT owner FROM stall_events
+                 WHERE raw_message LIKE 'MrBonq paid %'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept.as_deref(), Some("MrBonq"), "mismatched hire owner repaired to player");
+        let bought: Option<String> = c
+            .query_row(
+                "SELECT owner FROM stall_events WHERE action = 'bought'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bought, None, "non-hire NULL-owner row stays NULL");
+        // Idempotent: second run changes nothing.
+        migration_v88_stamp_hire_owner(&c).unwrap();
+        let n: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM stall_events WHERE owner IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "re-run must not stamp anything new");
     }
 
     #[test]

@@ -2,68 +2,22 @@
 
 Small tasks and notes that don't belong in a dedicated plan.
 
+> **Signal contract (2026-11-03):** the 10/21 client removed verbose `LocalPlayer:` events from Player.log — that stream is dark and not coming back. Replacements for the dark stream arrive via richer character-report exports (Chat.log and game-written `Books/` files, e.g. `Books/PlayerShopLog_*.txt`, remain supported sources — the `hired` action below arrives that way). Entries below say *report-only* where they wait on a new report field, and *dropped* where the only source was the log. The 10/21-10/28 triage history (`Player.log game-event outage triage`, per-tracker casualty verdicts) is in git history, not repeated here.
+
 ## Deferred tuning (needs real-world data)
 
 - [ ] rez-dedup 30s window calibration — see `docs/plans/deferred-tuning.md` (needs a captured rez pair; window still forward-only so backward-ordered pairs fail open; no fixture contains either phrasing; watch for duplicate `character_resuscitations` rows, cosmetic only).
 
 ---
 
-## Log-signal items
+## Product decisions (all four decided 2026-11-03 — no LocalPlayer: dependency)
 
-- [ ] Gardening helper — see `docs/plans/gardening-helper.md`
-  - Parser events exist (`EntityDescriptionUpdated`), plan written, garden almanac (Phase 0) complete. Missing is Phase 1+ code: no `EntityDescriptionUpdated` arm, no `garden_plots` table, no `get_garden_plots` command.
-  - **Effort: Medium for Phase 1 (plot tracker) | Impact: High**
-  - **Blocked portion:** whole Phase 1 sits behind the `LocalPlayer: Process` fast-path gate (`player_event_parser.rs:1257-1262`) — the current client emits zero such lines, so any `garden_plots` table would stay empty. No code this batch; un-blocks when lines recur.
+- [x] ~~Rename-orphan history on Rename-Golem/server-merge~~ — **DECIDED + BUILT (option b, move): `rename_character` (`setup_commands.rs`, registered `lib.rs`) UPDATEs the shared `GAME_STATE_TABLES` + `SCOPED_TABLES` consts (+ snapshot parents, whose children follow) in one `BEGIN IMMEDIATE` tx. Refuses missing source and occupied target (UNIQUE guard — no silent merge); refuses when owner labels are ambiguous across servers, or when the target name has retained owner rows from a deleted character; active identity follows the rename. Delete reuses the same consts so the lists can't drift. FE lives in Settings → General → Characters (per-row Rename/move, same-name no-op, busy gates); session reload only when the renamed character is active. Caveat: game-written `Reports/Character_<Old>_*.json` files still name the old character — the next report scan re-imports them and recreates the old identity. Remove or re-export old files after renaming (surfaced in the rename success copy); the backend deliberately does not touch the game's report files.**
+- [x] ~~"No stall rented" vs "rented, zero sales"~~ — **DECIDED + BUILT (option b, minimal): hire lines parse as `action='hired'` (`shop_log_parser.rs` `HIRED_RE`, owner-eligible hint). Flows through the Books-files path (`books_watcher.rs` reads game-written `Books/PlayerShopLog_*.txt` — no log line needed), surfaces in the Shop Log list, excluded from every sales/inventory aggregation. "Hired + zero bought" = rented-empty; zero rows = never rented.**
+- [x] ~~No-Resell flag with no item-model counterpart~~ — **DECIDED: dropped.** The only observable source was `ProcessPlayerVendorScreen` listing data, which never carried listing contents — nothing to model. Static half already covered by the `NoPlayerShops` CDN keyword. `vendor_prices` SQL table (dead — sole repo hit was its own `CREATE TABLE`, zero readers/writers, vendor pricing lives in the in-memory `vendor_items_by_npc` index at `value × 1.5`) dropped in migration v85. Do not revive.
+- [x] ~~Angling Perfect Catches as a new loot signal~~ — **DECIDED: dropped.** Nothing parses angling, no angling signal was ever captured, and the only transport was the log. Revisit only if a report field ever carries it.
 
-- [ ] Product decisions (from 10/21 update-notes triage; each needs a yes/no, no code until decided): rename-orphan history on Rename-Golem/server-merge (character tables key on `(character, server)`, no rename path); "no stall rented" vs "rented, zero sales" indistinguishable (no stall-rental table); No-Resell flag has no item-model counterpart (`vendor_prices` dead); Angling Perfect Catches as a new loot signal (nothing parses angling).
-  - **Blocked portion:** Angling Perfect Catches needs a new `LocalPlayer:` signal — no angling lines exist and the current client emits zero `LocalPlayer:` lines at all (fast-path gate `player_event_parser.rs:1257-1262`); un-blocks when lines recur. Rename-orphan, stall-rental, No-Resell stay actionable.
-
-## Post-10/21 client: Player.log emits zero game events — LocalPlayer: pipeline blind (added 2026-10-26; needs scoping, then investigation)
-
-- [x] ~~Player.log game-event outage triage~~ — **TRIAGED 2026-10-26: verdicts above; survey manual-framing split to next item; dark-state UI + cheap polling remain.**
-  - Verified 2026-10-26 against the live game dir: live `Player.log` (24MB) and `Player-prev.log` (13.7MB, 68,708 lines) contain **zero** `LocalPlayer:` lines — no `ProcessAddItem/DeleteItem/UpdateItemCode/ScreenText/TalkScreen`, nothing. Remaining `Process*` hits are engine noise (`ServerCmdProcessor`, `ProcessCommand Create/Update`, Unity input, `AreaCmdProcessor` animation/attack). Only the `Logged in as character … Time UTC=` login line survives. The 10/21 update's "remove excessive client logging to Player.log" removed the verbose player events, not just noise. `player_event_parser.rs:1257-1262` fast-path-skips every line without the prefix, so the entire `PlayerEvent` stream is dark; only `LogSessionAnchored` (login line, handled above the fast path) still fires. Chat.log is healthy (999 `[Status]` + 9,510 `[Combat]` lines today, live loot lines in the scored format).
-  - Casualties — triaged 2026-10-26 (zero `LocalPlayer:` lines confirmed; verdict per tracker):
-    - Surveys — **manual framing, chat loot survives.** Loot *data* flows (`ItemGained` → `survey_chat` rows, idempotent, 97.5% on fixtures); loot *framing* (uses, sessions, nodes, bonus) scores 0 — all `DeleteItem`/`DelayLoop`/`ScreenText`-derived (`aggregator.rs:535-704`). Short-term: hand-framed sessions + a new `survey_tracker_record_use {map, kind}` command reuses the chat-loot pipeline untouched. Treasure pings (`TreasureDistance`, parsed but unwritten) carry no kind/map/area — unclassified counter at best, not use detection. Nodes + speed bonus go **dark**.
-    - Skills — **chat fallback (degraded).** `apply_chat_level_up` keeps level current; base/bonus/tnl/max frozen (progress bars 100%/`<1min` = unknown). Character-report re-import re-anchors.
-    - Arena bets — **dark** (bets); matches **unaffected** via Kuzavek chat narration. No Confirm-Bet source exists.
-    - Poems — **dark** (new recitals lost; old-log backfill only). No chat/Reports source.
-    - Gifts — **dark** (tiers unaffected via Character report; weekly-count UI hidden with the strip — `add_manual_gift`/`remove_last_gift` exist in `useStatehelmTracker.ts` but have no visible caller; rewire tracked under dark-state UI item (2) below).
-    - Kill loot — **dark** (chat `EnemyKilled` covers counts/UI only; items, extracts, drop linkage lost).
-    - Inventory live — **dark / manual** (stale until login, then empty; Storage export re-import reseeds Storage report rows).
-    - Vendor live + other-stall browse — **dark / manual**; own-stall sales **unaffected** (shop-log books poll).
-    - Recipes (Cook's Helper) — **dark / manual** (report re-anchors). Effects/equipment/mount/weather/moon/guild/goals/strings/attributes/live-loadout — **dark** (report abilities + guild-motd text survive via books/reports).
-  - Open work: (1) `survey_tracker_record_use` command + manual-framing UI — **next build** (unblocks survey on current client); (2) per-tracker dark-state UI (hide vs explain — no silent stale); (3) watcher keeps polling cheaply (game may restore events). Player.log tailing stays — the login line still anchors sessions.
-- [x] ~~Survey manual use framing (`survey_tracker_record_use {map_internal_name, kind}` + session buttons)~~ — **DONE 2026-11-01 (verified in-tree: landed in `1213f41`; BE `survey_tracker_record_use` → `record_manual_use` → `claim_unlinked_chat_loot_near` (`commands.rs:196`, `aggregator.rs:596`), registered `lib.rs:913`; FE `Record survey use` block with map picker + kind override + error surface (`SurveyTrackerView.vue:42-85`, `onRecordUse :426-435`), session list + detail + store `recordUse` refresh).**
-  - **Effort: Medium (command + UI) | Impact: High (survey works again on current client)**
-
-  - Historical note (fixture-era, pre-10/21): on April fixtures with live Player.log events, the full pipeline captures 1500/2400 expected pieces (62.5%, all deltas negative, use detection 50/50 + 100/100 — attribution lossy, measured 2026-10-26 `npm run survey-test`):
-    | 50x-povus-marvelous (multihit) | 486 | 169 | 34.8% |
-    | 100x-eltmetal (basic, ring+pick) | 299 | 241 | 80.6% |
-    | 100x-serbcrystal (basic, with ring) | 406 | 269 | 66.3% |
-    | 100x-serbcrystal (basic, vanilla) | 407 | 213 | 52.3% |
-    | 100x-eltblue (basic, ring+pick) | 405 | 275 | 67.9% |
-    | 100x-eltcrystal (basic, vanilla) | 397 | 333 | 83.9% |
-    Item-level: 15 exact, 23 close, 65 off (>2) of 103. The plan-doc 99.9% claim (`docs/archive/plans/survey-tracker-rewrite.md`, written in the same commit as the harness, `7edd681`) is not reproducible from history — that commit needs an uncommitted CDN snapshot and chat files from a later commit, and it trimmed povus ground truth to survey-attributable-only. Chat-only replay on the same fixtures: 97.5% (2340/2400, all 5 basic datasets 100.0%; multihit 87.7% with extras the hand count excluded). The Oct-2026 item-identity tie-break is an overcount guard, byte-identical on replay — never going to move the undercount. Per-dataset miss attribution (which lines drop at which gate) is the right investigation *after* use detection is re-sourced, not before.
-
-- [ ] Bug: occasional inventory item miscounts
-  - **Root causes identified:** (1) Chat-to-player event correlation uses a ±2 second window — mismatches fall back to stack_size=1. (2) Parser's 1-line lookahead buffer for deletions (`pending_deletes`) can fail if log lines reorder. (3) During catch-up replay, stack count corrections from chat may arrive before/after Player.log events depending on replay ordering. (4) Login doesn't treat inventory as a full state dump, so items from earlier sessions can pollute later ones. The widget itself warns "item tracking is not great right now." Fix requires reconciliation logic and smarter replay-mode handling.
-  - **Audit: re-scoped — cause (4) is mostly fixed.** Live tailing *does* clear inventory (and equipment/combat/mount) on login: `game_state.rs:176-201`, reached once `live_mode` flips after catch-up (`coordinator.rs:622-628`); the "never cleared on login" reading only holds during catch-up, where it is deliberate. Causes (1)–(3) are confirmed live: `CHAT_GAIN_MATCH_WINDOW_SECS = 2` (`player_event_parser.rs:826`, matcher `:985-1011`, fallback `:1556-1560`), `pending_deletes` (`:632,1414-1506`), and the dual chat-correction path (`coordinator.rs:1265-1279,1306-1310`). The warning is in the **Critical Resources** widget (`CriticalResourcesWidget.vue:16`), not the Inventory tab.
-  - **Effort: Medium-High (multiple interacting root causes) | Impact: Medium (data accuracy)**
-
-- [ ] Smarter gamestate saving and initializing
-  - **Investigation complete:** Three core problems: (1) `ProcessAddItem` always records stack_size=1 as defensive default; `correct_stack_from_chat()` patches this via status messages but timing is fragile during replay. (2) No detection of "login reload" full-state dumps vs. incremental changes — items are UPSERTed individually, never cleared on login during catch-up. (3) During catch-up replay (`live_mode=false`), inventory is not cleared on character login, so items from earlier replayed sessions pollute later ones. Fix requires: detecting login-phase full-state dumps, intelligently clearing transient state, coordinating stack-correction timing with chat log replay order.
-  - **Audit: re-scoped.** (1) stands (`parse_add_item` seeds 1 or a matched buffered chat gain, patched later by `correct_stack_from_chat`, `game_state.rs:1138-1195`). (2) is half-solved: effects already do login-batch full-dump detection (`is_login_batch`, `player_event_parser.rs:3098`, clear at `game_state.rs:749-753`) and live mode clears the inventory family on login — **inventory alone has no dump flag**. (3) is intact and intentional. Residual: an inventory login-batch signal + replay-safe stack correction.
-  - **Effort: Medium-High | Impact: Medium (data accuracy)**
-
-- [ ] Item provenance downstream features
-  - Now that provenance is in the transaction ledger (item-provenance plan phases 1-5 complete), new analytics become possible: mining node yield stats per node type, vendor purchase history with total spend, kill loot breakdown by mob type, crafting yield analysis per recipe, "unknown source" diagnostic reports for discovering new signal patterns.
-  - **Audit: re-scoped — two of the five already shipped, just not on top of provenance.** Kill-loot-by-mob exists (`enemy_kills`/`enemy_kill_loot`, `migrations.rs:2900-2927`; `kill_tracking_commands.rs:156,312`; `EnemyBrowser.vue`); mining/survey yield ships **session-only** in Farming (`farmingStore.ts:814-840`, `FarmingSessionCard.vue:268-290`). Still absent: vendor-purchase total spend (0 production consumers of `source_kind='vendor_browsing'`), ledger-based craft yield (`HistoryTab.vue` uses `game_state_recipes.completion_count` instead), and the unknown/uncertain-source report (all production `source_kind` consumers are survey).
-  - **Effort: Medium per feature | Impact: Medium-High (analytics depth)**
-
-- [ ] Boss kill loot timers
-  - Currently only player *deaths* are tracked (via `ChatCombatEvent::PlayerDeath` with killer detection). No reverse tracking exists (player kills boss). Would need to extend `chat_combat_parser` or `player_event_parser` for enemy kill events with boss identification. Loot timer logic would layer on top.
-  - **Audit: re-scoped — the premise is wrong; reverse tracking already exists.** `chat_combat_parser.rs:9-30` defines `PlayerDeath`, `EnemyKilled` and `DamageOnPlayer`; `EnemyKilled` is emitted as `enemy-killed` (`coordinator.rs:1517-1525`) into `farmingStore.handleEnemyKilled`, and drop attribution comes from Player.log corpse searches (`coordinator.rs:1910`, migration v49, `kill_tracking_commands.rs`). Genuinely missing: **boss/named classification** (no log class signal — `combat_wisdom_commands.rs:8-11`) and the timer/lockout layer (0 hits for `loot_timer`). So this is a heuristic + UI item, not a parser extension.
-  - **Effort: Medium (classification heuristic + UI) | Impact: Medium**
+## Character-scoped work (report-backed, actionable)
 
 - [ ] Show work order completion state in tooltips for all characters
   - Work order tooltips should show completion/cooldown state across all tracked characters.
@@ -75,15 +29,28 @@ Small tasks and notes that don't belong in a dedicated plan.
   - **Inventory (Export Storage as JSON in Settings → VIP): 4 of 5 dropped keys now persisted (migration v81, this branch).** `StorageItem` and `SnapshotItem` (`inventory_commands.rs:23-57,88-114`) carry `IsAugmented`, `DyeCount`, `Inscription`, `Inscriber`; v81 adds the columns and backfills them from stored `raw_json`, and the duplicate-import path refreshes them fill-only (`duplicate_import_backfill_never_clobbers_newer_values`). Only `IngredientItemTypeIds` stays unpersisted — deliberate (single-occurrence curiosity; brewing already scans it straight off `raw_json`, `brewing_commands.rs:405`). No UI owed.
   - **Unblocks:** the Skillbook autowatchwords prerequisite (Larger Efforts — its audit names the missing `snapshot_skill_abilities` table explicitly), an honest "Hide unlearned abilities" in `AbilityPickerDialog.vue:52` (currently a `level <= skill level` proxy, `:246-248`), and a true "My abilities" filter in `ModBrowser.vue:16` (currently scoped to the build's assigned bars).
   - **Effort: Trivial (inventory half landed; only deliberate `IngredientItemTypeIds` omission remains) | Impact: Low (closes the report audit)**
-- [ ] Current gear display (blocked: no source flags what's worn — log path is nameless appearance keys, Character report path can't distinguish worn from carried; appearance-only view built and reverted).
-  - **Unblocks when:** a log event carrying item identity per slot, or a report/VIP flag for equipped items. **Effort: unknown | Impact: Medium**
-  - **Blocked portion:** fully blocked — the worn-vs-carried distinction needs a `LocalPlayer:` signal (fast-path gate `player_event_parser.rs:1257-1262`, current client emits zero). Un-blocks when lines recur.
 
-- [ ] Per-attacker damage history on a specific monster (blocked: the log never shows other players' outgoing attacks — 5 months of logs: 215 own hits, 1 pet, 0 others).
-  - **Unblocks when:** a source attributes other players' damage (log/chat echo setting, or game emitting it). Reverted build is the template. **Effort: small | Impact: Medium (group-fight awareness)**
-  - **Blocked portion:** fully blocked — other-players' outgoing attacks have no `LocalPlayer:` signal today and the current client emits zero `LocalPlayer:` lines at all (gate `player_event_parser.rs:1257-1262`). Un-blocks when lines recur.
+## Waiting on richer character reports or other non-log sources (no log path)
 
-- [ ] Ingestion architecture: no shared schema contract for Tauri event payloads (no specta/ts-rs/typeshare). Coordinator is a 3927-line manual dispatch hub; history tables exist per-domain except `game_state_*`. The outage re-source design belongs here.
+- [ ] Current gear display — no source flags what's worn (log path was nameless appearance keys; Character report path can't distinguish worn from carried; appearance-only view built and reverted).
+  - **Unblocks when:** a report/VIP flag or per-slot item-identity field for equipped items lands in the Character export. **Effort: unknown | Impact: Medium**
+- [ ] Quest tracking: repeatable-cooldown timestamps + Statehelm quests + renown possible-vs-earned — work orders + active quests shipped from exports (`get_work_orders_from_snapshot`, `crafting_commands.rs:836`; `character_active_quests`, `migrations.rs:2062-2070`); repeatables carry only `isRepeatable()` from `ReuseTime_Minutes/_Days`. Renown is a context-bar currency balance only.
+  - **Unblocks when:** the Character export gains quest-completion records (completion timestamps per repeatable; Statehelm quest completions; renown-possible schedule). No log parsing — fold Statehelm repeatable tracking here (same plan `docs/plans/quest-tracking.md` §3, same dependency). **Effort: Large | Impact: High**
+- [ ] Gardening helper Phase 1 (plot tracker) — see `docs/plans/gardening-helper.md:52-56`. Parser events exist (`EntityDescriptionUpdated`), plan written, garden almanac (Phase 0) complete. Missing Phase 1+ code: no `EntityDescriptionUpdated` arm, no `garden_plots` table, no `get_garden_plots` command.
+  - **Unblocks when:** the Character export (or another report) gains garden-plot state. Phase 0 almanac stays. **Effort: Medium | Impact: High**
+- [ ] Nightmare cave challenge door tracker — fixture/effect research stays actionable (effect/CDN join on fixtures: `ProcessAddEffects`/`ProcessRemoveEffects`/`ProcessUpdateEffectName` + `effects.json` `effect_12602-12608` Spawn-Premonition family; Letters of Authority via inventory reports).
+  - **Unblocks when:** a challenge-door identifier appears in fixtures, CDN, or a report. **Effort: Large (research + implementation) | Impact: Medium (niche but useful)**
+
+## Dropped with the log (no report path — dead unless the game re-emits)
+
+- Per-attacker damage on a specific monster (other players' outgoing attacks were never logged: 215 own / 1 pet / 0 other). Reverted build is the template if a source ever appears.
+- Angling Perfect Catches (decided above — no signal ever captured).
+- Inventory miscount causes (1)–(3) (chat-correlation ±2s window, `pending_deletes` reorder, catch-up stack-correction ordering) and gamestate login-batch residual (inventory dump flag): fixture-replay-only value, no live effect. Cause (4) already fixed (live tailing clears the inventory family on login, `game_state.rs:176-201`). Keep the Critical Resources warning text as-is.
+- Log-based quest parsing, log-based completion signals, live door-identifier capture (folded into the report-only entries above).
+
+## Cross-cutting
+
+- [ ] Ingestion architecture: no shared schema contract for Tauri event payloads (no specta/ts-rs/typeshare). Coordinator is a manual dispatch hub; history tables exist per-domain except `game_state_*`. Future re-source designs belong here.
   - **Effort: Medium | Impact: Medium (reliability)**
 
 - [ ] UI/UX standardization: Table sweep done — **32 instances across 29 files** (`ux-standards.md` checklist owns it; was 35 — batch-1 removed the MarketView stall-observations table and the orphan LiveInventoryTab table; stall inventory rework removed the Recently Sold Out table). Remaining: heading-class standardization (`typography-audit.md`), color Tier 3 cleanup (`color-standards.md`).
@@ -91,13 +58,26 @@ Small tasks and notes that don't belong in a dedicated plan.
 
 ---
 
+## Analytical features (report/chat-backed)
+
+- [ ] Item provenance downstream features
+  - Now that provenance is in the transaction ledger (item-provenance plan phases 1-5 complete), new analytics become possible: mining node yield stats per node type, vendor purchase history with total spend, kill loot breakdown by mob type, crafting yield analysis per recipe, "unknown source" diagnostic reports for discovering new signal patterns.
+  - **Audit: re-scoped — two of the five already shipped, just not on top of provenance.** Kill-loot-by-mob exists (`enemy_kills`/`enemy_kill_loot`, `migrations.rs:2900-2927`; `kill_tracking_commands.rs:156,312`; `EnemyBrowser.vue`); mining/survey yield ships **session-only** in Farming (`farmingStore.ts:814-840`, `FarmingSessionCard.vue:268-290`). Still absent: vendor-purchase total spend (0 production consumers of `source_kind='vendor_browsing'`), ledger-based craft yield (`HistoryTab.vue` uses `game_state_recipes.completion_count` instead), and the unknown/uncertain-source report (all production `source_kind` consumers are survey).
+  - **Effort: Medium per feature | Impact: Medium-High (analytics depth)**
+
+- [ ] Boss kill loot timers
+  - Reverse tracking exists (`chat_combat_parser.rs:9-30` `PlayerDeath`/`EnemyKilled`/`DamageOnPlayer`; `EnemyKilled` → `enemy-killed` → `farmingStore.handleEnemyKilled`; corpse-search drop attribution via `coordinator.rs:1910`, migration v49). Genuinely missing: **boss/named classification** (no log class signal — `combat_wisdom_commands.rs:8-11`) and the timer/lockout layer (0 hits for `loot_timer`). A heuristic + UI item, not a parser extension.
+  - **Effort: Medium (classification heuristic + UI) | Impact: Medium**
+
+---
+
 ## Larger Efforts / Research Needed
 
 - [ ] Quest tracking system (work orders, repeatables, Statehelm, active quests)
-  - **See `docs/plans/quest-tracking.md`** — consolidated plan covering quest event parsing, repeatable cooldown tracking, work order cooldowns, Statehelm quest tracking, and active quest browsing. Prerequisite: add quest events to the player event parser.
-  - **Audit: re-scoped — four features in four different states, and one already shipped.** (a) **Work orders — shipped**, but from character export, not the log (`get_work_orders_from_snapshot`, `crafting_commands.rs:836`; `QuestsScreen.vue:167-214`). (b) **Active quests — shipped**, also from export (`character_active_quests`, `migrations.rs:2062-2070`; `QuestsScreen.vue:154`). (c) **Repeatables — partial**: a `isRepeatable()` flag from `ReuseTime_Minutes/_Days` (`QuestsScreen.vue:118-120`), no completion timestamps, so no cooldown state. (d) **Statehelm quests + log-based parsing — not started**: 0 quest variants in `player_event_parser.rs`; plan §1/§3 unstarted. Fixtures do contain the events the plan wants (`ProcessLoadQuests` 29 lines across 9 files, `ProcessUpdateQuest` 22 lines across 5 files under `test_data/`). Also stale: `docs/features/screens/character/character-quests.md` still describes the pre-snapshot two-panel screen.
+  - **See `docs/plans/quest-tracking.md`** — consolidated plan covering quest event parsing, repeatable cooldown tracking, work order cooldowns, Statehelm quest tracking, and active quest browsing. Prerequisite (report-era): Character-export quest-completion records — the plan's log-parsing steps (§1/§3) are dead.
+  - **Audit: re-scoped — four features across three states, two already shipped.** (a) **Work orders — shipped**, but from character export, not the log (`get_work_orders_from_snapshot`, `crafting_commands.rs:836`; `QuestsScreen.vue:167-214`). (b) **Active quests — shipped**, also from export (`character_active_quests`, `migrations.rs:2062-2070`; `QuestsScreen.vue:154`). (c) **Repeatables — partial**: a `isRepeatable()` flag from `ReuseTime_Minutes/_Days` (`QuestsScreen.vue:118-120`), no completion timestamps, so no cooldown state. (d) **Statehelm quests + report-based parsing — not started**: plan §1/§3 log-parsing steps dead; rewrite against the report when completion records land. Also stale: `docs/features/screens/character/character-quests.md` still describes the pre-snapshot two-panel screen.
   - **Effort: Large | Impact: High**
-  - **Blocked portion:** (c) repeatable completion timestamps need log-based completion signals (dark — the log never reports completions today); (d) Statehelm quests + log-based quest parsing are not started (0 quest variants in `player_event_parser.rs`, fast-path gate `player_event_parser.rs:1257-1262`, current client emits zero). Work orders + active quests stay actionable (shipped from exports). Un-block condition: `LocalPlayer:` lines recur.
+  - **Report-only remainder:** (c) repeatable completion timestamps + (d) Statehelm quests wait on Character-export completion records (see "Waiting on richer character reports"). Work orders + active quests shipped from exports. Plan §1/§3 log-parsing steps are dead — rewrite against the report when fields land.
 
 - [ ] Interactive zone maps — see `docs/plans/interactive-maps.md`
   - kaeus is working on this i believe.
@@ -129,23 +109,11 @@ Small tasks and notes that don't belong in a dedicated plan.
   - **Audit: verified — investigation accurate; the missing prerequisites are named.** Live: `watch_rules.rs:19 evaluate_rules`, `WatchRule`/`WatchCondition`/`WatchNotifyConfig` (`settings.rs:282-312`), toast+sound on `watch-rule-triggered` (`watchwordAlertStore.ts`), UI `WatchwordsView.vue`. CDN: `Skillbook_FoxInABox` (`items.json:19289`), `SkillBook_Headbutt` (`:62631`), 537 `BestowAbility` items. Landed 2026-10-21: `snapshot_skill_abilities` (migration v74) + `get_snapshot_skill_abilities` now cover plan Phase 1. Still absent: a `source`/auto field on `WatchRule`, so the plan's `source:"auto_skillbook"` tag is currently unsupported; no `get_skillbooks_for_skill`/`generate_skillbook_watch_rules`. Note: `refs/tags/archive/feat-books-watcher` holds a prior, unmerged attempt.
   - **Effort: Large | Impact: High (proactive skill progression)**
 
-- [ ] Statehelm repeatable quest tracking — see `docs/plans/quest-tracking.md` §3
-  - Sub-task: track statehelm renown possible vs earned.
-  - **Audit: verified open — fold under the quest-tracking item (same plan, same dependency).** Renown exists only as a currency balance in the context bar (`contextBarPrefs.ts:10,30`); there is no possible-vs-earned computation, and no Statehelm quest-completion tracking (the tracker covers weekly gifts/favor only).
-  - **Effort: High | Impact: Medium-High**
-  - **Blocked portion:** fully blocked — renown possible-vs-earned needs Statehelm quest-completion tracking, which needs a `LocalPlayer:` quest signal (gate `player_event_parser.rs:1257-1262`, current client emits zero). Currency balance in the context bar stays actionable. Un-blocks when lines recur.
-
 - [ ] Write 'how to use' docs for each screen
   - Even brief docs for each screen would help users understand features. Could be in-app help or docs folder.
   - Need to have some standard place in the panel layout for a button or something, perhaps, that explains how to use it. maybe top right of the panel view? we will need a way to turn it off/on (not all panel layout consumers will want it) and then how to define what it contains.
   - **Audit: re-scoped into two halves.** (a) *Docs folder*: **69** markdown files exist under `docs/features/screens/`, but they are developer/architecture references (0 hits for a usage/how-to heading), so the end-user half is untouched — decide whether that counts. (b) *In-app affordance*: specified in `docs/plans/in-app-help.md` (PaneLayout `helpKey` prop + `src/components/Shared/ScreenHelpPanel.vue` + `useScreenHelp.ts` + a `src/help/` registry) and **does not exist** (0 hits for `helpKey`/`ScreenHelp`; `PaneLayout.vue` takes only `screenKey/leftPane/rightPane`). App-level help does exist (`components/Help/*`, `?` button at `MenuBar.vue:86-90`).
   - **Effort: Large (breadth) | Impact: Medium (onboarding/discoverability)**
-
-- [ ] Nightmare cave challenge door tracker
-  - Need to look up all the challenges and see which ones we can track. Some are easy (1200 armor) and some are harder (have 4x 10-second premonition buffs). Could also track letters of authority as alternate path. **No existing code found** — no parser events, coordinator handlers, or database tables. Requires research into all challenge types + log event identification + new persistence layer.
-  - **Audit: re-scoped — "no existing code" is right, but the ingredients are closer than stated.** Generic effect/attribute events already parse (`ProcessAddEffects`/`ProcessRemoveEffects`/`ProcessUpdateEffectName`, `player_event_parser.rs:1349-1362,3064-3107`) and fixture effect IDs map onto CDN effects (`docs/CDN-full-examples/effects.json` `effect_12602-12608` = the Spawn-Premonition family, including the 10-second tier), so "1200 armor" and "4× 10-sec premonition" are plausibly derivable from existing events + CDN joins; Letters of Authority already flow through inventory report tracking. What is genuinely missing is any challenge-*door* identifier in fixtures or CDN → **capture first**, then the persistence layer.
-  - **Effort: Large (research + implementation) | Impact: Medium (niche but useful)**
-  - **Blocked portion:** the live door-identifier capture is blocked — no challenge-door identifier exists in fixtures or CDN, and live capture would need a `LocalPlayer:` signal (gate `player_event_parser.rs:1257-1262`, current client emits zero). Effect/CDN research on fixtures stays actionable. Un-blocks when lines recur.
 
 - [ ] Reevaluate test suite
   - Think about what tests make sense, what isn't giving value, and how to harden against future failures.
@@ -190,19 +158,7 @@ Small tasks and notes that don't belong in a dedicated plan.
 - [x] ~~ParseFixB read-error follow-up~~ — **DECIDED 2026-10-26: keep `continue` (one undecodable line ≠ dead file); recorded at site.**
 - [x] ~~stall_ocr edge + year wrap~~ — **FIXED 2026-10-26 (see stall validation line).**
 - [x] ~~game_state_commands audits~~ — **FIXED 2026-10-26: `get_currency_estimate_for` split + anchor/delta test; normalization + fetch + traversal audits as code comments.**
-- [x] ~~Scan-path Status dispatch loss~~ — **FIXED 2026-10-26: shared `chat_status_dispatch` module (live drain + all three scan/tail paths run the same arms with per-file session identity; re-scan inserts nothing). ReportSaved intentionally excluded on scans (path may not exist locally); survey rows stay untagged for retro-claim.**
-
-## Blocked — waiting on LocalPlayer: restoration (added 2026-10-28; no work until lines recur)
-
-Missing event in most entries: a `LocalPlayer:` line (fast-path gate `player_event_parser.rs:1257-1262` — the current client emits zero such lines, so the whole `PlayerEvent` stream is dark). Default un-block condition: `LocalPlayer:` lines recur in Player.log. Two entries need more: Angling Perfect Catches needs a never-yet-seen angling signal, and per-attacker damage needs an other-players'-damage source never logged — lines recurring is necessary but not sufficient there. Moved here verbatim from their actionable sections above; the parents keep a `Blocked portion:` sub-line.
-
-- [ ] Gardening helper Phase 1 (plot tracker) — see `docs/plans/gardening-helper.md:52-56`. Parser events exist (`EntityDescriptionUpdated`), plan written, garden almanac (Phase 0) complete. Missing Phase 1+ code: no `EntityDescriptionUpdated` arm, no `garden_plots` table, no `get_garden_plots` command.
-- [ ] Current gear display — no source flags what's worn (log path is nameless appearance keys, Character report path can't distinguish worn from carried; appearance-only view built and reverted). Unblocks when: a log event carrying item identity per slot, or a report/VIP flag for equipped items.
-- [ ] Per-attacker damage history on a specific monster — the log never shows other players' outgoing attacks (5 months of logs: 215 own hits, 1 pet, 0 others). Unblocks when: a source attributes other players' damage (log/chat echo setting, or game emitting it). Reverted build is the template.
-- [ ] Angling Perfect Catches (blocked portion of Product decisions) — needs a new `LocalPlayer:` angling signal; nothing parses angling today. Rename-orphan, stall-rental, No-Resell stay actionable above.
-- [ ] Quest tracking: log-based quest parsing + Statehelm quests + repeatable-cooldown timestamps — 0 quest variants in `player_event_parser.rs`; the log never reports completions. Work orders + active quests stay actionable above (shipped from exports).
-- [ ] Statehelm repeatable quest tracking: renown possible-vs-earned + completion tracking — renown exists only as a currency balance in the context bar; no possible-vs-earned computation, no completion tracking. Currency balance stays actionable above.
-- [ ] Nightmare cave challenge: live door-identifier capture — no challenge-door identifier in fixtures or CDN; effect/CDN research on fixtures stays actionable above.
+- [x] ~~Scan-path Status dispatch loss~~ — **FIXED 2026-10-26: shared `chat_status_dispatch` module (live drain + all three scan/tail paths run the same arms with per-session identity; re-scan inserts nothing). ReportSaved intentionally excluded on scans (path may not exist locally); survey rows stay untagged for retro-claim.**
 
 ## UI backlog
 

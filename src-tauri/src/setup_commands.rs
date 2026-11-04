@@ -325,6 +325,60 @@ pub fn complete_setup(settings_manager: State<'_, Arc<SettingsManager>>) -> Resu
     settings_manager.update(settings)
 }
 
+/// Character-scoped tables for the delete/rename lifecycle ops. Every
+/// (character_name, server_name) table: delete enumerates these with DELETE,
+/// rename with UPDATE to the new identity. Keep both lists in sync with
+/// `db/migrations.rs` (`game_state_weather`/`moon` are world singletons and
+/// intentionally absent).
+const GAME_STATE_TABLES: &[&str] = &[
+    "game_state_active_skills",
+    "game_state_area",
+    "game_state_attributes",
+    "game_state_books",
+    "game_state_combat",
+    "game_state_currencies",
+    "game_state_directed_goals",
+    "game_state_effects",
+    "game_state_equipment",
+    "game_state_favor",
+    "game_state_gift_log",
+    "game_state_guild",
+    "game_state_inventory",
+    "game_state_mount",
+    "game_state_npc_vendor",
+    "game_state_recipes",
+    "game_state_session",
+    "game_state_skills",
+    "game_state_storage",
+    "game_state_strings",
+    "game_state_teleportation",
+];
+
+const SCOPED_TABLES: &[&str] = &[
+    "open_multihit_nodes",
+    "character_deaths",
+    "character_item_snapshots",
+    "character_report_stats",
+    "character_resuscitations",
+    "corpse_extracts",
+    "currency_estimate",
+    "enemy_kills",
+    "garden_almanac",
+    "garden_almanac_history",
+    "harvest_almanac",
+    "hoplology_studies",
+    "item_transactions",
+    "milking_timers",
+    "player_messages",
+    "player_milking_log",
+    "player_pooping_log",
+    "survey_uses",
+    "survey_sessions",
+    "tracked_skills",
+    "user_timers",
+    "words_of_power",
+];
+
 /// Delete a character and all their character-scoped data.
 ///
 /// Deletes every row keyed by `(character_name, server_name)` — all
@@ -381,38 +435,9 @@ fn delete_character_on_write_conn(
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| format!("Failed to begin transaction: {e}"))?;
 
-    // FK-safe order matters only for parent/child pairs deleted by id below;
-    // every (character_name, server_name) table is independent, so plain
-    // deletes are listed alphabetically within each group.
-    //
     // Group 1: game_state_* tables with a (character_name, server_name) scope.
-    // Verified against db/migrations.rs; game_state_weather/moon are world
-    // singletons and are intentionally absent.
-    let game_state_tables = [
-        "game_state_active_skills",
-        "game_state_area",
-        "game_state_attributes",
-        "game_state_books",
-        "game_state_combat",
-        "game_state_currencies",
-        "game_state_directed_goals",
-        "game_state_effects",
-        "game_state_equipment",
-        "game_state_favor",
-        "game_state_gift_log",
-        "game_state_guild",
-        "game_state_inventory",
-        "game_state_mount",
-        "game_state_npc_vendor",
-        "game_state_recipes",
-        "game_state_session",
-        "game_state_skills",
-        "game_state_storage",
-        "game_state_strings",
-        "game_state_teleportation",
-    ];
-
-    for table in &game_state_tables {
+    // Shared const above; verified against db/migrations.rs.
+    for table in GAME_STATE_TABLES {
         conn.execute(
             &format!("DELETE FROM {table} WHERE character_name = ?1 AND server_name = ?2"),
             rusqlite::params![character_name, server_name],
@@ -420,41 +445,15 @@ fn delete_character_on_write_conn(
         .map_err(|e| format!("Delete failed: {e}"))?;
     }
 
-    // Group 2: other (character_name, server_name)-scoped tables, verified
-    // against db/migrations.rs. enemy_kills/corpse_extracts use nullable
-    // character columns but still carry the character scope, so the same
-    // predicate applies.
+    // Group 2: other (character_name, server_name)-scoped tables. Shared
+    // const above; enemy_kills/corpse_extracts use nullable character
+    // columns but still carry the character scope, so the same predicate
+    // applies.
     //
     // FK-safe order: open_multihit_nodes references survey_uses (CASCADE),
     // so it goes first; survey_uses (SET NULL to survey_sessions) goes
-    // before survey_sessions.
-    let scoped_tables = [
-        "open_multihit_nodes",
-        "character_deaths",
-        "character_item_snapshots",
-        "character_report_stats",
-        "character_resuscitations",
-        "corpse_extracts",
-        "currency_estimate",
-        "enemy_kills",
-        "garden_almanac",
-        "garden_almanac_history",
-        "harvest_almanac",
-        "hoplology_studies",
-        "item_transactions",
-        "milking_timers",
-        "player_messages",
-        "player_milking_log",
-        "player_pooping_log",
-        "stall_price_observations",
-        "survey_uses",
-        "survey_sessions",
-        "tracked_skills",
-        "user_timers",
-        "words_of_power",
-    ];
-
-    for table in &scoped_tables {
+    // before survey_sessions. The const keeps that order; do not sort it.
+    for table in SCOPED_TABLES {
         conn.execute(
             &format!("DELETE FROM {table} WHERE character_name = ?1 AND server_name = ?2"),
             rusqlite::params![character_name, server_name],
@@ -578,6 +577,270 @@ fn delete_character_on_write_conn(
         rusqlite::params![character_name, server_name],
     )
     .map_err(|e| format!("Delete failed: {e}"))?;
+
+    conn.commit()
+        .map_err(|e| format!("Failed to commit transaction: {e}"))?;
+    Ok(())
+}
+
+/// Rename (or server-move) a character, carrying all character-scoped history
+/// with it.
+///
+/// UPDATEs the same table lists delete enumerates (`GAME_STATE_TABLES` +
+/// `SCOPED_TABLES`) plus the parent rows whose children CASCADE or are
+/// re-resolved by id (`character_snapshots`, `character_item_snapshots` —
+/// the surviving survey/death/kill children follow their parents, which are
+/// renamed in place). Name-only owner rows (`stall_events.owner`,
+/// `stall_inventory_baseline.owner`, `brewing_discoveries.character`) move on
+/// a name change (a server-only move leaves them — owner has no server
+/// column). Build-planner presets follow via their `Name@Server`
+/// `character_id` key. Not covered, same as delete: unscoped singletons
+/// and tables (`game_state_weather`/`moon`, `arena_*`).
+///
+/// Fails when the source identity has no `user_characters` row or the target
+/// identity already exists (UNIQUE guard against merging two histories).
+/// When the renamed character is active, settings follow the new identity.
+#[tauri::command]
+pub fn rename_character(
+    db: State<'_, DbPool>,
+    settings_manager: State<'_, Arc<SettingsManager>>,
+    character_name: String,
+    server_name: String,
+    new_character_name: String,
+    new_server_name: String,
+) -> Result<(), String> {
+    let new_character_name = new_character_name.trim().to_string();
+    let new_server_name = new_server_name.trim().to_string();
+    if new_character_name.is_empty() || new_server_name.is_empty() {
+        return Err("new character and server names must be non-empty".to_string());
+    }
+    if new_character_name == character_name && new_server_name == server_name {
+        return Ok(());
+    }
+
+    let mut conn = db
+        .get_write()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+
+    rename_character_on_write_conn(
+        &mut conn,
+        &character_name,
+        &server_name,
+        &new_character_name,
+        &new_server_name,
+    )?;
+
+    // Active identity follows the rename. The DB tx already committed, so a
+    // settings-write failure can't roll anything back — log it loudly
+    // instead of returning Ok into a stale persisted identity.
+    let settings = settings_manager.get();
+    if settings.active_character_name.as_deref() == Some(&character_name)
+        && settings.active_server_name.as_deref() == Some(&server_name)
+    {
+        let mut updated = settings;
+        updated.active_character_name = Some(new_character_name.clone());
+        updated.active_server_name = Some(new_server_name.clone());
+        if let Err(e) = settings_manager.update(updated) {
+            eprintln!("[setup] rename committed but settings follow failed: {e}");
+        }
+    }
+
+    eprintln!(
+        "[setup] Renamed character {character_name} on {server_name} to {new_character_name} on {new_server_name}"
+    );
+    Ok(())
+}
+
+/// Transaction body of [`rename_character`], split out so tests can run it
+/// against a plain `rusqlite::Connection` without a Tauri `State` wrapper.
+fn rename_character_on_write_conn(
+    conn: &mut rusqlite::Connection,
+    character_name: &str,
+    server_name: &str,
+    new_character_name: &str,
+    new_server_name: &str,
+) -> Result<(), String> {
+    // Target must be free (UNIQUE guard against merging two histories) and
+    // the source must exist — both read before the write tx opens.
+    let source_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM user_characters WHERE character_name = ?1 AND server_name = ?2",
+            rusqlite::params![character_name, server_name],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Query failed: {e}"))?;
+    if source_rows == 0 {
+        return Err(format!(
+            "no character {character_name} on {server_name} to rename"
+        ));
+    }
+    let target_rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM user_characters WHERE character_name = ?1 AND server_name = ?2",
+            rusqlite::params![new_character_name, new_server_name],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Query failed: {e}"))?;
+    if target_rows > 0 {
+        return Err(format!(
+            "{new_character_name} on {new_server_name} already exists — delete it first or pick a different name"
+        ));
+    }
+
+    let conn = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("Failed to begin transaction: {e}"))?;
+
+    for table in GAME_STATE_TABLES {
+        conn.execute(
+            &format!(
+                "UPDATE {table} SET character_name = ?1, server_name = ?2 WHERE character_name = ?3 AND server_name = ?4"
+            ),
+            rusqlite::params![
+                new_character_name,
+                new_server_name,
+                character_name,
+                server_name
+            ],
+        )
+        .map_err(|e| format!("Rename failed: {e}"))?;
+    }
+    for table in SCOPED_TABLES {
+        conn.execute(
+            &format!(
+                "UPDATE {table} SET character_name = ?1, server_name = ?2 WHERE character_name = ?3 AND server_name = ?4"
+            ),
+            rusqlite::params![
+                new_character_name,
+                new_server_name,
+                character_name,
+                server_name
+            ],
+        )
+        .map_err(|e| format!("Rename failed: {e}"))?;
+    }
+    // Parent rows: children keyed by snapshot/item-snapshot id follow
+    // automatically; survey/death/kill children follow their renamed parents.
+    for table in ["character_snapshots", "character_item_snapshots"] {
+        conn.execute(
+            &format!(
+                "UPDATE {table} SET character_name = ?1, server_name = ?2 WHERE character_name = ?3 AND server_name = ?4"
+            ),
+            rusqlite::params![
+                new_character_name,
+                new_server_name,
+                character_name,
+                server_name
+            ],
+        )
+        .map_err(|e| format!("Rename failed: {e}"))?;
+    }
+    conn.execute(
+        "UPDATE user_characters SET character_name = ?1, server_name = ?2 WHERE character_name = ?3 AND server_name = ?4",
+        rusqlite::params![
+            new_character_name,
+            new_server_name,
+            character_name,
+            server_name
+        ],
+    )
+    .map_err(|e| format!("Rename failed: {e}"))?;
+    // Owner/name-scoped rows (no server column): the stall owner label and
+    // the brewing `character` column are character-name-only, so only a
+    // name change moves them — a server-only move leaves them in place.
+    // Covered so the Stall Tracker (owner = active character) and brewing
+    // discoveries follow the rename instead of orphaning under the old name.
+    // Ambiguity guard: `user_characters` is (name, server)-keyed, so the
+    // same name can exist on another server. The UPDATEs below match on the
+    // bare name — refuse loudly when another row uses the old name or
+    // already uses the new name on another server (moving would merge two
+    // characters' owner rows into one label, un-undoable inside the tx; a
+    // different destination cannot fix a shared old name, so a silent
+    // partial move is worse than an error). The Err returns through the
+    // open tx, which drops without committing — nothing moves.
+    let name_shared: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM user_characters WHERE character_name = ?1 OR (character_name = ?2 AND server_name <> ?3)",
+            rusqlite::params![character_name, new_character_name, new_server_name],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Query failed: {e}"))?;
+    if new_character_name != character_name && name_shared > 0 {
+        return Err(
+            "cannot rename: stall and brewing history is ambiguous across servers under this name".to_string(),
+        );
+    }
+    // Retained-history guard: delete deliberately leaves name-only owner
+    // rows behind (owner is a stall label, not a character), so a deleted
+    // character's stall/brewing rows can outlive its `user_characters` row.
+    // Renaming into such a name would merge two characters' histories under
+    // one label. Refuse while the tx is open — nothing commits.
+    if new_character_name != character_name {
+        for (table, column) in [
+            ("stall_events", "owner"),
+            ("stall_inventory_baseline", "owner"),
+            ("brewing_discoveries", "character"),
+        ] {
+            let retained: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?1"),
+                    rusqlite::params![new_character_name],
+                    |row| row.get(0),
+                )
+                .map_err(|e| format!("Query failed: {e}"))?;
+            if retained > 0 {
+                return Err(format!(
+                    "cannot rename: {table} still holds history under {new_character_name} (delete leaves owner rows behind)"
+                ));
+            }
+        }
+    }
+    if new_character_name != character_name {
+        for (table, column) in [
+            ("stall_events", "owner"),
+            ("stall_inventory_baseline", "owner"),
+            ("brewing_discoveries", "character"),
+        ] {
+            conn.execute(
+                &format!("UPDATE {table} SET {column} = ?1 WHERE {column} = ?2"),
+                rusqlite::params![new_character_name, character_name],
+            )
+            .map_err(|e| format!("Rename failed: {e}"))?;
+        }
+    }
+    // Retained-preset guard: delete leaves `build_presets` behind (it only
+    // clears (character_name, server_name)-scoped rows, and presets are
+    // keyed by the opaque `Name@Server` string), so a deleted character's
+    // presets can outlive its `user_characters` row. Merging the renamed
+    // presets into a destination key that already holds presets would mix
+    // two characters' builds under one label. Refuse while the tx is open —
+    // nothing commits. Unchanged-key early-returns never reach here.
+    let new_id = format!("{new_character_name}@{new_server_name}");
+    let retained_presets: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM build_presets WHERE character_id = ?1",
+            rusqlite::params![new_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Query failed: {e}"))?;
+    if retained_presets > 0 {
+        return Err(format!(
+            "cannot rename: build_presets still holds history under {new_id} (delete leaves presets behind)"
+        ));
+    }
+    // Build-planner presets: keyed by the `Name@Server` identity string the
+    // frontend builds in `buildPlannerStore.getCharacterId()`, stored
+    // opaquely backend-side. A server-only move changes the key too, so
+    // this follows unconditionally — unlike the name-only owner rows above.
+    // Exact string match: no parsing, immune to `@` inside names.
+    conn.execute(
+        "UPDATE build_presets SET character_id = ?1 WHERE character_id = ?2",
+        rusqlite::params![
+            format!("{new_character_name}@{new_server_name}"),
+            format!("{character_name}@{server_name}")
+        ],
+    )
+    .map_err(|e| format!("Rename failed: {e}"))?;
 
     conn.commit()
         .map_err(|e| format!("Failed to commit transaction: {e}"))?;
@@ -1147,14 +1410,6 @@ mod tests {
             rusqlite::params![who, SERVER],
         )
         .unwrap();
-        // UNIQUE(observed_at, item_name, stall_npc_entity_id, price_unit) has
-        // no character column, so vary observed_at per character.
-        let observed_at = format!("2026-01-01 00:00:{:02}", if who == CHAR { 1 } else { 2 });
-        conn.execute(
-            "INSERT INTO stall_price_observations (character_name,server_name,item_name,price_unit,stall_npc_entity_id,stall_label,source,observed_at) VALUES (?1,?2,'Sword',5,1,'Stall','auto',?3)",
-            rusqlite::params![who, SERVER, observed_at],
-        )
-        .unwrap();
         conn.execute(
             "INSERT INTO survey_sessions (character_name,server_name,started_at,start_trigger) VALUES (?1,?2,'2026-01-01','manual')",
             rusqlite::params![who, SERVER],
@@ -1185,6 +1440,31 @@ mod tests {
         conn.execute(
             "INSERT INTO words_of_power (character_name,server_name,word,power_name,discovered_at) VALUES (?1,?2,'W','P','2026-01-01')",
             rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        // Owner/name-scoped rows: stall owner label + brewing character.
+        // UNIQUE(event_timestamp, raw_message, entry_index) forces a
+        // per-character raw_message.
+        let stall_msg = format!("{who} bought Sword");
+        conn.execute(
+            "INSERT INTO stall_events (event_timestamp,log_timestamp,log_title,action,player,owner,raw_message) VALUES ('2026-01-01','t','T','bought',?1,?1,?2)",
+            rusqlite::params![who, stall_msg],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO stall_inventory_baseline (owner,item,quantity,recorded_at) VALUES (?1,'Sword',1,'2026-01-01')",
+            rusqlite::params![who],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO brewing_discoveries (character,recipe_id,ingredient_ids,power,power_tier,first_seen_at,last_seen_at) VALUES (?1,1,'[]','P',1,'2026-01-01','2026-01-01')",
+            rusqlite::params![who],
+        )
+        .unwrap();
+        // Build-planner preset keyed by the frontend's `Name@Server` identity.
+        conn.execute(
+            "INSERT INTO build_presets (character_id,name) VALUES (?1,'Preset')",
+            rusqlite::params![format!("{who}@{SERVER}")],
         )
         .unwrap();
         // Snapshot family + children.
@@ -1246,7 +1526,6 @@ mod tests {
         "player_messages",
         "player_milking_log",
         "player_pooping_log",
-        "stall_price_observations",
         "survey_sessions",
         "survey_uses",
         "tracked_skills",
@@ -1299,5 +1578,217 @@ mod tests {
                 .unwrap();
             assert_eq!(total, 1, "child table {table} should keep only {OTHER}'s row");
         }
+    }
+
+    #[test]
+    fn rename_character_moves_every_scoped_row_but_keeps_other_character() {
+        const NEW: &str = "RenamedMe";
+        let mut conn = fresh_db();
+        seed_character(&conn, CHAR);
+        seed_character(&conn, OTHER);
+        conn.execute(
+            "INSERT OR REPLACE INTO game_state_session (id,character_name,server_name) VALUES (1,?1,?2)",
+            rusqlite::params![CHAR, SERVER],
+        )
+        .unwrap();
+
+        rename_character_on_write_conn(&mut conn, CHAR, SERVER, NEW, SERVER).unwrap();
+
+        // Old identity gone everywhere, new identity holds CHAR's rows,
+        // OTHER untouched.
+        for table in SCOPED_TABLES {
+            assert_eq!(count(&conn, table, CHAR), 0, "table {table} still has {CHAR} rows");
+            assert_eq!(count(&conn, table, NEW), 1, "table {table} lost renamed rows");
+            assert_eq!(count(&conn, table, OTHER), 1, "table {table} lost {OTHER} rows");
+        }
+        let session_who: String = conn
+            .query_row("SELECT character_name FROM game_state_session", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(session_who, NEW);
+        // Children follow their renamed parents (same row counts as delete
+        // keeps for OTHER, plus one renamed row each).
+        for table in [
+            "character_skill_levels",
+            "character_npc_favor",
+            "character_recipe_completions",
+            "character_stats",
+            "character_currencies",
+            "character_active_quests",
+            "snapshot_skill_abilities",
+            "character_snapshot_items",
+            "death_damage_sources",
+            "enemy_kill_loot",
+        ] {
+            let total: i64 = conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(total, 2, "child table {table} should keep renamed + {OTHER} rows");
+        }
+        // Owner/name-scoped rows follow the name change.
+        for (table, column, old, new) in [
+            ("stall_events", "owner", CHAR, NEW),
+            ("stall_inventory_baseline", "owner", CHAR, NEW),
+            ("brewing_discoveries", "character", CHAR, NEW),
+        ] {
+            let old_n: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?1"),
+                    rusqlite::params![old],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let new_n: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?1"),
+                    rusqlite::params![new],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(old_n, 0, "{table} still has {old} rows");
+            assert_eq!(new_n, 1, "{table} lost renamed rows");
+        }
+        // Build-planner presets follow via their `Name@Server` key —
+        // including OTHER's preset staying put.
+        let old_id = format!("{CHAR}@{SERVER}");
+        let new_id = format!("{NEW}@{SERVER}");
+        let other_id = format!("{OTHER}@{SERVER}");
+        for (id, want) in [(&old_id, 0), (&new_id, 1), (&other_id, 1)] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM build_presets WHERE character_id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, want, "build_presets {id} count wrong");
+        }
+    }
+
+    #[test]
+    fn rename_character_refuses_missing_source_and_occupied_target() {
+        let mut conn = fresh_db();
+        seed_character(&conn, CHAR);
+        seed_character(&conn, OTHER);
+        // Missing source.
+        let err = rename_character_on_write_conn(&mut conn, "Ghost", SERVER, "NewName", SERVER)
+            .unwrap_err();
+        assert!(err.contains("no character"), "unexpected error: {err}");
+        // Occupied target — no merge.
+        let err = rename_character_on_write_conn(&mut conn, CHAR, SERVER, OTHER, SERVER)
+            .unwrap_err();
+        assert!(err.contains("already exists"), "unexpected error: {err}");
+        // Both identities intact after the refused renames.
+        assert_eq!(count(&conn, "user_characters", CHAR), 1);
+        assert_eq!(count(&conn, "user_characters", OTHER), 1);
+    }
+
+    #[test]
+    fn rename_character_refuses_when_name_shared_across_servers() {
+        const ALT_SERVER: &str = "OtherServer";
+        let mut conn = fresh_db();
+        seed_character(&conn, CHAR);
+        // Same name on a second server: the (name, server) identity is
+        // distinct, but the owner labels are name-only — moving them would
+        // steal the other server's stall/brewing rows into the new label.
+        conn.execute(
+            "INSERT INTO user_characters (character_name,server_name,source) VALUES (?1,?2,'manual')",
+            rusqlite::params![CHAR, ALT_SERVER],
+        )
+        .unwrap();
+        let err = rename_character_on_write_conn(&mut conn, CHAR, SERVER, "RenamedMe", SERVER)
+            .unwrap_err();
+        assert!(err.contains("ambiguous"), "unexpected error: {err}");
+        // Nothing moved: the open tx dropped without committing — scoped
+        // rows and owner rows all stay under the old name (both servers).
+        let kept_identities: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM user_characters WHERE character_name = ?1",
+                rusqlite::params![CHAR],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept_identities, 2);
+        for (table, column) in [
+            ("stall_events", "owner"),
+            ("stall_inventory_baseline", "owner"),
+            ("brewing_discoveries", "character"),
+        ] {
+            let kept: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?1"),
+                    rusqlite::params![CHAR],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(kept, 1, "{table} owner rows must stay under the shared name");
+        }
+    }
+
+    #[test]
+    fn rename_character_refuses_target_with_retained_owner_history() {
+        let mut conn = fresh_db();
+        seed_character(&conn, CHAR);
+        seed_character(&conn, OTHER);
+        // Delete OTHER: scoped rows go, but the owner-label rows stay behind.
+        delete_character_on_write_conn(&mut conn, OTHER, SERVER).unwrap();
+        // Renaming CHAR into OTHER's freed name would merge CHAR's owner
+        // rows with OTHER's retained stall/brewing rows. Refuse instead.
+        let err = rename_character_on_write_conn(&mut conn, CHAR, SERVER, OTHER, SERVER)
+            .unwrap_err();
+        assert!(err.contains("still holds history"), "unexpected error: {err}");
+        // Nothing moved: scoped rows and owner rows all stay under CHAR.
+        assert_eq!(count(&conn, "user_characters", CHAR), 1);
+        for (table, column) in [
+            ("stall_events", "owner"),
+            ("stall_inventory_baseline", "owner"),
+            ("brewing_discoveries", "character"),
+        ] {
+            let kept: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {column} = ?1"),
+                    rusqlite::params![CHAR],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(kept, 1, "{table} owner rows must stay under {CHAR}");
+        }
+    }
+
+    #[test]
+    fn rename_character_refuses_target_with_retained_presets() {
+        let mut conn = fresh_db();
+        seed_character(&conn, CHAR);
+        // Destination holds ONLY a retained preset — no owner rows, no
+        // user_characters row (pure delete-leftover shape for the preset
+        // key, so the preset guard is the one that fires).
+        conn.execute(
+            "INSERT INTO build_presets (character_id,name) VALUES (?1,'Preset')",
+            rusqlite::params![format!("{OTHER}@{SERVER}")],
+        )
+        .unwrap();
+        // Renaming CHAR into OTHER would merge CHAR's preset with OTHER's
+        // retained preset under one key. Refuse instead.
+        let err = rename_character_on_write_conn(&mut conn, CHAR, SERVER, OTHER, SERVER)
+            .unwrap_err();
+        assert!(err.contains("build_presets"), "unexpected error: {err}");
+        // Nothing moved: scoped rows, owner rows, and presets stay under CHAR.
+        assert_eq!(count(&conn, "user_characters", CHAR), 1);
+        assert_eq!(count(&conn, "game_state_skills", CHAR), 1, "scoped rows must roll back");
+        let kept: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM build_presets WHERE character_id = ?1",
+                rusqlite::params![format!("{CHAR}@{SERVER}")],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 1, "preset must stay under {CHAR}");
+        let kept_owner: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM stall_events WHERE owner = ?1",
+                rusqlite::params![CHAR],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept_owner, 1, "owner rows must roll back");
     }
 }

@@ -5,6 +5,7 @@
 Goal is to make our NPC data much more useful and easier to interact with for players. There are three main avenues to attack this problem: dashboard widgets, tooltip improvements, and NPC screen improvements. All three rely on some better foundational game state tracking.
 
 Some notes:
+
 - NPCs reset their purchase gold every 168 hours. However, this counter only starts when a player sells them something and the counter is not yet running. So if a player sells something to VendorA on day0, then their available gold will decrease and start the timer to reset it in 168 hours. If they come back on day4 the timer isn't up yet, so any more sales to the vendor will continue to decrease their available gold and not impact when the cap resets. The vendor gold available will reset on day7. If they player doesn't sell items to the NPC again until day10, that's when the next 168 hour timer will begin.
 - If a player increases their favor rank with an NPC during a reset timer period, the difference in NewGoldCap - OldGoldCap will be added to their purchase pool. This does not change the timer.
 
@@ -13,6 +14,7 @@ All names of fields/variables/etc in this doc are to be taken as placeholders an
 ## GameState Updates
 
 NPC data in the game state needs to track:
+
 - NPC ID, obviously, so we know what NPC we're dealing with.
 - Last interaction: when did we see the user last interact with this NPC? Can come from Player.log parsing.
 - Last sell: when did we last see the user sell to this NPC? Also detectable in player.log.
@@ -24,17 +26,20 @@ NPC data in the game state needs to track:
 ### Current State Assessment
 
 **Already tracked in the database:**
+
 - `game_state_favor` table: `npc_key`, `npc_name`, `cumulative_delta` (session favor changes), `favor_tier`, `last_confirmed_at`, `source` (log/snapshot/both)
 - `game_state_gift_log` table: individual gift events with `gifted_at` timestamp and `favor_delta`
 - `game_state_storage` table: per-vault item tracking with `vault_key`, `instance_id`, `item_name`, `stack_size`, `slot_index`
 - `character_npc_favor` table: snapshot-derived favor levels from `/outputcharacter` imports
 
 **Already parsed from Player.log but NOT persisted:**
+
 - `InteractionStarted` / `InteractionEnded` — only used for internal parser context (vault key enrichment). These could feed "Last Interaction" tracking.
 - `VendorSold` / `VendorStackUpdated` — parsed and available in activity feed, but not stored in a dedicated table. These could feed "Last Sell" tracking.
 - `VendorGoldChanged` — parsed from `ProcessVendorUpdateAvailableGold(currentGold, serverId, maxGold)` but **completely unused on the frontend** (dead code after the type definition). This is exactly the event we need for GoldAvailable tracking.
 
 **New tracking needed:**
+
 - `last_interaction_at` — persist from `InteractionStarted` events (currently only held transiently in the parser)
 - `last_sell_at` — persist from `VendorSold` events
 - `vendor_gold_available` / `vendor_gold_max` — persist from `VendorGoldChanged` events (already parsed, just need storage)
@@ -44,7 +49,8 @@ NPC data in the game state needs to track:
 ### Implementation Approach
 
 A new `game_state_npc_status` table (or extending `game_state_favor`) would consolidate per-NPC tracking:
-```
+
+```text
 character_name, server_name, npc_key,
 last_interaction_at,
 last_sell_at,
@@ -52,11 +58,13 @@ vendor_gold_available,
 vendor_gold_max,
 vendor_gold_timer_start,  -- our best-guess 168h timer anchor
 ```
+
 This separates vendor/interaction state from favor tracking, which has different update patterns.
 
 ---
 
 Data I think we can derive without needing to store, but should evaluate this based on performance impact of doing so:
+
 - HasStorage: does the npc have storage? gamedata has this.
 - StorageSlotsTotal: Should be able to look this up in gamedata based on favor level of the NPC.
 - StorageSltosMaximum: what is the most storage slots this NPC could have at max favor? this lets us figure out how many not yet unlocked slots the player has.
@@ -91,7 +99,7 @@ All of the above "derivable" data is confirmed available in CDN. Here's exactly 
 | Gift favor tiers | `NpcInfo.gift_favor_tiers` (ItemGifts in CDN) | e.g., `["CloseFriends", "BestFriends", "LikeFamily", "SoulMates"]` |
 | Training | `TrainingService.skills[]` + `unlocks[]` at favor tiers | Already shown in NPC detail services section |
 | Barter | `BarterService` with `AdditionalUnlocks[]` | Available in services, limited detail on actual barter items |
-| Items they sell | `vendor_prices` table (CDN) | Already loaded — NPC sell prices at 1.5x item value |
+| Items they sell | `sources_items.json` Vendor/Barter entries (in-memory `vendor_items_by_npc` index, `ceil(value × 1.5)`) | NPC sell prices shown in the Data Browser; the old `vendor_prices` SQL table was dead (no readers/writers) and dropped in migration v85 |
 | NPC Quests | `QuestData.FavorNpc` field matches NPC key | Format: `"AreaName/NPC_Key"` — cross-reference available |
 | Quest favor rewards | `QuestData.Reward_Favor` | Numeric favor reward per quest |
 | Repeatable quests | `QuestData.ReuseTime_Minutes` / `ReuseTime_Days` | Fields exist — quests with these are repeatable |
@@ -101,7 +109,8 @@ All of the above "derivable" data is confirmed available in CDN. Here's exactly 
 
 **Services parsing note:** NPC services are currently stored as `Option<Vec<Value>>` (raw JSON). The TypeScript side has typed interfaces (`StoreService`, `TrainingService`, etc. in `src/types/npcServices.ts`) but parsing happens ad-hoc in components. A shared service-parsing utility (or parsing at CDN load time into typed structs) would make all the downstream features cleaner.
 
-## NPC Screen:
+## NPC Screen
+
 - Our statehelm vendor cards are awesome. Not perfect, but really quite good. They contain loads of info. Our NPC screen needs to use something like this. We should just make a shared, configurable vendor card we can use. Statehelm is currently the only place with limited numbers of gifts per week, so that kind of tracking is only relevant there, but still.
 - Left panel: npc list/filter/search/etc - need more/better controls here, but this is a decent start.
 - Main panel: show the NPC cards that match the filters.
@@ -119,6 +128,7 @@ All of the above "derivable" data is confirmed available in CDN. Here's exactly 
 ### Current NPC Screen Architecture
 
 The NPC screen (`NpcsScreen.vue`) currently uses a **two-panel** layout:
+
 - **Left panel** (`NpcListPanel.vue`): NPC list with filter by name/area/tier, grouping (area/favor/none), sorting (favor/name), toggle to hide neutral NPCs. Shows gold dot indicator for live gamestate data vs snapshot-only.
 - **Right panel** (`NpcDetailPanel.vue`): Selected NPC detail with sections for favor (`NpcFavorSection.vue`), services (`NpcServicesSection.vue`), and preferences (`NpcPreferencesSection.vue`).
 
@@ -127,12 +137,14 @@ The NPC screen (`NpcsScreen.vue`) currently uses a **two-panel** layout:
 ### Shared NPC Card Component
 
 The Statehelm cards (`StatehelmView.vue`) currently show per-NPC:
+
 - Name + favor tier badge
 - Gift progress: X/5 with +/- buttons and dot indicators
 - Top preferences (sorted by pref value)
 - Service summary (training skills, storage tiers, vendor caps + item types)
 
 A shared `NpcCard.vue` component could accept config props to toggle sections:
+
 - `showGiftTracking` (Statehelm weekly limits — only relevant there)
 - `showVendorGold` (current gold / max gold + timer)
 - `showStorageUsage` (slots used / total)
@@ -143,6 +155,7 @@ A shared `NpcCard.vue` component could accept config props to toggle sections:
 ### NPC Detail Panel Expansion
 
 The existing `NpcDetailPanel.vue` already has favor, services, and preferences sections. New sections needed:
+
 - **Inventory Gifts section**: cross-reference player inventory with NPC preferences to show giftable items. This requires the inventory tracking system (already exists in `game_state_inventory`).
 - **Gifting Calculator section**: target favor tier selector + item selector → estimated quantity. Uses `POINTS_TO_NEXT` from `useFavorTiers.ts` and preference `pref` values.
 - **Storage Contents section**: pull from `game_state_storage` for the NPC's vault key. Already have this data.
@@ -175,6 +188,7 @@ The Data Browser's `NpcBrowser.vue` has its own detail panel — these should sh
 **NPC Tooltip** (`NpcTooltip.vue`) currently shows: name, area, description, top 5 gift preferences, and trained skills. No player-specific data.
 
 **Item Tooltip**: Would need reverse lookups — "given this item, which NPCs want it?" This requires matching item properties against all NPC preference keywords. Two approaches:
+
 1. **Precomputed index**: At CDN load, build an inverted index of `item_keyword → [npc_keys]`. Fast lookups but requires maintaining the index.
 2. **On-demand scan**: For each item, scan all NPC preferences. With ~200 NPCs and ~5-10 preferences each, this is ~1000-2000 comparisons — probably fine for a tooltip that appears on hover with a small delay.
 
@@ -195,7 +209,7 @@ The vendor purchase gold display on item tooltips requires the new vendor gold t
 
 **Vendor gold reset timer:** The `VendorGoldChanged` event gives us `current_gold` and `max_gold` but **no timer information**. The log does not appear to expose the actual reset timestamp. Our best-guess approach (recording when gold first drops below max, then adding 168 hours) is likely the only option. **Caveat:** If the player wasn't running glogger when they first sold to the vendor, our timer will be wrong. We should show this as "estimated" with appropriate caveats in the UI.
 
-**Item sell prices:** Yes. We have a `vendor_prices` table loaded from CDN that contains NPC sell prices (calculated as 1.5x item value). The Data Browser's `NpcBrowser.vue` already displays a vendor inventory table with item names and sell prices.
+**Item sell prices:** Yes. NPC sell prices come from `sources_items.json` Vendor/Barter entries (the in-memory `vendor_items_by_npc` index, `ceil(value × 1.5)`). The Data Browser's `NpcBrowser.vue` already displays a vendor inventory table with item names and sell prices. (The old `vendor_prices` SQL table was dead — no readers or writers — and was dropped in migration v85.)
 
 **Barter option details:** Partially. The `BarterService` type has a `Favor` requirement and `AdditionalUnlocks` (favor tiers where more barter options open up), but **not the actual barter recipes** (what items you trade for what). The specific "trade 5 of X for 1 of Y" details don't appear in the NPC CDN data we currently parse. There may be a separate CDN file for barter recipes, or this data may be embedded in the raw JSON (`NpcInfo.raw_json`) under a field we're not extracting. **Status: Needs CDN raw JSON investigation.**
 
@@ -207,7 +221,7 @@ The vendor purchase gold display on item tooltips requires the new vendor gold t
 
 ## Implementation Plan
 
-**Status: ALL PHASES COMPLETE**
+### Status: ALL PHASES COMPLETE
 
 This plan is organized into phases with clear dependencies. Each phase builds on the prior one. Phases can contain multiple independent tasks that could be worked in parallel.
 
@@ -222,6 +236,7 @@ Everything downstream depends on clean, typed access to NPC service data and per
 **What exists:** `parseServices()` in `src/types/npcServices.ts` converts raw JSON to typed `NpcService` union. It's called inline in `StatehelmView.vue`, `NpcServicesSection.vue`, and `NpcDetailPanel.vue` — each doing their own filtering.
 
 **Work:**
+
 - Create `src/composables/useNpcServices.ts` composable that wraps `parseServices()` and provides computed helpers:
   - `storeService(npc)` → `StoreService | null`
   - `storageService(npc)` → `StorageService | null`
@@ -242,6 +257,7 @@ Everything downstream depends on clean, typed access to NPC service data and per
 **What exists:** `NpcBrowser.vue` does on-demand async calls to find quests for an NPC. `QuestData.FavorNpc` (format `"AreaName/NPC_Key"`) links quests to NPCs.
 
 **Work:**
+
 - In `gameDataStore`, build a computed `questsByNpc: Record<string, QuestData[]>` index during CDN data load by scanning all quests and grouping by their `FavorNpc` NPC key.
 - Expose a `getQuestsForNpc(npcKey)` method that returns from this index.
 - Include derived fields: `isRepeatable` (has `ReuseTime_Minutes` or `ReuseTime_Days`), `favorReward` (from `Reward_Favor`).
@@ -256,6 +272,7 @@ Everything downstream depends on clean, typed access to NPC service data and per
 **What exists:** Items have `keywords: Vec<String>`. NPC preferences have `keywords: Vec<String>`. No matching logic exists anywhere.
 
 **Work:**
+
 - Create `src/composables/useNpcGiftMatching.ts`:
   - `matchesPreference(item: ItemInfo, pref: NpcPreference)` → boolean. Matches if any item keyword is in the preference's keyword list. Handle special keyword formats: `SkillPrereq:X`, `EquipmentSlot:X`, `MinRarity:X`, `Maximized`, and plain item type/name keywords.
   - `findGiftableItems(npc: NpcInfo, inventory: InventoryItem[])` → items from inventory that match any Love/Like preference, sorted by preference value.
@@ -269,13 +286,16 @@ Everything downstream depends on clean, typed access to NPC service data and per
 **Goal:** Store the already-parsed `VendorGoldChanged`, `InteractionStarted`, and `VendorSold` events so the frontend can display vendor gold, timers, and last-interaction data.
 
 **What exists:**
+
 - `VendorGoldChanged` is parsed (fields: `current_gold`, `server_id`, `max_gold`) but has no handler in `game_state.rs` — falls through to `_ => {}`.
 - `InteractionStarted` is parsed (fields: `entity_id`, `interaction_type`, `npc_name`) but only used for parser-internal context.
 - `VendorSold` is parsed but not persisted.
 - Latest migration is v23.
 
 **Work:**
+
 - Add migration v24: create `game_state_npc_vendor` table:
+
   ```sql
   character_name TEXT NOT NULL,
   server_name TEXT NOT NULL,
@@ -288,6 +308,7 @@ Everything downstream depends on clean, typed access to NPC service data and per
   last_confirmed_at TEXT NOT NULL,
   PRIMARY KEY (character_name, server_name, npc_key)
   ```
+
 - Add handlers in `game_state.rs` `process_event_inner()`:
   - `VendorGoldChanged` → resolve NPC from `current_interaction` context → upsert `vendor_gold_available` and `vendor_gold_max`. Timer logic: if gold decreased and no existing timer, set `vendor_gold_timer_start` to now. If gold returned to max, clear timer. Push domain `"vendor"`.
   - `InteractionStarted` → resolve NPC name to key → upsert `last_interaction_at`. Push domain `"vendor"`.
@@ -311,6 +332,7 @@ This phase creates the shared visual components and restructures the NPC screen.
 **What exists:** `StatehelmView.vue` has a 311-line implementation with inline card rendering. The NPC list panel shows minimal row data.
 
 **Work:**
+
 - Create `src/components/Shared/NPC/NpcCard.vue` with props:
   - `npc: NpcInfo` (required)
   - `favorTier: string | null`
@@ -336,6 +358,7 @@ This phase creates the shared visual components and restructures the NPC screen.
 **What exists:** `NpcsScreen.vue` (113 lines) with `PaneLayout` holding `NpcListPanel` (left) and `NpcDetailPanel` (right).
 
 **Work:**
+
 - Update `NpcsScreen.vue` to use a 3-pane layout:
   - Left: `NpcListPanel` (filters + compact list, narrower than current)
   - Center: Card grid using `NpcCard` components, filtered by left panel selections
@@ -351,10 +374,12 @@ This phase creates the shared visual components and restructures the NPC screen.
 **Goal:** A comprehensive NPC detail view usable in both the NPC screen right panel and the Data Browser, replacing two divergent implementations.
 
 **What exists:**
+
 - `NpcDetailPanel.vue` (89 lines): Favor, Services, Preferences sections via sub-components. Character-specific, no quests or vendor inventory.
 - `NpcBrowser.vue` (330 lines): Inline detail with trained skills, preferences table, gift tiers, associated quests, vendor inventory, raw JSON. CDN-only, no player state.
 
 **Work:**
+
 - Expand `NpcDetailPanel.vue` (or create a new `NpcDetailView.vue` shared component) with all sections:
   - **Header:** NPC name, area (AreaInline), description, favorite toggle
   - **Favor section** (existing `NpcFavorSection.vue`): tier ladder, progress, session delta
@@ -382,6 +407,7 @@ Depends on Phase 1C (gift matching) and Phase 1D (vendor state).
 **What exists:** `NpcTooltip.vue` (54 lines): name, area, description, top 5 preferences, trained skills. No player data.
 
 **Work:**
+
 - Add to `NpcTooltip.vue`:
   - Favor tier badge + progress to next tier
   - Vendor gold: current/max (if vendor)
@@ -399,6 +425,7 @@ Depends on Phase 1C (gift matching) and Phase 1D (vendor state).
 **What exists:** Item tooltip system exists but has no NPC cross-reference.
 
 **Work:**
+
 - Add sections to the item tooltip component:
   - **"Vendors"**: List NPCs whose `StoreService.CapIncreases` item types match this item's type. Show NPC name + remaining gold. Uses Phase 1A `goldCapAtTier()` and Phase 1D vendor gold state. Limit to 3-5 entries.
   - **"Wanted as gift by"**: List NPCs with matching preferences. Uses Phase 1C `findInterestedNpcs()`. Show NPC name + desire (Love/Like) + preference value. Limit to 3-5 entries.
@@ -417,6 +444,7 @@ Depends on Phase 1C (gift matching), 1D (vendor state), and 2A (NpcCard).
 **What exists:** `CurrentZone` widget exists. Area tracking is in `game_state_area` with live updates. `statehelm-summary` widget exists as a pattern.
 
 **Work:**
+
 - Create or enhance a zone NPC widget that:
   - Reads current area from `gameStateStore` world/area state
   - Filters NPCs by `area_name` matching current zone
@@ -433,6 +461,7 @@ Depends on Phase 1C (gift matching), 1D (vendor state), and 2A (NpcCard).
 **What exists:** Inventory live tracking (`liveItemMap` in gameStateStore) with real-time item add/remove events. No gift watching logic.
 
 **Work:**
+
 - Create `src/components/Dashboard/widgets/GiftWatcherWidget.vue`:
   - Config panel: multi-select NPC picker for watched NPCs. Store selections in user preferences (settings store or a simple DB table).
   - Main view: list of watched NPCs with matched items from current inventory.
@@ -451,6 +480,7 @@ This phase circles back to improve Statehelm with the shared components.
 **Goal:** `StatehelmView.vue` uses `NpcCard` (Phase 2A) and the shared detail components, reducing its 311 lines significantly.
 
 **Work:**
+
 - ~~Replace inline card rendering with `NpcCard` configured for gift tracking mode.~~ Done in Phase 2A.
 - ~~Wire the NPC card click to open the unified detail panel (Phase 2C) in a right panel or modal.~~ Done — PaneLayout with collapsible right pane showing `NpcDetailPanel`. Clicking a card selects it and opens the detail panel; clicking again deselects and hides the panel.
 - ~~Preserve Statehelm-specific features: weekly gift counter, reset timer, hide-maxed-gifts filter.~~ All preserved.
@@ -464,6 +494,7 @@ This phase circles back to improve Statehelm with the shared components.
 **Goal:** Allow pinning an NPC tooltip/summary to the bottom of the screen, similar to existing pinning behavior users love.
 
 **Work:**
+
 - Add a pin icon to the NPC detail panel header and NPC cards.
 - When pinned, render a compact NPC summary bar at the bottom of the screen (similar to how existing pinned content works).
 - Show: NPC name, favor tier, vendor gold, storage %, timer.
@@ -474,7 +505,7 @@ This phase circles back to improve Statehelm with the shared components.
 
 ### Dependency Graph
 
-```
+```text
 Phase 1A (Service Composable) ──────┐
 Phase 1B (Quest Index) ─────────────┤
 Phase 1C (Gift Matching) ───────────┼──→ Phase 2A (NpcCard) ──────→ Phase 4A (Zone Widget)
@@ -491,6 +522,7 @@ Phase 1D (Vendor State Backend) ────┘        │                      
 ```
 
 **Parallelism within phases:**
+
 - Phase 1: A, B, C, and D are all independent — can be worked simultaneously.
 - Phase 2: A must come before B and C (they use the card). B and C are independent of each other.
 - Phase 3: A and B are independent of each other (both depend on Phase 1 only).
