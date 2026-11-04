@@ -166,12 +166,11 @@ fn parse_chat_log_events(path: &PathBuf) -> Result<Vec<TimedEvent>, String> {
         }
 
         // Regular chat message
-        if is_timestamped_line(line) {
-            if let Some(msg) = parse_chat_line(line) {
+        if is_timestamped_line(line)
+            && let Some(msg) = parse_chat_line(line) {
                 let utc_second = msg.timestamp.and_utc().timestamp();
                 events.push(TimedEvent::ChatMessage { utc_second, msg });
             }
-        }
     }
 
     Ok(events)
@@ -192,12 +191,11 @@ fn date_from_chat_content(events: &[TimedEvent]) -> Option<chrono::NaiveDate> {
         if let TimedEvent::ChatMessage { msg, .. } = event {
             return Some(msg.timestamp.date());
         }
-        if let TimedEvent::ChatLogin { utc_second, .. } = event {
-            if *utc_second > 0 {
+        if let TimedEvent::ChatLogin { utc_second, .. } = event
+            && *utc_second > 0 {
                 let dt = chrono::DateTime::from_timestamp(*utc_second, 0)?;
                 return Some(dt.date_naive());
             }
-        }
     }
     None
 }
@@ -302,8 +300,7 @@ fn run_replay(
     if let Some(first_player) = all_events
         .iter()
         .find(|e| matches!(e, TimedEvent::PlayerLine { .. }))
-    {
-        if let Some(last_player) = all_events
+        && let Some(last_player) = all_events
             .iter()
             .rev()
             .find(|e| matches!(e, TimedEvent::PlayerLine { .. }))
@@ -314,12 +311,10 @@ fn run_replay(
                 last_player.utc_second()
             );
         }
-    }
     if let Some(first_chat) = all_events
         .iter()
         .find(|e| matches!(e, TimedEvent::ChatMessage { .. }))
-    {
-        if let Some(last_chat) = all_events
+        && let Some(last_chat) = all_events
             .iter()
             .rev()
             .find(|e| matches!(e, TimedEvent::ChatMessage { .. }))
@@ -330,7 +325,6 @@ fn run_replay(
                 last_chat.utc_second()
             );
         }
-    }
 
     // --- Phase 4: Process through coordinator pipeline ---
     let mut player_parser = PlayerEventParser::new();
@@ -1052,10 +1046,10 @@ pub fn spawn_player_prev_watcher(
                 prune_player_log_archive(&dir, archive_limits(&settings));
             }
 
-            if settings.get_auto_ingest_player_prev() {
-                if let Some(prev_path) = settings.get_player_prev_log_path() {
-                    if let Ok(mtime) = std::fs::metadata(&prev_path).and_then(|m| m.modified()) {
-                        if last_mtime != Some(mtime) {
+            if settings.get_auto_ingest_player_prev()
+                && let Some(prev_path) = settings.get_player_prev_log_path()
+                    && let Ok(mtime) = std::fs::metadata(&prev_path).and_then(|m| m.modified())
+                        && last_mtime != Some(mtime) {
                             last_mtime = Some(mtime);
                             match ingest_kill_loot_from_logs(prev_path.clone(), &db) {
                                 Ok(r) if !r.already_ingested => {
@@ -1070,17 +1064,13 @@ pub fn spawn_player_prev_watcher(
                             // Archive the rotated session (content-hashed, so
                             // re-scans/repeated startups never duplicate it).
                             // Errors are non-fatal — never abort the loop.
-                            if let Some(dir) = player_log_archive_dir(&settings) {
-                                if let Err(e) =
+                            if let Some(dir) = player_log_archive_dir(&settings)
+                                && let Err(e) =
                                     archive_player_log(&prev_path, &dir, archive_limits(&settings))
                                 {
                                     eprintln!("[ingest] Player.log archive failed: {e}");
                                 }
-                            }
                         }
-                    }
-                }
-            }
             std::thread::sleep(Duration::from_secs(30));
         }
     });

@@ -171,14 +171,13 @@ pub async fn gst_download(app: tauri::AppHandle) -> Result<GstStatus, String> {
     // present, then the running total per chunk (a lying header can't smuggle
     // a big body past the chunk cap).
     const MAX_GST_BYTES: u64 = 256 * 1024 * 1024;
-    if let Some(len) = resp.content_length() {
-        if len > MAX_GST_BYTES {
+    if let Some(len) = resp.content_length()
+        && len > MAX_GST_BYTES {
             return Err(format!(
                 "Download too large (declared {len} bytes, cap {} MiB): refusing to download",
                 MAX_GST_BYTES / (1024 * 1024)
             ));
         }
-    }
     let mut bytes: Vec<u8> = Vec::new();
     while let Some(chunk) = resp
         .chunk()

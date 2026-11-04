@@ -20,11 +20,10 @@ pub fn insert_chat_messages(
 
     for msg in messages {
         // Never store messages from excluded channels
-        if let Some(channel) = &msg.channel {
-            if excluded_channels.iter().any(|c| c == channel) {
+        if let Some(channel) = &msg.channel
+            && excluded_channels.iter().any(|c| c == channel) {
                 continue;
             }
-        }
 
         // Insert the message - use INSERT OR IGNORE to handle duplicates gracefully
         let rows_affected = tx.execute(
@@ -687,8 +686,8 @@ pub fn get_watch_rule_messages<C: DbRead + ?Sized>(
     }
 
     // Channel filter
-    if let Some(ref channels) = rule.channels {
-        if !channels.is_empty() {
+    if let Some(ref channels) = rule.channels
+        && !channels.is_empty() {
             let placeholders: Vec<String> = channels
                 .iter()
                 .map(|_| {
@@ -702,7 +701,6 @@ pub fn get_watch_rule_messages<C: DbRead + ?Sized>(
                 param_values.push(ch.clone());
             }
         }
-    }
 
     // Build watch conditions
     let mut watch_conditions: Vec<String> = Vec::new();

@@ -1122,11 +1122,10 @@ impl PlayerEventParser {
             .retain(|c| now_secs < c.close_deadline_secs);
         // Pending interaction metadata also expires after ~5 seconds so it
         // doesn't cross-pollinate unrelated later events.
-        if let Some(pi) = &self.pending_interaction {
-            if now_secs.saturating_sub(pi.captured_at_secs) > 5 {
+        if let Some(pi) = &self.pending_interaction
+            && now_secs.saturating_sub(pi.captured_at_secs) > 5 {
                 self.pending_interaction = None;
             }
-        }
         // Aged-out chat gains are discarded to prevent them drifting into
         // attribution of unrelated later AddItems.
         self.pending_chat_gains.retain(|g| {
@@ -1301,8 +1300,7 @@ impl PlayerEventParser {
                     delta,
                     ..
                 } = &ev
-                {
-                    if *delta > 0 {
+                    && *delta > 0 {
                         self.last_item_event = Some(LastItemEvent {
                             instance_id: *instance_id,
                             item_name: item_name.clone().unwrap_or_default(),
@@ -1310,7 +1308,6 @@ impl PlayerEventParser {
                             quantity: *delta as u32,
                         });
                     }
-                }
                 events.push(ev);
             }
         } else if line.contains("ProcessDeleteItem(") {
@@ -1521,8 +1518,8 @@ impl PlayerEventParser {
             .unwrap_or(0);
 
         // Check for ProcessAddToStorageVault with matching instance ID
-        if line.contains("ProcessAddToStorageVault(") {
-            if let Some(storage_ev) = self.parse_add_to_storage(line) {
+        if line.contains("ProcessAddToStorageVault(")
+            && let Some(storage_ev) = self.parse_add_to_storage(line) {
                 let storage_instance_id = match &storage_ev {
                     PlayerEvent::StorageDeposit { instance_id, .. } => *instance_id,
                     _ => 0,
@@ -1546,11 +1543,10 @@ impl PlayerEventParser {
                 events.push(storage_ev);
                 return true;
             }
-        }
 
         // Check for ProcessVendorAddItem with matching instance ID
-        if line.contains("ProcessVendorAddItem(") {
-            if let Some(vendor_ev) = self.parse_vendor_add_item(line) {
+        if line.contains("ProcessVendorAddItem(")
+            && let Some(vendor_ev) = self.parse_vendor_add_item(line) {
                 let vendor_instance_id = match &vendor_ev {
                     PlayerEvent::VendorSold { instance_id, .. } => *instance_id,
                     _ => 0,
@@ -1573,11 +1569,10 @@ impl PlayerEventParser {
                 events.push(vendor_ev);
                 return true;
             }
-        }
 
         // Check for ProcessVendorUpdateItem (selling stackable to vendor that already has it)
-        if line.contains("ProcessVendorUpdateItem(") {
-            if let Some(vendor_ev) = self.parse_vendor_update_item(line) {
+        if line.contains("ProcessVendorUpdateItem(")
+            && let Some(vendor_ev) = self.parse_vendor_update_item(line) {
                 let pending = std::mem::take(&mut self.pending_deletes);
                 for pd in pending {
                     events.push(PlayerEvent::ItemDeleted {
@@ -1590,7 +1585,6 @@ impl PlayerEventParser {
                 events.push(vendor_ev);
                 return true;
             }
-        }
 
         // No storage/vendor confirmation on this line: age the buffer and
         // flush only the entries that outlived the retention window.
@@ -2534,8 +2528,8 @@ impl PlayerEventParser {
         }
 
         // Detect stall note receive: book_type = "PlayerShopNote", title = "Note From <player>"
-        if book_type == "PlayerShopNote" {
-            if let Some(sender) = title.strip_prefix("Note From ") {
+        if book_type == "PlayerShopNote"
+            && let Some(sender) = title.strip_prefix("Note From ") {
                 // Content format: "From: <sender>\nTime: <timestamp>\n\n<message>"
                 // The actual newlines in the escaped content are \\n
                 let body = content
@@ -2552,7 +2546,6 @@ impl PlayerEventParser {
                     item_name: None,
                 });
             }
-        }
 
         // Always emit the original BookOpened event too (coordinator uses it)
         events.push(PlayerEvent::BookOpened {
@@ -2632,8 +2625,8 @@ impl PlayerEventParser {
         // Contains item name in <i>...</i> tags and message after "Message:\\n<indent=3em>"
         if body_text.contains("I am sending") && body_text.contains("Message:") {
             // Extract recipient: "I am sending <name> the following"
-            if let Some(after_sending) = body_text.strip_prefix("Excellent. I am sending ") {
-                if let Some(name_end) = after_sending.find(" the following") {
+            if let Some(after_sending) = body_text.strip_prefix("Excellent. I am sending ")
+                && let Some(name_end) = after_sending.find(" the following") {
                     let recipient = after_sending[..name_end].to_string();
 
                     // Extract item from <i>...</i>
@@ -2664,12 +2657,11 @@ impl PlayerEventParser {
                         item_name: item,
                     });
                 }
-            }
         }
 
         // "The pigeon is sent!" — emit the pending pigeon send
-        if body_text.contains("The pigeon is sent!") {
-            if let Some(pending) = self.pending_pigeon_send.take() {
+        if body_text.contains("The pigeon is sent!")
+            && let Some(pending) = self.pending_pigeon_send.take() {
                 events.push(PlayerEvent::PlayerMessage {
                     timestamp: ts.clone(),
                     message_type: "pigeon".to_string(),
@@ -2679,11 +2671,10 @@ impl PlayerEventParser {
                     item_name: pending.item_name,
                 });
             }
-        }
 
         // Stall note send confirmation: body contains "Note Sent"
-        if body_text.contains("Note Sent") {
-            if let Some(pending) = self.pending_stall_note_send.take() {
+        if body_text.contains("Note Sent")
+            && let Some(pending) = self.pending_stall_note_send.take() {
                 events.push(PlayerEvent::PlayerMessage {
                     timestamp: ts.clone(),
                     message_type: "stall_note".to_string(),
@@ -2693,7 +2684,6 @@ impl PlayerEventParser {
                     item_name: None,
                 });
             }
-        }
 
         if let Some(corpse_name) = title.strip_prefix("Search Corpse of ") {
             // Corpse entity ids are always positive; narrow back to u32.
@@ -2762,13 +2752,12 @@ impl PlayerEventParser {
         let args = &line[args_start..];
 
         // Title is the third quoted string (after entityId, Type)
-        if let Some(title) = extract_quoted_string(args, 0) {
-            if let Some(recipient) = title.strip_prefix("Send Note to ") {
+        if let Some(title) = extract_quoted_string(args, 0)
+            && let Some(recipient) = title.strip_prefix("Send Note to ") {
                 self.pending_stall_note_send = Some(PendingStallNoteSend {
                     recipient: recipient.to_string(),
                 });
             }
-        }
     }
 
     /// ProcessPlayerVendorScreen(npcId, helpText, listType, slotCount,
@@ -2858,8 +2847,8 @@ impl PlayerEventParser {
             }
         };
 
-        if let Some((screen_npc, is_own)) = self.vendor_screen {
-            if screen_npc == npc_id && !is_own {
+        if let Some((screen_npc, is_own)) = self.vendor_screen
+            && screen_npc == npc_id && !is_own {
                 events.push(PlayerEvent::VendorItemTaken {
                     timestamp: ts,
                     npc_entity_id: npc_id,
@@ -2867,7 +2856,6 @@ impl PlayerEventParser {
                     is_own_stall: false,
                 });
             }
-        }
     }
 
     /// ProcessVendorScreen(npcId, ...) — opens VendorBrowsing context.

@@ -462,32 +462,28 @@ fn try_councils_misc(text: &str, ts: &str) -> Option<ChatStatusEvent> {
 
     // "You receive N coins." — distinct from "You received N Councils." and from
     // the corpse-search "found N coins." line (both handled earlier).
-    if let Some(rest) = text.strip_prefix("You receive ") {
-        if let Some(n) = rest.strip_suffix(" coins.") {
+    if let Some(rest) = text.strip_prefix("You receive ")
+        && let Some(n) = rest.strip_suffix(" coins.") {
             return num(n).map(signed);
         }
-    }
 
     // "You recovered N Councils stolen by <mob>."
-    if let Some(rest) = text.strip_prefix("You recovered ") {
-        if let Some(idx) = rest.find(" Councils stolen by ") {
+    if let Some(rest) = text.strip_prefix("You recovered ")
+        && let Some(idx) = rest.find(" Councils stolen by ") {
             return num(&rest[..idx]).map(signed);
         }
-    }
 
     // "You retrieve N stolen coins."
-    if let Some(rest) = text.strip_prefix("You retrieve ") {
-        if let Some(n) = rest.strip_suffix(" stolen coins.") {
+    if let Some(rest) = text.strip_prefix("You retrieve ")
+        && let Some(n) = rest.strip_suffix(" stolen coins.") {
             return num(n).map(signed);
         }
-    }
 
     // "You were given N coins by <player>!"
-    if let Some(rest) = text.strip_prefix("You were given ") {
-        if let Some(idx) = rest.find(" coins by ") {
+    if let Some(rest) = text.strip_prefix("You were given ")
+        && let Some(idx) = rest.find(" coins by ") {
             return num(&rest[..idx]).map(signed);
         }
-    }
 
     // "<mob> stole N Councils!" — a wallet loss (often partly recovered later).
     // Anchored form: `<thief> stole <amount> Councils!` with a non-empty
@@ -495,8 +491,8 @@ fn try_councils_misc(text: &str, ts: &str) -> Option<ChatStatusEvent> {
     // which could match a quoted/truncated line). Verified against
     // parser tests: "Ratkin Mugger stole 320 Councils!" parses; "You ..."
     // lines never reach here (matched by earlier arms).
-    if let Some(body) = text.strip_suffix(" Councils!") {
-        if let Some((thief, amount)) = body.split_once(" stole ") {
+    if let Some(body) = text.strip_suffix(" Councils!")
+        && let Some((thief, amount)) = body.split_once(" stole ") {
             let t = thief.trim();
             // Prefix anchor: reject quoted/channel chatter
             // (e.g. `Bob says "Rat stole 5 Councils!"` must not parse as theft).
@@ -504,7 +500,6 @@ fn try_councils_misc(text: &str, ts: &str) -> Option<ChatStatusEvent> {
                 return num(amount).map(|a| signed(-a));
             }
         }
-    }
 
     None
 }

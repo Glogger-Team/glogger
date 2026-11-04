@@ -95,8 +95,8 @@ fn extract_effect_label(item_name: &str, base_name: &str) -> Option<String> {
     // `get` (fall through to the generic handling on None) and measure the
     // match in the ORIGINAL string by consuming chars until their
     // lowercase equals the lowered base name.
-    if let Some(pos) = item_lower.find(&base_lower) {
-        if let (Some(prefix_raw), Some(rest)) = (item_name.get(..pos), item_name.get(pos..)) {
+    if let Some(pos) = item_lower.find(&base_lower)
+        && let (Some(prefix_raw), Some(rest)) = (item_name.get(..pos), item_name.get(pos..)) {
             let mut suffix_start = None;
             if !base_lower.is_empty() {
                 let mut lowered = String::new();
@@ -127,7 +127,6 @@ fn extract_effect_label(item_name: &str, base_name: &str) -> Option<String> {
                 }
             }
         }
-    }
 
     // Fallback: if names are identical, no label
     if item_lower == base_lower {

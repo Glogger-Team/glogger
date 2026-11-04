@@ -1188,11 +1188,10 @@ fn parse_csv_raw_events(content: &str) -> Result<Vec<ExportedEnemy>, String> {
         let rec = result.map_err(|e| format!("CSV parse error on row {}: {e}", i + 2))?;
 
         // Restrict to loot events when an event-type column exists.
-        if let Some(ei) = event_idx {
-            if !rec.get(ei).unwrap_or("").to_lowercase().contains("loot") {
+        if let Some(ei) = event_idx
+            && !rec.get(ei).unwrap_or("").to_lowercase().contains("loot") {
                 continue;
             }
-        }
 
         let enemy = rec.get(enemy_idx).unwrap_or("").trim().to_string();
         let corpse = rec.get(corpse_idx).unwrap_or("").trim().to_string();
@@ -1344,11 +1343,10 @@ fn parse_csv_aggregated(content: &str) -> Result<Vec<ExportedEnemy>, String> {
             map.insert(key.clone(), (0, HashMap::new(), Vec::new()));
         }
         let entry = map.get_mut(&key).unwrap();
-        if let Some(k) = kills_idx.and_then(|ix| rec.get(ix)).and_then(parse_int) {
-            if k > entry.0 {
+        if let Some(k) = kills_idx.and_then(|ix| rec.get(ix)).and_then(parse_int)
+            && k > entry.0 {
                 entry.0 = k;
             }
-        }
         if let Some(ix) = item_idx {
             let item = rec.get(ix).unwrap_or("").trim().to_string();
             if !item.is_empty() {

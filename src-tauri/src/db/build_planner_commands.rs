@@ -688,8 +688,8 @@ pub fn get_equipped_gear_candidates(
             .is_some_and(|a| a.eq_ignore_ascii_case(&character_name));
 
         let mut mods: Vec<EquippedGearMod> = Vec::new();
-        if let Some(ref json) = row.tsys_powers {
-            if let Ok(powers) = serde_json::from_str::<Vec<TsysPower>>(json) {
+        if let Some(ref json) = row.tsys_powers
+            && let Ok(powers) = serde_json::from_str::<Vec<TsysPower>>(json) {
                 for p in powers {
                     mods.push(EquippedGearMod {
                         power_name: p.power,
@@ -698,16 +698,14 @@ pub fn get_equipped_gear_candidates(
                     });
                 }
             }
-        }
-        if let Some(imbue) = row.imbue_power.clone() {
-            if !imbue.is_empty() {
+        if let Some(imbue) = row.imbue_power.clone()
+            && !imbue.is_empty() {
                 mods.push(EquippedGearMod {
                     power_name: imbue,
                     tier: row.imbue_tier.map(|t| t as i32),
                     is_augment: true,
                 });
             }
-        }
 
         by_slot
             .entry(planner_slot)

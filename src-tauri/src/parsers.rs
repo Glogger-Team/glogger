@@ -144,11 +144,10 @@ impl LogDateResolver {
             return to_utc_datetime_at(ts, None, now);
         };
 
-        if last_time.is_some_and(|previous| time_of_day < previous) {
-            if let Some(next) = date.succ_opt() {
+        if last_time.is_some_and(|previous| time_of_day < previous)
+            && let Some(next) = date.succ_opt() {
                 *date = next;
             }
-        }
         *last_time = Some(time_of_day);
 
         to_utc_datetime_with_base(ts, Some(*date))

@@ -280,8 +280,8 @@ fn match_character_login(line: &str, watcher: &mut PlayerLogWatcher) -> Option<L
         });
     }
 
-    if let Some(start) = line.find("Logged in as character [") {
-        if let Some(end) = line[start..].find(']') {
+    if let Some(start) = line.find("Logged in as character [")
+        && let Some(end) = line[start..].find(']') {
             let name_start = start + "Logged in as character [".len();
             let name_end = start + end;
             let character_name = line[name_start..name_end].to_string();
@@ -294,7 +294,6 @@ fn match_character_login(line: &str, watcher: &mut PlayerLogWatcher) -> Option<L
                 area: None,
             });
         }
-    }
     None
 }
 
@@ -566,15 +565,14 @@ impl ChatLogWatcher {
         }
 
         // Check for logout marker: ******** Logged Out
-        if line.contains("******** Logged Out") {
-            if let Some(player) = &self.player_name {
+        if line.contains("******** Logged Out")
+            && let Some(player) = &self.player_name {
                 events.push(LogEvent::CharacterLogout {
                     character_name: player.clone(),
                     timestamp: chrono::Utc::now().naive_utc(),
                 });
                 self.current_session_start = None;
             }
-        }
 
         events
     }

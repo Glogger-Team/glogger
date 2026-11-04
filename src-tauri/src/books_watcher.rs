@@ -195,14 +195,13 @@ pub fn rescan_books_once(
         // failures) is recorded and returned after the sweep so one bad
         // file never hides a good file's inserts. Every non-benign failure
         // is logged; the first is also returned so the UI can surface it.
-        if let Err(e) = process_book_file(&path, &content, &character, &server, db, app) {
-            if e != "no parseable shop-log entries" {
+        if let Err(e) = process_book_file(&path, &content, &character, &server, db, app)
+            && e != "no parseable shop-log entries" {
                 eprintln!("[books-watcher] rescan {file_name}: {e}");
                 if first_err.is_none() {
                     first_err = Some(format!("{file_name}: {e}"));
                 }
             }
-        }
     }
     if let Some(e) = first_err {
         return Err(e);

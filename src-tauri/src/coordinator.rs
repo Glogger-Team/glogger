@@ -395,9 +395,9 @@ impl DataIngestCoordinator {
 
         // Detect file rotation: if saved position is past current file size,
         // the game restarted and created a fresh Player.log
-        if position > 0 {
-            if let Ok(meta) = std::fs::metadata(&player_log_path) {
-                if meta.len() < position {
+        if position > 0
+            && let Ok(meta) = std::fs::metadata(&player_log_path)
+                && meta.len() < position {
                     startup_log!("Player.log was rotated (size {} < saved position {}), starting from beginning",
                         meta.len(), position);
                     // Persist the reset NOW: update_position's monotonic MAX
@@ -424,8 +424,6 @@ impl DataIngestCoordinator {
                     .map_err(|e| format!("Failed to force-save rotated position: {}", e))?;
                     position = 0;
                 }
-            }
-        }
 
         // Re-seed game state from settings — the setup wizard may have set
         // the active character+server after the coordinator was created.
@@ -550,8 +548,8 @@ impl DataIngestCoordinator {
                     watcher.get_file_path(),
                     chat_log_path
                 );
-                if let Ok(events) = watcher.poll() {
-                    if !events.is_empty() {
+                if let Ok(events) = watcher.poll()
+                    && !events.is_empty() {
                         startup_log!("Final flush: {} events from old chat log", events.len());
                         // Process inline to avoid borrow issues with self
                         let conn = self
@@ -578,7 +576,6 @@ impl DataIngestCoordinator {
                                 .ok();
                         }
                     }
-                }
             }
             self.stop_chat_log_tailing()?;
         }
@@ -602,11 +599,10 @@ impl DataIngestCoordinator {
         };
 
         // Set player name if known
-        if let Some(pw) = &self.player_watcher {
-            if let Some(name) = pw.get_active_character() {
+        if let Some(pw) = &self.player_watcher
+            && let Some(name) = pw.get_active_character() {
                 watcher.set_player_name(name.to_string());
             }
-        }
 
         // Start watching
         watcher.start()?;
@@ -709,8 +705,8 @@ impl DataIngestCoordinator {
             // from a saved position): the watcher's restored character is then
             // the only identity source. Without this, `process_events_batch`
             // drops every live event until the chat marker fires.
-            if self.game_state.get_active_character().is_none() {
-                if let Some(name) = self
+            if self.game_state.get_active_character().is_none()
+                && let Some(name) = self
                     .player_watcher
                     .as_ref()
                     .and_then(|w| w.get_active_character())
@@ -722,7 +718,6 @@ impl DataIngestCoordinator {
                     );
                     self.adopt_player_log_session(&name, false);
                 }
-            }
 
             // The log's newest session is who is playing now: make the durable
             // selection agree with the ingest identity — character *and* server,
@@ -791,8 +786,8 @@ impl DataIngestCoordinator {
             Err(_) => return,
         };
 
-        if let Some(watcher) = &mut self.player_watcher {
-            if let Some(path) = self.settings.get_player_log_path() {
+        if let Some(watcher) = &mut self.player_watcher
+            && let Some(path) = self.settings.get_player_log_path() {
                 log_positions::update_position(
                     &conn,
                     path.to_str().unwrap_or(""),
@@ -826,7 +821,6 @@ impl DataIngestCoordinator {
                     }
                 }
             }
-        }
 
         if let Some(watcher) = &mut self.chat_watcher {
             let file_path_str = watcher.get_file_path().to_string_lossy().to_string();
@@ -979,8 +973,8 @@ impl DataIngestCoordinator {
                     if let (Some(character), Some(server)) = (
                         self.game_state.get_active_character(),
                         self.game_state.get_active_server(),
-                    ) {
-                        if let Ok(conn) = self.db_pool.get_write() {
+                    )
+                        && let Ok(conn) = self.db_pool.get_write() {
                             conn.execute(
                                 "INSERT INTO game_state_area (character_name, server_name, area_name, last_confirmed_at)
                                  VALUES (?1, ?2, ?3, datetime('now'))
@@ -991,7 +985,6 @@ impl DataIngestCoordinator {
                             ).ok();
                             domains_batch.push("area");
                         }
-                    }
                     self.app_handle.emit("area-transition", &area).ok();
                 }
                 LogEvent::SkillUpdated(update) => {
@@ -1218,8 +1211,8 @@ impl DataIngestCoordinator {
                         PlayerEvent::DelayLoopStarted {
                             action_type, label, ..
                         } if action_type == "Eat" => {
-                            if let Some(food_name) = label.strip_prefix("Using ") {
-                                if let Ok(conn) = self.db_pool.get_write() {
+                            if let Some(food_name) = label.strip_prefix("Using ")
+                                && let Ok(conn) = self.db_pool.get_write() {
                                     match crate::db::gourmand_commands::record_food_eaten(
                                         &conn, food_name,
                                     ) {
@@ -1233,7 +1226,6 @@ impl DataIngestCoordinator {
                                         }
                                     }
                                 }
-                            }
                         }
                         _ => {}
                     }
@@ -1450,11 +1442,10 @@ impl DataIngestCoordinator {
                                 crate::chat_status_parser::parse_status_message(&msg),
                                 Some(ChatStatusEvent::ItemGained { .. })
                             );
-                            if is_loot {
-                                if let (Some(id), Ok(conn)) =
+                            if is_loot
+                                && let (Some(id), Ok(conn)) =
                                     (identity.as_ref(), self.db_pool.get_write())
-                                {
-                                    if let Some(use_id) =
+                                    && let Some(use_id) =
                                         self.survey_aggregator.attribute_chat_gain(
                                             &conn,
                                             &id.character,
@@ -1492,8 +1483,6 @@ impl DataIngestCoordinator {
                                         )
                                         .ok();
                                     }
-                                }
-                            }
                         }
                         let _ = item_type_id;
                     }
@@ -2969,8 +2958,8 @@ fn parse_almanac_content(content: &str, captured_at: &str) -> Vec<AlmanacEvent> 
         }
 
         // Parse <i>Ends in X hours Y minutes</i> or <i>Starts in X hours Y minutes</i>
-        if let Some(i_content) = extract_tag_content(line, "i") {
-            if let (Some(crop), Some(zone)) = (pending_crop.take(), pending_zone.take()) {
+        if let Some(i_content) = extract_tag_content(line, "i")
+            && let (Some(crop), Some(zone)) = (pending_crop.take(), pending_zone.take()) {
                 let duration = parse_duration_text(&i_content);
                 let is_current = in_current_section;
 
@@ -2995,7 +2984,6 @@ fn parse_almanac_content(content: &str, captured_at: &str) -> Vec<AlmanacEvent> 
                     captured_at: captured_at.to_string(),
                 });
             }
-        }
     }
 
     events
@@ -3516,19 +3504,17 @@ fn apply_catch_up_login(
         // replayed session pollute this one. Equipment/combat/mount/favor are
         // deliberately untouched: equipment self-heals via its full-dump
         // reinsert, and the rest have no repopulating dump event.
-        if clear_inventory {
-            if let (Some(character), Ok(conn)) = (
+        if clear_inventory
+            && let (Some(character), Ok(conn)) = (
                 game_state.get_active_character().map(str::to_string),
                 db.get_write(),
-            ) {
-                if let Err(e) = conn.execute(
+            )
+                && let Err(e) = conn.execute(
                     "DELETE FROM game_state_inventory WHERE character_name = ?1 AND server_name = ?2",
                     rusqlite::params![character, server],
                 ) {
                     startup_log!("[coordinator] clear-on-adopt inventory delete failed: {e}");
                 }
-            }
-        }
     }
     source
 }

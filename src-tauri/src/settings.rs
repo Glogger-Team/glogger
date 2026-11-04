@@ -512,8 +512,8 @@ impl SettingsManager {
 /// On macOS Player.log lives under ~/Library/Logs/, separate from game data.
 /// On Windows returns empty so callers fall back to game_data_path/Player.log.
 pub fn get_default_player_log_path() -> String {
-    if cfg!(target_os = "macos") {
-        if let Ok(home) = std::env::var("HOME") {
+    if cfg!(target_os = "macos")
+        && let Ok(home) = std::env::var("HOME") {
             return PathBuf::from(home)
                 .join("Library")
                 .join("Logs")
@@ -524,7 +524,6 @@ pub fn get_default_player_log_path() -> String {
                 .unwrap_or_default()
                 .to_string();
         }
-    }
     String::new()
 }
 
@@ -546,8 +545,8 @@ pub fn get_default_game_data_path() -> String {
                 return path;
             }
         }
-    } else if cfg!(target_os = "macos") {
-        if let Ok(home) = std::env::var("HOME") {
+    } else if cfg!(target_os = "macos")
+        && let Ok(home) = std::env::var("HOME") {
             return PathBuf::from(home)
                 .join("Library")
                 .join("Application Support")
@@ -556,7 +555,6 @@ pub fn get_default_game_data_path() -> String {
                 .unwrap_or_default()
                 .to_string();
         }
-    }
 
     // Fallback for other OSes or if we can't determine the path
     String::new()

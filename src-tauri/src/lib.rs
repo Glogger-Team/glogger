@@ -321,12 +321,11 @@ fn seed_experimental_data(app_data_dir: &std::path::Path, current_version: &Opti
     }
 
     // Remove old experimental data so we start clean
-    if db_path.exists() {
-        if let Err(e) = fs::remove_file(&db_path) {
+    if db_path.exists()
+        && let Err(e) = fs::remove_file(&db_path) {
             startup_log!("Experimental seed: failed to remove old db: {}", e);
             return;
         }
-    }
     // Also drop the SQLite journal sidecars. A stale `-wal` beside a freshly
     // copied main file can make the next open recover a journal that does not
     // belong to the file. They may legitimately not exist.
@@ -665,8 +664,8 @@ pub fn run() {
                         );
 
                         // Persist CDN data to database only if version changed
-                        if let Some(pool) = app_handle.try_state::<db::DbPool>() {
-                            if let Ok(mut conn) = pool.get_write() {
+                        if let Some(pool) = app_handle.try_state::<db::DbPool>()
+                            && let Ok(mut conn) = pool.get_write() {
                                 let db_version = db::queries::cdn_data::get_cdn_version(&*conn).ok().flatten();
                                 if db_version == Some(data.version) {
                                     startup_log!("CDN v{} already persisted to database, skipping", data.version);
@@ -679,7 +678,6 @@ pub fn run() {
                                     }}
                                 }
                             }
-                        }
 
                         // Notify the frontend that data is loaded
                         app_handle.emit("game-data-ready", data.version).ok();

@@ -377,11 +377,10 @@ fn ability_lines_in_file(
     for line in text.lines() {
         // Same cheap text test as the needles: only a login line is parsed for
         // its offset, and only until one is found.
-        if login_offset.is_none() && line.contains("Logged In As") {
-            if let Some(info) = chat_parser::parse_chat_login_line(line) {
+        if login_offset.is_none() && line.contains("Logged In As")
+            && let Some(info) = chat_parser::parse_chat_login_line(line) {
                 login_offset = info.timezone_offset_seconds;
             }
-        }
         if !needles.iter().any(|needle| line.contains(needle)) {
             continue;
         }
@@ -562,8 +561,8 @@ fn run_scan_dispatch(
         // line, keyed by the line's own session identity — never the
         // drain-final identity. Idempotent: only `stack_size = 1` rows match.
         for (item_name, quantity) in std::mem::take(&mut outcome.staged_gains) {
-            if let Some(id) = identity.as_ref() {
-                if quantity > 1 {
+            if let Some(id) = identity.as_ref()
+                && quantity > 1 {
                     // Resolve the internal name like the manager path does:
                     // inventory rows store the Player.log internal token,
                     // which often differs from the chat display name
@@ -591,7 +590,6 @@ fn run_scan_dispatch(
                         }
                     }
                 }
-            }
         }
         let had_arena = outcome.domains.iter().any(|d| d == "arena");
         for d in std::mem::take(&mut outcome.domains) {
@@ -652,11 +650,10 @@ fn run_scan_dispatch(
             eprintln!("[run_scan_dispatch] Skipping scan chat level-up for unresolvable skill: {skill}");
         }
     }
-    if !domains.is_empty() {
-        if let Some(app) = app {
+    if !domains.is_empty()
+        && let Some(app) = app {
             app.emit("game-state-updated", &domains).ok();
         }
-    }
     domains
 }
 

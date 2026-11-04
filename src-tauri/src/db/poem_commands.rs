@@ -132,16 +132,14 @@ pub fn backfill_from_player_logs(
     }
 
     // The two live logs are always scanned regardless of mtime.
-    if let Some(p) = settings.get_player_prev_log_path() {
-        if p.is_file() {
+    if let Some(p) = settings.get_player_prev_log_path()
+        && p.is_file() {
             paths.push(p);
         }
-    }
-    if let Some(p) = settings.get_player_log_path() {
-        if p.is_file() {
+    if let Some(p) = settings.get_player_log_path()
+        && p.is_file() {
             paths.push(p);
         }
-    }
 
     let parsed: Vec<(String, String, String, String)> =
         paths.iter().flat_map(parse_poems_from_path).collect();

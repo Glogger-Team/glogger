@@ -92,11 +92,10 @@ pub fn scan_gift_notes(path: &Path, week_start: &str) -> Vec<GiftNote> {
         };
         // PG writes `[HH:MM:SS]` in UTC, so `date + time` is the UTC instant. A
         // decrease in time-of-day means the file crossed midnight.
-        if let (Some(prev), Some(d)) = (prev_time, date) {
-            if time < prev {
+        if let (Some(prev), Some(d)) = (prev_time, date)
+            && time < prev {
                 date = d.succ_opt();
             }
-        }
         prev_time = Some(time);
 
         let (Some(character), Some(date)) = (character.as_deref(), date) else {
@@ -314,8 +313,8 @@ pub fn backfill_from_player_logs(
 
     // Archived rotated copies first — only those recent enough to possibly hold
     // this week's notes. (All files are still scanned for the week filter.)
-    if let Some(dir) = crate::replay::player_log_archive_dir(settings) {
-        if let Some(threshold) = archive_mtime_threshold(&week_start) {
+    if let Some(dir) = crate::replay::player_log_archive_dir(settings)
+        && let Some(threshold) = archive_mtime_threshold(&week_start) {
             let mut archived: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&dir)
                 .into_iter()
                 .flatten()
@@ -336,19 +335,16 @@ pub fn backfill_from_player_logs(
             archived.sort_by_key(|(mtime, _)| *mtime);
             paths.extend(archived.into_iter().map(|(_, p)| p));
         }
-    }
 
     // The two live logs are always scanned regardless of mtime.
-    if let Some(p) = settings.get_player_prev_log_path() {
-        if p.is_file() {
+    if let Some(p) = settings.get_player_prev_log_path()
+        && p.is_file() {
             paths.push(p);
         }
-    }
-    if let Some(p) = settings.get_player_log_path() {
-        if p.is_file() {
+    if let Some(p) = settings.get_player_log_path()
+        && p.is_file() {
             paths.push(p);
         }
-    }
 
     let changed = backfill_gifts_from_paths(&paths, &week_start, &server, db)?;
     if changed > 0 {
