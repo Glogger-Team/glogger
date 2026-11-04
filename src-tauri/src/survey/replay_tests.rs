@@ -533,10 +533,9 @@ fn loot_gap_report(
         if let Some(internal_match) = item_display_to_internal
             .iter()
             .find(|(_, internal)| *internal == item)
+            && seen_display.contains(internal_match.0)
         {
-            if seen_display.contains(internal_match.0) {
-                continue;
-            }
+            continue;
         }
         out.push((format!("(no chat) {item}"), 0, qty, qty));
     }

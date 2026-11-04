@@ -306,12 +306,11 @@ impl DebugCaptureState {
             "lines": lines,
         });
 
-        if let Some(parent) = out_path.parent() {
-            if !parent.as_os_str().is_empty() {
+        if let Some(parent) = out_path.parent()
+            && !parent.as_os_str().is_empty() {
                 fs::create_dir_all(parent)
                     .map_err(|e| format!("Failed to create output dir: {e}"))?;
             }
-        }
         let out_file = fs::File::create(&out_path)
             .map_err(|e| format!("Failed to create output file: {e}"))?;
         let writer = BufWriter::new(out_file);

@@ -1242,11 +1242,10 @@ fn save_stall_baseline_internal(
     if !(0..=1_000_000).contains(&quantity) {
         return Err("save_stall_baseline quantity out of range (0-1000000)".to_string());
     }
-    if let Some(p) = input.price_unit {
-        if !(0.0..=1_000_000_000.0).contains(&p) {
+    if let Some(p) = input.price_unit
+        && !(0.0..=1_000_000_000.0).contains(&p) {
             return Err("save_stall_baseline price out of range".to_string());
         }
-    }
 
     // qty 0 stores a zero row (not a DELETE): the zero seed makes the
     // aggregator drop all older events for the item and report quantity 0,

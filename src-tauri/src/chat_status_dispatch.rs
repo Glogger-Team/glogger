@@ -217,9 +217,9 @@ pub fn dispatch_chat_message(
         ctx.msg.sender.as_deref(),
         &ctx.msg.message,
         ctx.local_ts,
-    ) {
-        if let Ok(conn) = ctx.db.get_write() {
-            if let Ok(1) = crate::db::arena_commands::record_arena_match(
+    )
+        && let Ok(conn) = ctx.db.get_write()
+            && let Ok(1) = crate::db::arena_commands::record_arena_match(
                 &conn,
                 &m.fought_at,
                 &m.fighter_a,
@@ -229,8 +229,6 @@ pub fn dispatch_chat_message(
                 out.domain("arena");
                 out.arena_resolved = true;
             }
-        }
-    }
     // Watch rules fire on the raw message (same as the live drain's
     // post-insert evaluation). Rules match on channel/sender/text, none of
     // which are identity-scoped, so scans evaluate them too.
@@ -243,14 +241,13 @@ pub fn dispatch_chat_message(
     if let Some(status_event) = parse_status_message(ctx.msg) {
         // Combat Wisdom keys on the LOCAL wall clock (live + backfill dedup),
         // so it bypasses the UTC-stamped generic arm.
-        if let ChatStatusEvent::CombatWisdomEarned { amount, source_name, verb, zone, .. } = &status_event {
-            if let Ok(conn) = ctx.db.get_write() {
+        if let ChatStatusEvent::CombatWisdomEarned { amount, source_name, verb, zone, .. } = &status_event
+            && let Ok(conn) = ctx.db.get_write() {
                 crate::db::combat_wisdom_commands::record_combat_wisdom_earn(
                     &conn, ctx.local_ts, *amount, source_name.as_deref(), verb, zone.as_deref(),
                 )
                 .ok();
             }
-        }
         dispatch_status_event(&ctx, &status_event, &mut out, survey_hook, state);
         out.chat_status_event = Some(status_event);
     }
@@ -301,18 +298,16 @@ pub fn dispatch_chat_message(
                 ctx.msg.sender.as_deref(),
                 &ctx.msg.message,
                 &id.character,
-            ) {
-                if record_poop(ctx.db, &id.character, &id.server, &target, ctx.local_ts) {
+            )
+                && record_poop(ctx.db, &id.character, &id.server, &target, ctx.local_ts) {
                     out.domain("report_stats");
                 }
-            }
         }
 
-        if let Some(rez_event) = chat_resuscitate_parser::parse_resuscitate_message(ctx.msg) {
-            if persist_rez_event(ctx.db, id, &rez_event, state.last_rez_dedup, &state.current_area) {
+        if let Some(rez_event) = chat_resuscitate_parser::parse_resuscitate_message(ctx.msg)
+            && persist_rez_event(ctx.db, id, &rez_event, state.last_rez_dedup, &state.current_area) {
                 out.character_resuscitated = Some(rez_event);
             }
-        }
     }
 
     out
@@ -350,8 +345,8 @@ fn dispatch_status_event(
                 // Milking timer: a Bottle of Milk gain while a cow
                 // interaction is pending attributes the milk to that cow
                 // (live path only — scans have no interaction state).
-                if item_name == "Bottle of Milk" || internal_name.as_deref() == Some("BottleOfMilk") {
-                    if let Some(cow_internal) = state.pending_cow_interaction.take() {
+                if (item_name == "Bottle of Milk" || internal_name.as_deref() == Some("BottleOfMilk"))
+                    && let Some(cow_internal) = state.pending_cow_interaction.take() {
                         let cow_display = cow_internal
                             .strip_prefix("Cow_")
                             .unwrap_or(&cow_internal)
@@ -362,7 +357,6 @@ fn dispatch_status_event(
                             out.domain("milking");
                         }
                     }
-                }
                 out.staged_gains.push((item_name.clone(), *quantity));
                 let survey_use_id = if context == "loot" {
                     match survey_hook {
@@ -394,8 +388,8 @@ fn dispatch_status_event(
                 .ok()
                 .and_then(|gd| gd.find_equipment_base_name(item_name))
                 .unwrap_or_else(|| item_name.to_string());
-            if let Some(id) = ctx.identity {
-                if let Ok(conn) = ctx.db.get_write() {
+            if let Some(id) = ctx.identity
+                && let Ok(conn) = ctx.db.get_write() {
                     match crate::db::hoplology_commands::insert_hoplology_study_from_chat(
                         &conn, &id.character, &id.server, &base_name, timestamp,
                     ) {
@@ -404,7 +398,6 @@ fn dispatch_status_event(
                         Err(e) => eprintln!("Failed to persist hoplology study: {e}"),
                     }
                 }
-            }
         }
         ChatStatusEvent::CombatWisdomEarned { .. } => {
             // Already recorded with the local-ts key before this fn —
@@ -414,18 +407,16 @@ fn dispatch_status_event(
         // no per-line memory, so a scan cannot know which of its lines the
         // live drain already counted. Scan paths leave the flag `false`.
         ChatStatusEvent::CoinsLooted { amount, timestamp } => {
-            if state.count_currency {
-                if let Some(id) = ctx.identity {
+            if state.count_currency
+                && let Some(id) = ctx.identity {
                     accrue_currency_delta(ctx.db, &id.character, &id.server, *amount as i64, timestamp);
                 }
-            }
         }
         ChatStatusEvent::CouncilsChanged { amount, timestamp } => {
-            if state.count_currency {
-                if let Some(id) = ctx.identity {
+            if state.count_currency
+                && let Some(id) = ctx.identity {
                     accrue_currency_delta(ctx.db, &id.character, &id.server, *amount, timestamp);
                 }
-            }
         }
         // Local wall-clock key, like Combat Wisdom and arena: the chat
         // backfill parses raw log lines (local time, no UTC conversion),
@@ -445,11 +436,10 @@ fn dispatch_status_event(
             }
         }
         ChatStatusEvent::MilkedBy { milker, timestamp } => {
-            if let Some(id) = ctx.identity {
-                if record_player_milk(ctx.db, &id.character, &id.server, milker, "milked_by", timestamp) {
+            if let Some(id) = ctx.identity
+                && record_player_milk(ctx.db, &id.character, &id.server, milker, "milked_by", timestamp) {
                     out.domain("milking");
                 }
-            }
         }
         ChatStatusEvent::LevelUp { skill, level, xp, timestamp } => {
             if let Some(id) = ctx.identity {
@@ -678,8 +668,7 @@ fn persist_death_event(
             armor_damage: ap,
             is_crit,
         } = dmg_event
-        {
-            if tx
+            && tx
                 .execute(
                     "INSERT INTO death_damage_sources
                         (death_id, event_order, timestamp, attacker_name, attacker_entity_id,
@@ -694,7 +683,6 @@ fn persist_death_event(
             {
                 return false;
             }
-        }
     }
     tx.commit().is_ok()
 }
@@ -718,11 +706,10 @@ fn persist_rez_event(
         }
     };
     if success {
-        if let Some(prev) = last_rez_dedup.get(target_name) {
-            if crate::coordinator::rez_within_dedup_window(prev, timestamp) {
+        if let Some(prev) = last_rez_dedup.get(target_name)
+            && crate::coordinator::rez_within_dedup_window(prev, timestamp) {
                 return false;
             }
-        }
         last_rez_dedup.retain(|_, prev| crate::coordinator::rez_within_dedup_window(prev, timestamp));
     }
     let Ok(conn) = db.get_write() else {
@@ -804,12 +791,11 @@ pub fn claim_survey_loot_near(
                 return 0;
             }
             let _ = survey_persistence::set_use_status(&conn, survey_use_id, SurveyUseStatus::Completed);
-            if let Ok(Some(su)) = survey_persistence::get_use(&conn, survey_use_id) {
-                if let Some(sid) = su.session_id {
+            if let Ok(Some(su)) = survey_persistence::get_use(&conn, survey_use_id)
+                && let Some(sid) = su.session_id {
                     let _ = survey_persistence::update_first_loot_at(&conn, sid, used_at_iso);
                     let _ = survey_persistence::update_last_loot_at(&conn, sid, used_at_iso);
                 }
-            }
             n
         }
         Err(_) => 0,

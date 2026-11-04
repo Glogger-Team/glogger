@@ -363,10 +363,9 @@ impl ArenaBetTracker {
         if line.contains("ProcessScreenText(")
             && line.contains("You received ")
             && line.contains(" Councils.")
-        {
-            if let Some(amount) = parse_received_councils(line) {
-                if let Some(a) = &self.active {
-                    if a.payout == amount {
+            && let Some(amount) = parse_received_councils(line)
+                && let Some(a) = &self.active
+                    && a.payout == amount {
                         let b = self.active.take().unwrap();
                         return Some(ArenaBet {
                             placed_at: b.placed_at,
@@ -377,9 +376,6 @@ impl ArenaBetTracker {
                             won: true,
                         });
                     }
-                }
-            }
-        }
 
         None
     }

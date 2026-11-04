@@ -243,11 +243,10 @@ async fn load_json_keys(path: &Path) -> Result<BTreeMap<String, Value>, String> 
 /// Checks common PG CDN fields: Name, InternalName, DisplayName.
 fn extract_label(val: &Value) -> Option<String> {
     for field in &["Name", "InternalName", "DisplayName"] {
-        if let Some(Value::String(s)) = val.get(field) {
-            if !s.is_empty() {
+        if let Some(Value::String(s)) = val.get(field)
+            && !s.is_empty() {
                 return Some(s.clone());
             }
-        }
     }
     None
 }

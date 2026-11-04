@@ -381,21 +381,20 @@ pub async fn search_items(
                 }
             }
             // Effect text filter (search within effect descriptions)
-            if let Some(ref eq) = effect_q {
-                if !eq.is_empty() {
+            if let Some(ref eq) = effect_q
+                && !eq.is_empty() {
                     let has_match = item.effect_descs.iter().any(|desc| {
                         // Check raw effect desc string
                         if desc.to_lowercase().contains(eq) {
                             return true;
                         }
                         // Also try resolving the effect for a human-readable match
-                        if let Some(resolved) = resolve_single_effect(desc, &data) {
-                            if resolved.formatted.to_lowercase().contains(eq)
-                                || resolved.label.to_lowercase().contains(eq)
+                        if let Some(resolved) = resolve_single_effect(desc, &data)
+                            && (resolved.formatted.to_lowercase().contains(eq)
+                                || resolved.label.to_lowercase().contains(eq))
                             {
                                 return true;
                             }
-                        }
                         false
                     });
                     if !has_match {
@@ -410,7 +409,6 @@ pub async fn search_items(
                         }
                     }
                 }
-            }
             true
         })
         .cloned()
@@ -708,11 +706,10 @@ pub async fn search_ability_families(
                 return false;
             }
             // Filter by skill if specified
-            if let Some(sm) = skill_match {
-                if f.skill.as_deref() != Some(sm) {
+            if let Some(sm) = skill_match
+                && f.skill.as_deref() != Some(sm) {
                     return false;
                 }
-            }
             // Match on family base_name first (fast path)
             if f.base_name.to_lowercase().contains(&lower) {
                 return true;
@@ -723,11 +720,10 @@ pub async fn search_ability_families(
                     if ability.name.to_lowercase().contains(&lower) {
                         return true;
                     }
-                    if let Some(desc) = &ability.description {
-                        if desc.to_lowercase().contains(&lower) {
+                    if let Some(desc) = &ability.description
+                        && desc.to_lowercase().contains(&lower) {
                             return true;
                         }
-                    }
                 }
             }
             false
@@ -882,11 +878,10 @@ pub async fn get_recipes_producing_items(
     for item_id in &item_ids {
         if let Some(recipe_ids) = data.recipes_producing_item.get(item_id) {
             for recipe_id in recipe_ids {
-                if seen.insert(*recipe_id) {
-                    if let Some(recipe) = data.recipes.get(recipe_id) {
+                if seen.insert(*recipe_id)
+                    && let Some(recipe) = data.recipes.get(recipe_id) {
                         results.push(recipe.clone());
                     }
-                }
             }
         }
     }
@@ -1954,8 +1949,8 @@ fn resolve_single_effect(desc: &str, data: &GameData) -> Option<ResolvedEffect> 
         let token = parts[0].trim_end_matches('}');
         let value_str = parts[1].trim_end_matches('}');
 
-        if let Some(attr) = data.attributes.get(token) {
-            if let Some(label) = attr.raw.get("Label").and_then(|v| v.as_str()) {
+        if let Some(attr) = data.attributes.get(token)
+            && let Some(label) = attr.raw.get("Label").and_then(|v| v.as_str()) {
                 let label = label.to_string();
                 let display_type = attr
                     .raw
@@ -1982,7 +1977,6 @@ fn resolve_single_effect(desc: &str, data: &GameData) -> Option<ResolvedEffect> 
                     icon_id,
                 });
             }
-        }
     }
 
     // Handle "<icon=XXXX>text" format (pre-rendered effect descriptions)
@@ -2297,8 +2291,8 @@ fn parse_conditional_direct_text(desc: &str) -> Vec<(String, f64, String)> {
         }
         return out;
     }
-    if d.starts_with("Direct ") {
-        if let Some(tail) = RE_PCT_TAIL.captures(d) {
+    if d.starts_with("Direct ")
+        && let Some(tail) = RE_PCT_TAIL.captures(d) {
             let pct = tail[1].parse::<f64>().unwrap_or(0.0) / 100.0;
             let skill = tail[2].to_string();
             for t in RE_DIRECT_TYPE.captures_iter(d) {
@@ -2309,7 +2303,6 @@ fn parse_conditional_direct_text(desc: &str) -> Vec<(String, f64, String)> {
                 ));
             }
         }
-    }
     out
 }
 
@@ -2678,11 +2671,9 @@ fn harvest_type_rules(
             && ids
                 .iter()
                 .any(|id| data.ability_to_family.get(id).map(|s| s.as_str()) == Some(tf))
-        {
-            if let Some(to) = parse_named_type_conversion(&rest) {
+            && let Some(to) = parse_named_type_conversion(&rest) {
                 conversions.push(to);
             }
-        }
     }
 
     if let Some((subject, dot_name, seconds)) = parse_dot_apply(&body) {
@@ -2738,11 +2729,10 @@ fn resolve_mod_effects(
     };
 
     for (token, value, condition) in candidates {
-        if let Some(skill) = &condition {
-            if !equipped.contains(&skill.to_lowercase()) {
+        if let Some(skill) = &condition
+            && !equipped.contains(&skill.to_lowercase()) {
                 continue;
             }
-        }
         let (label, display_type) = attr_label(data, &token);
         out.push(crate::game_data::ability_stats::ModEffect {
             token,
@@ -2956,14 +2946,13 @@ fn resolve_direct_add(
             push(&token.clone(), value, effects);
         }
     }
-    if let Some(caps) = RE_POWER_COST.captures(&rest) {
-        if let (Ok(v), Some(token)) = (
+    if let Some(caps) = RE_POWER_COST.captures(&rest)
+        && let (Ok(v), Some(token)) = (
             caps[1].parse::<f64>(),
             stats.attributes_that_delta_power_cost.first(),
         ) {
             push(&token.clone(), -v, effects);
         }
-    }
 }
 
 /// One assigned build mod, as the frontend knows it (preset mods + slot label).
@@ -3919,13 +3908,11 @@ pub async fn get_quests_by_moon_phase(
     let data = state.read().await;
 
     fn has_moon_phase(req: &serde_json::Value, phase: &str) -> bool {
-        if let Some(t) = req.get("T").and_then(|v| v.as_str()) {
-            if t == "MoonPhase" {
-                if let Some(mp) = req.get("MoonPhase").and_then(|v| v.as_str()) {
+        if let Some(t) = req.get("T").and_then(|v| v.as_str())
+            && t == "MoonPhase"
+                && let Some(mp) = req.get("MoonPhase").and_then(|v| v.as_str()) {
                     return mp == phase;
                 }
-            }
-        }
         false
     }
 
@@ -4085,8 +4072,8 @@ pub async fn get_cp_recipes_for_slot(
             }
 
             // Crafting Enhancement: "CraftingEnhanceItemXxx(value,cpCost)"
-            if effect.starts_with("CraftingEnhanceItem") {
-                if let Some(inner) = effect
+            if effect.starts_with("CraftingEnhanceItem")
+                && let Some(inner) = effect
                     .find('(')
                     .and_then(|start| effect.strip_suffix(')').map(|s| &s[start + 1..]))
                 {
@@ -4146,7 +4133,6 @@ pub async fn get_cp_recipes_for_slot(
                         effect_description: description,
                     });
                 }
-            }
         }
     }
 
@@ -4179,11 +4165,10 @@ pub async fn get_tsys_ability_map(
             continue;
         }
         // Try as internal_name via precomputed index — O(1)
-        if let Some(cdn_key) = data.tsys_internal_name_index.get(key) {
-            if let Some(ids) = data.tsys_to_abilities.get(cdn_key) {
+        if let Some(cdn_key) = data.tsys_internal_name_index.get(key)
+            && let Some(ids) = data.tsys_to_abilities.get(cdn_key) {
                 result.insert(key.clone(), ids.clone());
             }
-        }
     }
     Ok(result)
 }
@@ -4220,11 +4205,10 @@ fn extract_icon_ids(effect_descs: &[String]) -> std::collections::HashSet<u32> {
         let mut remaining = desc.as_str();
         while let Some(start) = remaining.find("<icon=") {
             let after = &remaining[start + 6..];
-            if let Some(end) = after.find('>') {
-                if let Ok(id) = after[..end].parse::<u32>() {
+            if let Some(end) = after.find('>')
+                && let Ok(id) = after[..end].parse::<u32>() {
                     icons.insert(id);
                 }
-            }
             remaining = &remaining[start + 6..];
         }
     }
@@ -4552,11 +4536,10 @@ pub async fn get_abilities_for_tsys(
     // 2. Icon ID matching: find abilities whose icon_id appears in text descs
     if !tsys_icon_ids.is_empty() {
         for ability in data.abilities.values() {
-            if let Some(icon_id) = ability.icon_id {
-                if tsys_icon_ids.contains(&icon_id) {
+            if let Some(icon_id) = ability.icon_id
+                && tsys_icon_ids.contains(&icon_id) {
                     matched_ability_ids.insert(ability.id);
                 }
-            }
         }
     }
 
@@ -4580,13 +4563,12 @@ pub async fn get_abilities_for_tsys(
                     })
                     .map(|n| n.as_str())
                     .collect();
-                if text_contains_ability_name(&clean, base_name, &longer) {
-                    if let Some(ids) = ability_base_names.get(base_name.as_str()) {
+                if text_contains_ability_name(&clean, base_name, &longer)
+                    && let Some(ids) = ability_base_names.get(base_name.as_str()) {
                         for id in ids {
                             matched_ability_ids.insert(*id);
                         }
                     }
-                }
             }
         }
     }
@@ -4827,8 +4809,8 @@ pub async fn find_recipe_items_in_inventory(
 
         // Check skill requirements
         let mut unmet_requirements: Vec<UnmetRequirement> = Vec::new();
-        if let Some(ref skill_reqs) = item.skill_reqs {
-            if let Some(obj) = skill_reqs.as_object() {
+        if let Some(ref skill_reqs) = item.skill_reqs
+            && let Some(obj) = skill_reqs.as_object() {
                 for (skill_ref, level_val) in obj {
                     let required = level_val.as_u64().unwrap_or(0) as u32;
                     // Resolve skill name
@@ -4846,7 +4828,6 @@ pub async fn find_recipe_items_in_inventory(
                     }
                 }
             }
-        }
 
         let meets_requirements = unmet_requirements.is_empty();
 
@@ -4929,11 +4910,10 @@ pub async fn search_lorebooks(
         .values()
         .filter(|b| {
             // Category filter
-            if let Some(ref cat) = category {
-                if b.category.as_deref() != Some(cat.as_str()) {
+            if let Some(ref cat) = category
+                && b.category.as_deref() != Some(cat.as_str()) {
                     return false;
                 }
-            }
             // Text query filter
             if q.is_empty() {
                 return true;
@@ -5346,11 +5326,10 @@ fn find_seedling_for_plant<'a>(data: &'a GameData, plant: &ItemInfo) -> Option<&
 
     for suffix in SEEDLING_SUFFIXES {
         let candidate = format!("{}{}", plant_internal, suffix);
-        if let Some(item) = data.resolve_item(&candidate) {
-            if is_seedling(item) {
+        if let Some(item) = data.resolve_item(&candidate)
+            && is_seedling(item) {
                 return Some(item);
             }
-        }
     }
 
     None
@@ -5408,8 +5387,8 @@ pub async fn get_gardening_product_chain(
 
     // Build product list from recipes that use the plant item
     let mut products = Vec::new();
-    if let Some(plant) = plant_item {
-        if let Some(recipe_ids) = data.recipes_using_item.get(&plant.id) {
+    if let Some(plant) = plant_item
+        && let Some(recipe_ids) = data.recipes_using_item.get(&plant.id) {
             for recipe_id in recipe_ids {
                 if let Some(recipe) = data.recipes.get(recipe_id) {
                     let product_items: Vec<GardeningChainItem> = recipe
@@ -5433,7 +5412,6 @@ pub async fn get_gardening_product_chain(
                 }
             }
         }
-    }
 
     // Sort products by skill level requirement
     products.sort_by(|a, b| {

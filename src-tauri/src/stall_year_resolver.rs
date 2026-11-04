@@ -72,11 +72,10 @@ pub fn resolve_timestamps_oldest_first(timestamps: &[&str], base_year: i32) -> V
             out.push(None);
             continue;
         };
-        if let Some((pm, pd)) = prev {
-            if (month, day) < (pm, pd) {
+        if let Some((pm, pd)) = prev
+            && (month, day) < (pm, pd) {
                 year += 1;
             }
-        }
         prev = Some((month, day));
         out.push(format_iso(year, month, day, hour, minute));
     }

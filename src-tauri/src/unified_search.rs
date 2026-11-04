@@ -497,16 +497,14 @@ fn search_items(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Unifi
         // Level range
         // Level range (all ranges — positive and negated — must hold)
         let in_range = |lvl: u32, min: Option<u32>, max: Option<u32>| {
-            if let Some(m) = min {
-                if lvl < m {
+            if let Some(m) = min
+                && lvl < m {
                     return false;
                 }
-            }
-            if let Some(m) = max {
-                if lvl > m {
+            if let Some(m) = max
+                && lvl > m {
                     return false;
                 }
-            }
             true
         };
         if let Some((min, max)) = level_range {
@@ -545,26 +543,22 @@ fn search_items(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Unifi
                 None => continue,
             }
         }
-        if let Some(ns) = neg_slot {
-            if let Some(es) = &item.equip_slot {
-                if es.to_lowercase().contains(ns) {
+        if let Some(ns) = neg_slot
+            && let Some(es) = &item.equip_slot
+                && es.to_lowercase().contains(ns) {
                     continue;
                 }
-            }
-        }
 
         // Name filter (restricts to name-only matching)
         // Name filter (positive restricts to name-only; negated excludes names)
-        if let Some(nf) = name_filter {
-            if !item.name.to_lowercase().contains(nf) {
+        if let Some(nf) = name_filter
+            && !item.name.to_lowercase().contains(nf) {
                 continue;
             }
-        }
-        if let Some(nn) = neg_name {
-            if item.name.to_lowercase().contains(nn) {
+        if let Some(nn) = neg_name
+            && item.name.to_lowercase().contains(nn) {
                 continue;
             }
-        }
 
         // Text matching
         let searchable = combine_fields(&[
@@ -650,13 +644,11 @@ fn search_recipes(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Uni
                 None => continue,
             }
         }
-        if let Some(ns) = neg_skill {
-            if let Some(s) = &recipe.skill {
-                if s.to_lowercase().contains(ns) {
+        if let Some(ns) = neg_skill
+            && let Some(s) = &recipe.skill
+                && s.to_lowercase().contains(ns) {
                     continue;
                 }
-            }
-        }
 
         // Level filter on skill_level_req (recipes have no other level).
         // Missing requirement fails a positive range (can't prove a match);
@@ -665,41 +657,36 @@ fn search_recipes(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Uni
             match recipe.skill_level_req {
                 Some(req) => {
                     let lvl = req as u32;
-                    if let Some(m) = min {
-                        if lvl < m {
+                    if let Some(m) = min
+                        && lvl < m {
                             continue;
                         }
-                    }
-                    if let Some(m) = max {
-                        if lvl > m {
+                    if let Some(m) = max
+                        && lvl > m {
                             continue;
                         }
-                    }
                 }
                 None => continue,
             }
         }
-        if !neg_levels.is_empty() {
-            if let Some(req) = recipe.skill_level_req {
+        if !neg_levels.is_empty()
+            && let Some(req) = recipe.skill_level_req {
                 let lvl = req as u32;
                 let inside = neg_levels.iter().any(|(min, max)| {
-                    if let Some(m) = min {
-                        if lvl < *m {
+                    if let Some(m) = min
+                        && lvl < *m {
                             return false;
                         }
-                    }
-                    if let Some(m) = max {
-                        if lvl > *m {
+                    if let Some(m) = max
+                        && lvl > *m {
                             return false;
                         }
-                    }
                     true
                 });
                 if inside {
                     continue;
                 }
             }
-        }
 
         let ingredient_names: Vec<String> = recipe
             .ingredients
@@ -813,24 +800,22 @@ fn search_npcs(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Unifie
         }
 
         // Skill filter (NPCs that train a skill; positive + negated)
-        if let Some(sf) = skill_filter {
-            if !npc
+        if let Some(sf) = skill_filter
+            && !npc
                 .trains_skills
                 .iter()
                 .any(|s| s.to_lowercase().contains(sf))
             {
                 continue;
             }
-        }
-        if let Some(ns) = neg_skill {
-            if npc
+        if let Some(ns) = neg_skill
+            && npc
                 .trains_skills
                 .iter()
                 .any(|s| s.to_lowercase().contains(ns))
             {
                 continue;
             }
-        }
 
         let searchable = combine_fields(&[
             &npc.name,
@@ -918,16 +903,14 @@ fn search_quests(data: &GameData, query: &ParsedQuery, limit: usize) -> Vec<Unif
             .unwrap_or("");
 
         // Area filter (positive + negated) on the displayed location
-        if let Some(af) = area_filter {
-            if !location.to_lowercase().contains(af) {
+        if let Some(af) = area_filter
+            && !location.to_lowercase().contains(af) {
                 continue;
             }
-        }
-        if let Some(na) = neg_area {
-            if location.to_lowercase().contains(na) {
+        if let Some(na) = neg_area
+            && location.to_lowercase().contains(na) {
                 continue;
             }
-        }
 
         let searchable = combine_fields(&[name, description, location, favor_npc]);
 
@@ -1048,13 +1031,11 @@ fn search_abilities(
                 None => continue,
             }
         }
-        if let Some(ns) = neg_skill {
-            if let Some(s) = &family.skill {
-                if s.to_lowercase().contains(ns) {
+        if let Some(ns) = neg_skill
+            && let Some(s) = &family.skill
+                && s.to_lowercase().contains(ns) {
                     continue;
                 }
-            }
-        }
 
         // Build searchable text from family + tier abilities
         let mut search_parts = vec![family.base_name.clone()];

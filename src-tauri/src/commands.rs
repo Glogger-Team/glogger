@@ -74,11 +74,10 @@ pub async fn parse_log(path: String, app: AppHandle) -> Result<String, String> {
     let app_worker = app.clone();
     tokio::task::spawn_blocking(move || {
         let finish = |status: ParseLogStatus| {
-            if let Some(jobs) = app_worker.try_state::<ParseLogJobs>() {
-                if let Ok(mut guard) = jobs.0.lock() {
+            if let Some(jobs) = app_worker.try_state::<ParseLogJobs>()
+                && let Ok(mut guard) = jobs.0.lock() {
                     guard.insert(job_id_worker.clone(), status);
                 }
-            }
         };
         let mut player_parser = PlayerEventParser::new();
         let mut game_state = GameStateManager::new(game_data.clone());

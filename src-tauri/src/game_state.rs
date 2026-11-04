@@ -1815,12 +1815,10 @@ mod tests {
             let mut stmt = conn
                 .prepare("SELECT npc_key FROM game_state_gift_log ORDER BY npc_key")
                 .unwrap();
-            let keys = stmt
-                .query_map([], |row| row.get(0))
+            stmt.query_map([], |row| row.get(0))
                 .unwrap()
                 .collect::<Result<Vec<_>, _>>()
-                .unwrap();
-            keys
+                .unwrap()
         };
         assert_eq!(
             gift_keys(&pool),

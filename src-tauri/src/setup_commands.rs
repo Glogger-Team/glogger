@@ -72,11 +72,10 @@ fn is_placeholder_report(character: &str, race: Option<&str>) -> bool {
     if name.is_empty() || name == "???" {
         return true;
     }
-    if let Some(r) = race {
-        if r.trim().eq_ignore_ascii_case("error") {
+    if let Some(r) = race
+        && r.trim().eq_ignore_ascii_case("error") {
             return true;
         }
-    }
     false
 }
 
@@ -146,11 +145,10 @@ pub fn scan_reports_for_characters(path: String) -> Result<Vec<DiscoveredCharact
         entry.0 += 1;
 
         // Track the latest timestamp
-        if let Some(ts) = &header.timestamp {
-            if entry.1.as_ref().is_none_or(|existing| ts > existing) {
+        if let Some(ts) = &header.timestamp
+            && entry.1.as_ref().is_none_or(|existing| ts > existing) {
                 entry.1 = Some(ts.clone());
             }
-        }
     }
 
     let mut result: Vec<DiscoveredCharacter> = char_map
@@ -905,20 +903,18 @@ pub fn import_latest_report_for_character(
         }
 
         // Filter by server when specified
-        if let Some(ref wanted_server) = server_name {
-            if &header.server_name != wanted_server {
+        if let Some(ref wanted_server) = server_name
+            && &header.server_name != wanted_server {
                 continue;
             }
-        }
 
-        if let Some(ts) = &header.timestamp {
-            if best_file
+        if let Some(ts) = &header.timestamp
+            && best_file
                 .as_ref()
                 .is_none_or(|(existing_ts, _)| ts > existing_ts)
             {
                 best_file = Some((ts.clone(), file_path));
             }
-        }
     }
 
     let Some((_, file_path)) = best_file else {
@@ -1105,20 +1101,18 @@ pub fn import_latest_inventory_for_character(
         }
 
         // Filter by server when specified
-        if let Some(ref wanted_server) = server_name {
-            if &header.server_name != wanted_server {
+        if let Some(ref wanted_server) = server_name
+            && &header.server_name != wanted_server {
                 continue;
             }
-        }
 
-        if let Some(ts) = &header.timestamp {
-            if best_file
+        if let Some(ts) = &header.timestamp
+            && best_file
                 .as_ref()
                 .is_none_or(|(existing_ts, _)| ts > existing_ts)
             {
                 best_file = Some((ts.clone(), file_path));
             }
-        }
     }
 
     let Some((_, file_path)) = best_file else {

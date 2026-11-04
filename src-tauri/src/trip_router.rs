@@ -142,13 +142,12 @@ fn best_travel_method(
         .copied()
         .flatten()
     {
-        if let Some(bind_zone) = graph.resolve_overworld(bind) {
-            if bind_zone == to_resolved && best.cost() > 1 {
+        if let Some(bind_zone) = graph.resolve_overworld(bind)
+            && bind_zone == to_resolved && best.cost() > 1 {
                 best = TravelMethod::BindRecall {
                     bind_name: bind.clone(),
                 };
             }
-        }
     }
 
     // Check mushroom circles.
@@ -157,13 +156,12 @@ fn best_travel_method(
         .copied()
         .flatten()
     {
-        if let Some(circle_zone) = graph.resolve_overworld(circle) {
-            if circle_zone == to_resolved && best.cost() > 1 {
+        if let Some(circle_zone) = graph.resolve_overworld(circle)
+            && circle_zone == to_resolved && best.cost() > 1 {
                 best = TravelMethod::MushroomRecall {
                     circle_name: circle.clone(),
                 };
             }
-        }
     }
 
     // Check TP machine — if the player has a bind at Gazluk Caves, any zone

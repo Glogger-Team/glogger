@@ -96,9 +96,9 @@ fn period_label(key: &str, granularity: Granularity, show_year: bool) -> String 
             // as next year's W01. The year in the key is the ISO week-year,
             // which differs from the calendar year at both boundaries.
             let parts: Vec<&str> = key.split("-W").collect();
-            if parts.len() == 2 {
-                if let (Ok(year), Ok(week)) = (parts[0].parse::<i32>(), parts[1].parse::<u32>()) {
-                    if let Some(monday) = NaiveDate::from_isoywd_opt(year, week, Weekday::Mon) {
+            if parts.len() == 2
+                && let (Ok(year), Ok(week)) = (parts[0].parse::<i32>(), parts[1].parse::<u32>())
+                    && let Some(monday) = NaiveDate::from_isoywd_opt(year, week, Weekday::Mon) {
                         let sunday = monday + chrono::Duration::days(6);
                         return if show_year {
                             format!(
@@ -111,20 +111,16 @@ fn period_label(key: &str, granularity: Granularity, show_year: bool) -> String 
                             format!("{} – {}", monday.format("%b %-d"), sunday.format("%b %-d"))
                         };
                     }
-                }
-            }
             key.to_string()
         }
         Granularity::Monthly => {
             // key = "YYYY-MM" — year is always shown
             let parts: Vec<&str> = key.split('-').collect();
-            if parts.len() == 2 {
-                if let (Ok(year), Ok(month)) = (parts[0].parse::<i32>(), parts[1].parse::<u32>()) {
-                    if let Some(d) = NaiveDate::from_ymd_opt(year, month, 1) {
+            if parts.len() == 2
+                && let (Ok(year), Ok(month)) = (parts[0].parse::<i32>(), parts[1].parse::<u32>())
+                    && let Some(d) = NaiveDate::from_ymd_opt(year, month, 1) {
                         return d.format("%b %Y").to_string();
                     }
-                }
-            }
             key.to_string()
         }
     }
@@ -607,11 +603,10 @@ pub fn aggregate_inventory_with_baselines(
     // Events at-or-before an item's baseline are dropped: the baseline is
     // the ground truth for everything up to its timestamp.
     for ev in events {
-        if let Some(at) = baseline_at.get(&ev.item) {
-            if ev.event_at.as_str() <= at.as_str() {
+        if let Some(at) = baseline_at.get(&ev.item)
+            && ev.event_at.as_str() <= at.as_str() {
                 continue;
             }
-        }
         let state = by_item.entry(ev.item.clone()).or_default();
         if state.baseline_at.is_some() {
             state.post_baseline_count += 1;
@@ -1031,11 +1026,10 @@ pub fn aggregate_sales_timeseries(
     let mut by_item: BTreeMap<String, Acc> = BTreeMap::new();
 
     for (dt, e) in &parsed {
-        if let TimeseriesMode::Item(item) = &mode {
-            if &e.item != item {
+        if let TimeseriesMode::Item(item) = &mode
+            && &e.item != item {
                 continue;
             }
-        }
         let key = bucket_key(dt, bucket);
         let Some(&i) = index.get(&key) else {
             continue; // outside the window

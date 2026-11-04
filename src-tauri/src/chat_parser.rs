@@ -380,19 +380,16 @@ pub fn get_chat_log_files(chat_logs_dir: &Path) -> std::io::Result<Vec<ChatLogFi
         let entry = entry?;
         let path = entry.path();
 
-        if path.is_file() {
-            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                if file_name.starts_with("Chat-") && file_name.ends_with(".log") {
-                    if let Some(date) = parse_chat_log_filename(file_name) {
+        if path.is_file()
+            && let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+                && file_name.starts_with("Chat-") && file_name.ends_with(".log")
+                    && let Some(date) = parse_chat_log_filename(file_name) {
                         files.push(ChatLogFile {
                             file_path: path.clone(),
                             file_name: file_name.to_string(),
                             file_date: date,
                         });
                     }
-                }
-            }
-        }
     }
 
     // Sort by date, newest first

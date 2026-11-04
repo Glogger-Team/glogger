@@ -361,11 +361,10 @@ impl GameData {
     /// Resolve any string reference to an ItemInfo.
     /// Tries: numeric ID → display name → internal name → TSys prefix/suffix stripping.
     pub fn resolve_item(&self, reference: &str) -> Option<&items::ItemInfo> {
-        if let Ok(id) = reference.parse::<u32>() {
-            if let Some(item) = self.items.get(&id) {
+        if let Ok(id) = reference.parse::<u32>()
+            && let Some(item) = self.items.get(&id) {
                 return Some(item);
             }
-        }
         if let Some(item) = self.item_by_name(reference) {
             return Some(item);
         }
@@ -380,26 +379,22 @@ impl GameData {
     /// Try to resolve an item by stripping known TSys prefixes and suffixes.
     fn resolve_item_with_mod_stripping(&self, reference: &str) -> Option<&items::ItemInfo> {
         for info in self.tsys.client_info.values() {
-            if let Some(prefix) = &info.prefix {
-                if let Some(stripped) = reference.strip_prefix(prefix.as_str()) {
+            if let Some(prefix) = &info.prefix
+                && let Some(stripped) = reference.strip_prefix(prefix.as_str()) {
                     let stripped = stripped.trim_start();
-                    if !stripped.is_empty() {
-                        if let Some(item) = self.item_by_name(stripped) {
+                    if !stripped.is_empty()
+                        && let Some(item) = self.item_by_name(stripped) {
                             return Some(item);
                         }
-                    }
                 }
-            }
-            if let Some(suffix) = &info.suffix {
-                if let Some(stripped) = reference.strip_suffix(suffix.as_str()) {
+            if let Some(suffix) = &info.suffix
+                && let Some(stripped) = reference.strip_suffix(suffix.as_str()) {
                     let stripped = stripped.trim_end();
-                    if !stripped.is_empty() {
-                        if let Some(item) = self.item_by_name(stripped) {
+                    if !stripped.is_empty()
+                        && let Some(item) = self.item_by_name(stripped) {
                             return Some(item);
                         }
-                    }
                 }
-            }
         }
         None
     }
@@ -434,11 +429,10 @@ impl GameData {
     /// Resolve any string reference to a SkillInfo.
     /// Tries: numeric ID → display name → internal name.
     pub fn resolve_skill(&self, reference: &str) -> Option<&skills::SkillInfo> {
-        if let Ok(id) = reference.parse::<u32>() {
-            if let Some(skill) = self.skills.get(&id) {
+        if let Ok(id) = reference.parse::<u32>()
+            && let Some(skill) = self.skills.get(&id) {
                 return Some(skill);
             }
-        }
         if let Some(skill) = self.skill_by_name(reference) {
             return Some(skill);
         }
@@ -449,11 +443,10 @@ impl GameData {
     /// Resolve any string reference to a RecipeInfo.
     /// Tries: numeric ID → display name → internal name.
     pub fn resolve_recipe(&self, reference: &str) -> Option<&recipes::RecipeInfo> {
-        if let Ok(id) = reference.parse::<u32>() {
-            if let Some(recipe) = self.recipes.get(&id) {
+        if let Ok(id) = reference.parse::<u32>()
+            && let Some(recipe) = self.recipes.get(&id) {
                 return Some(recipe);
             }
-        }
         if let Some(recipe) = self.recipe_by_name(reference) {
             return Some(recipe);
         }
@@ -493,11 +486,10 @@ impl GameData {
     /// Resolve any string reference to an AbilityInfo.
     /// Tries: numeric ID → display name.
     pub fn resolve_ability(&self, reference: &str) -> Option<&abilities::AbilityInfo> {
-        if let Ok(id) = reference.parse::<u32>() {
-            if let Some(ability) = self.abilities.get(&id) {
+        if let Ok(id) = reference.parse::<u32>()
+            && let Some(ability) = self.abilities.get(&id) {
                 return Some(ability);
             }
-        }
         let id = self.ability_name_index.get(reference)?;
         self.abilities.get(id)
     }
@@ -1205,14 +1197,13 @@ fn build_all_indices(src: &GameDataSources<'_>) -> GameDataIndices {
     let mut vendor_items_by_npc: HashMap<String, Vec<u32>> = HashMap::new();
     for (&item_id, source_info) in &sources.items {
         for entry in &source_info.entries {
-            if entry.source_type == "Vendor" || entry.source_type == "Barter" {
-                if let Some(ref npc_key) = entry.npc {
+            if (entry.source_type == "Vendor" || entry.source_type == "Barter")
+                && let Some(ref npc_key) = entry.npc {
                     vendor_items_by_npc
                         .entry(npc_key.clone())
                         .or_default()
                         .push(item_id);
                 }
-            }
         }
     }
     // Sort each NPC's item list for consistent ordering
@@ -1265,11 +1256,10 @@ fn build_all_indices(src: &GameDataSources<'_>) -> GameDataIndices {
     // Build families for abilities that have upgrades
     for (base_internal_name, mut tier_ids) in family_tiers {
         // Add the base ability itself
-        if let Some(&base_id) = ability_internal_name_map.get(base_internal_name.as_str()) {
-            if !tier_ids.contains(&base_id) {
+        if let Some(&base_id) = ability_internal_name_map.get(base_internal_name.as_str())
+            && !tier_ids.contains(&base_id) {
                 tier_ids.push(base_id);
             }
-        }
 
         // Sort tiers by level ascending
         tier_ids.sort_by(|a, b| {
@@ -1438,11 +1428,10 @@ fn extract_icon_ids(effect_descs: &[String]) -> std::collections::HashSet<u32> {
         let mut remaining = desc.as_str();
         while let Some(start) = remaining.find("<icon=") {
             let after = &remaining[start + 6..];
-            if let Some(end) = after.find('>') {
-                if let Ok(id) = after[..end].parse::<u32>() {
+            if let Some(end) = after.find('>')
+                && let Ok(id) = after[..end].parse::<u32>() {
                     icons.insert(id);
                 }
-            }
             remaining = &remaining[start + 6..];
         }
     }
@@ -1660,11 +1649,10 @@ fn build_tsys_ability_index(
             // Store all tier IDs for matched families (not just the representative)
             let mut all_ability_ids: Vec<u32> = Vec::new();
             for &rep_id in &matched_family_ids {
-                if let Some(family_key) = ability_to_family.get(&rep_id) {
-                    if let Some(family) = ability_families.get(family_key) {
+                if let Some(family_key) = ability_to_family.get(&rep_id)
+                    && let Some(family) = ability_families.get(family_key) {
                         all_ability_ids.extend(&family.tier_ids);
                     }
-                }
             }
             all_ability_ids.sort();
             all_ability_ids.dedup();

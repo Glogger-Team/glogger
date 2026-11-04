@@ -321,12 +321,11 @@ fn seed_experimental_data(app_data_dir: &std::path::Path, current_version: &Opti
     }
 
     // Remove old experimental data so we start clean
-    if db_path.exists() {
-        if let Err(e) = fs::remove_file(&db_path) {
+    if db_path.exists()
+        && let Err(e) = fs::remove_file(&db_path) {
             startup_log!("Experimental seed: failed to remove old db: {}", e);
             return;
         }
-    }
     // Also drop the SQLite journal sidecars. A stale `-wal` beside a freshly
     // copied main file can make the next open recover a journal that does not
     // belong to the file. They may legitimately not exist.
@@ -387,7 +386,10 @@ fn apply_webkit_dmabuf_workaround() {
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some() {
         return;
     }
-    std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    // SAFETY: single-threaded startup before any thread reads this var.
+    unsafe {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -665,21 +667,20 @@ pub fn run() {
                         );
 
                         // Persist CDN data to database only if version changed
-                        if let Some(pool) = app_handle.try_state::<db::DbPool>() {
-                            if let Ok(mut conn) = pool.get_write() {
+                        if let Some(pool) = app_handle.try_state::<db::DbPool>()
+                            && let Ok(mut conn) = pool.get_write() {
                                 let db_version = db::queries::cdn_data::get_cdn_version(&*conn).ok().flatten();
                                 if db_version == Some(data.version) {
                                     startup_log!("CDN v{} already persisted to database, skipping", data.version);
                                 } else {
                                     cdn_commands::emit_startup_detail(&app_handle, 0, "Saving to database...");
-                                    if let Err(e) = db::cdn_persistence::persist_cdn_data(&mut conn, &data) {
+                                    match db::cdn_persistence::persist_cdn_data(&mut conn, &data) { Err(e) => {
                                         startup_log!("Failed to persist CDN data to database: {e}");
-                                    } else {
+                                    } _ => {
                                         startup_log!("CDN data persisted to database");
-                                    }
+                                    }}
                                 }
                             }
-                        }
 
                         // Notify the frontend that data is loaded
                         app_handle.emit("game-data-ready", data.version).ok();

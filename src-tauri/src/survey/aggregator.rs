@@ -560,11 +560,10 @@ impl SurveySessionAggregator {
                         kept.push(gain);
                         continue;
                     }
-                    if let Some(map_name) = gain.map_display_name.as_ref() {
-                        if !matched_map_names.iter().any(|name| name == map_name) {
+                    if let Some(map_name) = gain.map_display_name.as_ref()
+                        && !matched_map_names.iter().any(|name| name == map_name) {
                             matched_map_names.push(map_name.clone());
                         }
-                    }
                     let has_chat_twin = match gain.resolved_at.as_deref() {
                         Some(at) => persistence::unclaimed_chat_gain_exists(
                             conn,
@@ -702,11 +701,10 @@ impl SurveySessionAggregator {
         // A survey map entering inventory is a craft, never survey loot —
         // its chat line is identical to a loot line, and players commonly
         // craft the next map within seconds of using one.
-        if let Some(internal) = internal_name {
-            if self.lookup_survey_kind(internal).is_some() {
+        if let Some(internal) = internal_name
+            && self.lookup_survey_kind(internal).is_some() {
                 return None;
             }
-        }
         let chat_ts = parse_utc_datetime(timestamp)?;
 
         // Basic window: same-tick loot around a recent Basic consumption
@@ -756,9 +754,9 @@ impl SurveySessionAggregator {
 
         // Identity fallback: survey-yield items count while a session is
         // active, attributed to its most recent use.
-        if internal_name.is_some_and(|internal| self.is_survey_loot_item(internal)) {
-            if let Some(session_id) = self.fetch_active_session(conn, character, server) {
-                if let Ok(Some(use_id)) = persistence::latest_use_id_for_session(conn, session_id) {
+        if internal_name.is_some_and(|internal| self.is_survey_loot_item(internal))
+            && let Some(session_id) = self.fetch_active_session(conn, character, server)
+                && let Ok(Some(use_id)) = persistence::latest_use_id_for_session(conn, session_id) {
                     return self.record_chat_attribution(
                         conn,
                         ChatAttribution {
@@ -772,8 +770,6 @@ impl SurveySessionAggregator {
                         },
                     );
                 }
-            }
-        }
 
         None
     }
@@ -860,12 +856,11 @@ impl SurveySessionAggregator {
             item_name,
             CHAT_BASIC_WINDOW_SECS as u32,
         );
-        if !already_counted {
-            if let Err(e) = persistence::add_loot_qty(conn, use_id, quantity) {
+        if !already_counted
+            && let Err(e) = persistence::add_loot_qty(conn, use_id, quantity) {
                 eprintln!("[survey-aggregator] chat add_loot_qty failed: {e}");
                 return None;
             }
-        }
         update_session_loot_timestamps(conn, use_id, timestamp);
         if mark_completed {
             // Post-attribution cosmetic mark: log, never propagate.
@@ -917,13 +912,11 @@ impl SurveySessionAggregator {
         // triggering survey use lands in the fresh session rather than the one
         // being closed. Only in the auto-start regime; a manually-managed
         // session is the user's to end. See [`SESSION_MAX_DURATION_SECS`].
-        if self.auto_start_enabled {
-            if let Some(ref iso) = event_iso {
-                if let Some(ev) = self.maybe_roll_over_session(conn, character, server, iso) {
+        if self.auto_start_enabled
+            && let Some(ref iso) = event_iso
+                && let Some(ev) = self.maybe_roll_over_session(conn, character, server, iso) {
                     emitted.push(ev);
                 }
-            }
-        }
         // Speed-bonus pointer lifetime: the "(speed bonus!)" ScreenText
         // arrives in the same tick as the gains. Any other event means the
         // marker isn't coming, so drop the pointer now (per the documented
@@ -958,8 +951,8 @@ impl SurveySessionAggregator {
                         ..
                     }
                 );
-                if is_craft {
-                    if let Some(kind) = self.lookup_survey_kind(item_name) {
+                if is_craft
+                    && let Some(kind) = self.lookup_survey_kind(item_name) {
                         self.handle_survey_crafted(
                             conn,
                             CraftedUse {
@@ -972,7 +965,6 @@ impl SurveySessionAggregator {
                             &mut emitted,
                         );
                     }
-                }
             }
 
             // Survey map consumed → record use, push pending attribution.
@@ -1463,8 +1455,8 @@ impl SurveySessionAggregator {
         // (Re-)adoption for this swing, in order of confidence:
         // 1. A node already bound to a survey use — a multihit node resumed
         //    after the player mined something else in between.
-        if let Some(entity) = node_entity {
-            if let Some(use_id) = self
+        if let Some(entity) = node_entity
+            && let Some(use_id) = self
                 .known_survey_nodes
                 .iter()
                 .find(|(known, _)| *known == entity)
@@ -1478,7 +1470,6 @@ impl SurveySessionAggregator {
                 });
                 return;
             }
-        }
 
         // 2. A Motherlode/Multihit map consumed within the grace window
         //    whose loot hasn't already been claimed by an earlier
@@ -1509,9 +1500,9 @@ impl SurveySessionAggregator {
         //    ("MiningNodeFromSurvey9", "GeologyNodeFromSurveyBlue", …) but
         //    the map use fell outside the grace window (long walk). Bind to
         //    the most recent Motherlode/Multihit use.
-        if let Some((_, Some(name))) = &node {
-            if name.contains("FromSurvey") {
-                if let Ok(Some((use_id, _))) = persistence::latest_recent_nonbasic_use(
+        if let Some((_, Some(name))) = &node
+            && name.contains("FromSurvey")
+                && let Ok(Some((use_id, _))) = persistence::latest_recent_nonbasic_use(
                     conn,
                     character,
                     server,
@@ -1520,8 +1511,6 @@ impl SurveySessionAggregator {
                 ) {
                     self.adopt_for_chat(use_id, node_entity, now_dt, window_secs);
                 }
-            }
-        }
     }
 
     /// Clip the current swing's loot window when the player starts
@@ -2161,15 +2150,14 @@ impl SurveySessionAggregator {
 /// use row is one cheap indexed read that only fires when loot is
 /// attributed (not on every event).
 fn update_session_loot_timestamps(conn: &Connection, use_id: i64, ts: &str) {
-    if let Ok(Some(su)) = persistence::get_use(conn, use_id) {
-        if let Some(sid) = su.session_id {
+    if let Ok(Some(su)) = persistence::get_use(conn, use_id)
+        && let Some(sid) = su.session_id {
             let _ = persistence::update_first_loot_at(conn, sid, ts);
             let _ = persistence::update_last_loot_at(conn, sid, ts);
             // Keep started_at tight for open sessions so the header
             // reflects actual activity, not the session-creation moment.
             let _ = persistence::tighten_started_at(conn, sid, ts);
         }
-    }
 }
 
 // ============================================================
