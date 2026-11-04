@@ -1149,6 +1149,11 @@ export const useGameStateStore = defineStore('gameState', () => {
         invoke<GameStateStorageItem[]>('get_game_state_storage', { characterName, serverName }),
         invoke<GameStateVendor[]>('get_game_state_vendor', { characterName, serverName }),
       ])
+      // A character switch during the await makes these results stale — a
+      // newer load owns the state now. Refuse to overwrite it and report
+      // failure so callers (e.g. post-rename refresh) warn instead of
+      // claiming fresh state under the new identity.
+      if (getCharacterName() !== characterName || getServerName() !== serverName) return false
       skills.value = sk
       attributes.value = attr
       activeSkills.value = active
