@@ -1091,12 +1091,14 @@ fn migration_v87_reclassify_hire_events(conn: &Connection) -> Result<()> {
 /// are owner-only by game mechanics — you can only hire your own stall —
 /// and the parser already derives the book-level owner hint from them
 /// (`shop_log_parser.rs`: `hired` sits in the owner-action hint set). But
-/// v87 only repaired `action`/`player`/`price_total`, and rows written
-/// before the owner was stamped carry `owner IS NULL`, which hides them
-/// from every owner-scoped query (`build_filter_where` requires a
-/// non-empty owner). Copy `player` into the missing `owner`; the
-/// `owner IS NULL` predicate makes re-runs a no-op, and the `player != ''`
-/// guard leaves degenerate rows untouched.
+/// v87 only repaired `action`/`player`/`price_total`, and legacy hire rows
+/// can carry a missing (`NULL`) or mismatched owner: pre-owner books fell
+/// back to the active character at import, which may not have been the
+/// shopkeeper. Such rows hide under the wrong label (or none) in every
+/// owner-scoped query (`build_filter_where` requires a non-empty owner).
+/// Copy `player` into the wrong `owner`; `IS NOT` treats NULL as
+/// mismatched, so re-runs converge and then touch zero rows. The
+/// `player != ''` guard leaves degenerate rows untouched.
 fn migration_v88_stamp_hire_owner(conn: &Connection) -> Result<()> {
     // Same minimal-fixture guard as v87 (roulette v77 synthetic DB has
     // no `stall_events`): skip instead of failing. Real DBs always carry
@@ -1115,7 +1117,7 @@ fn migration_v88_stamp_hire_owner(conn: &Connection) -> Result<()> {
         "UPDATE stall_events
             SET owner = player
          WHERE action = 'hired'
-           AND owner IS NULL
+           AND owner IS NOT player
            AND player != ''",
         [],
     )?;
@@ -4707,10 +4709,11 @@ mod tests {
     }
     #[test]
     fn migration_v88_stamps_hire_owner() {
-        // Pre-owner-era hire rows carry `owner IS NULL`, which hides them
-        // from every owner-scoped query. v88 stamps `owner = player`
-        // (you can only hire your own stall); non-hire NULL-owner rows
-        // and already-owned hires stay untouched; re-run is a no-op.
+        // Pre-owner-era hire rows carry `owner IS NULL`, and legacy imports
+        // could stamp the wrong active character — both hide the fee under
+        // the wrong label (or none) in owner-scoped queries. v88 stamps
+        // `owner = player` (you can only hire your own stall); non-hire
+        // NULL-owner rows stay untouched; re-run is a no-op.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         c.execute_batch(
@@ -4748,7 +4751,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(kept.as_deref(), Some("SomebodyElse"), "stamped hire row untouched");
+        assert_eq!(kept.as_deref(), Some("MrBonq"), "mismatched hire owner repaired to player");
         let bought: Option<String> = c
             .query_row(
                 "SELECT owner FROM stall_events WHERE action = 'bought'",
