@@ -1046,11 +1046,13 @@ fn migration_v86_drop_stall_price_observations(conn: &Connection) -> Result<()> 
 ///
 /// Hire lines (`<player> paid <N> Councils to hire a stall for <H> hours`)
 /// parsed as `unknown` before the `hired` action existed
-/// (`shop_log_parser.rs::HIRED_RE`). The `stall_events` UNIQUE key excludes
-/// `action` and inserts are `OR IGNORE`, so rescan never updates those rows
-/// — they stay invisible to the `hired` filter. Match `raw_message` against
-/// the hire shape and flip only `action`, preserving every other column.
-/// Idempotent: the `action = 'unknown'` predicate skips already-migrated rows.
+/// (`shop_log_parser.rs::HIRED_RE`): `player` stayed empty and `price_total`
+/// NULL. The `stall_events` UNIQUE key excludes `action` and inserts are
+/// `OR IGNORE`, so rescan never updates those rows — they stay invisible to
+/// the `hired` filter with a blank player and no fee. Match `raw_message`
+/// against the hire shape and backfill `action` + `player` + `price_total`,
+/// preserving every other column. Idempotent: the `action = 'unknown'`
+/// predicate skips already-migrated rows.
 fn migration_v87_reclassify_hire_events(conn: &Connection) -> Result<()> {
     // Minimal fixtures (e.g. the roulette v77 test) seed a late
     // `schema_migrations` version without the early tables — skip instead
@@ -1067,8 +1069,12 @@ fn migration_v87_reclassify_hire_events(conn: &Connection) -> Result<()> {
         return Ok(());
     }
     conn.execute(
-        "UPDATE stall_events SET action = 'hired'
-         WHERE action = 'unknown' AND raw_message LIKE '% to hire a stall for %'",
+        "UPDATE stall_events
+            SET action = 'hired',
+                player = substr(raw_message, 1, instr(raw_message, ' paid ') - 1),
+                price_total = CAST(substr(raw_message, instr(raw_message, ' paid ') + 6) AS INTEGER)
+         WHERE action = 'unknown'
+           AND raw_message LIKE '% paid % Councils to hire a stall for %'",
         [],
     )?;
     Ok(())
@@ -4604,9 +4610,10 @@ mod tests {
     }
     #[test]
     fn migration_v87_reclassifies_legacy_hire_rows() {
-        // Pre-hired-era rows landed as `unknown`; the UNIQUE key excludes
-        // `action`, so rescan never fixes them. v87 flips only `action`,
-        // preserving every other column; re-run is a no-op.
+        // Pre-hired-era rows landed as `unknown` with empty `player` and
+        // NULL `price_total`; the UNIQUE key excludes `action`, so rescan
+        // never fixes them. v87 backfills all three columns from
+        // `raw_message`; re-run is a no-op.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         c.execute_batch(
@@ -4616,22 +4623,25 @@ mod tests {
                  price_unit, price_total, raw_message, entry_index)
              VALUES
                 ('2026-01-01T00:00:00', NULL, 'ts', 'title',
-                 'unknown', 'Deradon', 'Deradon', NULL, 1,
-                 NULL, 5000, 'Deradon paid 5000 Councils to hire a stall for 24 hours', 0),
+                 'unknown', '', 'Deradon', NULL, 1,
+                 NULL, NULL, 'Deradon paid 5000 Councils to hire a stall for 24 hours', 0),
                 ('2026-01-02T00:00:00', NULL, 'ts', 'title',
                  'unknown', 'MrBonq', 'MrBonq', 'Nice Saddle', 1,
                  4000.0, 4000, 'MrBonq bought Nice Saddle at a cost of 4000 per 1 = 4000', 0);",
         )
         .unwrap();
         migration_v87_reclassify_hire_events(&c).unwrap();
-        let action: String = c
+        let (action, player, price): (String, String, Option<i64>) = c
             .query_row(
-                "SELECT action FROM stall_events WHERE player = 'Deradon'",
+                "SELECT action, player, price_total FROM stall_events
+                 WHERE raw_message LIKE 'Deradon paid %'",
                 [],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
         assert_eq!(action, "hired", "legacy hire row should flip to hired");
+        assert_eq!(player, "Deradon", "player backfilled from raw_message");
+        assert_eq!(price, Some(5000), "fee backfilled from raw_message");
         let (kept_action, kept_item, kept_price): (String, Option<String>, Option<i64>) = c
             .query_row(
                 "SELECT action, item, price_total FROM stall_events WHERE player = 'MrBonq'",
