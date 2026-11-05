@@ -195,7 +195,7 @@ def main(argv):
         else:
             range_ref = tag
             notes = CURATED_NOTES.get(tag) or changelog_notes("", tag)
-        if "No user-facing changes" in notes:
+        if "No visible changes" in notes:
             out += ["_Pre-convention history — all commits in range:_", ""]
             listed = run_git(
                 ["log", "--format=- %s (`%h`)", "--no-decorate", range_ref]

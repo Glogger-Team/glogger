@@ -148,7 +148,11 @@ def main():
     # Release-time triage pass: draft every in-range line, edit in $EDITOR,
     # approved lines land in release-notes/<tag>.md for the generator.
     prev_proc = subprocess.run(
-        [sys.executable, str(script_dir / "last-published-tag.py")],
+        [
+            sys.executable,
+            str(script_dir / "last-published-tag.py"),
+            "Glogger-Team/glogger",
+        ],
         cwd=root,
         capture_output=True,
         text=True,
@@ -157,6 +161,16 @@ def main():
     prev_tag = prev_proc.stdout.strip().splitlines()
     prev_tag = prev_tag[0] if prev_tag else ""
     range_ref = f"{prev_tag}..HEAD" if prev_tag else "HEAD"
+
+    def render_grouped(pairs, header):
+        order = [("feat", "### New"), ("fix", "### Fixed"), ("impv", "### Improved")]
+        out = [header.rstrip("\n"), ""]
+        for key, title in order:
+            lines = [text for section, text in pairs if section == key]
+            if lines:
+                out += [title] + [f"- {t}" for t in lines] + [""]
+        return "\n".join(out) + "\n"
+
     rows = triage_draft_rows(range_ref, script_dir)
     if args.dry_run:
         for r in rows:
@@ -177,7 +191,12 @@ def main():
             triage_path = f.name
         editor = os.environ.get("EDITOR", "notepad" if os.name == "nt" else "vi")
         try:
-            subprocess.run([editor, triage_path], check=False)
+            edited = subprocess.run([editor, triage_path], check=False)
+            if edited.returncode != 0:
+                print(
+                    f"Error: editor exited {edited.returncode} - notes not saved, tag not created."
+                )
+                return 1
             with open(triage_path, encoding="utf-8", errors="replace") as fh:
                 approved = [
                     ln.strip()
@@ -189,14 +208,16 @@ def main():
         notes_dir = root / "release-notes"
         notes_dir.mkdir(exist_ok=True)
         notes_file = notes_dir / f"{tag}.md"
+        by_draft = {}
+        for r in rows:
+            by_draft.setdefault(r["draft"], r["section"])
+        pairs = [(by_draft.get(ln, "impv"), ln) for ln in approved]
         body = (
-            "\n".join(f"- {ln}" for ln in approved) + "\n"
+            render_grouped(pairs, f"## What's Changed since {prev_tag}")
             if approved
             else "### Improved\n- No visible changes — stability and maintenance update.\n"
         )
-        notes_file.write_text(
-            f"## What's Changed since {prev_tag}\n\n" + body, encoding="utf-8"
-        )
+        notes_file.write_text(body, encoding="utf-8")
         print(f"Wrote {notes_file} ({len(approved)} lines)")
         git(["add", str(notes_file.relative_to(root))], root)
         noted = subprocess.run(
@@ -214,12 +235,11 @@ def main():
         notes_dir = root / "release-notes"
         notes_dir.mkdir(exist_ok=True)
         notes_file = notes_dir / f"{tag}.md"
-        notes_file.write_text(
-            f"## What's Changed since {prev_tag}\n\n"
-            + "\n".join(f"- {r['draft']}" for r in rows)
-            + "\n",
-            encoding="utf-8",
+        body = render_grouped(
+            [(r["section"], r["draft"]) for r in rows],
+            f"## What's Changed since {prev_tag}",
         )
+        notes_file.write_text(body, encoding="utf-8")
         git(["add", str(notes_file.relative_to(root))], root)
         noted = subprocess.run(
             ["git", "commit", "-m", f"release: notes for {tag}", "--no-verify"],
