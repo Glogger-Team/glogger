@@ -306,6 +306,7 @@ def visible_entries(subject, body_lines, entries):
         if section in NOTES_TYPES and text and (vetted or not is_internal_subject(text))
     ]
 
+
 def is_internal_subject(subject):
     """True when a notes-section subject names tooling, not the app.
 
