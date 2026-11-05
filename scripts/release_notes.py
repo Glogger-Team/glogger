@@ -615,6 +615,30 @@ def run_tests():
     if detail != "":
         print(f"FAIL prose empty: got {detail!r}")
         failures += 1
+    # Release-Note trailer cases (Finding 5).
+    if release_note_trailer(["Release-Note: Players see X."]) != "Players see X.":
+        print("FAIL trailer basic")
+        failures += 1
+    if release_note_trailer(["release-note: NONE"]) != "":
+        print("FAIL trailer none")
+        failures += 1
+    if release_note_trailer(["nothing here"]) is not None:
+        print("FAIL trailer absent")
+        failures += 1
+    entries = entries_for_record("feat: add thing", ["Release-Note: Players see X."])
+    if entries != [("feat", "Players see X.")]:
+        print(f"FAIL trailer wins: got {entries}")
+        failures += 1
+    entries = entries_for_record("fix: thing (#1)", ["Release-Note: none"])
+    if entries != []:
+        print(f"FAIL trailer none-skips: got {entries}")
+        failures += 1
+    entries = entries_for_record(
+        "docs: update readme", ["Release-Note: Players see X."]
+    )
+    if entries != []:
+        print(f"FAIL trailer on docs ignored: got {entries}")
+        failures += 1
     return failures
 
 

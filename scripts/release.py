@@ -1,13 +1,17 @@
-"""Cut a release: create and push an annotated v<semver> tag.
+"""Cut a release: triage notes, commit them, push an annotated v<semver> tag.
 
-CI does the rest (in-workspace version sync, notes since last published
-release, signed builds, GitHub Release, updater channel, Flatpak).
+CI does the rest (in-workspace version sync, signed builds, GitHub Release,
+updater channel, Flatpak).
 
 Usage:
-    python scripts/release.py [--yes|-y] [vX.Y.Z]
+    python scripts/release.py [--yes|-y] [--dry-run] [vX.Y.Z]
 
 With no version argument, suggests the next tag from commit history via
 next-version.py and asks for confirmation unless --yes is given.
+--dry-run renders the triage draft and tags nothing. The triage pass opens
+$EDITOR with one draft line per in-range feat/fix/impv commit (trailer
+verbatim when present, else a humanized guess); --yes skips the editor and
+approves drafts as-is.
 """
 
 import argparse
@@ -91,6 +95,30 @@ def main():
 
     script_dir = Path(__file__).resolve().parent
 
+    branch = git(["rev-parse", "--abbrev-ref", "HEAD"], root)
+    if branch.stdout.strip() != "main":
+        print(
+            f"Error: must be on the 'main' branch (currently '{branch.stdout.strip()}')"
+        )
+        return 1
+    if git(["status", "--porcelain"], root).stdout.strip():
+        print("Error: working tree not clean")
+        print(git(["status", "--short"], root).stdout, end="")
+        return 1
+    git(["fetch", "origin"], root)
+    if (
+        git(["rev-parse", "HEAD"], root).stdout.strip()
+        != git(["rev-parse", "origin/main"], root).stdout.strip()
+    ):
+        print("Error: main is not up to date with origin/main - pull/rebase first")
+        return 1
+    local_exists = git(["rev-parse", tag], root).returncode == 0
+    remote_out = git(["ls-remote", "--tags", "origin", "refs/tags/" + tag], root)
+    remote_exists = bool(remote_out.stdout.strip())
+    if local_exists or remote_exists:
+        print(f"Error: tag {tag} already exists (locally or on origin)")
+        return 1
+
     # Gate hardening (vue lesson): warn when latest main CI run is red.
     gh = subprocess.run(
         [
@@ -130,6 +158,10 @@ def main():
     prev_tag = prev_tag[0] if prev_tag else ""
     range_ref = f"{prev_tag}..HEAD" if prev_tag else "HEAD"
     rows = triage_draft_rows(range_ref, script_dir)
+    if args.dry_run:
+        for r in rows:
+            print(f"[{r['section']}] {r['draft']}")
+        return 0
     if rows and not args.yes:
         import os
         import tempfile
@@ -144,60 +176,71 @@ def main():
                 f.write(f"{r['draft']}\n\n")
             triage_path = f.name
         editor = os.environ.get("EDITOR", "notepad" if os.name == "nt" else "vi")
-        subprocess.run([editor, triage_path], check=False)
-        with open(triage_path, encoding="utf-8") as fh:
-            approved = [
-                ln.strip() for ln in fh if ln.strip() and not ln.startswith("#")
-            ]
-        os.unlink(triage_path)
-        if args.dry_run:
-            print("\n".join(f"- {ln}" for ln in approved))
-            return 0
+        try:
+            subprocess.run([editor, triage_path], check=False)
+            with open(triage_path, encoding="utf-8", errors="replace") as fh:
+                approved = [
+                    ln.strip()
+                    for ln in fh
+                    if ln.strip() and not ln.strip().startswith("#")
+                ]
+        finally:
+            os.unlink(triage_path)
+        notes_dir = root / "release-notes"
+        notes_dir.mkdir(exist_ok=True)
+        notes_file = notes_dir / f"{tag}.md"
+        body = (
+            "\n".join(f"- {ln}" for ln in approved) + "\n"
+            if approved
+            else "### Improved\n- No visible changes — stability and maintenance update.\n"
+        )
+        notes_file.write_text(
+            f"## What's Changed since {prev_tag}\n\n" + body, encoding="utf-8"
+        )
+        print(f"Wrote {notes_file} ({len(approved)} lines)")
+        git(["add", str(notes_file.relative_to(root))], root)
+        noted = subprocess.run(
+            ["git", "commit", "-m", f"release: notes for {tag}", "--no-verify"],
+            cwd=root,
+            check=False,
+        )
+        if noted.returncode != 0:
+            print("Error: could not commit triage notes")
+            return 1
+    elif rows:
+        # --yes: non-interactive automation path. Approve drafts as-is so CI
+        # uses the triaged file instead of silently falling back.
+        print("Warning: --yes skips the triage editor; approving drafts as-is")
         notes_dir = root / "release-notes"
         notes_dir.mkdir(exist_ok=True)
         notes_file = notes_dir / f"{tag}.md"
         notes_file.write_text(
             f"## What's Changed since {prev_tag}\n\n"
-            + "\n".join(f"- {ln}" for ln in approved)
-            + "\n"
-            if approved
-            else "No visible changes.\n",
+            + "\n".join(f"- {r['draft']}" for r in rows)
+            + "\n",
             encoding="utf-8",
         )
-        print(f"Wrote {notes_file} ({len(approved)} lines)")
-    elif args.dry_run:
-        for r in rows:
-            print(f"[{r['section']}] {r['draft']}")
-        return 0
-
-    branch = git(["rev-parse", "--abbrev-ref", "HEAD"], root)
-    if branch.stdout.strip() != "main":
-        print(
-            f"Error: must be on the 'main' branch (currently '{branch.stdout.strip()}')"
+        git(["add", str(notes_file.relative_to(root))], root)
+        noted = subprocess.run(
+            ["git", "commit", "-m", f"release: notes for {tag}", "--no-verify"],
+            cwd=root,
+            check=False,
         )
-        return 1
-    if git(["status", "--porcelain"], root).stdout.strip():
-        print("Error: working tree not clean")
-        print(git(["status", "--short"], root).stdout, end="")
-        return 1
-    git(["fetch", "origin"], root)
-    if (
-        git(["rev-parse", "HEAD"], root).stdout.strip()
-        != git(["rev-parse", "origin/main"], root).stdout.strip()
-    ):
-        print("Error: main is not up to date with origin/main - pull/rebase first")
-        return 1
-    local_exists = git(["rev-parse", tag], root).returncode == 0
-    remote_out = git(["ls-remote", "--tags", "origin", "refs/tags/" + tag], root)
-    remote_exists = bool(remote_out.stdout.strip())
-    if local_exists or remote_exists:
-        print(f"Error: tag {tag} already exists (locally or on origin)")
-        return 1
+        if noted.returncode != 0:
+            print("Error: could not commit triage notes")
+            return 1
 
     tagged = subprocess.run(
         ["git", "tag", "-a", tag, "-m", "glogger " + tag], cwd=root, check=False
     )
     if tagged.returncode != 0:
+        return 1
+    branch_push = subprocess.run(
+        ["git", "push", "origin", "main"], cwd=root, check=False
+    )
+    if branch_push.returncode != 0:
+        print("Error: failed to push main (notes commit) - tag not created.")
+        print("Then retry with: git push origin main")
         return 1
     pushed = subprocess.run(["git", "push", "origin", tag], cwd=root, check=False)
     if pushed.returncode != 0:

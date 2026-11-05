@@ -133,12 +133,13 @@ def entry_lines(cleaned, detail):
 
 
 def draft_items(range_ref):
-    """Release-time triage rows: one per in-range commit with a notes section.
+    """Release-time triage rows: one per notes entry in range.
 
-    Each row: (short_hash, section, draft_line, has_trailer, subject).
-    draft_line is the trailer verbatim when present, else the humanized
+    Each row is a dict with section/draft/has_trailer/subject keys.
+    draft is the trailer verbatim when present, else the humanized
     subject/bullet guess for the user to accept, rewrite, merge, or mark
-    none. Nothing is dropped here — triage happens in release.py.
+    none. Commits filtered by the internal-subject denylist or without
+    notes sections never reach triage — release.py drops lines there.
     """
     from release_notes import release_note_trailer
 
@@ -148,21 +149,24 @@ def draft_items(range_ref):
             continue
         if not entries:
             continue
-        section, text = entries[0]
-        if section not in ("feat", "impv", "fix"):
-            continue
-        if not text or is_internal_subject(text):
-            continue
-        trailer = release_note_trailer(body)
-        draft = trailer if trailer else humanize(text)
-        rows.append(
-            {
-                "section": section,
-                "draft": draft,
-                "has_trailer": trailer is not None and trailer != "",
-                "subject": subject,
-            }
-        )
+        for section, text in entries:
+            if section not in ("feat", "impv", "fix"):
+                continue
+            is_trailer = section == entries[0][0] and release_note_trailer(
+                body
+            ) not in (None, "")
+            if not text or (not is_trailer and is_internal_subject(text)):
+                continue
+            trailer = release_note_trailer(body)
+            draft = trailer if trailer else humanize(text)
+            rows.append(
+                {
+                    "section": section,
+                    "draft": draft,
+                    "has_trailer": trailer is not None and trailer != "",
+                    "subject": subject,
+                }
+            )
     return rows
 
 
@@ -175,10 +179,13 @@ def sections_for(range_ref):
         if is_internal_subject(subject):
             continue
         detail = prose_detail(body)
+        from release_notes import release_note_trailer as _trailer
+
+        vetted = _trailer(body) not in (None, "")
         for section, text in entries:
             if section not in ("feat", "impv", "fix"):
                 continue
-            if not text or is_internal_subject(text):
+            if not text or (not vetted and is_internal_subject(text)):
                 continue
             cleaned = humanize(text)
             key = (section, cleaned)
