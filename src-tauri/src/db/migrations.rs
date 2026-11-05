@@ -4507,7 +4507,7 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 86) plus the purge itself on the three aggregate source tables.
+        // 88) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
@@ -4559,8 +4559,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 87 (full chain
-        // through the v85/v86 drops + v87 hire reclassification). Repair: a
+        // Chain wiring: full run_migrations head must be 88 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
