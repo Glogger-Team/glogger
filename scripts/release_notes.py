@@ -286,6 +286,27 @@ def release_note_trailer(body_lines):
     return None
 
 
+def visible_entries(subject, body_lines, entries):
+    """Notes entries that survive the player filter: [(section, text)].
+
+    One predicate for every consumer (sections_for, draft_items): skip
+    when the subject names tooling, when the entry is not a notes
+    section, when the text is empty or (unvetted) names tooling. A
+    Release-Note: footer vets the text — author-approved wording stays
+    even when it mentions tooling. Single commit-level trailer lookup.
+    """
+    if is_internal_subject(subject):
+        return []
+    if not entries:
+        return []
+    vetted = release_note_trailer(body_lines) not in (None, "")
+    return [
+        (section, text)
+        for section, text in entries
+        if section in NOTES_TYPES and text and (vetted or not is_internal_subject(text))
+    ]
+
+
 def is_internal_subject(subject):
     """True when a notes-section subject names tooling, not the app.
 
@@ -638,6 +659,34 @@ def run_tests():
     )
     if entries != []:
         print(f"FAIL trailer on docs ignored: got {entries}")
+        failures += 1
+    # Exemption branches (visible_entries): vetted tooling words survive,
+    # unvetted tooling text is dropped, internal subject kills the record.
+    kept = visible_entries(
+        "feat: add thing",
+        ["Release-Note: Lint errors are now clearer."],
+        [("feat", "Lint errors are now clearer.")],
+    )
+    if kept != [("feat", "Lint errors are now clearer.")]:
+        print(f"FAIL vetted survives: got {kept}")
+        failures += 1
+    kept = visible_entries(
+        "feat: add thing",
+        ["* feat: bump the lint gate"],
+        [("feat", "bump the lint gate")],
+    )
+    if kept != []:
+        print(f"FAIL unvetted dropped: got {kept}")
+        failures += 1
+    kept = visible_entries(
+        "chore: bump lint gate", ["Release-Note: Players see X."], [("feat", "X")]
+    )
+    if kept != []:
+        print(f"FAIL internal subject kills: got {kept}")
+        failures += 1
+    kept = visible_entries("feat: add thing", [], [])
+    if kept != []:
+        print(f"FAIL empty entries: got {kept}")
         failures += 1
     return failures
 

@@ -230,17 +230,17 @@ def main():
             print("Error: could not commit triage notes")
             return 1
 
-    tagged = subprocess.run(
-        ["git", "tag", "-a", tag, "-m", "glogger " + tag], cwd=root, check=False
-    )
-    if tagged.returncode != 0:
-        return 1
     branch_push = subprocess.run(
         ["git", "push", "origin", "main"], cwd=root, check=False
     )
     if branch_push.returncode != 0:
         print("Error: failed to push main (notes commit) - tag not created.")
         print("Then retry with: git push origin main")
+        return 1
+    tagged = subprocess.run(
+        ["git", "tag", "-a", tag, "-m", "glogger " + tag], cwd=root, check=False
+    )
+    if tagged.returncode != 0:
         return 1
     pushed = subprocess.run(["git", "push", "origin", tag], cwd=root, check=False)
     if pushed.returncode != 0:
