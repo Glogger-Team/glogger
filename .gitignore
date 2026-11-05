@@ -43,3 +43,5 @@ CLAUDE.md
 .flatpak-builder/
 flatpak/generated-cargo-sources.json
 flatpak/generated-node-sources.json
+# Python bytecode from script self-tests (regenerated on every run)
+scripts/__pycache__/
