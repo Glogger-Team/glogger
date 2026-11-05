@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the full CHANGELOG.md from every v<semver> tag to HEAD.
-Ranges use scripts/generate-changelog.py grouping (feat:/impv:/fix:) with
-humanized entries (type prefix stripped, scope kept as `Scope: …`, no hash,
+Ranges use scripts/generate-changelog.py grouping (feat: → New, fix: →
+Fixed, impv: → Improved) with one line per entry (no type prefix, hash,
 PR ref, or commit count); ranges with no prefixed commits (pre-convention
 history) fall back to a raw commit-subject list so old history is still
 recorded.
@@ -21,8 +21,85 @@ _CHANGELOG_PATH = Path(__file__).resolve().parent / "generate-changelog.py"
 _spec = importlib.util.spec_from_file_location("generate_changelog", _CHANGELOG_PATH)
 generate_changelog = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(generate_changelog)
-
 TAG_NUM_RE = re.compile(r"^v(\d+(?:\.\d+)*)(.*)$")
+
+# Hand-polished player notes for the v1.5.0–v1.12.0 backfill (per-release
+# signoff). Takes precedence over generated output so regeneration keeps
+# the approved wording. Keys are exact tag names.
+CURATED_NOTES = {
+    "v1.5.0": """### New
+- More accurate deaths, treasure, and inventory counts.
+- Notices when others milk you are now tracked.
+- Vendor view grouped into categories with favorites.
+
+### Improved
+- Milking history matches across views.
+
+### Fixed
+- Live data resumes updating after pauses.
+- Switching characters clears old data reliably.""",
+    "v1.5.1": """### New
+- Skill level-ups from chat are now tracked.
+- VIP reports import automatically.
+
+### Fixed
+- Level-up XP counts correctly in combat rate.
+- Milking notices track again after chat fix.
+- Version check works more reliably.""",
+    "v1.5.2": """### New
+- Past incoming milkings now appear in ability history.
+- Skills shows Prodigy sessions and level progress.
+
+### Improved
+- Survey loot is counted once and correctly.
+- Log imports run faster and more reliably.
+- Screens refresh in the right order.
+
+### Fixed
+- Roulette, self-milking times, and scans are steadier.
+- Item stacks, search, and shortcuts work better.
+- Currency, arena, and hidden tabs update correctly.
+- Status respects time zone; inactive trackers stay hidden.
+- Survey rewards attach to the right items.""",
+    "v1.6.0": """### New
+- Cross-character work orders.
+- Survey Retry after load errors.
+
+### Improved
+- Clearer storage and exports.
+
+### Fixed
+- Surveys and work orders reload correctly.
+- Items reload when switching servers with All Characters.
+- Loading states no longer stick.""",
+    "v1.7.0": """### Improved
+- No visible changes — stability and maintenance update.""",
+    "v1.8.0": """### Improved
+- NPC list loads faster and stays current.
+- Removed the Inventory Live tab.
+
+### Fixed
+- Character picker stays open when adding.
+- Wealth no longer shows ??? entries.""",
+    "v1.9.0": """### Improved
+- Merged XP view is now called XP Rate.
+- Tidier XP, stall prices, and gift views.
+
+### Fixed
+- Weather matches the right area.
+- Status shows live weather; outdated badges removed.""",
+    "v1.9.1": """### Fixed
+- Recipes with no progress still show as known.""",
+    "v1.10.0": """### Improved
+- Inventory items load faster.
+- Portraits close with Esc and size better.""",
+    "v1.11.0": """### Improved
+- Stall stock stays accurate with less game data.""",
+    "v1.12.0": """### Improved
+- Clearer names across the app; unused views removed.
+- StallTracker recounts correctly after restocking.
+- Clear unsure items instead of sold-out list.""",
+}
 
 
 def run_git(args, cwd=None):
@@ -74,10 +151,9 @@ def main(argv):
 
     out = []
     out += ["# Changelog", ""]
-    out += ["Full release history for glogger, generated from git tags."]
     out += ["Per-release notes use the same grouping as scripts/generate-changelog.py"]
-    out += ["(feat: → Features, impv: → Improvements, fix: → Fixes) with humanized"]
-    out += ["entries (no type prefix, hash, PR ref, or commit count)."]
+    out += ["(feat: → New, fix: → Fixed, impv: → Improved) with one line per entry"]
+    out += ["(no type prefix, hash, PR ref, or commit count)."]
     out += [
         "Releases that predate the commit-prefix convention list all commit subjects."
     ]
@@ -115,10 +191,10 @@ def main(argv):
         if i > 0:
             since = tags[i - 1]
             range_ref = f"{since}..{tag}"
-            notes = changelog_notes(since, tag)
+            notes = CURATED_NOTES.get(tag) or changelog_notes(since, tag)
         else:
             range_ref = tag
-            notes = changelog_notes("", tag)
+            notes = CURATED_NOTES.get(tag) or changelog_notes("", tag)
         if "No user-facing changes" in notes:
             out += ["_Pre-convention history — all commits in range:_", ""]
             listed = run_git(

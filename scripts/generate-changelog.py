@@ -11,16 +11,15 @@ Usage:
   python scripts/generate-changelog.py v1.0.2 v1.0.3^  # a historical range (until ref)
 
 Commit prefixes are the source of truth for grouping:
-  feat: -> Features, impv: -> Improvements, fix: -> Fixes.
+  feat: -> New, fix: -> Fixed, impv: -> Improved.
 docs:/test:/build:/chore:/release: and merges are intentionally excluded —
 anything a user should read about belongs in a feat:/impv:/fix: commit.
 Subjects naming repo tooling (lint, hooks, gates, classifiers, review
-rounds, editions) are omitted as internal — see is_internal_subject in
-scripts/release_notes.py. Squash bodies contribute their first explanatory
-prose paragraph as an indented detail line under the entry title.
-Output is humanized for end users: the type prefix and `!` are stripped at
-render, the scope (if any) is kept as a `Scope: …` label, sentence-cased,
-with no hashes, PR refs, or commit counts.
+rounds, release automation) are omitted as internal — see is_internal_subject in
+scripts/release_notes.py. Output is one line per entry for players
+(UI labels like Inventory or StallTracker allowed, no code terms, no paths).
+Wording is polished by hand before tagging; breaking changes get a top
+Notice: block added by hand when player action is needed.
 """
 
 import re
@@ -128,9 +127,8 @@ def commit_records(range_ref):
 
 
 def entry_lines(cleaned, detail):
-    """One entry: `- Title` plus an optional indented detail sentence."""
-    if detail and detail != cleaned:
-        return [f"- {cleaned}", f"  {detail}"]
+    """One entry: `- Title` only (detail dropped for the 1-line template)."""
+    del detail
     return [f"- {cleaned}"]
 
 
@@ -169,13 +167,17 @@ def render(range_ref, header, initial):
         out += ["Initial release.", ""]
     features, improvements, fixes = sections_for(range_ref)
     if features:
-        out += ["### Features", *features, ""]
-    if improvements:
-        out += ["### Improvements", *improvements, ""]
+        out += ["### New", *features, ""]
     if fixes:
-        out += ["### Fixes", *fixes, ""]
+        out += ["### Fixed", *fixes, ""]
+    if improvements:
+        out += ["### Improved", *improvements, ""]
     if not features and not improvements and not fixes:
-        out += ["No user-facing changes in this release.", ""]
+        out += [
+            "### Improved",
+            "- No visible changes — stability and maintenance update.",
+            "",
+        ]
     return "\n".join(out) + "\n"
 
 
