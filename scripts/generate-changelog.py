@@ -14,6 +14,10 @@ Commit prefixes are the source of truth for grouping:
   feat: -> Features, impv: -> Improvements, fix: -> Fixes.
 docs:/test:/build:/chore:/release: and merges are intentionally excluded —
 anything a user should read about belongs in a feat:/impv:/fix: commit.
+Subjects naming repo tooling (lint, hooks, gates, classifiers, review
+rounds, editions) are omitted as internal — see is_internal_subject in
+scripts/release_notes.py. Squash bodies contribute their first explanatory
+prose paragraph as an indented detail line under the entry title.
 Output is humanized for end users: the type prefix and `!` are stripped at
 render, the scope (if any) is kept as a `Scope: …` label, sentence-cased,
 with no hashes, PR refs, or commit counts.
@@ -27,7 +31,7 @@ from pathlib import Path
 # Classification lives in scripts/release_notes.py (shared with
 # next-version.py). Imported, not duplicated.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from release_notes import entries_for_record
+from release_notes import entries_for_record, is_internal_subject, prose_detail
 
 SCOPED_RE = re.compile(r"^(feat|fix|impv)\(([^)]*)\)!?:\s*(.*)$")
 BARE_RE = re.compile(r"^(feat|fix|impv)!?:\s*(.*)$")
@@ -99,7 +103,7 @@ FAIL_MSG = (
 
 
 def commit_records(range_ref):
-    """Yield (subject, body_lines) newest-first, skipping blank subjects."""
+    """Yield (subject, body_lines, entries) newest-first, blanks skipped."""
     hashes = run_git(["log", "--no-merges", "--no-decorate", "--format=%H", range_ref])
     if hashes.returncode != 0:
         eprint(hashes.stderr.strip() or f"error: git log failed for range {range_ref}")
@@ -120,26 +124,42 @@ def commit_records(range_ref):
         except Exception:  # noqa: BLE001 — any classifier failure must refuse output
             eprint(FAIL_MSG)
             sys.exit(1)
-        yield entries
+        yield subject, lines[1:], entries
+
+
+def entry_lines(cleaned, detail):
+    """One entry: `- Title` plus an optional indented detail sentence."""
+    if detail and detail != cleaned:
+        return [f"- {cleaned}", f"  {detail}"]
+    return [f"- {cleaned}"]
 
 
 def sections_for(range_ref):
     features = []
     improvements = []
     fixes = []
-    for entries in commit_records(range_ref):
+    seen = set()
+    for subject, body, entries in commit_records(range_ref):
+        if is_internal_subject(subject):
+            continue
+        detail = prose_detail(body)
         for section, text in entries:
             if section not in ("feat", "impv", "fix"):
                 continue
-            if not text:
+            if not text or is_internal_subject(text):
                 continue
             cleaned = humanize(text)
+            key = (section, cleaned)
+            if key in seen:
+                continue
+            seen.add(key)
+            lines = entry_lines(cleaned, detail)
             if section == "feat":
-                features.append(f"- {cleaned}")
+                features.extend(lines)
             elif section == "impv":
-                improvements.append(f"- {cleaned}")
+                improvements.extend(lines)
             else:
-                fixes.append(f"- {cleaned}")
+                fixes.extend(lines)
     return features, improvements, fixes
 
 

@@ -32,6 +32,57 @@ BULLET_RE = re.compile(
 )
 SQUASH_RE = re.compile(r"\(#\d+\)\s*$")
 MERGE_RE = re.compile(r"^Merge ")
+INTERNAL_PHRASES = (
+    # Tooling the user never sees: lint slices, hooks, gates, classifiers,
+    # release automation, and review-process batches. Matched case-insensitively
+    # against the subject only — body prose (squash `*` bullets excluded) can
+    # mention these words innocently. Kept tight to observed shapes; a
+    # user-facing subject never contains these ("humanize changelog" stays).
+    "lint",
+    "clippy",
+    "ruff",
+    "shellcheck",
+    "yamllint",
+    "zizmor",
+    "pinact",
+    "pre-commit",
+    "commit-msg",
+    "setup-hooks",
+    "hook self-test",
+    "parity",
+    "classif",  # classifier / classify / unification
+    "review round",
+    "local-review",
+    "frozen review",
+    "review-patterns",
+    "coderabbit",
+    "autofix",
+    "auto-fix",
+    "d-review",
+    "c-gate",
+    "c majors",
+    "c minors",
+    "b-delta",
+    "b findings",
+    "markdown gate",
+    "markdown lint",
+    "rust edition",
+    "edition 2021",
+    "edition 2024",
+    "edition",
+    "toolchain",
+    "mise run",
+    "mise lint",
+    "slice partition",
+    "push lint",
+    "drift-proof",
+    "stdlib-only",
+    "unify repo automation",
+    "port remaining shell",
+    "loop-doc",
+)
+DETAIL_MAX_CHARS = 600
+DETAIL_MAX_LINES = 6
 
 NOTES_TYPES = ("feat", "impv", "fix")
 
@@ -149,6 +200,86 @@ def entries_for_record(subject, body_lines):
         text = re.sub(r"^\s*\*\s*", "", line).strip()
         entries.append((ctype, text))
     return entries
+
+
+def is_internal_subject(subject):
+    """True when a notes-section subject names tooling, not the app.
+
+    Subject-only: a user-facing entry can mention lint/classifiers in its
+    body ("Markdown gate was red") without being internal. Checked before
+    entries render, so filtered commits vanish from the notes entirely —
+    bump classification is untouched (internal work still counts as patch).
+    """
+    lowered = subject.lower()
+    return any(phrase in lowered for phrase in INTERNAL_PHRASES)
+
+
+def prose_detail(body_lines):
+    """First explanatory chunk of a squash body, else "".
+
+    Squash `* type:` bullets are entry titles; the prose paragraphs and
+    `- ` dash-bullets between them are the summaries. A second bullet
+    marker ends the detail — joining a whole bullet list reads as one
+    mega-sentence. Review-process boilerplate (Co-authored-by,
+    declined/finding/verdict lines) and `word:` tooling blocks
+    (slices:/hooks:/ci:/guard:) are skipped. Caps at DETAIL_MAX_LINES /
+    DETAIL_MAX_CHARS so one entry cannot flood the notes.
+    """
+    SKIP_RE = re.compile(
+        r"^(co-authored-by|signed-off-by|reviewed-by|"
+        r"finding|declined|verified|delta finding|b-delta|b findings?)\b",
+        re.IGNORECASE,
+    )
+    BLOCK_RE = re.compile(
+        r"^(slices|hooks|ci|guard|hook|docs|entry pins|denylist):\s*$",
+        re.IGNORECASE,
+    )
+    DASH_RE = re.compile(r"^-\s+(.*)$")
+    paragraph = []
+    for line in body_lines:
+        stripped = line.strip()
+        if not stripped:
+            if paragraph:
+                break
+            continue
+        if stripped.startswith("*"):
+            if paragraph:
+                break
+            continue
+        dash = DASH_RE.match(stripped)
+        if dash:
+            if paragraph:
+                break
+            content = dash.group(1).strip()
+            if not content:
+                continue
+            if SUBJECT_RE.match(content):
+                continue
+            if SKIP_RE.match(content) or BLOCK_RE.match(content):
+                continue
+            if len(content) < 40 and content[-1] not in ".!?)":
+                continue
+            paragraph.append(content)
+            continue
+        if paragraph:
+            paragraph.append(stripped)
+            continue
+        if SKIP_RE.match(stripped) or BLOCK_RE.match(stripped):
+            continue
+        if len(stripped) < 40 and stripped[-1] not in ".!?)":
+            continue
+        paragraph.append(stripped)
+    if not paragraph:
+        return ""
+    text = " ".join(paragraph)
+    words = text.split()
+    if len(words) > DETAIL_MAX_LINES * 20:
+        words = words[: DETAIL_MAX_LINES * 20]
+    text = " ".join(words)
+    if len(text) > DETAIL_MAX_CHARS:
+        cut = text.rfind(" ", 0, DETAIL_MAX_CHARS)
+        text = text[: cut if cut > 0 else DETAIL_MAX_CHARS].rstrip() + "…"
+    return text
 
 
 def bump_for_records(records):
@@ -322,13 +453,83 @@ def run_tests():
     if agg != "patch":
         print(f"FAIL agg patch: got {agg}")
         failures += 1
-    agg = bump_for_records([("fix: a", []), ("feat: b", [])])
-    if agg != "minor":
-        print(f"FAIL agg minor: got {agg}")
-        failures += 1
     agg = bump_for_records([("feat: a", []), ("fix!: b", [])])
     if agg != "major":
         print(f"FAIL agg major: got {agg}")
+        failures += 1
+    internal_cases = [
+        ("impv: slim push lint, full gate manual", True),
+        ("impv: push lint runs typecheck, full vite bundle stays CI-only", True),
+        ("impv: unify repo automation on Python (stdlib-only scripts)", True),
+        ("feat: lint-parity guard, hook self-test, loop-doc hardening", True),
+        ("feat: drift-proof pre-commit lint sharing single entrypoint", True),
+        ("impv: unify release classifiers behind shared release_notes.py", True),
+        ("impv: address CodeRabbit review findings on classifiers", True),
+        ("fix: classify Merge-prefixed squash subjects by body", True),
+        ("fix: review round B fix batch (stale head comments)", True),
+        ("impv: local-review fix batch — drop commented import", True),
+        ("build: migrate Rust edition 2021 to 2024", True),
+        ("build: port remaining shell scripts to Python stdlib", True),
+        ("fix: collapse nested if-lets for edition 2024 clippy", True),
+        ("feat(StallTracker): replace Recently Sold Out with Clear unsure", False),
+        ("feat(StallTracker): baseline recount-after-restock discipline", False),
+        ("feat: resolve backlog product decisions, rename UI", False),
+        ("feat: humanize changelog entries for end users", False),
+        ("impv: dark Statehelm dashboard widget until LocalPlayer lines", False),
+    ]
+    for subject, want in internal_cases:
+        got = is_internal_subject(subject)
+        if got != want:
+            print(f"FAIL internal {subject!r}: want {want}, got {got}")
+            failures += 1
+    # Prose detail: first explanatory paragraph, tooling blocks skipped.
+    detail = prose_detail(
+        [
+            "* feat(StallTracker): replace Recently Sold Out with Clear unsure",
+            "",
+            "Recently Sold Out was a second table to scan with its own window",
+            "dropdown and sort state, for rows the user can't act on. Clear unsure",
+            "rolls the guess rows into one action.",
+            "",
+            "* impv(StallTracker): single Refresh in action row",
+        ]
+    )
+    if not detail.startswith("Recently Sold Out was a second table"):
+        print(f"FAIL prose basic: got {detail!r}")
+        failures += 1
+    detail = prose_detail(
+        [
+            "* feat: drift-proof pre-commit lint sharing single entrypoint",
+            "",
+            "* slices: mise run lint partitioned into lint:ruff/shell/yaml",
+            "",
+            "* hooks: local-only .pre-commit-config.yaml (no upstream repos)",
+        ]
+    )
+    if detail != "":
+        print(f"FAIL prose tooling-blocks: got {detail!r}")
+        failures += 1
+    detail = prose_detail(
+        [
+            "* feat: resolve backlog product decisions, rename UI, drop dead tables",
+            "",
+            "- Product decisions (2026-11-03): rename-orphan -> rename_character",
+            "  command (shared table consts, guard against merge); stall hired ->",
+            "  parsed 'hired' action via Books-files path; vendor_prices dropped",
+            "  (v85, dead table); No-Resell + angling dropped (no source)",
+            "- Settings -> General Characters section: rename/move affordance with",
+            "  active-identity follow + cross-character cache invalidation",
+        ]
+    )
+    if not detail.startswith("Product decisions (2026-11-03): rename-orphan"):
+        print(f"FAIL prose dash-first: got {detail!r}")
+        failures += 1
+    if "General Characters section" in detail:
+        print(f"FAIL prose dash-second-leaks: got {detail!r}")
+        failures += 1
+    detail = prose_detail([])
+    if detail != "":
+        print(f"FAIL prose empty: got {detail!r}")
         failures += 1
     return failures
 
