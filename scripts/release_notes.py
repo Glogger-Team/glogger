@@ -32,6 +32,13 @@ BULLET_RE = re.compile(
 )
 SQUASH_RE = re.compile(r"\(#\d+\)\s*$")
 MERGE_RE = re.compile(r"^Merge ")
+# Optional per-commit player line (grpc/k8s lesson: authorship at merge,
+# triage at release). Footer in the squash body, e.g.:
+#   Release-Note: Skill level-ups from chat are now tracked.
+#   Release-Note: none
+# Matched case-insensitively; first match wins. "none" (any case, with or
+# without trailing period) marks a deliberate skip.
+TRAILER_RE = re.compile(r"^Release-Note:\s*(.+?)\s*$", re.IGNORECASE)
 INTERNAL_PHRASES = (
     # Tooling the user never sees: lint slices, hooks, gates, classifiers,
     # release automation, and review-process batches. Matched case-insensitively
@@ -231,15 +238,22 @@ def classify_record(subject, body_lines):
 def entries_for_record(subject, body_lines):
     """One entry per notes line: [(section, text)].
 
-    Normal commits yield zero or one entry (subject text). Unprefixed
-    squash records yield one entry per `* type:` bullet (bullet text,
-    `* ` stripped) — matching pre-unification classify_squash_body, which
+    A Release-Note: footer wins verbatim (section from the subject or
+    first notes bullet); "none" yields no entries. Otherwise normal
+    commits yield zero or one entry (subject text). Unprefixed squash
+    records yield one entry per `* type:` bullet (bullet text, `* `
+    stripped) — matching pre-unification classify_squash_body, which
     emitted every bullet, not one per section. Prefixed subjects (squash
     or not) yield the subject alone: the PR title is the entry.
     """
     _, sections = classify_record(subject, body_lines)
     if not sections:
         return []
+    trailer = release_note_trailer(body_lines)
+    if trailer is not None:
+        if trailer == "":
+            return []
+        return [(sections[0], trailer)]
     subj_bump, subj_section = classify_subject(subject)
     if subj_section != "none" or subj_bump == "major":
         return [(subj_section, subject)] if subj_section != "none" else []
@@ -254,6 +268,22 @@ def entries_for_record(subject, body_lines):
         text = re.sub(r"^\s*\*\s*", "", line).strip()
         entries.append((ctype, text))
     return entries
+
+
+def release_note_trailer(body_lines):
+    """Player line from a Release-Note: footer, or None.
+
+    Returns "" when the footer says none (deliberate skip), None when
+    absent (untriaged — the release-time pass drafts from the subject).
+    """
+    for line in body_lines:
+        m = TRAILER_RE.match(line.strip())
+        if m:
+            text = m.group(1).strip()
+            if text.lower().rstrip(".") == "none":
+                return ""
+            return text
+    return None
 
 
 def is_internal_subject(subject):

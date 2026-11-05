@@ -132,6 +132,40 @@ def entry_lines(cleaned, detail):
     return [f"- {cleaned}"]
 
 
+def draft_items(range_ref):
+    """Release-time triage rows: one per in-range commit with a notes section.
+
+    Each row: (short_hash, section, draft_line, has_trailer, subject).
+    draft_line is the trailer verbatim when present, else the humanized
+    subject/bullet guess for the user to accept, rewrite, merge, or mark
+    none. Nothing is dropped here — triage happens in release.py.
+    """
+    from release_notes import release_note_trailer
+
+    rows = []
+    for subject, body, entries in commit_records(range_ref):
+        if is_internal_subject(subject):
+            continue
+        if not entries:
+            continue
+        section, text = entries[0]
+        if section not in ("feat", "impv", "fix"):
+            continue
+        if not text or is_internal_subject(text):
+            continue
+        trailer = release_note_trailer(body)
+        draft = trailer if trailer else humanize(text)
+        rows.append(
+            {
+                "section": section,
+                "draft": draft,
+                "has_trailer": trailer is not None and trailer != "",
+                "subject": subject,
+            }
+        )
+    return rows
+
+
 def sections_for(range_ref):
     features = []
     improvements = []
