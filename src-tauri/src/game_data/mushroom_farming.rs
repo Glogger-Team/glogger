@@ -31,7 +31,8 @@ pub struct MushroomFarmingInfo {
     pub poor_phases: &'static [&'static str],
 }
 
-/// The full reference table in Mycology-req order (matches the wiki chart order).
+/// The full reference table in the wiki chart order (chart itself is not strictly
+/// Mycology-req sorted; the widget re-sorts by `mycology_req` at runtime).
 pub const MUSHROOMS: &[MushroomFarmingInfo] = &[
     MushroomFarmingInfo {
         name: "Parasol Mushroom",
