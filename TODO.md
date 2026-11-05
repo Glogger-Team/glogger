@@ -2,6 +2,15 @@
 
 Small tasks and notes that don't belong in a dedicated plan.
 
+- Mushroom Substrate recommendations are incorrect, fix them.
+- NPC widget refactor.
+  - Add all NPCs to the to favor widget
+  - NPC grouping by tags
+  - ie. add/view all serbule NPCs at once
+  - Grouping and sorting refinements, user story:
+    - It would be nice to look at it more generically. ie. you have 49 object in inv that can be gifted to 7 NPC in tag "serbule" and then its easier to do group favour runs
+- Better release notes
+
 > **Signal contract (2026-11-03):** the 10/21 client removed verbose `LocalPlayer:` events from Player.log — that stream is dark and not coming back. Replacements for the dark stream arrive via richer character-report exports (Chat.log and game-written `Books/` files, e.g. `Books/PlayerShopLog_*.txt`, remain supported sources — the `hired` action below arrives that way). Entries below say *report-only* where they wait on a new report field, and *dropped* where the only source was the log. The 10/21-10/28 triage history (`Player.log game-event outage triage`, per-tracker casualty verdicts) is in git history, not repeated here.
 
 ## Deferred tuning (needs real-world data)
