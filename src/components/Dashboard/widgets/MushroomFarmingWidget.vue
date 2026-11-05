@@ -32,6 +32,13 @@
         class="flex-1 px-2 py-1 rounded bg-surface-2 border border-border text-sm text-text-primary placeholder:text-text-dim focus:outline-none focus:border-accent-blue" />
     </div>
 
+    <div v-if="loadError" class="flex items-center gap-2 text-xs text-text-primary bg-value-negative/10 border border-value-negative/40 rounded px-2 py-1.5">
+      <span class="flex-1">Mushroom reference failed to load. Showing no data.</span>
+      <button class="px-2 py-0.5 rounded bg-surface-2 border border-border hover:bg-surface-3" @click="reload">
+        Retry
+      </button>
+    </div>
+
     <!-- Mushroom table -->
     <div class="overflow-y-auto max-h-80">
       <DataTable
@@ -43,7 +50,7 @@
         compact
         size="sm"
         empty-variant="compact"
-        empty-text="No mushrooms match your filter."
+        :empty-text="loadError ? 'Mushroom reference failed to load.' : 'No mushrooms match your filter.'"
         :row-class="rowClass"
         @sort="onSort">
         <template #cell-name="{ row }">
@@ -121,14 +128,19 @@ const columns = [
 type MushroomInfo = MushroomRow
 
 const mushrooms = ref<MushroomInfo[]>([])
+const loadError = ref(false)
 
-onMounted(async () => {
+async function reload() {
+  loadError.value = false
   try {
     mushrooms.value = await invoke<MushroomInfo[]>('get_mushroom_farming')
   } catch (e) {
+    loadError.value = true
     console.error('[MushroomFarmingWidget] Failed to load mushroom data:', e)
   }
-})
+}
+
+onMounted(reload)
 const PHASE_EMOJI: Record<MoonPhaseName, string> = Object.fromEntries(
   ALL_PHASES.map(p => [p.name, p.emoji])
 ) as Record<MoonPhaseName, string>
