@@ -66,6 +66,7 @@ use cdn_commands::{
     get_all_tsys,
     get_brewing_ingredients,
     get_brewing_recipes,
+    get_mushroom_farming,
     get_cache_status,
     get_combat_skills,
     get_cp_recipes_for_slot,
@@ -773,6 +774,7 @@ pub fn run() {
             // Brewing queries
             get_brewing_recipes,
             get_brewing_ingredients,
+            get_mushroom_farming,
             get_brewing_discoveries,
             add_brewing_discovery_manual,
             scan_snapshot_for_brewing_discoveries,

@@ -14,8 +14,9 @@ use crate::cdn;
 use crate::db::DbPool;
 use crate::game_data::{
     self, AbilityFamily, AbilityInfo, AiSummary, AreaInfo, BrewingIngredient, BrewingRecipe,
-    EffectInfo, GameData, ItemInfo, LorebookCategoryInfo, LorebookEntry, NpcInfo, PlayerTitleInfo,
-    QuestInfo, RecipeInfo, SkillInfo, SourceEntry, TsysClientInfo, TsysTierInfo,
+    EffectInfo, GameData, ItemInfo, LorebookCategoryInfo, LorebookEntry, MushroomFarmingInfo,
+    NpcInfo, PlayerTitleInfo, QuestInfo, RecipeInfo, SkillInfo, SourceEntry, TsysClientInfo,
+    TsysTierInfo,
 };
 
 /// Timestamped log line for startup diagnostics.
@@ -4962,6 +4963,13 @@ pub async fn get_brewing_ingredients(
 ) -> Result<Vec<BrewingIngredient>, String> {
     let data = state.read().await;
     Ok(data.brewing_ingredients.clone())
+}
+
+// ── Mushroom farming commands ──
+
+#[tauri::command]
+pub fn get_mushroom_farming() -> Result<Vec<MushroomFarmingInfo>, String> {
+    Ok(crate::game_data::mushroom_farming::MUSHROOMS.to_vec())
 }
 
 // ── CDN Diff commands ────────────────────────────────────────────────────────
