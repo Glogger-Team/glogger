@@ -49,19 +49,19 @@
         <template #cell-name="{ row }">
           <ItemInline :reference="(row.name as string)" />
         </template>
-        <template #cell-level="{ value }">
-          <span class="text-text-dim font-mono">{{ value }}</span>
+        <template #cell-mycology_req="{ row }">
+          <span class="text-text-dim font-mono">{{ (row as unknown as MushroomRow).mycology_req ?? 'N/A' }}</span>
         </template>
-        <template #cell-growTime="{ value }">
-          <span class="text-text-dim font-mono">{{ value }}h</span>
+        <template #cell-grow_hours="{ row }">
+          <span class="text-text-dim font-mono">{{ (row as unknown as MushroomRow).grow_hours }}h</span>
         </template>
         <template #cell-substrate="{ row }">
-          <span class="text-accent-gold">{{ row.optimalSubstrate }}</span>
-          <span class="text-text-dim"> / {{ row.adequateSubstrate }}</span>
+          <span class="text-accent-gold">{{ (row as unknown as MushroomRow).very_well_substrate }}</span>
+          <span class="text-text-dim"> / {{ (row as unknown as MushroomRow).adequate_substrate ?? '??' }}</span>
         </template>
         <template #cell-moon="{ row }">
           <span
-            v-for="p in (row.robustPhases as MoonPhaseName[])"
+            v-for="p in ((row as unknown as MushroomRow).robust_phases as MoonPhaseName[])"
             :key="p"
             class="mr-1"
             :class="phase?.name === p ? 'text-value-positive' : 'text-text-dim'"
@@ -70,7 +70,7 @@
           </span>
           <span class="text-text-dim mx-0.5">|</span>
           <span
-            v-for="p in (row.poorPhases as MoonPhaseName[])"
+            v-for="p in ((row as unknown as MushroomRow).poor_phases as MoonPhaseName[])"
             :key="p"
             class="mr-1"
             :class="phase?.name === p ? 'text-value-negative' : 'text-text-dim'"
@@ -84,14 +84,16 @@
     <div class="text-xs text-text-dim flex items-center gap-1">
       <span class="text-value-positive">&#9679;</span> extra yield
       <span class="text-value-negative ml-2">&#9679;</span> reduced yield
-      <span class="ml-2">Substrate: <span class="text-accent-gold">optimal</span> / adequate</span>
+      <span class="ml-2">Substrate: <span class="text-accent-gold">very well</span> / adequate</span>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import { useMoonPhase, ALL_PHASES, type MoonPhaseName } from '../../../composables/useMoonPhase'
+import type { MushroomFarmingInfo as MushroomRow } from '../../../types/gameData/mushroomFarming'
 import DataTable from '../../Shared/DataTable.vue'
 import ItemInline from '../../Shared/Item/ItemInline.vue'
 
@@ -99,7 +101,7 @@ const { phase, daysUntil } = useMoonPhase()
 
 const search = ref('')
 const filterMode = ref<'all' | 'robust' | 'poor'>('robust')
-const sortKey = ref<'name' | 'level' | 'growTime'>('level')
+const sortKey = ref<'name' | 'mycology_req' | 'grow_hours'>('mycology_req')
 
 const filterOptions = [
   { value: 'all' as const, label: 'All' },
@@ -110,47 +112,23 @@ const sortAsc = ref(true)
 
 const columns = [
   { key: 'name', label: 'Mushroom', sortable: true },
-  { key: 'level', label: 'Lvl', sortable: true, align: 'center' as const },
-  { key: 'growTime', label: 'Time', sortable: true, align: 'center' as const },
+  { key: 'mycology_req', label: 'Myco', sortable: true, align: 'center' as const },
+  { key: 'grow_hours', label: 'Time', sortable: true, align: 'center' as const },
   { key: 'substrate', label: 'Substrate', sortable: false },
   { key: 'moon', label: 'Moon', sortable: false },
 ]
 
-interface MushroomInfo {
-  name: string
-  level: number
-  growTime: number
-  adequateSubstrate: string
-  optimalSubstrate: string
-  robustPhases: MoonPhaseName[]
-  poorPhases: MoonPhaseName[]
-}
+type MushroomInfo = MushroomRow
 
-const MUSHROOMS: MushroomInfo[] = [
-  { name: 'Parasol Mushroom', level: 0, growTime: 2, adequateSubstrate: 'Dirt', optimalSubstrate: 'Organs', robustPhases: ['FullMoon', 'WaningCrescentMoon'], poorPhases: ['NewMoon', 'WaxingGibbousMoon'] },
-  { name: 'Mycena Mushroom', level: 5, growTime: 3, adequateSubstrate: 'Bone', optimalSubstrate: 'Limbs', robustPhases: ['WaxingCrescentMoon', 'QuarterMoon'], poorPhases: ['WaningGibbousMoon', 'LastQuarterMoon'] },
-  { name: 'Boletus Mushroom', level: 10, growTime: 4, adequateSubstrate: 'Meat', optimalSubstrate: 'Exotic', robustPhases: ['NewMoon', 'WaningGibbousMoon'], poorPhases: ['WaxingCrescentMoon', 'FullMoon'] },
-  { name: 'Goblin Puffball', level: 12, growTime: 5, adequateSubstrate: 'Dirt', optimalSubstrate: 'Exotic', robustPhases: ['NewMoon', 'WaxingGibbousMoon'], poorPhases: ['FullMoon', 'WaningCrescentMoon'] },
-  { name: 'Field Mushroom', level: 15, growTime: 5, adequateSubstrate: 'Bone', optimalSubstrate: 'Organs', robustPhases: ['WaxingGibbousMoon', 'LastQuarterMoon'], poorPhases: ['QuarterMoon', 'WaningCrescentMoon'] },
-  { name: 'Blusher Mushroom', level: 20, growTime: 6, adequateSubstrate: 'Meat', optimalSubstrate: 'Exotic', robustPhases: ['NewMoon', 'WaningGibbousMoon'], poorPhases: ['WaxingCrescentMoon', 'FullMoon'] },
-  { name: 'Milk Cap Mushroom', level: 25, growTime: 7, adequateSubstrate: 'Dirt', optimalSubstrate: 'Organs', robustPhases: ['FullMoon', 'WaningCrescentMoon'], poorPhases: ['NewMoon', 'WaxingGibbousMoon'] },
-  { name: 'Blood Mushroom', level: 30, growTime: 8, adequateSubstrate: 'Dirt', optimalSubstrate: 'Limbs', robustPhases: ['WaxingCrescentMoon', 'LastQuarterMoon'], poorPhases: ['QuarterMoon', 'WaningGibbousMoon'] },
-  { name: 'Blastcap Mushroom', level: 33, growTime: 8, adequateSubstrate: 'Meat', optimalSubstrate: 'Organs', robustPhases: ['FullMoon', 'WaningGibbousMoon'], poorPhases: ['NewMoon', 'WaxingCrescentMoon'] },
-  { name: 'Coral Mushroom', level: 40, growTime: 9, adequateSubstrate: 'Meat', optimalSubstrate: 'Limbs', robustPhases: ['QuarterMoon', 'WaxingGibbousMoon'], poorPhases: ['LastQuarterMoon', 'WaningCrescentMoon'] },
-  { name: 'Iocaine Mushroom', level: 40, growTime: 10, adequateSubstrate: 'Bone', optimalSubstrate: 'Limbs', robustPhases: ['WaxingCrescentMoon', 'QuarterMoon'], poorPhases: ['WaningGibbousMoon', 'LastQuarterMoon'] },
-  { name: 'Groxmax Mushroom', level: 47, growTime: 11, adequateSubstrate: 'Bone', optimalSubstrate: 'Organs', robustPhases: ['WaxingGibbousMoon', 'LastQuarterMoon'], poorPhases: ['QuarterMoon', 'WaningCrescentMoon'] },
-  { name: 'Porcini Mushroom', level: 55, growTime: 12, adequateSubstrate: 'Meat', optimalSubstrate: 'Exotic', robustPhases: ['FullMoon', 'WaningGibbousMoon'], poorPhases: ['NewMoon', 'WaxingCrescentMoon'] },
-  { name: 'False Agaric', level: 57, growTime: 12, adequateSubstrate: 'Bone', optimalSubstrate: 'Limbs', robustPhases: ['WaningCrescentMoon', 'LastQuarterMoon'], poorPhases: ['QuarterMoon', 'WaxingGibbousMoon'] },
-  { name: 'Black Foot Morel', level: 64, growTime: 13, adequateSubstrate: 'Dirt', optimalSubstrate: 'Exotic', robustPhases: ['NewMoon', 'WaningCrescentMoon'], poorPhases: ['FullMoon', 'WaxingGibbousMoon'] },
-  { name: "Pixie's Parasol", level: 70, growTime: 14, adequateSubstrate: 'Meat', optimalSubstrate: 'Organs', robustPhases: ['QuarterMoon', 'WaxingGibbousMoon'], poorPhases: ['LastQuarterMoon', 'WaningCrescentMoon'] },
-  { name: 'Fly Amanita', level: 77, growTime: 15, adequateSubstrate: 'Bone', optimalSubstrate: 'Organs', robustPhases: ['WaxingCrescentMoon', 'FullMoon'], poorPhases: ['NewMoon', 'WaningGibbousMoon'] },
-  { name: "Wizard's Mushroom", level: 75, growTime: 16, adequateSubstrate: 'Bone', optimalSubstrate: 'Organs', robustPhases: ['WaxingCrescentMoon', 'QuarterMoon'], poorPhases: ['WaxingGibbousMoon', 'LastQuarterMoon'] },
-  { name: 'Charged Mycelium', level: 80, growTime: 16, adequateSubstrate: 'Meat', optimalSubstrate: 'Exotic', robustPhases: ['NewMoon', 'WaxingGibbousMoon'], poorPhases: ['WaningCrescentMoon', 'FullMoon'] },
-  { name: 'Granamurch Mushroom', level: 85, growTime: 17, adequateSubstrate: 'Dirt', optimalSubstrate: 'Limbs', robustPhases: ['FullMoon', 'NewMoon'], poorPhases: ['WaningGibbousMoon', 'LastQuarterMoon', 'WaningCrescentMoon', 'QuarterMoon'] },
-  { name: 'Ghostshroom', level: 90, growTime: 18, adequateSubstrate: 'Exotic', optimalSubstrate: 'Meat', robustPhases: ['FullMoon', 'NewMoon'], poorPhases: ['LastQuarterMoon', 'WaxingCrescentMoon', 'QuarterMoon', 'WaxingGibbousMoon'] },
-  { name: 'Mortaferus Mushroom', level: 95, growTime: 19, adequateSubstrate: 'Unknown', optimalSubstrate: 'Organs', robustPhases: ['WaningGibbousMoon', 'LastQuarterMoon'], poorPhases: ['WaxingCrescentMoon'] },
-]
+const mushrooms = ref<MushroomInfo[]>([])
 
+onMounted(async () => {
+  try {
+    mushrooms.value = await invoke<MushroomInfo[]>('get_mushroom_farming')
+  } catch (e) {
+    console.error('[MushroomFarmingWidget] Failed to load mushroom data:', e)
+  }
+})
 const PHASE_EMOJI: Record<MoonPhaseName, string> = Object.fromEntries(
   ALL_PHASES.map(p => [p.name, p.emoji])
 ) as Record<MoonPhaseName, string>
@@ -170,11 +148,11 @@ function phaseLabel(name: MoonPhaseName): string {
 const nextPhase = computed(() => daysUntil.value.length > 0 ? daysUntil.value[0] : null)
 
 function isRobustNow(m: MushroomInfo): boolean {
-  return !!phase.value && m.robustPhases.includes(phase.value.name)
+  return !!phase.value && m.robust_phases.includes(phase.value.name)
 }
 
 function isPoorNow(m: MushroomInfo): boolean {
-  return !!phase.value && m.poorPhases.includes(phase.value.name)
+  return !!phase.value && m.poor_phases.includes(phase.value.name)
 }
 
 function rowClass(row: Record<string, unknown>): string {
@@ -185,13 +163,13 @@ function rowClass(row: Record<string, unknown>): string {
 }
 
 function onSort(payload: { key: string; dir: 'asc' | 'desc' }) {
-  sortKey.value = payload.key as 'name' | 'level' | 'growTime'
+  sortKey.value = payload.key as 'name' | 'mycology_req' | 'grow_hours'
   sortAsc.value = payload.dir === 'asc'
 }
 
 const filteredMushrooms = computed(() => {
   const q = search.value.toLowerCase().trim()
-  let result = MUSHROOMS.filter(m => {
+  let result = mushrooms.value.filter(m => {
     if (q && !m.name.toLowerCase().includes(q)) return false
     if (filterMode.value === 'robust' && !isRobustNow(m)) return false
     if (filterMode.value === 'poor' && !isPoorNow(m)) return false
@@ -201,8 +179,8 @@ const filteredMushrooms = computed(() => {
   result.sort((a, b) => {
     let cmp = 0
     if (sortKey.value === 'name') cmp = a.name.localeCompare(b.name)
-    else if (sortKey.value === 'level') cmp = a.level - b.level
-    else if (sortKey.value === 'growTime') cmp = a.growTime - b.growTime
+    else if (sortKey.value === 'mycology_req') cmp = (a.mycology_req ?? -1) - (b.mycology_req ?? -1)
+    else if (sortKey.value === 'grow_hours') cmp = a.grow_hours - b.grow_hours
     return sortAsc.value ? cmp : -cmp
   })
 

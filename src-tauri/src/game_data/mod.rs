@@ -33,6 +33,7 @@ mod item_uses;
 mod items;
 mod landmarks;
 mod lorebooks;
+pub mod mushroom_farming;
 mod npcs;
 mod player_titles;
 mod quests;
@@ -67,6 +68,7 @@ pub use npcs::NpcInfo;
 // re-exported: callers use `is_gift_capped_area`, never the list itself.
 pub use ai::AiSummary;
 pub use brewing::{BrewingIngredient, BrewingRecipe};
+pub use mushroom_farming::MushroomFarmingInfo;
 pub use npcs::{has_gift_tastes, is_gift_capped_area, parse as parse_npcs_json};
 pub use player_titles::PlayerTitleInfo;
 pub use quests::QuestInfo;
