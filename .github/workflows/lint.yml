@@ -57,8 +57,8 @@ jobs:
         # Same `mise run lint:ruff` slice the pre-commit hook runs.
         run: mise run lint:ruff
 
-  shellcheck:
-    name: ShellCheck
+  commit-msg:
+    name: Commit-msg hook contract
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -78,11 +78,10 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           mise install
 
-      - name: ShellCheck scripts
-        # Same `mise run lint:shell` slice the pre-commit hook runs.
-        # The old `.githooks` scan is gone with the directory; the commit-msg
-        # hook is now scripts/check-commit-msg.py (warning-only, not shellcheck-scanned).
-        run: mise run lint:shell
+      - name: Commit-msg self-test
+        # Same `mise run lint:commit` slice the pre-commit hook runs.
+        # The hook is scripts/check-commit-msg.py (warning-only).
+        run: mise run lint:commit
 
   cargo-audit:
     name: Cargo audit (RustSec)

@@ -4,7 +4,7 @@ conventional prefix. This improves changelog generation quality.
 
 Known prefixes: feat, fix, impv, docs, test, build, release
 
-Install: scripts/setup-hooks.sh (pre-commit commit-prefix hook)
+Install: python scripts/setup-hooks.py (pre-commit commit-prefix hook)
 """
 
 import re
@@ -55,8 +55,7 @@ def self_test() -> int:
 
 def main() -> int:
     # Self-test: `python scripts/check-commit-msg.py --self-test` (wired
-    # into `mise run lint:shell`). Pins the warn-but-never-block contract:
-    # every path exits 0, prefixed/exempt messages stay silent, unprefixed warn.
+    # into `mise run lint:commit`). Pins the warn-but-never-block contract:
     if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
         return self_test()
     if hasattr(sys.stdout, "reconfigure"):
