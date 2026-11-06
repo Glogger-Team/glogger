@@ -190,10 +190,12 @@ def main():
             "w", suffix=".md", delete=False, encoding="utf-8"
         ) as f:
             f.write(TRIAGE_PREFIX)
-            for r in rows:
+            f.write("# Format: [n] draft text — keep the [n] tag, edit the text.\n")
+            f.write("# Delete a line to drop it. Lines without a tag go to Improved.\n")
+            for n, r in enumerate(rows):
                 marker = " (trailer)" if r["has_trailer"] else " (draft)"
                 f.write(f"# [{r['section']}]{marker} {r['subject']}\n")
-                f.write(f"{r['draft']}\n\n")
+                f.write(f"[{n}] {r['draft']}\n\n")
             triage_path = f.name
         editor = os.environ.get("EDITOR", "notepad" if os.name == "nt" else "vi")
         try:
@@ -209,20 +211,21 @@ def main():
                     for ln in fh
                     if ln.strip() and not ln.strip().startswith("#")
                 ]
+            import re as _re
+
+            tag_re = _re.compile(r"^\[(\d+)\]\s*(.*)$")
+            pairs = []
+            for ln in approved:
+                m = tag_re.match(ln)
+                if m and int(m.group(1)) < len(rows):
+                    pairs.append((rows[int(m.group(1))]["section"], m.group(2)))
+                else:
+                    pairs.append(("impv", tag_re.sub(r"\2", ln)))
         finally:
             os.unlink(triage_path)
         notes_dir = root / "release-notes"
         notes_dir.mkdir(exist_ok=True)
         notes_file = notes_dir / f"{tag}.md"
-        from collections import deque
-
-        by_draft: dict[str, deque[str]] = {}
-        for r in rows:
-            by_draft.setdefault(r["draft"], deque()).append(r["section"])
-        pairs = []
-        for ln in approved:
-            queue = by_draft.get(ln)
-            pairs.append((queue.popleft() if queue else "impv", ln))
         header = f"## What's Changed since {prev_tag}"
         body = (
             render_grouped(pairs, header)
