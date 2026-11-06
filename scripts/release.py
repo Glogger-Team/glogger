@@ -16,6 +16,7 @@ approves drafts as-is.
 
 import argparse
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -96,28 +97,34 @@ def main():
     script_dir = Path(__file__).resolve().parent
 
     branch = git(["rev-parse", "--abbrev-ref", "HEAD"], root)
-    if branch.stdout.strip() != "main":
+    if branch.stdout.strip() != "main" and not args.dry_run:
         print(
             f"Error: must be on the 'main' branch (currently '{branch.stdout.strip()}')"
         )
         return 1
-    if git(["status", "--porcelain"], root).stdout.strip():
-        print("Error: working tree not clean")
-        print(git(["status", "--short"], root).stdout, end="")
-        return 1
-    git(["fetch", "origin"], root)
-    if (
-        git(["rev-parse", "HEAD"], root).stdout.strip()
-        != git(["rev-parse", "origin/main"], root).stdout.strip()
-    ):
-        print("Error: main is not up to date with origin/main - pull/rebase first")
-        return 1
-    local_exists = git(["rev-parse", tag], root).returncode == 0
-    remote_out = git(["ls-remote", "--tags", "origin", "refs/tags/" + tag], root)
-    remote_exists = bool(remote_out.stdout.strip())
-    if local_exists or remote_exists:
-        print(f"Error: tag {tag} already exists (locally or on origin)")
-        return 1
+    if branch.stdout.strip() != "main":
+        print(
+            f"Warning: not on main (currently '{branch.stdout.strip()}') - "
+            "tag suggestion reads main's history, preview only"
+        )
+    if not args.dry_run:
+        if git(["status", "--porcelain"], root).stdout.strip():
+            print("Error: working tree not clean")
+            print(git(["status", "--short"], root).stdout, end="")
+            return 1
+        git(["fetch", "origin"], root)
+        if (
+            git(["rev-parse", "HEAD"], root).stdout.strip()
+            != git(["rev-parse", "origin/main"], root).stdout.strip()
+        ):
+            print("Error: main is not up to date with origin/main - pull/rebase first")
+            return 1
+        local_exists = git(["rev-parse", tag], root).returncode == 0
+        remote_out = git(["ls-remote", "--tags", "origin", "refs/tags/" + tag], root)
+        remote_exists = bool(remote_out.stdout.strip())
+        if local_exists or remote_exists:
+            print(f"Error: tag {tag} already exists (locally or on origin)")
+            return 1
 
     # Gate hardening (vue lesson): warn when latest main CI run is red.
     gh = subprocess.run(
@@ -187,7 +194,7 @@ def main():
         import tempfile
 
         with tempfile.NamedTemporaryFile(
-            "w", suffix=".md", delete=False, encoding="utf-8"
+            "w", suffix=".txt", delete=False, encoding="utf-8", newline="\n"
         ) as f:
             f.write(TRIAGE_PREFIX)
             f.write("# Format: [n] draft text — keep the [n] tag, edit the text.\n")
@@ -197,9 +204,13 @@ def main():
                 f.write(f"# [{r['section']}]{marker} {r['subject']}\n")
                 f.write(f"[{n}] {r['draft']}\n\n")
             triage_path = f.name
-        editor = os.environ.get("EDITOR", "notepad" if os.name == "nt" else "vi")
+        editor = shlex.split(
+            os.environ.get("EDITOR", "notepad" if os.name == "nt" else "vi")
+        )
+        if not editor:
+            editor = ["notepad" if os.name == "nt" else "vi"]
         try:
-            edited = subprocess.run([editor, triage_path], check=False)
+            edited = subprocess.run([*editor, triage_path], check=False)
             if edited.returncode != 0:
                 print(
                     f"Error: editor exited {edited.returncode} - notes not saved, tag not created."
@@ -233,7 +244,7 @@ def main():
             else header
             + "\n\n### Improved\n- No visible changes — stability and maintenance update.\n"
         )
-        notes_file.write_text(body, encoding="utf-8")
+        notes_file.write_text(body, encoding="utf-8", newline="\n")
         print(f"Wrote {notes_file} ({len(approved)} lines)")
         git(["add", str(notes_file.relative_to(root))], root)
         if not git(
@@ -260,7 +271,7 @@ def main():
             [(r["section"], r["draft"]) for r in rows],
             f"## What's Changed since {prev_tag}",
         )
-        notes_file.write_text(body, encoding="utf-8")
+        notes_file.write_text(body, encoding="utf-8", newline="\n")
         git(["add", str(notes_file.relative_to(root))], root)
         if not git(
             ["status", "--porcelain", "--", str(notes_file)], root
@@ -280,8 +291,53 @@ def main():
         ["git", "push", "origin", "main"], cwd=root, check=False
     )
     if branch_push.returncode != 0:
-        print("Error: failed to push main (notes commit) - tag not created.")
-        print("Then retry with: git push origin main")
+        # Direct push failed — typically branch protection ("Protect main"
+        # ruleset). Route the notes commit through a branch + PR instead of
+        # dead-ending: the tree was clean at entry and the sync gate held, so
+        # the notes commit is the only commit ahead of origin/main.
+        notes_branch = f"release/{tag}-notes"
+        if (
+            git(
+                ["rev-parse", "--verify", f"refs/heads/{notes_branch}"], root
+            ).returncode
+            == 0
+        ):
+            print(f"Error: failed to push main, and {notes_branch} already exists.")
+            print("Delete it or push it manually, then retry: git push origin main")
+            return 1
+        if git(["checkout", "-b", notes_branch], root).returncode != 0:
+            print("Error: failed to push main - tag not created.")
+            print("Then retry with: git push origin main")
+            return 1
+        if (
+            subprocess.run(
+                ["git", "push", "-u", "origin", notes_branch], cwd=root, check=False
+            ).returncode
+            != 0
+        ):
+            print(f"Error: pushed neither main nor {notes_branch} - tag not created.")
+            print(f"You are on {notes_branch}; push it manually, then retry.")
+            return 1
+        pr = subprocess.run(
+            [
+                "gh",
+                "pr",
+                "create",
+                "--title",
+                f"release: notes for {tag}",
+                "--body",
+                f"Release notes for {tag}. Merge, then re-run `python scripts/release.py {tag}` to tag.",
+            ],
+            cwd=root,
+            check=False,
+        )
+        if pr.returncode != 0:
+            print(f"Pushed {notes_branch} - open a PR manually, merge it, then re-run:")
+            print(f"  gh pr create --title 'release: notes for {tag}'")
+        else:
+            print(f"Pushed {notes_branch} - merge the PR, then re-run to tag:")
+        print(f"  python scripts/release.py {tag}")
+        git(["checkout", "main"], root)
         return 1
     tagged = subprocess.run(
         ["git", "tag", "-a", tag, "-m", "glogger " + tag], cwd=root, check=False
