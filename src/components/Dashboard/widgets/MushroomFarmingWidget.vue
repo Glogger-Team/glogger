@@ -135,6 +135,7 @@ async function reload() {
   try {
     mushrooms.value = await invoke<MushroomInfo[]>('get_mushroom_farming')
   } catch (e) {
+    mushrooms.value = []
     loadError.value = true
     console.error('[MushroomFarmingWidget] Failed to load mushroom data:', e)
   }

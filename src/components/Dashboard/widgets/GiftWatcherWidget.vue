@@ -58,6 +58,7 @@
           </div>
           <button
             v-for="npc in searchResults"
+            :key="npc.key"
             class="w-full text-left px-2 py-1.5 text-sm hover:bg-surface-hover transition-colors"
             :class="watchedNpcKeys.includes(npc.key) ? 'text-text-dim' : 'text-text'"
             @click="toggleNpc(npc.key)"
@@ -214,8 +215,9 @@ const ROLE_SEARCH_LABELS: Record<string, string> = {
 function npcSearchText(npc: NpcInfo): string {
   const parts = [npc.area_friendly_name ?? '']
   for (const svc of getServices(npc)) {
+    parts.push(svc.type.toLowerCase())
     const label = ROLE_SEARCH_LABELS[svc.type]
-    if (label) parts.push(label)
+    if (label && label !== svc.type.toLowerCase()) parts.push(label)
   }
   for (const skill of npc.trains_skills ?? []) parts.push(skill)
   return parts.join(' ').toLowerCase()
@@ -251,11 +253,11 @@ function onSearchInput() {
 function addAllSearchResults() {
   const watched = new Set(watchedNpcKeys.value)
   const fresh = searchResults.value.map(n => n.key).filter(k => !watched.has(k))
+  searchQuery.value = ''
+  searchResults.value = []
   if (fresh.length === 0) return
   watchedNpcKeys.value = [...watchedNpcKeys.value, ...fresh]
   saveWatchedNpcs()
-  searchQuery.value = ''
-  searchResults.value = []
 }
 function toggleNpc(key: string) {
   if (watchedNpcKeys.value.includes(key)) {
