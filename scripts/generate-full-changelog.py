@@ -183,6 +183,11 @@ def main(argv):
 
     # Newest release first. Tag i covers (TAGS[i-1]..TAGS[i]); the oldest tag
     # covers everything reachable from it.
+    # The commit-prefix convention starts at the earliest curated release;
+    # only ranges entirely below it take the raw-subject fallback.
+    # Convention-era ranges with no visible entries keep the stability line so
+    # filtered tooling subjects never leak into player notes.
+    first_conventional = min(CURATED_NOTES, key=version_key)
     for i in range(len(tags) - 1, -1, -1):
         tag = tags[i]
         dated = run_git(["log", "-1", "--format=%ad", "--date=short", tag])
@@ -195,7 +200,10 @@ def main(argv):
         else:
             range_ref = tag
             notes = CURATED_NOTES.get(tag) or changelog_notes("", tag)
-        if not CURATED_NOTES.get(tag) and "No visible changes" in notes:
+        if (
+            version_key(tag) < version_key(first_conventional)
+            and "No visible changes" in notes
+        ):
             out += ["_Pre-convention history — all commits in range:_", ""]
             listed = run_git(
                 ["log", "--format=- %s (`%h`)", "--no-decorate", range_ref]
