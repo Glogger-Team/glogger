@@ -61,6 +61,7 @@ def main():
     tauri_release_conf = root / "src-tauri" / "tauri.release.conf.json"
     tauri_experimental_conf = root / "src-tauri" / "tauri.experimental.conf.json"
     package_json = root / "package.json"
+    package_lock = root / "package-lock.json"
     cargo_toml = root / "src-tauri" / "Cargo.toml"
 
     match = VERSION_RE.search(tauri_conf.read_text(encoding="utf-8"))
@@ -124,13 +125,72 @@ def main():
     ):
         return 1
 
-    # 4. package.json
-    if not replace_regex(
-        package_json,
-        r'"version": "\d+\.\d+\.\d+"',
-        f'"version": "{new_version}"',
-    ):
-        return 1
+    # 4. package.json + package-lock.json via npm itself (primary path).
+    # `npm version` stamps both files atomically (top-level + packages[""]),
+    # --no-git-tag-version keeps it commit/tag-free, --ignore-scripts skips
+    # version lifecycle hooks. Guarded: OSError
+    # (Windows .cmd shim without shell) is caught, and a nonzero npm exit
+    # falls through to the regex fallback instead of half-bumping.
+    js_synced = False
+    if shutil.which("npm"):
+        try:
+            npm_proc = subprocess.run(
+                [
+                    "npm",
+                    "version",
+                    new_version,
+                    "--no-git-tag-version",
+                    "--no-commit-hooks",
+                    "--ignore-scripts",
+                ],
+                cwd=root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            js_synced = npm_proc.returncode == 0
+            if not js_synced:
+                print(
+                    "Warning: npm version failed - regex fallback: "
+                    f"{npm_proc.stderr.strip()[:200]}"
+                )
+        except OSError as e:
+            print(f"Warning: npm not runnable ({e}) - regex fallback")
+    if not js_synced:
+        # Fallback: surgical regex on both files. Pre-validate the lockfile
+        # stamps before mutating anything, so a lockfile miss fails before
+        # package.json is rewritten (no half-bumped tree). Drift-tolerant
+        # (lockfile may lag a release); \r?\n tolerates CRLF worktrees.
+        lock_pat_top = r'("name": "glogger",\r?\n  "version": ")(\d+\.\d+\.\d+)(")'
+        lock_pat_pkg = r'("name": "glogger",\r?\n      "version": ")(\d+\.\d+\.\d+)(")'
+        try:
+            lock_text = package_lock.read_bytes().decode("utf-8")
+        except OSError as e:
+            print(f"Error: cannot read {package_lock}: {e}")
+            return 1
+        if not re.search(lock_pat_top, lock_text) or not re.search(
+            lock_pat_pkg, lock_text
+        ):
+            print(f"Error: expected lockfile stamps not found in {package_lock}")
+            return 1
+        if not replace_regex(
+            package_json,
+            r'"version": "\d+\.\d+\.\d+"',
+            f'"version": "{new_version}"',
+        ):
+            return 1
+        if not replace_regex(
+            package_lock,
+            lock_pat_top,
+            rf"\g<1>{new_version}\g<3>",
+        ):
+            return 1
+        if not replace_regex(
+            package_lock,
+            lock_pat_pkg,
+            rf"\g<1>{new_version}\g<3>",
+        ):
+            return 1
 
     # 5. Cargo.toml - only the package version (first occurrence, like the
     # awk in the .sh), not dependency versions.
@@ -155,6 +215,7 @@ def main():
     print("  - src-tauri/tauri.release.conf.json")
     print("  - src-tauri/tauri.experimental.conf.json")
     print("  - package.json")
+    print("  - package-lock.json")
     print("  - src-tauri/Cargo.toml")
     print()
     print(
