@@ -700,8 +700,13 @@ def run_tests():
     )
     gen = _ilu.module_from_spec(spec)
     spec.loader.exec_module(gen)
-    feats, impvs, fixes = gen.sections_for("v1.11.0..HEAD")
-    _ = (feats, impvs, fixes)  # smoke: generator path intact
+    try:
+        feats, impvs, fixes = gen.sections_for("v1.11.0..HEAD")
+    except SystemExit:
+        print("FAIL sections_for exited (missing range?)")
+        failures += 1
+        return failures
+    _ = (feats, impvs, fixes)  # smoke: import + generator path intact
     kept = visible_entries(
         "fix: thing",
         ["Release-Note: fix: clearer errors."],
