@@ -17,6 +17,7 @@ approves drafts as-is.
 import argparse
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -208,11 +209,20 @@ def main():
                 f.write(f"# [{r['section']}]{marker} {r['subject']}\n")
                 f.write(f"[{n}] {r['draft']}\n\n")
             triage_path = f.name
+        # Empty EDITOR ("") must behave like unset: getenv's default only
+        # fires on a missing key, and split("") yields [] (WinError 2 on
+        # launch). which() names the next failure class instead of the
+        # bare traceback.
         editor = shlex.split(
-            os.environ.get("EDITOR", "notepad" if os.name == "nt" else "vi")
+            os.environ.get("EDITOR") or ("notepad" if os.name == "nt" else "vi")
         )
-        if not editor:
-            editor = ["notepad" if os.name == "nt" else "vi"]
+        if not editor or shutil.which(editor[0]) is None:
+            print(
+                f"Error: editor {editor[0] if editor else ''!r} not found "
+                f"(EDITOR={os.environ.get('EDITOR')!r}) - set EDITOR or use --yes."
+            )
+            os.unlink(triage_path)
+            return 1
         try:
             edited = subprocess.run([*editor, triage_path], check=False)
             if edited.returncode != 0:
