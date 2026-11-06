@@ -167,12 +167,14 @@ def sections_for(range_ref):
     improvements = []
     fixes = []
     seen = set()
+    from release_notes import release_note_trailer
     from release_notes import visible_entries as _visible
 
     for subject, body, entries in commit_records(range_ref):
         detail = prose_detail(body)
+        trailer = release_note_trailer(body)
         for section, text in _visible(subject, body, entries):
-            cleaned = humanize(text)
+            cleaned = text if trailer else humanize(text)
             key = (section, cleaned)
             if key in seen:
                 continue

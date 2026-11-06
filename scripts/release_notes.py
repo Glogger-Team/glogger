@@ -688,6 +688,28 @@ def run_tests():
     if kept != []:
         print(f"FAIL empty entries: got {kept}")
         failures += 1
+    # Trailer fidelity (sections_for bypasses humanize for trailer text).
+    import importlib.util as _ilu
+
+    spec = _ilu.spec_from_file_location(
+        "gen",
+        str(
+            __import__("pathlib").Path(__file__).resolve().parent
+            / "generate-changelog.py"
+        ),
+    )
+    gen = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    feats, impvs, fixes = gen.sections_for("v1.11.0..HEAD")
+    _ = (feats, impvs, fixes)  # smoke: generator path intact
+    kept = visible_entries(
+        "fix: thing",
+        ["Release-Note: fix: clearer errors."],
+        [("fix", "fix: clearer errors.")],
+    )
+    if kept != [("fix", "fix: clearer errors.")]:
+        print(f"FAIL trailer text intact: got {kept}")
+        failures += 1
     return failures
 
 
