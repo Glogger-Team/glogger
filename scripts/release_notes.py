@@ -32,6 +32,13 @@ BULLET_RE = re.compile(
 )
 SQUASH_RE = re.compile(r"\(#\d+\)\s*$")
 MERGE_RE = re.compile(r"^Merge ")
+# Optional per-commit player line (grpc/k8s lesson: authorship at merge,
+# triage at release). Footer in the squash body, e.g.:
+#   Release-Note: Skill level-ups from chat are now tracked.
+#   Release-Note: none
+# Matched case-insensitively; first match wins. "none" (any case, with or
+# without trailing period) marks a deliberate skip.
+TRAILER_RE = re.compile(r"^Release-Note:\s*(.+?)\s*$", re.IGNORECASE)
 INTERNAL_PHRASES = (
     # Tooling the user never sees: lint slices, hooks, gates, classifiers,
     # release automation, and review-process batches. Matched case-insensitively
@@ -55,6 +62,7 @@ INTERNAL_PHRASES = (
     "local-review",
     "frozen review",
     "review-patterns",
+    "review fixes",
     "coderabbit",
     "autofix",
     "auto-fix",
@@ -80,6 +88,59 @@ INTERNAL_PHRASES = (
     "unify repo automation",
     "port remaining shell",
     "loop-doc",
+    "flatpak",
+    "version-sync",
+    "version sync",
+    "sync_pat",
+    "sync pat",
+    "artipacked",
+    "setup-python",
+    "setup python",
+    "crlf",
+    "ascii tag",
+    "push retry",
+    "tagless",
+    "tag-only",
+    "tag only",
+    "tauri-action",
+    "tauri action",
+    "release test",
+    "release workflow",
+    "release channel",
+    "prose detail",
+    "internal filter",
+    "release classifier",
+    "release_notes",
+    "concurrency",
+    "reusable workflow",
+    "local-path",
+    "local path",
+    "script +x",
+    "+x bits",
+    "exec bit",
+    "shebang",
+    "exe001",
+    "next-version",
+    "next version",
+    "squash-body",
+    "squash body",
+    "pr title",
+    "self-repo",
+    "self repo",
+    "apt-cache",
+    "apt cache",
+    "audit-script",
+    "audit script",
+    "validate-only",
+    "validate only",
+    "bump-version",
+    "bump version",
+    "bsd sed",
+    "pr bot",
+    "latest.json",
+    "draft-until",
+    "draft until",
+    "typecheck",
 )
 DETAIL_MAX_CHARS = 600
 DETAIL_MAX_LINES = 6
@@ -177,15 +238,22 @@ def classify_record(subject, body_lines):
 def entries_for_record(subject, body_lines):
     """One entry per notes line: [(section, text)].
 
-    Normal commits yield zero or one entry (subject text). Unprefixed
-    squash records yield one entry per `* type:` bullet (bullet text,
-    `* ` stripped) — matching pre-unification classify_squash_body, which
+    A Release-Note: footer wins verbatim (section from the subject or
+    first notes bullet); "none" yields no entries. Otherwise normal
+    commits yield zero or one entry (subject text). Unprefixed squash
+    records yield one entry per `* type:` bullet (bullet text, `* `
+    stripped) — matching pre-unification classify_squash_body, which
     emitted every bullet, not one per section. Prefixed subjects (squash
     or not) yield the subject alone: the PR title is the entry.
     """
     _, sections = classify_record(subject, body_lines)
     if not sections:
         return []
+    trailer = release_note_trailer(body_lines)
+    if trailer is not None:
+        if trailer == "":
+            return []
+        return [(sections[0], trailer)]
     subj_bump, subj_section = classify_subject(subject)
     if subj_section != "none" or subj_bump == "major":
         return [(subj_section, subject)] if subj_section != "none" else []
@@ -200,6 +268,43 @@ def entries_for_record(subject, body_lines):
         text = re.sub(r"^\s*\*\s*", "", line).strip()
         entries.append((ctype, text))
     return entries
+
+
+def release_note_trailer(body_lines):
+    """Player line from a Release-Note: footer, or None.
+
+    Returns "" when the footer says none (deliberate skip), None when
+    absent (untriaged — the release-time pass drafts from the subject).
+    """
+    for line in body_lines:
+        m = TRAILER_RE.match(line.strip())
+        if m:
+            text = m.group(1).strip()
+            if text.lower().rstrip(".") == "none":
+                return ""
+            return text
+    return None
+
+
+def visible_entries(subject, body_lines, entries):
+    """Notes entries that survive the player filter: [(section, text)].
+
+    One predicate for every consumer (sections_for, draft_items): skip
+    when the subject names tooling, when the entry is not a notes
+    section, when the text is empty or (unvetted) names tooling. A
+    Release-Note: footer vets the text — author-approved wording stays
+    even when it mentions tooling. Single commit-level trailer lookup.
+    """
+    if is_internal_subject(subject):
+        return []
+    if not entries:
+        return []
+    vetted = release_note_trailer(body_lines) not in (None, "")
+    return [
+        (section, text)
+        for section, text in entries
+        if section in NOTES_TYPES and text and (vetted or not is_internal_subject(text))
+    ]
 
 
 def is_internal_subject(subject):
@@ -530,6 +635,58 @@ def run_tests():
     detail = prose_detail([])
     if detail != "":
         print(f"FAIL prose empty: got {detail!r}")
+        failures += 1
+    # Release-Note trailer cases (Finding 5).
+    if release_note_trailer(["Release-Note: Players see X."]) != "Players see X.":
+        print("FAIL trailer basic")
+        failures += 1
+    if release_note_trailer(["release-note: NONE"]) != "":
+        print("FAIL trailer none")
+        failures += 1
+    if release_note_trailer(["nothing here"]) is not None:
+        print("FAIL trailer absent")
+        failures += 1
+    entries = entries_for_record("feat: add thing", ["Release-Note: Players see X."])
+    if entries != [("feat", "Players see X.")]:
+        print(f"FAIL trailer wins: got {entries}")
+        failures += 1
+    entries = entries_for_record("fix: thing (#1)", ["Release-Note: none"])
+    if entries != []:
+        print(f"FAIL trailer none-skips: got {entries}")
+        failures += 1
+    entries = entries_for_record(
+        "docs: update readme", ["Release-Note: Players see X."]
+    )
+    if entries != []:
+        print(f"FAIL trailer on docs ignored: got {entries}")
+        failures += 1
+    # Exemption branches (visible_entries): vetted tooling words survive,
+    # unvetted tooling text is dropped, internal subject kills the record.
+    kept = visible_entries(
+        "feat: add thing",
+        ["Release-Note: Lint errors are now clearer."],
+        [("feat", "Lint errors are now clearer.")],
+    )
+    if kept != [("feat", "Lint errors are now clearer.")]:
+        print(f"FAIL vetted survives: got {kept}")
+        failures += 1
+    kept = visible_entries(
+        "feat: add thing",
+        ["* feat: bump the lint gate"],
+        [("feat", "bump the lint gate")],
+    )
+    if kept != []:
+        print(f"FAIL unvetted dropped: got {kept}")
+        failures += 1
+    kept = visible_entries(
+        "chore: bump lint gate", ["Release-Note: Players see X."], [("feat", "X")]
+    )
+    if kept != []:
+        print(f"FAIL internal subject kills: got {kept}")
+        failures += 1
+    kept = visible_entries("feat: add thing", [], [])
+    if kept != []:
+        print(f"FAIL empty entries: got {kept}")
         failures += 1
     return failures
 

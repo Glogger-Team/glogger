@@ -1,0 +1,9 @@
+# Line-ending guard: LF everywhere. `.gitattributes` normalizes on commit;
+# this keeps editors from reintroducing CRLF on save. (VS Code: install
+# the EditorConfig extension — see .vscode/extensions.json.)
+root = true
+
+[*]
+end_of_line = lf
+insert_final_newline = true
+charset = utf-8

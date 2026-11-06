@@ -131,17 +131,23 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          # Notes come from the commit-prefix convention (feat:/impv:/fix:)
-          # since the last *published* GitHub Release, not the nearest tag: a
-          # tag whose Release run failed never reached users, so the next
-          # release's notes must still cover its commits. Checked out at the
-          # new tag, so probe HEAD^ first — plain HEAD would resolve the new
-          # tag itself as its own base.
+          # Notes come from the release-time triage file when present
+          # else the commit-prefix convention (feat:/impv:/fix:) since the
+          # last *published* GitHub Release, not the nearest tag: a tag whose
+          # Release run failed never reached users, so the next release's
+          # notes must still cover its commits. Checked out at the new tag,
+          # so probe HEAD^ first — plain HEAD would resolve the new tag
+          # itself as its own base.
           PREV_TAG=$(python3 scripts/last-published-tag.py "$REPO" 2>/dev/null || git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD^ 2>/dev/null || git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || echo "")
           echo "notes base: ${PREV_TAG:-the initial release}"
           mkdir -p release-notes
-          python3 scripts/generate-changelog.py "$PREV_TAG" HEAD > release-notes/NOTES.md
+          if [ -f "release-notes/${TAG}.md" ]; then
+            cp "release-notes/${TAG}.md" release-notes/NOTES.md
+          else
+            python3 scripts/generate-changelog.py "$PREV_TAG" HEAD > release-notes/NOTES.md
+          fi
           cat release-notes/NOTES.md
 
       - name: Upload release notes
@@ -538,7 +544,7 @@ jobs:
     # Local-path syntax (./...): same-repo callee, resolved by GitHub —
     # not subject to checkout filesystem state, and counts as pinned under a
     # fully-pinned repo policy. Always tracks the current ref's flatpak.yml.
-    uses: ./.github/workflows/flatpak.yml
+    uses: $/.github/workflows/flatpak.yml
     with:
       tag: ${{ needs.validate.outputs.tag }}
       publish: true

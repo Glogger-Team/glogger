@@ -1,13 +1,17 @@
-"""Cut a release: create and push an annotated v<semver> tag.
+"""Cut a release: triage notes, commit them, push an annotated v<semver> tag.
 
-CI does the rest (in-workspace version sync, notes since last published
-release, signed builds, GitHub Release, updater channel, Flatpak).
+CI does the rest (in-workspace version sync, signed builds, GitHub Release,
+updater channel, Flatpak).
 
 Usage:
-    python scripts/release.py [--yes|-y] [vX.Y.Z]
+    python scripts/release.py [--yes|-y] [--dry-run] [vX.Y.Z]
 
 With no version argument, suggests the next tag from commit history via
 next-version.py and asks for confirmation unless --yes is given.
+--dry-run renders the triage draft and tags nothing. The triage pass opens
+$EDITOR with one draft line per in-range feat/fix/impv commit (trailer
+verbatim when present, else a humanized guess); --yes skips the editor and
+approves drafts as-is.
 """
 
 import argparse
@@ -17,6 +21,23 @@ import sys
 from pathlib import Path
 
 TAG_RE = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+
+TRIAGE_PREFIX = (
+    "# Lines starting with # are comments (commit subjects).\n"
+    "# Edit the draft lines, delete a line to drop it, save and exit.\n"
+    "# Empty lines and # lines are ignored.\n\n"
+)
+
+
+def triage_draft_rows(range_ref, script_dir):
+    """One triage row per in-range commit: import by path, not subprocess."""
+    import importlib.util
+
+    path = script_dir / "generate-changelog.py"
+    spec = importlib.util.spec_from_file_location("gen_changelog", path)
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    return gen.draft_items(range_ref)
 
 
 def git(args, root):
@@ -29,6 +50,9 @@ def main():
     parser = argparse.ArgumentParser(description="Cut a release tag and push it.")
     parser.add_argument("version", nargs="?")
     parser.add_argument("--yes", "-y", action="store_true")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="render triage draft, tag nothing"
+    )
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parent.parent
@@ -61,11 +85,15 @@ def main():
             return 1
         sys.stderr.write(suggestion.stderr)
         print(f"Suggesting {tag} ...")
-        if not args.yes:
+        if args.dry_run:
+            pass  # triage block below renders and exits before any prompt
+        elif not args.yes:
             answer = input(f"Tag and push {tag} from main? [y/N] ")
             if not re.match(r"^[Yy]$", answer):
                 print("Aborted.")
                 return 1
+
+    script_dir = Path(__file__).resolve().parent
 
     branch = git(["rev-parse", "--abbrev-ref", "HEAD"], root)
     if branch.stdout.strip() != "main":
@@ -91,6 +119,170 @@ def main():
         print(f"Error: tag {tag} already exists (locally or on origin)")
         return 1
 
+    # Gate hardening (vue lesson): warn when latest main CI run is red.
+    gh = subprocess.run(
+        [
+            "gh",
+            "run",
+            "list",
+            "--branch",
+            "main",
+            "--limit",
+            "1",
+            "--json",
+            "conclusion",
+            "--jq",
+            ".[0].conclusion",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if gh.returncode == 0 and gh.stdout.strip():
+        if gh.stdout.strip() not in ("success", "skipped"):
+            print(f"Warning: latest main CI run is {gh.stdout.strip()} (not blocking)")
+    else:
+        print("Warning: could not check CI status (gh unavailable?)")
+
+    # Release-time triage pass: draft every in-range line, edit in $EDITOR,
+    # approved lines land in release-notes/<tag>.md for the generator.
+    prev_proc = subprocess.run(
+        [
+            sys.executable,
+            str(script_dir / "last-published-tag.py"),
+            "Glogger-Team/glogger",
+        ],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if prev_proc.returncode != 0:
+        sys.stderr.write((prev_proc.stderr or "").strip() + "\n")
+        print(
+            "Error: could not determine last published tag - refusing to guess the range."
+        )
+        return 1
+    prev_tag = prev_proc.stdout.strip().splitlines()
+    prev_tag = prev_tag[0] if prev_tag else ""
+    range_ref = f"{prev_tag}..HEAD" if prev_tag else "HEAD"
+
+    def render_grouped(pairs, header):
+        order = [("feat", "### New"), ("fix", "### Fixed"), ("impv", "### Improved")]
+        out = [header.rstrip("\n"), ""]
+        for key, title in order:
+            lines = [text for section, text in pairs if section == key]
+            if lines:
+                out += [title] + [f"- {t}" for t in lines] + [""]
+        return "\n".join(out) + "\n"
+
+    rows = triage_draft_rows(range_ref, script_dir)
+    if args.dry_run:
+        for r in rows:
+            print(f"[{r['section']}] {r['draft']}")
+        return 0
+    if rows and not args.yes:
+        import os
+        import tempfile
+
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".md", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(TRIAGE_PREFIX)
+            f.write("# Format: [n] draft text — keep the [n] tag, edit the text.\n")
+            f.write("# Delete a line to drop it. Lines without a tag go to Improved.\n")
+            for n, r in enumerate(rows):
+                marker = " (trailer)" if r["has_trailer"] else " (draft)"
+                f.write(f"# [{r['section']}]{marker} {r['subject']}\n")
+                f.write(f"[{n}] {r['draft']}\n\n")
+            triage_path = f.name
+        editor = os.environ.get("EDITOR", "notepad" if os.name == "nt" else "vi")
+        try:
+            edited = subprocess.run([editor, triage_path], check=False)
+            if edited.returncode != 0:
+                print(
+                    f"Error: editor exited {edited.returncode} - notes not saved, tag not created."
+                )
+                return 1
+            with open(triage_path, encoding="utf-8", errors="replace") as fh:
+                approved = [
+                    ln.strip()
+                    for ln in fh
+                    if ln.strip() and not ln.strip().startswith("#")
+                ]
+            import re as _re
+
+            tag_re = _re.compile(r"^\[(\d+)\]\s*(.*)$")
+            pairs = []
+            for ln in approved:
+                m = tag_re.match(ln)
+                if m and int(m.group(1)) < len(rows):
+                    pairs.append((rows[int(m.group(1))]["section"], m.group(2)))
+                else:
+                    pairs.append(("impv", tag_re.sub(r"\2", ln)))
+        finally:
+            os.unlink(triage_path)
+        notes_dir = root / "release-notes"
+        notes_dir.mkdir(exist_ok=True)
+        notes_file = notes_dir / f"{tag}.md"
+        header = f"## What's Changed since {prev_tag}"
+        body = (
+            render_grouped(pairs, header)
+            if approved
+            else header
+            + "\n\n### Improved\n- No visible changes — stability and maintenance update.\n"
+        )
+        notes_file.write_text(body, encoding="utf-8")
+        print(f"Wrote {notes_file} ({len(approved)} lines)")
+        git(["add", str(notes_file.relative_to(root))], root)
+        if not git(
+            ["status", "--porcelain", "--", str(notes_file)], root
+        ).stdout.strip():
+            print(f"Notes unchanged ({notes_file}); skipping commit")
+        else:
+            noted = subprocess.run(
+                ["git", "commit", "-m", f"release: notes for {tag}", "--no-verify"],
+                cwd=root,
+                check=False,
+            )
+            if noted.returncode != 0:
+                print("Error: could not commit triage notes")
+                return 1
+    elif rows:
+        # --yes: non-interactive automation path. Approve drafts as-is so CI
+        # uses the triaged file instead of silently falling back.
+        print("Warning: --yes skips the triage editor; approving drafts as-is")
+        notes_dir = root / "release-notes"
+        notes_dir.mkdir(exist_ok=True)
+        notes_file = notes_dir / f"{tag}.md"
+        body = render_grouped(
+            [(r["section"], r["draft"]) for r in rows],
+            f"## What's Changed since {prev_tag}",
+        )
+        notes_file.write_text(body, encoding="utf-8")
+        git(["add", str(notes_file.relative_to(root))], root)
+        if not git(
+            ["status", "--porcelain", "--", str(notes_file)], root
+        ).stdout.strip():
+            print(f"Notes unchanged ({notes_file}); skipping commit")
+        else:
+            noted = subprocess.run(
+                ["git", "commit", "-m", f"release: notes for {tag}", "--no-verify"],
+                cwd=root,
+                check=False,
+            )
+            if noted.returncode != 0:
+                print("Error: could not commit triage notes")
+                return 1
+
+    branch_push = subprocess.run(
+        ["git", "push", "origin", "main"], cwd=root, check=False
+    )
+    if branch_push.returncode != 0:
+        print("Error: failed to push main (notes commit) - tag not created.")
+        print("Then retry with: git push origin main")
+        return 1
     tagged = subprocess.run(
         ["git", "tag", "-a", tag, "-m", "glogger " + tag], cwd=root, check=False
     )

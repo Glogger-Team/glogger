@@ -11,16 +11,15 @@ Usage:
   python scripts/generate-changelog.py v1.0.2 v1.0.3^  # a historical range (until ref)
 
 Commit prefixes are the source of truth for grouping:
-  feat: -> Features, impv: -> Improvements, fix: -> Fixes.
+  feat: -> New, fix: -> Fixed, impv: -> Improved.
 docs:/test:/build:/chore:/release: and merges are intentionally excluded —
 anything a user should read about belongs in a feat:/impv:/fix: commit.
 Subjects naming repo tooling (lint, hooks, gates, classifiers, review
-rounds, editions) are omitted as internal — see is_internal_subject in
-scripts/release_notes.py. Squash bodies contribute their first explanatory
-prose paragraph as an indented detail line under the entry title.
-Output is humanized for end users: the type prefix and `!` are stripped at
-render, the scope (if any) is kept as a `Scope: …` label, sentence-cased,
-with no hashes, PR refs, or commit counts.
+rounds, release automation) are omitted as internal — see is_internal_subject in
+scripts/release_notes.py. Output is one line per entry for players
+(UI labels like Inventory or StallTracker allowed, no code terms, no paths).
+Wording is polished by hand before tagging; breaking changes get a top
+Notice: block added by hand when player action is needed.
 """
 
 import re
@@ -31,7 +30,7 @@ from pathlib import Path
 # Classification lives in scripts/release_notes.py (shared with
 # next-version.py). Imported, not duplicated.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from release_notes import entries_for_record, is_internal_subject, prose_detail
+from release_notes import entries_for_record, prose_detail
 
 SCOPED_RE = re.compile(r"^(feat|fix|impv)\(([^)]*)\)!?:\s*(.*)$")
 BARE_RE = re.compile(r"^(feat|fix|impv)!?:\s*(.*)$")
@@ -128,10 +127,39 @@ def commit_records(range_ref):
 
 
 def entry_lines(cleaned, detail):
-    """One entry: `- Title` plus an optional indented detail sentence."""
-    if detail and detail != cleaned:
-        return [f"- {cleaned}", f"  {detail}"]
+    """One entry: `- Title` only (detail dropped for the 1-line template)."""
+    del detail
     return [f"- {cleaned}"]
+
+
+def draft_items(range_ref):
+    """Release-time triage rows: one per notes entry in range.
+
+    Each row is a dict with section/draft/has_trailer/subject keys.
+    draft is the trailer verbatim when present, else the humanized
+    subject/bullet guess for the user to accept, rewrite, merge, or mark
+    none. Commits filtered by the internal-subject denylist or without
+    notes sections never reach triage — release.py drops lines there.
+    """
+    from release_notes import release_note_trailer, visible_entries
+
+    rows = []
+    for subject, body, entries in commit_records(range_ref):
+        kept = visible_entries(subject, body, entries)
+        if not kept:
+            continue
+        trailer = release_note_trailer(body)
+        for section, text in kept:
+            draft = trailer if trailer else humanize(text)
+            rows.append(
+                {
+                    "section": section,
+                    "draft": draft,
+                    "has_trailer": trailer is not None and trailer != "",
+                    "subject": subject,
+                }
+            )
+    return rows
 
 
 def sections_for(range_ref):
@@ -139,15 +167,11 @@ def sections_for(range_ref):
     improvements = []
     fixes = []
     seen = set()
+    from release_notes import visible_entries as _visible
+
     for subject, body, entries in commit_records(range_ref):
-        if is_internal_subject(subject):
-            continue
         detail = prose_detail(body)
-        for section, text in entries:
-            if section not in ("feat", "impv", "fix"):
-                continue
-            if not text or is_internal_subject(text):
-                continue
+        for section, text in _visible(subject, body, entries):
             cleaned = humanize(text)
             key = (section, cleaned)
             if key in seen:
@@ -169,13 +193,17 @@ def render(range_ref, header, initial):
         out += ["Initial release.", ""]
     features, improvements, fixes = sections_for(range_ref)
     if features:
-        out += ["### Features", *features, ""]
-    if improvements:
-        out += ["### Improvements", *improvements, ""]
+        out += ["### New", *features, ""]
     if fixes:
-        out += ["### Fixes", *fixes, ""]
+        out += ["### Fixed", *fixes, ""]
+    if improvements:
+        out += ["### Improved", *improvements, ""]
     if not features and not improvements and not fixes:
-        out += ["No user-facing changes in this release.", ""]
+        out += [
+            "### Improved",
+            "- No visible changes — stability and maintenance update.",
+            "",
+        ]
     return "\n".join(out) + "\n"
 
 
