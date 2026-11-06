@@ -28,7 +28,7 @@ run = ["python scripts/check-commit-msg.py --self-test"]
 description = "yamllint + zizmor + pinact on .github/ (commit-fast slice)"
 run = [
   "yamllint .github/",
-  "zizmor --no-online-audits --config \"{{config_root}}/.github/zizmor.yml\" --min-severity medium \"{{config_root}}/.github/workflows/\"",
+  "zizmor -o --config \"{{config_root}}/.github/zizmor.yml\" \"{{config_root}}/.github/workflows/\"",
   "pinact run --check",
 ]
 

@@ -1,0 +1,15 @@
+# Line-ending policy: LF everywhere — index and worktree, every box.
+#
+# `* text=auto eol=lf` normalizes every text file to LF on commit AND checks
+# out LF on every platform. The `eol` attribute beats `core.autocrlf` for
+# checkout conversion, so Windows clones get LF worktrees (matching Linux CI)
+# without per-machine config. The pre-commit hook reads worktree bytes, so
+# this is what lets `yamllint new-lines` pass locally instead of only in CI.
+* text=auto eol=lf
+
+# Binary media: never convert, never diff, never gate. (PNG/ICO headers
+# carry `\r` bytes; without this git could misread them as text.)
+*.png binary
+*.ico binary
+*.icns binary
+*.webp binary
