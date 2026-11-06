@@ -158,6 +158,12 @@ def main():
         text=True,
         check=False,
     )
+    if prev_proc.returncode != 0:
+        sys.stderr.write((prev_proc.stderr or "").strip() + "\n")
+        print(
+            "Error: could not determine last published tag - refusing to guess the range."
+        )
+        return 1
     prev_tag = prev_proc.stdout.strip().splitlines()
     prev_tag = prev_tag[0] if prev_tag else ""
     range_ref = f"{prev_tag}..HEAD" if prev_tag else "HEAD"
@@ -227,14 +233,19 @@ def main():
         notes_file.write_text(body, encoding="utf-8")
         print(f"Wrote {notes_file} ({len(approved)} lines)")
         git(["add", str(notes_file.relative_to(root))], root)
-        noted = subprocess.run(
-            ["git", "commit", "-m", f"release: notes for {tag}", "--no-verify"],
-            cwd=root,
-            check=False,
-        )
-        if noted.returncode != 0:
-            print("Error: could not commit triage notes")
-            return 1
+        if not git(
+            ["status", "--porcelain", "--", str(notes_file)], root
+        ).stdout.strip():
+            print(f"Notes unchanged ({notes_file}); skipping commit")
+        else:
+            noted = subprocess.run(
+                ["git", "commit", "-m", f"release: notes for {tag}", "--no-verify"],
+                cwd=root,
+                check=False,
+            )
+            if noted.returncode != 0:
+                print("Error: could not commit triage notes")
+                return 1
     elif rows:
         # --yes: non-interactive automation path. Approve drafts as-is so CI
         # uses the triaged file instead of silently falling back.
@@ -248,14 +259,19 @@ def main():
         )
         notes_file.write_text(body, encoding="utf-8")
         git(["add", str(notes_file.relative_to(root))], root)
-        noted = subprocess.run(
-            ["git", "commit", "-m", f"release: notes for {tag}", "--no-verify"],
-            cwd=root,
-            check=False,
-        )
-        if noted.returncode != 0:
-            print("Error: could not commit triage notes")
-            return 1
+        if not git(
+            ["status", "--porcelain", "--", str(notes_file)], root
+        ).stdout.strip():
+            print(f"Notes unchanged ({notes_file}); skipping commit")
+        else:
+            noted = subprocess.run(
+                ["git", "commit", "-m", f"release: notes for {tag}", "--no-verify"],
+                cwd=root,
+                check=False,
+            )
+            if noted.returncode != 0:
+                print("Error: could not commit triage notes")
+                return 1
 
     branch_push = subprocess.run(
         ["git", "push", "origin", "main"], cwd=root, check=False
