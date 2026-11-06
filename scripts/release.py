@@ -213,9 +213,12 @@ def main():
         # fires on a missing key, and split("") yields [] (WinError 2 on
         # launch). which() names the next failure class instead of the
         # bare traceback.
-        editor = shlex.split(
-            os.environ.get("EDITOR") or ("notepad" if os.name == "nt" else "vi")
+        raw_editor = os.environ.get("EDITOR") or (
+            "notepad" if os.name == "nt" else "vi"
         )
+        # POSIX shlex strips backslashes from Windows paths
+        # (C:\WINDOWS\... -> C:WINDOWS...). posix=False keeps them.
+        editor = shlex.split(raw_editor, posix=(os.name != "nt"))
         if not editor or shutil.which(editor[0]) is None:
             print(
                 f"Error: editor {editor[0] if editor else ''!r} not found "
