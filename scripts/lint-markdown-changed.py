@@ -33,8 +33,17 @@ import sys
 def in_scope(path: str) -> bool:
     if not path.endswith(".md"):
         return False
-    base = path.replace("\\", "/").rsplit("/", 1)[-1]
-    return base != "CHANGELOG.md"
+    norm = path.replace("\\", "/")
+    base = norm.rsplit("/", 1)[-1]
+    if base == "CHANGELOG.md":
+        return False
+    # Triage files are generator-shaped (## header + ### groups, written by
+    # scripts/release.py), not hand-maintained docs — the gate's MD041/MD022
+    # rules reject that shape. CI release.yml consumes them verbatim.
+    return not (
+        norm == "release-notes/NOTES.md"
+        or (norm.startswith("release-notes/v") and norm.endswith(".md"))
+    )
 
 
 def git(*args: str) -> list[str]:
