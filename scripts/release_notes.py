@@ -39,6 +39,16 @@ MERGE_RE = re.compile(r"^Merge ")
 # Matched case-insensitively; first match wins. "none" (any case, with or
 # without trailing period) marks a deliberate skip.
 TRAILER_RE = re.compile(r"^Release-Note:\s*(.+?)\s*$", re.IGNORECASE)
+WORD_BOUND_PHRASES = frozenset(
+    {
+        # Short/generic tokens that collide with ordinary game vocabulary
+        # (flint, splinter, parry, parity is a real word): match on word
+        # boundaries so "fix: flint sword damage" survives. Everything else
+        # stays substring — specific enough not to collide.
+        "lint",
+        "parity",
+    }
+)
 INTERNAL_PHRASES = (
     # Tooling the user never sees: lint slices, hooks, gates, classifiers,
     # release automation, and review-process batches. Matched case-insensitively
@@ -316,7 +326,13 @@ def is_internal_subject(subject):
     bump classification is untouched (internal work still counts as patch).
     """
     lowered = subject.lower()
-    return any(phrase in lowered for phrase in INTERNAL_PHRASES)
+    for phrase in INTERNAL_PHRASES:
+        if phrase in WORD_BOUND_PHRASES:
+            if re.search(r"\b" + re.escape(phrase) + r"\b", lowered):
+                return True
+        elif phrase in lowered:
+            return True
+    return False
 
 
 def prose_detail(body_lines):

@@ -5,11 +5,22 @@ Per-release notes use the same grouping as scripts/generate-changelog.py
 (no type prefix, hash, PR ref, or commit count).
 Releases that predate the commit-prefix convention list all commit subjects.
 
-## Unreleased (since v1.12.0)
+## Unreleased (since v1.13.0)
+
+### Fixed
+- Harden release.py against Windows traps and protected main
+
+
+## v1.13.0 (2026-11-05)
+
+### New
+- Group Gift Watcher by zone with zone filter
+
+### Fixed
+- Backend-owned mushroom farming reference, Mortaferus substrate corrected
 
 ### Improved
-- No visible changes — stability and maintenance update.
-
+- Player-first release notes with release-time triage
 
 ## v1.12.0 (2026-11-04)
 
@@ -265,8 +276,9 @@ Releases that predate the commit-prefix convention list all commit subjects.
 
 ## v1.0.1 (2026-10-05)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v1.0.1 (`e0373ae`)
 
 ## v1.0.0 (2026-10-05)
 
@@ -311,8 +323,12 @@ Releases that predate the commit-prefix convention list all commit subjects.
 
 ## v0.12.17 (2026-07-30)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- Merge pull request #126 from crisp-oddio/release/v0.12.17 (`cf5e360`)
+- release: v0.12.17 (`cd3e152`)
+- Merge pull request #125 from crisp-oddio/dev (`161dfa3`)
+- feat(gourmand): classify foods by source (crafted vs event vs drop) (`75ffa9b`)
 
 ## v0.12.16 (2026-07-29)
 
@@ -499,8 +515,10 @@ Releases that predate the commit-prefix convention list all commit subjects.
 
 ## v0.11.19 (2026-07-02)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- Merge pull request #57 from crisp-oddio/release/v0.11.19 (`e833ee8`)
+- release: v0.11.19 (`8cacac1`)
 
 ## v0.11.18 (2026-07-02)
 
@@ -509,8 +527,12 @@ Releases that predate the commit-prefix convention list all commit subjects.
 
 ## v0.11.17 (2026-07-01)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- Merge pull request #54 from crisp-oddio/release/v0.11.17 (`0894a55`)
+- release: v0.11.17 (`457806d`)
+- Merge pull request #53 from crisp-oddio/dev (`3120af7`)
+- style(roulette): fit widget within fixed card height (`bd348bd`)
 
 ## v0.11.16 (2026-07-01)
 
@@ -519,8 +541,12 @@ Releases that predate the commit-prefix convention list all commit subjects.
 
 ## v0.11.15 (2026-06-30)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- Merge pull request #50 from crisp-oddio/release/v0.11.15 (`ad37fdc`)
+- release: v0.11.15 (`ff5ad7e`)
+- Merge pull request #49 from crisp-oddio/dev (`bb1d66d`)
+- style(roulette): roomier board cells for legibility (`be1eb40`)
 
 ## v0.11.14 (2026-06-30)
 
@@ -656,8 +682,9 @@ Releases that predate the commit-prefix convention list all commit subjects.
 
 ## v0.9.18 (2026-06-21)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.9.18 (`8549d6f`)
 
 ## v0.9.17 (2026-06-21)
 
@@ -672,8 +699,11 @@ Releases that predate the commit-prefix convention list all commit subjects.
 
 ## v0.9.15 (2026-06-20)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.9.15 (`a7c5502`)
+- Merge pull request #7 from crisp-oddio/dev (`5f7d162`)
+- feat(farming): split gathered boxes, Active/History parity, drop-rate Database tab (`39c22f6`)
 
 ## v0.9.14 (2026-06-20)
 
@@ -746,8 +776,12 @@ Releases that predate the commit-prefix convention list all commit subjects.
 
 ## v0.9.2 (2026-06-18)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- ci: run Flatpak build inside the GNOME 47 builder container (`1482e21`)
+- ci: fix Flatpak workflow offline-source generation (`d6ab741`)
+- fix: Flatpak production build renders correctly; release v0.9.2 (`935d8ac`)
+- feat: v0.9.1 — Flatpak packaging for Linux (`4d5c2bd`)
 
 ## v0.9.0 (2026-06-18)
 
@@ -780,8 +814,11 @@ Releases that predate the commit-prefix convention list all commit subjects.
 
 ## v0.8.3 (2026-05-01)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.8.3 (`ca813fd`)
+- Merge branch 'main' of https://github.com/danielout/glogger (`620ec79`)
+- chore: prepping for swapping to singular repo (`e145506`)
 
 ## v0.8.2 (2026-05-01)
 
@@ -904,18 +941,24 @@ Releases that predate the commit-prefix convention list all commit subjects.
 
 ## v0.7.7 (2026-04-20)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.7.7 (`460cc97`)
+- build: pipe pipe pipe (`92911a1`)
 
 ## v0.7.6 (2026-04-20)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.7.6 (`ee7a435`)
+- Merge branch 'main' of https://github.com/danielout/glogger (`6b044e7`)
+- build: fix the release script maybne (`40dbb25`)
 
 ## v0.7.5 (2026-04-20)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.7.5 (`3e56d6c`)
 
 ## v0.7.4 (2026-04-20)
 
@@ -927,13 +970,19 @@ Releases that predate the commit-prefix convention list all commit subjects.
 
 ## v0.7.3 (2026-04-20)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.7.3 (`7c878e4`)
+- Merge branch 'main' of https://github.com/danielout/glogger (`ccd6e06`)
+- build: fixing release script (`42273dd`)
 
 ## v0.7.2 (2026-04-20)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.7.2 (`451e3dd`)
+- Merge branch 'main' of https://github.com/danielout/glogger (`ad6f2bf`)
+- fear: updater and new build process (`e0709d0`)
 
 ## v0.7.1 (2026-04-20)
 
@@ -1149,56 +1198,127 @@ Releases that predate the commit-prefix convention list all commit subjects.
 
 ## v0.4.5 (2026-04-06)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.4.5 (`e0ccb70`)
+- bad text on npc browser (`bcfc6a3`)
+- gourmand screen scroll fix (`9ef266a`)
+- multi-character fix (`b9fcca7`)
 
 ## v0.4.4 (2026-04-06)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.4.4 (`33d02ba`)
+- statehelm rep tracker (`fcc3570`)
+- survey analytics improvements (`bfec7fd`)
+- crafting views now properly support dynamic slots, and valid daynamic slot items can be set by players (`c0e7e86`)
+- Merge branch 'main' of https://github.com/danielout/glogger (`18404fe`)
+- survey and analytics fixes (`d263a9d`)
 
 ## v0.4.3 (2026-04-03)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.4.3 (`e8ed4f0`)
+- fixing survey summary historical data (`0552339`)
+- documenting our NPC vendor stuff (`37e36db`)
+- market prices made the app think it was vendor buyable due to legacy code. aka last week me is dumb (`624053c`)
+- Properly displaying recipes with proto items in the crafting skills display. (`2d914a8`)
 
 ## v0.4.2 (2026-04-03)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.4.2 (`4bbcb88`)
+- fixing silly build error (`a2060fe`)
+- more workflow updates. i'm dumb and can't read (`a543909`)
 
 ## v0.4.1 (2026-04-03)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.4.1 (`ddb4ed4`)
+- Updating workflow from v4 to v5 (`8bcdc62`)
+- Tackling assorted TODO list items (`5726f1a`)
+- surveying analytics improvements (`ddd00bb`)
+- Merge branch 'main' of https://github.com/danielout/glogger (`07902f1`)
+- timestamp standardization (`5fdfb9d`)
 
 ## v0.4.0 (2026-04-02)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.4.0 (`5af850c`)
+- Layout updates (`1bb2367`)
+- NEW FEATURE: Crafting Skill Reports (`98ad97f`)
+- Layout/UX improvements (`d27b38f`)
+- first step towards cross-referenced data browsing (`dab6a58`)
+- data browser and layout bugfixing (`8701a75`)
+- projtects tab improvements. groups, intermediates. (`b88669b`)
+- startup order refinement (`ace780b`)
+- titlebar version updating not automagical (`1d0c4d3`)
 
 ## v0.3.1 (2026-03-31)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.3.1 (`80a4087`)
+- build planner bugs. joy. (`b189594`)
 
 ## v0.3.0 (2026-03-30)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.3.0 (`985bc73`)
+- NEW FEATURE: Build Planner (`f799992`)
+- Fixing a bug where monsters that ate flesh lumps couldn't import their gourmand report, WOGAN. (`3033f36`)
+- layout improvement to crafting levelling planning (`31b653d`)
+- fixing up our release pipeline so i don't have to nuke my real data for testing (`4d0dcd6`)
+- build planner initial work (`53b6f35`)
+- dev/realease directory breakout and window -state plugin (`d2c00fe`)
+- fixing bug with first craft xp being modified (`463e603`)
+- documentation consolidation and organization (`52b4bea`)
+- small fix to inventory tracking - updating gamestate from json (`dfebd7f`)
+- Merge branch 'main' of https://github.com/danielout/glogger (`1173ebe`)
+- fixing the crafting level planner to use the right xp (base level vs total) standardizing how handle level across the app (`62befc4`)
+- better organizing and breaking out docs for my sanity. (`8e98b1e`)
+- haha let's stop murdering people's databases (`69b431f`)
 
 ## v0.2.2 (2026-03-29)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.2.2 (`2ec7401`)
+- fixing a bug with Cook's Help Brought To You By ReyDash (`8d3a3c9`)
+- moving gourmand doc slight ui tweaks for the crafting levelling tab. (`192413e`)
+- Merge branch 'main' of https://github.com/danielout/glogger (`2dd7d25`)
+- NPC and Quest screens for character (`abe86f7`)
 
 ## v0.2.1 (2026-03-28)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.2.1 (`e681e90`)
+- new skills page that hopefully is more useful! (`e647a38`)
+- fixed an issue with file position watchers and reactive components (`09bc459`)
 
 ## v0.2.0 (2026-03-27)
 
-### Improved
-- No visible changes — stability and maintenance update.
+_Pre-convention history — all commits in range:_
+
+- release: v0.2.0 (`efcb3d1`)
+- prep for alpha v0.2.0 (`e501377`)
+- prototype-v0.1.1 (`f22ef7a`)
+- doc shuffle (`9c19c38`)
+- prototype-v0.1.0 (`a633b4f`)
+- adding player export samples (`add51ed`)
+- adding data browser (`1b04bfe`)
+- JSON sample files for easier browsing than full files (`74022a1`)
+- Breaking out our CDN importing in to specialty files. (`09c0a00`)
+- basic survey setup (`d3358ab`)
+- breaking out things in to smaller components, refined skill view. (`05bf679`)
+- barebones testing functional (`917d75c`)
+- initial commit (`98f6efb`)
+- Initial Project Scaffold (`1f76811`)
 

@@ -2,8 +2,10 @@
 """Lint changed hand-maintained Markdown files with markdownlint-cli2.
 
 Scope (single source of truth shared by CI `lint.yml: markdown` and local
-`mise run lint:markdown`): every `*.md` EXCEPT the generated changelog —
-`CHANGELOG.md` (rewritten by `npm run changelog` each release).
+`mise run lint:markdown`): every hand-maintained `*.md` EXCEPT generated
+output — `CHANGELOG.md` (rewritten by `npm run changelog` each release)
+and `release-notes/NOTES.md` + `release-notes/v*.md` (triage files written
+by `scripts/release.py`, consumed verbatim by CI release.yml).
 
 Grandfathering: only changed files are linted; pre-existing findings in
 untouched files stay out of scope until the full `--fix` cleanup pass. CI

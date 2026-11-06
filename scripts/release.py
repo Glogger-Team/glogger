@@ -112,7 +112,11 @@ def main():
             print("Error: working tree not clean")
             print(git(["status", "--short"], root).stdout, end="")
             return 1
-        git(["fetch", "origin"], root)
+        fetch = git(["fetch", "origin"], root)
+        if fetch.returncode != 0:
+            print("Error: could not fetch origin - refusing to tag on stale refs.")
+            print((fetch.stderr or "").strip()[:200])
+            return 1
         if (
             git(["rev-parse", "HEAD"], root).stdout.strip()
             != git(["rev-parse", "origin/main"], root).stdout.strip()
@@ -228,10 +232,11 @@ def main():
             pairs = []
             for ln in approved:
                 m = tag_re.match(ln)
-                if m and int(m.group(1)) < len(rows):
+                if m and int(m.group(1)) < len(rows) and m.group(2).strip():
                     pairs.append((rows[int(m.group(1))]["section"], m.group(2)))
-                else:
+                elif not m or m.group(2).strip():
                     pairs.append(("impv", tag_re.sub(r"\2", ln)))
+                # else: [n] with deleted text — dropped, not an empty bullet.
         finally:
             os.unlink(triage_path)
         notes_dir = root / "release-notes"
