@@ -208,14 +208,21 @@ def main():
         notes_dir = root / "release-notes"
         notes_dir.mkdir(exist_ok=True)
         notes_file = notes_dir / f"{tag}.md"
-        by_draft = {}
+        from collections import deque
+
+        by_draft: dict[str, deque[str]] = {}
         for r in rows:
-            by_draft.setdefault(r["draft"], r["section"])
-        pairs = [(by_draft.get(ln, "impv"), ln) for ln in approved]
+            by_draft.setdefault(r["draft"], deque()).append(r["section"])
+        pairs = []
+        for ln in approved:
+            queue = by_draft.get(ln)
+            pairs.append((queue.popleft() if queue else "impv", ln))
+        header = f"## What's Changed since {prev_tag}"
         body = (
-            render_grouped(pairs, f"## What's Changed since {prev_tag}")
+            render_grouped(pairs, header)
             if approved
-            else "### Improved\n- No visible changes — stability and maintenance update.\n"
+            else header
+            + "\n\n### Improved\n- No visible changes — stability and maintenance update.\n"
         )
         notes_file.write_text(body, encoding="utf-8")
         print(f"Wrote {notes_file} ({len(approved)} lines)")
