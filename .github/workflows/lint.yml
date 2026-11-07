@@ -1,3 +1,20 @@
+# PR path filter: the `changes` job (first job) classifies changed files
+# into per-slice filter outputs (one boolean per scope) with pinned
+# dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d (# v4.0.3).
+# Gating contract (#131-#135): heavy steps gate on their scope output, OR
+# runall (a lint.yml edit runs every slice), OR a main push (pushes run the
+# full gate with no skips); `workflow_dispatch` stays gated. Every
+# gated job/step ends with an always-run note printing `<scope> scope: ran
+# | skipped (no <paths> changed)` — skips exit 0 with a note, never a
+# job-level `if:` (checks stay visible, never missing). Always-run set:
+# commit-msg self-test, lint-parity drift guard (unconditional in the yaml
+# job), game-interaction constraints. Per-slice scopes: ruff on
+# scripts/**; yamllint on repo-wide **/*.yml|yaml; zizmor+pinact+pre-commit
+# on .github/**; markdown on **/*.md (changed-files script); frontend build
+# on src/** + manifests; grids on src/**/*.vue; review-patterns on
+# src-tauri/src/db/migrations.rs; tests+clippy on src-tauri/** + Cargo
+# manifests; audit on Cargo manifests + scripts/cargo-audit-gate.py.
+# Local hooks (pre-commit lint:fast, pre-push lint) are untouched.
 # PR gates on PRs and main pushes: frontend type-check/build, Rust tests
 # (plus clippy `-D warnings` on all targets), plus fast local-feedback
 # linters. CI calls each `mise run lint:*` slice individually (the check
@@ -30,8 +47,94 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Path filter
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      ruff: ${{ steps.filter.outputs.ruff }}
+      yamllint: ${{ steps.filter.outputs.yamllint }}
+      actions: ${{ steps.filter.outputs.actions }}
+      markdown: ${{ steps.filter.outputs.markdown }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      grids: ${{ steps.filter.outputs.grids }}
+      review: ${{ steps.filter.outputs.review }}
+      rust: ${{ steps.filter.outputs.rust }}
+      audit: ${{ steps.filter.outputs.audit }}
+      runall: ${{ steps.filter.outputs.runall }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Path filter
+        id: filter
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            ruff:
+              - 'scripts/**'
+            yamllint:
+              - '**/*.yml'
+              - '**/*.yaml'
+            actions:
+              - '.github/**'
+            markdown:
+              - '**/*.md'
+            frontend:
+              - 'src/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'vite.config.ts'
+              - 'index.html'
+              - 'dev-panel.html'
+            grids:
+              - 'src/**/*.vue'
+            review:
+              - 'src-tauri/src/db/migrations.rs'
+            rust:
+              - 'src-tauri/**'
+              - 'src-tauri/Cargo.toml'
+              - 'src-tauri/Cargo.lock'
+            audit:
+              - 'src-tauri/Cargo.toml'
+              - 'src-tauri/Cargo.lock'
+              - 'scripts/cargo-audit-gate.py'
+            runall:
+              - '.github/workflows/lint.yml'
+
+      - name: Log filter outputs
+        env:
+          FILTER_RUFF: ${{ steps.filter.outputs.ruff }}
+          FILTER_YAMLLINT: ${{ steps.filter.outputs.yamllint }}
+          FILTER_ACTIONS: ${{ steps.filter.outputs.actions }}
+          FILTER_MARKDOWN: ${{ steps.filter.outputs.markdown }}
+          FILTER_FRONTEND: ${{ steps.filter.outputs.frontend }}
+          FILTER_GRIDS: ${{ steps.filter.outputs.grids }}
+          FILTER_REVIEW: ${{ steps.filter.outputs.review }}
+          FILTER_RUST: ${{ steps.filter.outputs.rust }}
+          FILTER_AUDIT: ${{ steps.filter.outputs.audit }}
+          FILTER_RUN_ALL: ${{ steps.filter.outputs.runall }}
+        run: |
+          echo "ruff=$FILTER_RUFF"
+          echo "yamllint=$FILTER_YAMLLINT"
+          echo "actions=$FILTER_ACTIONS"
+          echo "markdown=$FILTER_MARKDOWN"
+          echo "frontend=$FILTER_FRONTEND"
+          echo "grids=$FILTER_GRIDS"
+          echo "review=$FILTER_REVIEW"
+          echo "rust=$FILTER_RUST"
+          echo "audit=$FILTER_AUDIT"
+          echo "runall=$FILTER_RUN_ALL"
+
   ruff:
     name: Ruff (Python)
+    needs: [changes]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -41,8 +144,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check ruff scope (#132)
+        # Reads the `ruff` filter output; heavy steps below no-op unless
+        # scripts/ changed.
+        env:
+          RUFF_SCOPE: ${{ needs.changes.outputs.ruff }}
+        run: echo "ruff=$RUFF_SCOPE"
 
       - name: Install mise and tools
+        if: needs.changes.outputs.ruff == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         # No third-party action (org allowlist): official installer script.
         # `mise install` / `mise run` trust the active config automatically,
         # so no explicit `mise trust` step.
@@ -54,8 +164,22 @@ jobs:
           mise install
 
       - name: Ruff check and format
+        if: needs.changes.outputs.ruff == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         # Same `mise run lint:ruff` slice the pre-commit hook runs.
         run: mise run lint:ruff
+
+      - name: Ruff scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
+        if: always()
+        env:
+          RUFF_SCOPE: ${{ needs.changes.outputs.ruff }}
+        run: |
+          if [ "$RUFF_SCOPE" = "true" ]; then
+            echo "ruff scope: ran"
+          else
+            echo "ruff scope: skipped (no scripts/** changed)"
+          fi
 
   commit-msg:
     name: Commit-msg hook contract
@@ -89,6 +213,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+    # #134: runs when Cargo manifests or the gate script change; else the
+    # audit step skips and the note below exits green.
+    needs: [changes]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -110,16 +237,32 @@ jobs:
 
       - name: Install cargo-audit
         # Floor, not a freeze: no watcher here, so a freeze would rot silently.
+        if: needs.changes.outputs.audit == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         run: set -euo pipefail; cargo install cargo-audit --locked
 
       - name: Audit (fail on critical/high only)
         # Same `mise run lint:audit` slice (`lint:full` full gate; CI runs
         # every slice individually): scripts/cargo-audit-gate.py owns
         # ignores + scoring.
+        if: needs.changes.outputs.audit == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         run: mise run lint:audit
+
+      - name: Audit scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
+        if: always()
+        env:
+          AUDIT_SCOPE: ${{ needs.changes.outputs.audit }}
+        run: |
+          if [ "$AUDIT_SCOPE" = "true" ]; then
+            echo "audit scope: ran"
+          else
+            echo "audit scope: skipped (no Cargo manifests or gate script changed)"
+          fi
 
   yaml:
     name: YAML and Actions
+    needs: [changes]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -129,6 +272,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Check yaml scope (#132)
+        # Job runs if either scope is true.
+        env:
+          YAMLLINT_SCOPE: ${{ needs.changes.outputs.yamllint }}
+          ACTIONS_SCOPE: ${{ needs.changes.outputs.actions }}
+        run: |
+          echo "yamllint=$YAMLLINT_SCOPE"
+          echo "actions=$ACTIONS_SCOPE"
 
       - name: Install mise and tools
         # No third-party action and no setup-python step (org allowlist):
@@ -141,16 +293,25 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           mise install
 
-      - name: YAML and Actions (yamllint + zizmor + pinact)
-        # Same `mise run lint:yaml` slice the pre-commit hook runs — pinact
-        # now gates CI too (green on HEAD; was local-only because
-        # pinact-action is uninstallable on stock runners).
+      - name: yamllint (.github)
+        # `lint:yaml` slice part 1 (same `yamllint .github/` the pre-commit
+        # hook runs): gates on the `yamllint` filter output.
+        if: needs.changes.outputs.yamllint == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
+        run: mise exec -- yamllint .github/
+
+      - name: zizmor + pinact (.github/workflows)
+        # `lint:yaml` slice parts 2-3 (same zizmor + pinact commands the
+        # pre-commit hook runs via `mise run lint:yaml`): gate on `actions`.
         # GITHUB_TOKEN keeps pinact's tag-lookup API calls authenticated
         # (5k/hr vs 60/hr anonymous — the anonymous pool exhausts on busy
         # repos). Local runs stay tokenless; CI-only difference.
+        if: needs.changes.outputs.actions == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: mise run lint:yaml
+        run: |
+          set -euo pipefail
+          mise exec -- zizmor -o --config .github/zizmor.yml .github/workflows/
+          mise exec -- pinact run --check
 
       - name: Lint-parity drift guard
         # Same `mise run lint:parity` slice the pre-commit hook runs (via
@@ -158,10 +319,26 @@ jobs:
         # contract holds, fast-set stays seconds-scale.
         run: mise run lint:parity
       - name: Validate pre-commit config
+        if: needs.changes.outputs.actions == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         run: mise exec -- pre-commit validate-config
+
+      - name: YAML scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
+        if: always()
+        env:
+          YAMLLINT_SCOPE: ${{ needs.changes.outputs.yamllint }}
+          ACTIONS_SCOPE: ${{ needs.changes.outputs.actions }}
+        run: |
+          if [ "$YAMLLINT_SCOPE" = "true" ] || [ "$ACTIONS_SCOPE" = "true" ]; then
+            echo "yaml scope: ran"
+          else
+            echo "yaml scope: skipped (no repo-wide YAML or .github/** changed)"
+          fi
 
   markdown:
     name: Markdown (changed files)
+    needs: [changes]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -175,7 +352,15 @@ jobs:
           # checkout can't diff against it.
           fetch-depth: 0
 
+      - name: Check markdown scope (#132)
+        # Reads the `markdown` filter output; heavy steps below no-op
+        # unless *.md changed.
+        env:
+          MARKDOWN_SCOPE: ${{ needs.changes.outputs.markdown }}
+        run: echo "markdown=$MARKDOWN_SCOPE"
+
       - name: Install mise and tools
+        if: needs.changes.outputs.markdown == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         # No third-party action (org allowlist): official installer script;
         # mise provides node + python + markdownlint-cli2 from mise.toml.
         run: |
@@ -186,6 +371,7 @@ jobs:
           mise install
 
       - name: Markdown lint (changed hand-maintained docs)
+        if: needs.changes.outputs.markdown == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         # Scope lives in scripts/lint-markdown-changed.py (single source of
         # truth with `mise run lint:markdown`): all *.md except CHANGELOG.md
         # (generator-rewritten each release). Grandfathered: only changed
@@ -203,8 +389,22 @@ jobs:
           fi
           mise exec -- python scripts/lint-markdown-changed.py --base "$BASE"
 
+      - name: Markdown scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
+        if: always()
+        env:
+          MARKDOWN_SCOPE: ${{ needs.changes.outputs.markdown }}
+        run: |
+          if [ "$MARKDOWN_SCOPE" = "true" ]; then
+            echo "markdown scope: ran"
+          else
+            echo "markdown scope: skipped (no **/*.md changed)"
+          fi
+
   frontend:
     name: Frontend type-check and build
+    needs: [changes]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -214,6 +414,17 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Log gate inputs (#133)
+        # Reads the path-filter outputs this job gates on; informational only.
+        env:
+          GATE_FRONTEND: ${{ needs.changes.outputs.frontend }}
+          GATE_GRIDS: ${{ needs.changes.outputs.grids }}
+          GATE_REVIEW: ${{ needs.changes.outputs.review }}
+        run: |
+          echo "frontend=$GATE_FRONTEND"
+          echo "grids=$GATE_GRIDS"
+          echo "review=$GATE_REVIEW"
 
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -233,31 +444,77 @@ jobs:
           mise install
 
       - name: Install frontend dependencies
+        # Shared by the type-check/build and grids steps (both run on node);
+        # skipped only when neither scope needs it.
+        if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.grids == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         run: npm ci
       - name: Frontend type-check and build
         # CI-only `mise run lint:build` slice (full vite bundle — too slow
         # even for push, which runs `lint:typecheck` instead via `mise run
         # lint`). Would have caught the TS 7 major: vue-tsc crashes on
         # its removed './lib/tsc' export before checking a single file.
+        if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         run: mise run lint:build
+
+      - name: Frontend scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
+        if: always()
+        env:
+          FRONTEND_SCOPE: ${{ needs.changes.outputs.frontend }}
+        run: |
+          if [ "$FRONTEND_SCOPE" = "true" ]; then
+            echo "frontend scope: ran"
+          else
+            echo "frontend scope: skipped (no src or manifest paths changed)"
+          fi
 
       - name: Grid standards
         # Same `mise run lint:grids` slice (`lint:fast` commit set, also in
         # push `lint`).
+        if: needs.changes.outputs.grids == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         run: mise run lint:grids
+
+      - name: Grids scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
+        if: always()
+        env:
+          GRIDS_SCOPE: ${{ needs.changes.outputs.grids }}
+        run: |
+          if [ "$GRIDS_SCOPE" = "true" ]; then
+            echo "grids scope: ran"
+          else
+            echo "grids scope: skipped (no src/**/*.vue changed)"
+          fi
 
       - name: Game-interaction hard lines (TOS/CoC)
         # Same `mise run lint:constraints` slice (`lint:full` full gate —
         # no longer in push `lint`; CI + manual stage A + release
-        # `validate` enforce).
+        # `validate` enforce). UNGATED: always runs, so the job exits 0
+        # with a real check even when every gated scope skips.
         shell: pwsh
         run: mise run lint:constraints
 
       - name: Review-patterns gate (decided defect shapes)
         # Same `mise run lint:review` slice (`lint:fast` commit set, also
         # in push `lint`).
+        if: needs.changes.outputs.review == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         shell: bash
         run: mise run lint:review
+
+      - name: Review scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
+        if: always()
+        env:
+          REVIEW_SCOPE: ${{ needs.changes.outputs.review }}
+        run: |
+          if [ "$REVIEW_SCOPE" = "true" ]; then
+            echo "review scope: ran"
+          else
+            echo "review scope: skipped (no migrations.rs changed)"
+          fi
 
   rust-tests:
     name: Rust tests
@@ -265,6 +522,9 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    # #134: test + clippy share one scope (src-tauri + Cargo manifests);
+    # checkout/cache/apt/mise setup stay unconditional, heavy steps gate.
+    needs: [changes]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -339,8 +599,23 @@ jobs:
       - name: Rust tests
         # Same `mise run lint:test` slice (`lint:full` full gate; CI runs
         # every slice individually).
+        if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         run: mise run lint:test
 
       - name: Clippy (deny warnings)
         # Same `mise run lint:clippy` slice (push `lint` keeps it).
+        if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         run: mise run lint:clippy
+
+      - name: Rust scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
+        if: always()
+        env:
+          RUST_SCOPE: ${{ needs.changes.outputs.rust }}
+        run: |
+          if [ "$RUST_SCOPE" = "true" ]; then
+            echo "rust scope: ran"
+          else
+            echo "rust scope: skipped (no src-tauri or Cargo paths changed)"
+          fi
