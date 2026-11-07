@@ -1,7 +1,19 @@
 # PR path filter: the `changes` job (first job) classifies changed files
 # into per-slice filter outputs (one boolean per scope) with pinned
 # dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad (# v4.0.3).
-# No job gates on these outputs yet — gating lands in #132/#133/#134.
+# Gating contract (#131-#135): heavy steps gate on their scope output and
+# every gated job/step ends with an always-run note printing `<scope>
+# scope: ran | skipped (no <paths> changed)` — skips exit 0 with a note,
+# never a job-level `if:` (checks stay visible, never missing). Always-run
+# set: commit-msg self-test, lint-parity drift guard, game-interaction
+# constraints. Per-slice scopes: ruff on scripts/**; yamllint on repo-wide
+# **/*.yml|yaml; zizmor+pinact+parity+pre-commit on .github/**; markdown
+# on **/*.md (changed-files script); frontend build on src/** + manifests;
+# grids on src/**/*.vue; review-patterns on
+# src-tauri/src/db/migrations.rs; tests+clippy on src-tauri/** + Cargo
+# manifests; audit on Cargo manifests + scripts/cargo-audit-gate.py. A
+# lint.yml edit runs every slice (run-all); main pushes run the full gate.
+# Local hooks (pre-commit lint:fast, pre-push lint) are untouched.
 # PR gates on PRs and main pushes: frontend type-check/build, Rust tests
 # (plus clippy `-D warnings` on all targets), plus fast local-feedback
 # linters. CI calls each `mise run lint:*` slice individually (the check
@@ -155,18 +167,17 @@ jobs:
         # Same `mise run lint:ruff` slice the pre-commit hook runs.
         run: mise run lint:ruff
 
-      - name: Ruff scope note (#132)
+      - name: Ruff scope note
         # Always-run note: skipped = exit 0 with note, never a job-level
         # `if:` (keeps the check visible, not missing).
         if: always()
         env:
           RUFF_SCOPE: ${{ needs.changes.outputs.ruff }}
         run: |
-          echo "ruff scope: $RUFF_SCOPE"
           if [ "$RUFF_SCOPE" = "true" ]; then
-            echo "ruff slice ran."
+            echo "ruff scope: ran"
           else
-            echo "ruff slice skipped: no changed files in scope."
+            echo "ruff scope: skipped (no scripts/** changed)"
           fi
 
   commit-msg:
@@ -235,14 +246,17 @@ jobs:
         if: needs.changes.outputs.audit == 'true'
         run: mise run lint:audit
 
-      - name: No relevant changes (audit skipped)
+      - name: Audit scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
         if: always()
+        env:
+          AUDIT_SCOPE: ${{ needs.changes.outputs.audit }}
         run: |
-          echo "audit=${{ needs.changes.outputs.audit }}"
-          if [ "${{ needs.changes.outputs.audit }}" = "true" ]; then
-            echo "audit scope touched: advisory check ran."
+          if [ "$AUDIT_SCOPE" = "true" ]; then
+            echo "audit scope: ran"
           else
-            echo "No relevant changes: cargo audit skipped (exit 0)."
+            echo "audit scope: skipped (no Cargo manifests or gate script changed)"
           fi
 
   yaml:
@@ -309,7 +323,7 @@ jobs:
         if: needs.changes.outputs.actions == 'true'
         run: mise exec -- pre-commit validate-config
 
-      - name: YAML scope note (#132)
+      - name: YAML scope note
         # Always-run note: skipped = exit 0 with note, never a job-level
         # `if:` (keeps the check visible, not missing).
         if: always()
@@ -317,12 +331,10 @@ jobs:
           YAMLLINT_SCOPE: ${{ needs.changes.outputs.yamllint }}
           ACTIONS_SCOPE: ${{ needs.changes.outputs.actions }}
         run: |
-          echo "yamllint scope: $YAMLLINT_SCOPE"
-          echo "actions scope: $ACTIONS_SCOPE"
           if [ "$YAMLLINT_SCOPE" = "true" ] || [ "$ACTIONS_SCOPE" = "true" ]; then
-            echo "yaml slice ran (at least one scope true)."
+            echo "yaml scope: ran"
           else
-            echo "yaml job skipped: no changed files in scope."
+            echo "yaml scope: skipped (no repo-wide YAML or .github/** changed)"
           fi
 
   markdown:
@@ -378,18 +390,17 @@ jobs:
           fi
           mise exec -- python scripts/lint-markdown-changed.py --base "$BASE"
 
-      - name: Markdown scope note (#132)
+      - name: Markdown scope note
         # Always-run note: skipped = exit 0 with note, never a job-level
         # `if:` (keeps the check visible, not missing).
         if: always()
         env:
           MARKDOWN_SCOPE: ${{ needs.changes.outputs.markdown }}
         run: |
-          echo "markdown scope: $MARKDOWN_SCOPE"
           if [ "$MARKDOWN_SCOPE" = "true" ]; then
-            echo "markdown slice ran."
+            echo "markdown scope: ran"
           else
-            echo "markdown slice skipped: no changed files in scope."
+            echo "markdown scope: skipped (no **/*.md changed)"
           fi
 
   frontend:
@@ -446,11 +457,18 @@ jobs:
         if: needs.changes.outputs.frontend == 'true'
         run: mise run lint:build
 
-      - name: Frontend gate note
-        # Always-run companion: names whether the frontend scope ran or skipped.
+      - name: Frontend scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
         if: always()
+        env:
+          FRONTEND_SCOPE: ${{ needs.changes.outputs.frontend }}
         run: |
-          echo "frontend scope: ${{ needs.changes.outputs.frontend == 'true' && 'ran' || 'skipped (no frontend paths changed)' }}"
+          if [ "$FRONTEND_SCOPE" = "true" ]; then
+            echo "frontend scope: ran"
+          else
+            echo "frontend scope: skipped (no src or manifest paths changed)"
+          fi
 
       - name: Grid standards
         # Same `mise run lint:grids` slice (`lint:fast` commit set, also in
@@ -458,11 +476,18 @@ jobs:
         if: needs.changes.outputs.grids == 'true'
         run: mise run lint:grids
 
-      - name: Grids gate note
-        # Always-run companion: names whether the grids scope ran or skipped.
+      - name: Grids scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
         if: always()
+        env:
+          GRIDS_SCOPE: ${{ needs.changes.outputs.grids }}
         run: |
-          echo "grids scope: ${{ needs.changes.outputs.grids == 'true' && 'ran' || 'skipped (no src/**/*.vue changed)' }}"
+          if [ "$GRIDS_SCOPE" = "true" ]; then
+            echo "grids scope: ran"
+          else
+            echo "grids scope: skipped (no src/**/*.vue changed)"
+          fi
 
       - name: Game-interaction hard lines (TOS/CoC)
         # Same `mise run lint:constraints` slice (`lint:full` full gate —
@@ -479,11 +504,18 @@ jobs:
         shell: bash
         run: mise run lint:review
 
-      - name: Review gate note
-        # Always-run companion: names whether the review scope ran or skipped.
+      - name: Review scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
         if: always()
+        env:
+          REVIEW_SCOPE: ${{ needs.changes.outputs.review }}
         run: |
-          echo "review scope: ${{ needs.changes.outputs.review == 'true' && 'ran' || 'skipped (no review paths changed)' }}"
+          if [ "$REVIEW_SCOPE" = "true" ]; then
+            echo "review scope: ran"
+          else
+            echo "review scope: skipped (no migrations.rs changed)"
+          fi
 
   rust-tests:
     name: Rust tests
@@ -576,12 +608,15 @@ jobs:
         if: needs.changes.outputs.rust == 'true'
         run: mise run lint:clippy
 
-      - name: No relevant changes (rust skipped)
+      - name: Rust scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
         if: always()
+        env:
+          RUST_SCOPE: ${{ needs.changes.outputs.rust }}
         run: |
-          echo "rust=${{ needs.changes.outputs.rust }}"
-          if [ "${{ needs.changes.outputs.rust }}" = "true" ]; then
-            echo "rust scope touched: tests + clippy ran."
+          if [ "$RUST_SCOPE" = "true" ]; then
+            echo "rust scope: ran"
           else
-            echo "No relevant changes: rust tests + clippy skipped (exit 0)."
+            echo "rust scope: skipped (no src-tauri or Cargo paths changed)"
           fi
