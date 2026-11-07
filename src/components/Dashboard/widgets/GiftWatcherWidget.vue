@@ -20,6 +20,14 @@
           <option value="All">All zones</option>
           <option v-for="zone in availableZones" :key="zone" :value="zone">{{ zone }}</option>
         </select>
+        <button
+          v-if="!editing && zoneFilter !== ALL_ZONES"
+          :title="`Add all NPCs in ${zoneFilter} to watched`"
+          class="text-xs text-text-dim hover:text-text-muted transition-colors whitespace-nowrap"
+          @click="addAllInZone"
+        >
+          Add all in {{ zoneFilter }}
+        </button>
         <span class="text-xs text-text-dim">
           {{ watchedNpcKeys.length }} NPC{{ watchedNpcKeys.length === 1 ? '' : 's' }} watched
         </span>
@@ -259,6 +267,20 @@ function addAllSearchResults() {
   watchedNpcKeys.value = [...watchedNpcKeys.value, ...fresh]
   saveWatchedNpcs()
 }
+function addAllInZone() {
+  if (zoneFilter.value === ALL_ZONES) return
+  gameData.loadAllNpcsMap().then(() => {
+    const watched = new Set(watchedNpcKeys.value)
+    const fresh = Object.values(gameData.npcsByKey)
+      .filter(n => (n.area_friendly_name ?? UNKNOWN_ZONE) === zoneFilter.value)
+      .map(n => n.key)
+      .filter(k => !watched.has(k))
+    if (fresh.length === 0) return
+    watchedNpcKeys.value = [...watchedNpcKeys.value, ...fresh]
+    saveWatchedNpcs()
+    clampZoneFilter()
+  })
+}
 function toggleNpc(key: string) {
   if (watchedNpcKeys.value.includes(key)) {
     removeNpc(key)
@@ -376,7 +398,15 @@ const groupedMatches = computed<ZoneGroup[]>(() => {
     .sort(([a], [b]) =>
       a === UNKNOWN_ZONE ? 1 : b === UNKNOWN_ZONE ? -1 : a.localeCompare(b),
     )
-    .map(([zone, entries]) => ({ zone, entries }))
+    .map(([zone, entries]) => ({
+      zone,
+      entries: [...entries].sort((a, b) => {
+        const totalA = a.matches.reduce((sum, m) => sum + m.count, 0)
+        const totalB = b.matches.reduce((sum, m) => sum + m.count, 0)
+        if (totalB !== totalA) return totalB - totalA
+        return resolveNpcName(a.npcKey).localeCompare(resolveNpcName(b.npcKey))
+      }),
+    }))
 })
 
 // Reset a stale zone selection when the watched set (or its zones) changes.
