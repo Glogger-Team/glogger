@@ -33,6 +33,7 @@
             </div>
           </div>
           <SkillListPanel
+            ref="skillListPanelRef"
             :selected-skill="selectedSkill"
             :cdn-skills="cdnSkillMap"
             @select="selectSkill" />
@@ -52,10 +53,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, nextTick, onMounted, watch } from 'vue'
 import { useGameStateStore } from '../../stores/gameStateStore'
 import { useGameDataStore } from '../../stores/gameDataStore'
 import { useSettingsStore } from '../../stores/settingsStore'
+import { pendingSkillSelection } from '../../composables/useViewNavigation'
 import type { SkillInfo } from '../../types/gameData'
 import type { GameStateSkill } from '../../types/gameState'
 import PaneLayout from '../Shared/PaneLayout.vue'
@@ -69,6 +71,19 @@ const gameData = useGameDataStore()
 const settingsStore = useSettingsStore()
 
 const selectedSkill = ref<string | null>(null)
+const skillListPanelRef = ref<InstanceType<typeof SkillListPanel> | null>(null)
+
+/** Consume a pending search drill-in: select the named skill if known, else no-op. Always clears pending. */
+function consumePendingSkillSelection() {
+  const name = pendingSkillSelection.value
+  if (!name) return
+  pendingSkillSelection.value = null
+  if (!store.skillsByName[name] && !store.sessionSkills[name]) return
+  selectedSkill.value = name
+  nextTick(() => {
+    skillListPanelRef.value?.revealSkill(name)
+  })
+}
 
 // CDN skill data cache for the list panel
 const cdnSkillMap = ref<Record<string, SkillInfo>>({})
@@ -129,9 +144,13 @@ async function loadCdnSkills() {
     console.warn('Failed to load CDN skills:', e)
   }
 }
-
 onMounted(() => {
   loadCdnSkills()
+  consumePendingSkillSelection()
+})
+
+watch(pendingSkillSelection, () => {
+  consumePendingSkillSelection()
 })
 
 watch(() => gameData.status, (s) => {

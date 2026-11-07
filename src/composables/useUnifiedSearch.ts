@@ -12,6 +12,7 @@ export interface SearchNavigation {
   subTab?: string
   entityType?: string
   entityId?: string | number
+  skillName?: string
 }
 
 export interface SearchResult {
@@ -237,7 +238,7 @@ function searchPlayerData(query: string, cap: number): SearchCategory[] {
         category: "Your Skills",
         label: skill.skill_name,
         detail: `Lv ${skill.level} · ${skill.xp.toLocaleString()} XP`,
-        navigation: { view: "character", subTab: "skills" },
+        navigation: { view: "character", subTab: "skills", skillName: skill.skill_name },
         score: 85,
       })
     }

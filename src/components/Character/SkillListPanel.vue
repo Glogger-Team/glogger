@@ -38,7 +38,7 @@
     </div>
 
     <!-- Grouped skill list -->
-    <div class="overflow-y-auto flex-1 border border-surface-elevated">
+    <div ref="listRoot" class="overflow-y-auto flex-1 border border-surface-elevated">
       <template v-for="group in groupedSkills" :key="group.label">
         <div
           v-if="group.label"
@@ -52,6 +52,7 @@
           <div
             v-for="row in group.skills"
             :key="row.skill_name"
+            :data-skill-name="row.skill_name"
             class="flex items-center gap-2 px-2 py-1 cursor-pointer border-b border-surface-dark text-xs hover:bg-surface-row-hover"
             :class="{
               'bg-surface-card border-l-2 border-l-accent-gold': selectedSkill === row.skill_name,
@@ -135,6 +136,29 @@ const sortBy = ref<'level' | 'name' | 'session'>('level')
 const hideMaxed = ref(false)
 const hideZero = ref(true)
 const collapsedGroups = ref(new Set<string>())
+const listRoot = ref<HTMLElement | null>(null)
+
+/** Reveal a skill row: clear hiding filters, expand its group, scroll into view. Returns true if a row is now visible. */
+function revealSkill(skillName: string): boolean {
+  const inAll = allRows.value.some(r => r.skill_name === skillName)
+  if (!inAll) return false
+  const visibleNow = sortedRows.value.some(r => r.skill_name === skillName)
+  if (!visibleNow) {
+    filter.value = ''
+    hideMaxed.value = false
+    hideZero.value = false
+  }
+  const group = groupedSkills.value.find(g => g.skills.some(r => r.skill_name === skillName))
+  if (group?.label && collapsedGroups.value.has(group.label)) toggleGroup(group.label)
+  requestAnimationFrame(() => {
+    listRoot.value
+      ?.querySelector(`[data-skill-name="${CSS.escape(skillName)}"]`)
+      ?.scrollIntoView({ block: 'nearest' })
+  })
+  return true
+}
+
+defineExpose({ revealSkill })
 
 function toggleGroup(label: string) {
   const next = new Set(collapsedGroups.value)
