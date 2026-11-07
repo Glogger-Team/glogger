@@ -283,7 +283,6 @@ jobs:
           echo "actions=$ACTIONS_SCOPE"
 
       - name: Install mise and tools
-        if: needs.changes.outputs.yamllint == 'true' || needs.changes.outputs.actions == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         # No third-party action and no setup-python step (org allowlist):
         # official installer script; mise provides python + yamllint +
         # zizmor + pinact from mise.toml, same as local.
