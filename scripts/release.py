@@ -120,10 +120,11 @@ def main_protected(root):
             if any(r.get("type") == "pull_request" for r in rules):
                 return True
         return False
-    except (OSError, ValueError, KeyError, AttributeError):
-        # OSError: gh/git spawn or timeout. ValueError/KeyError/
-        # AttributeError: unexpected ruleset JSON shape. Anything else
-        # propagates - a best-effort probe must not swallow real bugs.
+    except (OSError, ValueError, KeyError, AttributeError, subprocess.TimeoutExpired):
+        # OSError: gh/git spawn failure. TimeoutExpired: hung gh (DNS
+        # stall) past timeout=15. ValueError/KeyError/AttributeError:
+        # unexpected ruleset JSON shape. Anything else propagates - a
+        # best-effort probe must not swallow real bugs.
         return False
 
 
