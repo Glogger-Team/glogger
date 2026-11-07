@@ -48,6 +48,93 @@ def git(args, root):
     )
 
 
+def main_protected(root):
+    """True when origin's default branch has a PR-required rule.
+
+    Best-effort: any failure (no gh, no network, no permission) returns
+    False and the caller falls back to try-push-then-route. Keeps the
+    offline/air-gapped path working.
+
+    Note: the rulesets *list* endpoint omits conditions/rules, so each
+    candidate is re-fetched by id. Targets ~DEFAULT_BRANCH, default
+    branch name, or main.
+    """
+    try:
+        import json as _json
+
+        repo_proc = subprocess.run(
+            ["gh", "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        slug = (repo_proc.stdout or "").strip()
+        if repo_proc.returncode != 0 or not slug:
+            return False
+        branch_proc = subprocess.run(
+            ["git", "symbolic-ref", "refs/remotes/origin/HEAD"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        ref = (branch_proc.stdout or "").strip()
+        # refs/remotes/origin/<branch>: strip the remote prefix, keep the
+        # full branch name (feature/x stays feature/x, not x).
+        default_branch = ref.split("refs/remotes/origin/", 1)[-1] or "main"
+        out = subprocess.run(
+            ["gh", "api", f"repos/{slug}/rulesets?includes_parents=true"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+        if out.returncode != 0 or not out.stdout.strip():
+            return False
+        for summary in _json.loads(out.stdout):
+            if not summary.get("enforcement", "").startswith("active"):
+                continue
+            rid = summary.get("id")
+            if rid is None:
+                continue
+            det = subprocess.run(
+                ["gh", "api", f"repos/{slug}/rulesets/{rid}"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=15,
+            )
+            if det.returncode != 0 or not det.stdout.strip():
+                continue
+            rs = _json.loads(det.stdout)
+            refs = rs.get("conditions", {}).get("ref_name", {}).get("include", [])
+            # Exact ref forms only: substring matching ("main" in
+            # "refs/heads/maintenance") false-positives a PR detour.
+            # ~DEFAULT_BRANCH and ~ALL cover the default branch and all
+            # refs respectively; otherwise match the concrete ref.
+            want = {f"refs/heads/{default_branch}", default_branch}
+            hits_default = any(
+                (c in ("~DEFAULT_BRANCH", "~ALL")) or (c in want) for c in refs
+            )
+            if not hits_default:
+                continue
+            rules = rs.get("rules", [])
+            if any(r.get("type") == "pull_request" for r in rules):
+                return True
+        return False
+    except (OSError, ValueError, KeyError, AttributeError, subprocess.TimeoutExpired):
+        # OSError: gh/git spawn failure. TimeoutExpired: hung gh (DNS
+        # stall) past timeout=15. ValueError/KeyError/AttributeError:
+        # unexpected ruleset JSON shape. Anything else propagates - a
+        # best-effort probe must not swallow real bugs.
+        return False
+
+
 def main():
     parser = argparse.ArgumentParser(description="Cut a release tag and push it.")
     parser.add_argument("version", nargs="?")
@@ -305,14 +392,30 @@ def main():
                 print("Error: could not commit triage notes")
                 return 1
 
-    branch_push = subprocess.run(
-        ["git", "push", "origin", "main"], cwd=root, check=False
+    # Idempotent re-run: triage produced no new commit (empty range,
+    # unchanged notes, or the notes PR already merged). Nothing to push,
+    # so skip the push/PR dance and proceed straight to tag.
+    in_sync = (
+        git(["rev-parse", "HEAD"], root).stdout.strip()
+        == git(["rev-parse", "origin/main"], root).stdout.strip()
     )
-    if branch_push.returncode != 0:
-        # Direct push failed — typically branch protection ("Protect main"
-        # ruleset). Route the notes commit through a branch + PR instead of
-        # dead-ending: the tree was clean at entry and the sync gate held, so
-        # the notes commit is the only commit ahead of origin/main.
+    if in_sync:
+        print("Notes already current - proceeding straight to tag.")
+    elif main_protected(root):
+        # Protected main (the normal case here): never attempt the doomed
+        # push. Fall through to try-push only when the ruleset check is
+        # itself inconclusive (no gh / offline), preserving old behavior.
+        print("main is protected - routing notes through a PR, skipping direct push.")
+        branch_push = None
+    else:
+        branch_push = subprocess.run(
+            ["git", "push", "origin", "main"], cwd=root, check=False
+        )
+    if not in_sync and (branch_push is None or branch_push.returncode != 0):
+        # Reached either by a failed direct push or by the pre-check above
+        # (protected: push never attempted). The tree was clean at entry
+        # and the sync gate held, so the notes commit is the only commit
+        # ahead of origin/main.
         notes_branch = f"release/{tag}-notes"
         if (
             git(
