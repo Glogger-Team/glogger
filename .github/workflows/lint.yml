@@ -178,6 +178,9 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+    # #134: runs when Cargo manifests or the gate script change; else the
+    # audit step skips and the note below exits green.
+    needs: [changes]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -199,13 +202,25 @@ jobs:
 
       - name: Install cargo-audit
         # Floor, not a freeze: no watcher here, so a freeze would rot silently.
+        if: needs.changes.outputs.audit == 'true'
         run: set -euo pipefail; cargo install cargo-audit --locked
 
       - name: Audit (fail on critical/high only)
         # Same `mise run lint:audit` slice (`lint:full` full gate; CI runs
         # every slice individually): scripts/cargo-audit-gate.py owns
         # ignores + scoring.
+        if: needs.changes.outputs.audit == 'true'
         run: mise run lint:audit
+
+      - name: No relevant changes (audit skipped)
+        if: always()
+        run: |
+          echo "audit=${{ needs.changes.outputs.audit }}"
+          if [ "${{ needs.changes.outputs.audit }}" = "true" ]; then
+            echo "audit scope touched: advisory check ran."
+          else
+            echo "No relevant changes: cargo audit skipped (exit 0)."
+          fi
 
   yaml:
     name: YAML and Actions
@@ -354,6 +369,9 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    # #134: test + clippy share one scope (src-tauri + Cargo manifests);
+    # checkout/cache/apt/mise setup stay unconditional, heavy steps gate.
+    needs: [changes]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -428,8 +446,20 @@ jobs:
       - name: Rust tests
         # Same `mise run lint:test` slice (`lint:full` full gate; CI runs
         # every slice individually).
+        if: needs.changes.outputs.rust == 'true'
         run: mise run lint:test
 
       - name: Clippy (deny warnings)
         # Same `mise run lint:clippy` slice (push `lint` keeps it).
+        if: needs.changes.outputs.rust == 'true'
         run: mise run lint:clippy
+
+      - name: No relevant changes (rust skipped)
+        if: always()
+        run: |
+          echo "rust=${{ needs.changes.outputs.rust }}"
+          if [ "${{ needs.changes.outputs.rust }}" = "true" ]; then
+            echo "rust scope touched: tests + clippy ran."
+          else
+            echo "No relevant changes: rust tests + clippy skipped (exit 0)."
+          fi
