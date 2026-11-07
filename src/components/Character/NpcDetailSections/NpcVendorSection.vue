@@ -92,12 +92,12 @@
       <!-- Timer / Reset notice -->
       <div v-if="timerExpired" class="flex items-center gap-2 px-2 text-xs">
         <span class="text-value-positive italic">Likely reset to full</span>
-        <span class="text-text-dim text-[0.55rem]">(7d+ since last sale)</span>
+        <span class="text-text-dim text-[10px]">(7d+ since last sale)</span>
       </div>
       <div v-else-if="resetTimeLabel" class="flex items-center gap-2 px-2 text-xs">
         <span class="text-text-muted">Resets in:</span>
         <span class="text-text-secondary">~{{ resetTimeLabel }}</span>
-        <span class="text-text-dim text-[0.55rem] italic">(estimated)</span>
+        <span class="text-text-dim text-[10px] italic">(estimated)</span>
       </div>
 
       <!-- Last sell -->

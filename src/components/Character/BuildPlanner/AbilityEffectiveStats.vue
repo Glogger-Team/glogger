@@ -44,7 +44,7 @@
         </span>
         <span class="flex items-baseline gap-1.5 shrink-0">
           <span class="font-semibold" :class="valueClass(sv.value)">{{ fmt(sv.value.effective) }}</span>
-          <span v-if="sv.value.dormant_activated" class="text-[9px] uppercase font-semibold text-accent-gold">active</span>
+          <span v-if="sv.value.dormant_activated" class="text-[10px] leading-tight uppercase font-semibold text-accent-gold">active</span>
           <span v-else-if="isMod(sv.value)" class="text-[10px] text-text-dim">was {{ fmt(sv.value.base) }}</span>
         </span>
       </div>

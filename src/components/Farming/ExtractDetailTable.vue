@@ -14,7 +14,7 @@
           <span class="text-[0.6rem]"> · {{ row.times }} {{ row.times === 1 ? 'pull' : 'pulls' }}</span>
         </span>
       </div>
-      <div class="flex flex-wrap gap-1 text-[0.55rem]">
+      <div class="flex flex-wrap gap-1 text-[10px] leading-tight">
         <span v-if="row.skill_level != null" class="px-1 py-0.5 rounded bg-[#5a4a2a]/40 text-[#d6b87e]">
           {{ row.skill }} {{ row.skill_level }}
         </span>
@@ -27,7 +27,7 @@
         </span>
       </div>
     </div>
-    <p class="text-[0.55rem] text-text-dim leading-tight">
+    <p class="text-[10px] text-text-dim leading-tight">
       Skill level &amp; anatomy shown are your current (highest observed); equipment is the harvest bonus.
     </p>
   </div>

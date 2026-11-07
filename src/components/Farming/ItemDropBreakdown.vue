@@ -34,7 +34,7 @@
              harvest, equipment bonus, and anatomy skill for the monster type. -->
         <div
           v-if="props.mode === 'extract' && hasHarvestDetail(row)"
-          class="flex flex-wrap gap-1 text-[0.55rem]">
+          class="flex flex-wrap gap-1 text-[10px] leading-tight">
           <span v-if="row.skillLevel != null" class="px-1 py-0.5 rounded bg-[#5a4a2a]/40 text-[#d6b87e]">
             {{ row.skill ?? 'Skill' }} {{ row.skillLevel }}
           </span>
@@ -69,7 +69,7 @@
         </div>
       </div>
 
-      <p class="text-[0.55rem] text-text-dim leading-tight pt-0.5">
+      <p class="text-[10px] text-text-dim leading-tight pt-0.5">
         <template v-if="props.mode === 'gathered'">
           Mining/survey yield — not a loot-table drop, so there’s no lifetime drop rate.
         </template>

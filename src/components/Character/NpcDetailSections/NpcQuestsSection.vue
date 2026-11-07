@@ -10,7 +10,7 @@
         :key="quest.internal_name"
         class="flex items-center gap-2 px-2 py-0.5 text-xs bg-surface-inset rounded">
         <QuestInline :reference="quest.internal_name" />
-        <span v-if="isRepeatable(quest)" class="text-[0.55rem] text-cyan-400 shrink-0" title="Repeatable">
+        <span v-if="isRepeatable(quest)" class="text-[10px] text-cyan-400 shrink-0" title="Repeatable">
           &#x21BB;
         </span>
         <span v-if="quest.raw.Reward_Favor" class="text-[0.6rem] text-accent-gold font-mono ml-auto shrink-0">

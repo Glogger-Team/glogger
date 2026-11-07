@@ -8,7 +8,7 @@
         </h4>
         <!-- Distribution info -->
         <div class="group relative">
-          <span class="text-[9px] text-text-dim cursor-help border-b border-dotted border-text-dim/40">
+          <span class="text-[10px] leading-none text-text-dim cursor-help border-b border-dotted border-text-dim/40">
             Slot Rules
           </span>
           <!-- Tooltip -->

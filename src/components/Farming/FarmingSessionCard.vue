@@ -155,7 +155,7 @@
               </div>
               <div class="flex flex-col items-end shrink-0">
                 <span class="text-xs font-bold text-value-positive">+{{ skill.gained.toLocaleString() }}</span>
-                <span class="text-[0.55rem] text-text-dim">{{ skill.perHour.toLocaleString() }}/hr</span>
+                <span class="text-[10px] leading-tight text-text-dim">{{ skill.perHour.toLocaleString() }}/hr</span>
               </div>
             </div>
           </div>
@@ -193,7 +193,7 @@
                 <EnemyInline :reference="kill.name" />
                 <div class="flex items-center gap-2 shrink-0">
                   <span class="font-mono font-bold text-[#e87e7e]">x{{ kill.count }}</span>
-                  <span class="text-[0.55rem] text-text-dim">{{ kill.perHour }}/hr</span>
+                  <span class="text-[10px] leading-tight text-text-dim">{{ kill.perHour }}/hr</span>
                 </div>
               </div>
               <!-- Loot from this enemy type -->
@@ -250,7 +250,7 @@
               <div class="flex items-center justify-between px-2 py-1.5 rounded text-xs bg-black/20 border border-border-default hover:border-[#c8a47e]/40 cursor-help w-full">
                 <span class="flex items-center gap-1.5 min-w-0">
                   <span class="text-[#c8a47e] font-medium truncate">{{ displayName(item.name) }}</span>
-                  <span class="text-[0.55rem] text-text-dim uppercase shrink-0">{{ item.skill }}</span>
+                  <span class="text-[10px] leading-tight text-text-dim uppercase shrink-0">{{ item.skill }}</span>
                 </span>
                 <span class="text-text-secondary shrink-0 ml-2">
                   Extracted <span class="text-value-positive font-mono font-bold">{{ item.quantity }}</span>
@@ -278,7 +278,7 @@
               <div class="flex items-center justify-between px-2 py-1.5 rounded text-xs bg-black/20 border border-border-default hover:border-[#7ea4c8]/40 cursor-help w-full">
                 <span class="flex items-center gap-1.5 min-w-0">
                   <span class="text-[#7ea4c8] font-medium truncate">{{ displayName(item.name) }}</span>
-                  <span class="text-[0.55rem] text-text-dim uppercase shrink-0">{{ item.skill }}</span>
+                  <span class="text-[10px] leading-tight text-text-dim uppercase shrink-0">{{ item.skill }}</span>
                 </span>
                 <span class="text-text-secondary shrink-0 ml-2">
                   Gathered <span class="text-value-positive font-mono font-bold">{{ item.quantity }}</span>

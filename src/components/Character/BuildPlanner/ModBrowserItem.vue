@@ -39,7 +39,7 @@
           <span
             v-for="slot in power.slots"
             :key="slot"
-            class="text-[9px] px-1.5 py-0.5 rounded border border-border-default bg-surface-dark text-text-secondary">
+            class="text-[10px] leading-tight px-1.5 py-0.5 rounded border border-border-default bg-surface-dark text-text-secondary">
             {{ slot }}
           </span>
         </div>
