@@ -96,7 +96,7 @@
         <!-- Row header -->
         <div class="flex items-baseline gap-2">
           <span class="text-text-primary font-semibold">{{ r.survey_type }}</span>
-          <span v-if="idx === 0" class="text-[0.55rem] uppercase tracking-wider text-accent-gold font-bold">
+          <span v-if="idx === 0" class="text-[10px] leading-tight uppercase tracking-wider text-accent-gold font-bold">
             Best
           </span>
           <span v-if="r.zone" class="text-[0.6rem] text-text-dim ml-auto">
@@ -107,38 +107,38 @@
         <!-- Numbers grid -->
         <div class="grid grid-cols-[repeat(auto-fit,minmax(64px,1fr))] gap-1 text-[0.7rem] tabular-nums">
           <div>
-            <div class="text-[0.55rem] uppercase tracking-wider text-text-dim">Yield</div>
+            <div class="text-[10px] leading-tight uppercase tracking-wider text-text-dim">Yield</div>
             <div class="text-text-primary font-semibold">{{ r.effective_yield.toFixed(1) }}</div>
           </div>
           <div>
-            <div class="text-[0.55rem] uppercase tracking-wider text-text-dim">Needed</div>
+            <div class="text-[10px] leading-tight uppercase tracking-wider text-text-dim">Needed</div>
             <div class="text-text-primary font-semibold">{{ r.surveys_needed.toLocaleString() }}</div>
           </div>
           <div>
-            <div class="text-[0.55rem] uppercase tracking-wider text-text-dim">Cost Each</div>
+            <div class="text-[10px] leading-tight uppercase tracking-wider text-text-dim">Cost Each</div>
             <div class="text-text-secondary">{{ formatGold(r.crafting_cost) }}</div>
           </div>
           <div>
-            <div class="text-[0.55rem] uppercase tracking-wider text-text-dim">Total Cost</div>
+            <div class="text-[10px] leading-tight uppercase tracking-wider text-text-dim">Total Cost</div>
             <div :class="idx === 0 && sortMode === 'cost' ? 'text-accent-green font-bold' : 'text-text-primary'">
               {{ formatGold(r.total_cost) }}
             </div>
           </div>
           <div>
-            <div class="text-[0.55rem] uppercase tracking-wider text-text-dim">Est. Time</div>
+            <div class="text-[10px] leading-tight uppercase tracking-wider text-text-dim">Est. Time</div>
             <div :class="timeValueClass(r, idx)">
               {{ r.avg_seconds_per_survey > 0 ? formatTime(r.total_time_seconds) : 'N/A' }}
             </div>
           </div>
           <template v-if="hasSellPrice">
             <div>
-              <div class="text-[0.55rem] uppercase tracking-wider text-text-dim">Profit</div>
+              <div class="text-[10px] leading-tight uppercase tracking-wider text-text-dim">Profit</div>
               <div :class="r.profit >= 0 ? 'text-accent-green' : 'text-accent-red'">
                 {{ r.profit >= 0 ? '+' : '' }}{{ formatGold(r.profit) }}
               </div>
             </div>
             <div>
-              <div class="text-[0.55rem] uppercase tracking-wider text-text-dim">Profit/hr</div>
+              <div class="text-[10px] leading-tight uppercase tracking-wider text-text-dim">Profit/hr</div>
               <div :class="profitPerHourClass(r, idx)">
                 {{ r.avg_seconds_per_survey > 0
                   ? (r.profit_per_hour >= 0 ? '+' : '') + formatGold(r.profit_per_hour) + '/hr'

@@ -73,7 +73,7 @@
 
         <!-- Sidebar slot config -->
         <div v-if="bar.id === 'sidebar'" class="flex items-center gap-2 px-2.5 pb-2 border-t border-border-default/30 pt-1.5">
-          <label class="text-[9px] text-text-dim">Slots:</label>
+          <label class="text-[10px] leading-none text-text-dim">Slots:</label>
           <input
             type="number"
             :value="store.sidebarSlotCount"
@@ -81,7 +81,7 @@
             :max="MAX_SIDEBAR_SLOTS"
             class="bg-surface-elevated border border-border-default rounded px-1 py-0.5 text-[10px] text-text-primary w-10 text-center"
             @change="onSidebarSlotsChange" />
-          <span class="text-[9px] text-text-dim">(max {{ MAX_SIDEBAR_SLOTS }})</span>
+          <span class="text-[10px] leading-none text-text-dim">(max {{ MAX_SIDEBAR_SLOTS }})</span>
         </div>
       </div>
     </div>

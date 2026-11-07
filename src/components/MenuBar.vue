@@ -66,7 +66,7 @@
           @click="emit('navigate', 'search')"
           title="Search (Ctrl+F for quick search)">
           Search
-          <kbd class="text-[0.55rem] text-text-muted bg-surface-elevated border border-border-default rounded px-1 py-0.5 leading-none">Ctrl+F</kbd>
+          <kbd class="text-[10px] text-text-muted bg-surface-elevated border border-border-default rounded px-1 py-0.5 leading-none">Ctrl+F</kbd>
         </button>
         <button
           class="px-3 py-1.5 bg-transparent border-none cursor-pointer text-xl rounded transition-all leading-none hover:bg-surface-elevated"

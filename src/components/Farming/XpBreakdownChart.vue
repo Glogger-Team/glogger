@@ -17,7 +17,7 @@
           <SkillInline :reference="skill.name" :show-icon="true" />
           <span class="shrink-0">
             <span class="text-value-positive font-mono font-bold">+{{ skill.gained.toLocaleString() }}</span>
-            <span v-if="skill.levelsGained" class="text-[0.55rem] text-value-neutral-warm font-bold ml-1">+{{ skill.levelsGained }}lvl</span>
+            <span v-if="skill.levelsGained" class="text-[10px] leading-tight text-value-neutral-warm font-bold ml-1">+{{ skill.levelsGained }}lvl</span>
           </span>
         </div>
         <div class="relative h-2.5 rounded bg-black/40 border border-border-default overflow-hidden">
@@ -25,7 +25,7 @@
             class="absolute inset-y-0 left-0 bg-[#3a5a3a] transition-[width] duration-300"
             :style="{ width: barWidth(skill.gained) + '%' }" />
         </div>
-        <div v-if="skill.perHour" class="text-[0.55rem] text-text-dim self-end">{{ skill.perHour.toLocaleString() }}/hr</div>
+        <div v-if="skill.perHour" class="text-[10px] leading-tight text-text-dim self-end">{{ skill.perHour.toLocaleString() }}/hr</div>
       </div>
     </div>
   </div>

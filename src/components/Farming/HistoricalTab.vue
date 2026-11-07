@@ -140,7 +140,7 @@
                         </div>
                         <ExtractDetailTable :item-name="item.item_name" />
                         <ItemDropBreakdownTable :item-name="item.item_name" scope="combined" />
-                        <p class="text-[0.55rem] text-text-dim leading-tight pt-0.5">
+                        <p class="text-[10px] text-text-dim leading-tight pt-0.5">
                           Lifetime drop rate = kills that dropped this item ÷ all kills of that enemy.
                         </p>
                       </div>

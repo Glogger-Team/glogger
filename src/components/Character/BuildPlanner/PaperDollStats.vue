@@ -42,7 +42,7 @@
           class="text-xs"
           :class="entry.hasBonus ? 'text-accent-gold font-medium' : 'text-text-dim'">
           {{ entry.count }}x {{ entry.type }}
-          <span v-if="entry.hasBonus" class="text-[9px]">(3pc)</span>
+          <span v-if="entry.hasBonus" class="text-[10px] leading-none">(3pc)</span>
         </div>
       </div>
     </div>

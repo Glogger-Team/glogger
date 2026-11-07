@@ -32,7 +32,7 @@
               </button>
             </template>
             <div class="flex-1" />
-            <kbd class="text-[0.55rem] text-text-dim bg-surface-elevated border border-border-default rounded px-1.5 py-0.5">ESC</kbd>
+            <kbd class="text-[10px] text-text-dim bg-surface-elevated border border-border-default rounded px-1.5 py-0.5">ESC</kbd>
             <button
               class="bg-transparent border-none text-text-muted cursor-pointer text-sm hover:text-accent-red transition-colors px-1.5 py-0.5 rounded hover:bg-surface-elevated"
               title="Close"
