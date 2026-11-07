@@ -81,7 +81,10 @@ def main_protected(root):
             check=False,
             timeout=15,
         )
-        default_branch = (branch_proc.stdout or "").strip().split("/")[-1] or "main"
+        ref = (branch_proc.stdout or "").strip()
+        # refs/remotes/origin/<branch>: strip the remote prefix, keep the
+        # full branch name (feature/x stays feature/x, not x).
+        default_branch = ref.split("refs/remotes/origin/", 1)[-1] or "main"
         out = subprocess.run(
             ["gh", "api", f"repos/{slug}/rulesets?includes_parents=true"],
             cwd=root,
@@ -110,9 +113,13 @@ def main_protected(root):
                 continue
             rs = _json.loads(det.stdout)
             refs = rs.get("conditions", {}).get("ref_name", {}).get("include", [])
+            # Exact ref forms only: substring matching ("main" in
+            # "refs/heads/maintenance") false-positives a PR detour.
+            # ~DEFAULT_BRANCH and ~ALL cover the default branch and all
+            # refs respectively; otherwise match the concrete ref.
+            want = {f"refs/heads/{default_branch}", default_branch}
             hits_default = any(
-                ("DEFAULT_BRANCH" in c) or (default_branch in c) or ("main" in c)
-                for c in refs
+                (c in ("~DEFAULT_BRANCH", "~ALL")) or (c in want) for c in refs
             )
             if not hits_default:
                 continue
