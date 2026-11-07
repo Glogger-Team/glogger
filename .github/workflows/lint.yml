@@ -1,6 +1,6 @@
 # PR path filter: the `changes` job (first job) classifies changed files
 # into per-slice filter outputs (one boolean per scope) with pinned
-# dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad (# v4.0.3).
+# dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d (# v4.0.3).
 # Gating contract (#131-#135): heavy steps gate on their scope output, OR
 # runall (a lint.yml edit runs every slice), OR a main push (pushes run the
 # full gate with no skips); `workflow_dispatch` stays gated. Every
@@ -74,7 +74,7 @@ jobs:
 
       - name: Path filter
         id: filter
-        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v4.0.3
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           filters: |
             ruff:
