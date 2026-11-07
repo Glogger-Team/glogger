@@ -384,21 +384,30 @@ def main():
                 print("Error: could not commit triage notes")
                 return 1
 
-    # Protected main (the normal case here): never attempt the doomed push.
-    # Pre-check the ruleset; fall through to try-push only when the check
-    # itself is inconclusive (no gh / offline), preserving old behavior.
-    if main_protected(root):
+    # Idempotent re-run: triage produced no new commit (empty range,
+    # unchanged notes, or the notes PR already merged). Nothing to push,
+    # so skip the push/PR dance and proceed straight to tag.
+    in_sync = (
+        git(["rev-parse", "HEAD"], root).stdout.strip()
+        == git(["rev-parse", "origin/main"], root).stdout.strip()
+    )
+    if in_sync:
+        print("Notes already current - proceeding straight to tag.")
+    elif main_protected(root):
+        # Protected main (the normal case here): never attempt the doomed
+        # push. Fall through to try-push only when the ruleset check is
+        # itself inconclusive (no gh / offline), preserving old behavior.
         print("main is protected - routing notes through a PR, skipping direct push.")
         branch_push = None
     else:
         branch_push = subprocess.run(
             ["git", "push", "origin", "main"], cwd=root, check=False
         )
-    if branch_push is None or branch_push.returncode != 0:
-        # Reached either by a failed direct push (unprotected repo) or by
-        # the pre-check above (protected: push never attempted). Either
-        # way the tree was clean at entry and the sync gate held, so the
-        # notes commit is the only commit ahead of origin/main.
+    if not in_sync and (branch_push is None or branch_push.returncode != 0):
+        # Reached either by a failed direct push or by the pre-check above
+        # (protected: push never attempted). The tree was clean at entry
+        # and the sync gate held, so the notes commit is the only commit
+        # ahead of origin/main.
         notes_branch = f"release/{tag}-notes"
         if (
             git(
