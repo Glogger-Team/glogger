@@ -318,6 +318,12 @@ jobs:
         # `mise run lint:fast`): hook/docs refs resolve, TODO location
         # contract holds, fast-set stays seconds-scale.
         run: mise run lint:parity
+      - name: Workflow expression identifiers + LF policy
+        # Same `mise run lint:workflow` slice the pre-commit hook runs (via
+        # `mise run lint:fast`): hyphenated output names fail workflow
+        # admission (startup_failure, zero jobs); CRLF breaks yamllint
+        # new-lines. Unconditional: seconds-scale, guards the gate itself.
+        run: mise run lint:workflow
       - name: Validate pre-commit config
         if: needs.changes.outputs.actions == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         run: mise exec -- pre-commit validate-config
