@@ -294,6 +294,7 @@ jobs:
 
   frontend:
     name: Frontend type-check and build
+    needs: [changes]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -303,6 +304,17 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Log gate inputs (#133)
+        # Reads the path-filter outputs this job gates on; informational only.
+        env:
+          GATE_FRONTEND: ${{ needs.changes.outputs.frontend }}
+          GATE_GRIDS: ${{ needs.changes.outputs.grids }}
+          GATE_REVIEW: ${{ needs.changes.outputs.review }}
+        run: |
+          echo "frontend=$GATE_FRONTEND"
+          echo "grids=$GATE_GRIDS"
+          echo "review=$GATE_REVIEW"
 
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -322,31 +334,56 @@ jobs:
           mise install
 
       - name: Install frontend dependencies
+        # Shared by the type-check/build and grids steps (both run on node);
+        # skipped only when neither scope needs it.
+        if: needs.changes.outputs.frontend == 'true' || needs.changes.outputs.grids == 'true'
         run: npm ci
       - name: Frontend type-check and build
         # CI-only `mise run lint:build` slice (full vite bundle — too slow
         # even for push, which runs `lint:typecheck` instead via `mise run
         # lint`). Would have caught the TS 7 major: vue-tsc crashes on
         # its removed './lib/tsc' export before checking a single file.
+        if: needs.changes.outputs.frontend == 'true'
         run: mise run lint:build
+
+      - name: Frontend gate note
+        # Always-run companion: names whether the frontend scope ran or skipped.
+        if: always()
+        run: |
+          echo "frontend scope: ${{ needs.changes.outputs.frontend == 'true' && 'ran' || 'skipped (no frontend paths changed)' }}"
 
       - name: Grid standards
         # Same `mise run lint:grids` slice (`lint:fast` commit set, also in
         # push `lint`).
+        if: needs.changes.outputs.grids == 'true'
         run: mise run lint:grids
+
+      - name: Grids gate note
+        # Always-run companion: names whether the grids scope ran or skipped.
+        if: always()
+        run: |
+          echo "grids scope: ${{ needs.changes.outputs.grids == 'true' && 'ran' || 'skipped (no src/**/*.vue changed)' }}"
 
       - name: Game-interaction hard lines (TOS/CoC)
         # Same `mise run lint:constraints` slice (`lint:full` full gate —
         # no longer in push `lint`; CI + manual stage A + release
-        # `validate` enforce).
+        # `validate` enforce). UNGATED: always runs, so the job exits 0
+        # with a real check even when every gated scope skips.
         shell: pwsh
         run: mise run lint:constraints
 
       - name: Review-patterns gate (decided defect shapes)
         # Same `mise run lint:review` slice (`lint:fast` commit set, also
         # in push `lint`).
+        if: needs.changes.outputs.review == 'true'
         shell: bash
         run: mise run lint:review
+
+      - name: Review gate note
+        # Always-run companion: names whether the review scope ran or skipped.
+        if: always()
+        run: |
+          echo "review scope: ${{ needs.changes.outputs.review == 'true' && 'ran' || 'skipped (no review paths changed)' }}"
 
   rust-tests:
     name: Rust tests
