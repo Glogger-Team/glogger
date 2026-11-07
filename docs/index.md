@@ -193,3 +193,5 @@ Sample data files for development and testing (gitignored).
 - `samples/character-export-samples/` — Character export JSON examples.
 - `samples/player-log-samples/` — Player.log excerpts for parser testing.
 - `samples/devtolsCaptures/` — Debug capture JSON files for analysis and feature discovery.
+
+<!-- probe: selective-lint skip-side verification -->
