@@ -121,6 +121,7 @@ jobs:
 
   ruff:
     name: Ruff (Python)
+    needs: [changes]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -130,8 +131,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Check ruff scope (#132)
+        # Reads the `ruff` filter output; heavy steps below no-op unless
+        # scripts/ changed.
+        env:
+          RUFF_SCOPE: ${{ needs.changes.outputs.ruff }}
+        run: echo "ruff=$RUFF_SCOPE"
 
       - name: Install mise and tools
+        if: needs.changes.outputs.ruff == 'true'
         # No third-party action (org allowlist): official installer script.
         # `mise install` / `mise run` trust the active config automatically,
         # so no explicit `mise trust` step.
@@ -143,8 +151,23 @@ jobs:
           mise install
 
       - name: Ruff check and format
+        if: needs.changes.outputs.ruff == 'true'
         # Same `mise run lint:ruff` slice the pre-commit hook runs.
         run: mise run lint:ruff
+
+      - name: Ruff scope note (#132)
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
+        if: always()
+        env:
+          RUFF_SCOPE: ${{ needs.changes.outputs.ruff }}
+        run: |
+          echo "ruff scope: $RUFF_SCOPE"
+          if [ "$RUFF_SCOPE" = "true" ]; then
+            echo "ruff slice ran."
+          else
+            echo "ruff slice skipped: no changed files in scope."
+          fi
 
   commit-msg:
     name: Commit-msg hook contract
@@ -209,6 +232,7 @@ jobs:
 
   yaml:
     name: YAML and Actions
+    needs: [changes]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -219,7 +243,17 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Check yaml scope (#132)
+        # Job runs if either scope is true.
+        env:
+          YAMLLINT_SCOPE: ${{ needs.changes.outputs.yamllint }}
+          ACTIONS_SCOPE: ${{ needs.changes.outputs.actions }}
+        run: |
+          echo "yamllint=$YAMLLINT_SCOPE"
+          echo "actions=$ACTIONS_SCOPE"
+
       - name: Install mise and tools
+        if: needs.changes.outputs.yamllint == 'true' || needs.changes.outputs.actions == 'true'
         # No third-party action and no setup-python step (org allowlist):
         # official installer script; mise provides python + yamllint +
         # zizmor + pinact from mise.toml, same as local.
@@ -230,27 +264,55 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           mise install
 
-      - name: YAML and Actions (yamllint + zizmor + pinact)
-        # Same `mise run lint:yaml` slice the pre-commit hook runs — pinact
-        # now gates CI too (green on HEAD; was local-only because
-        # pinact-action is uninstallable on stock runners).
+      - name: yamllint (.github)
+        # `lint:yaml` slice part 1 (same `yamllint .github/` the pre-commit
+        # hook runs): gates on the `yamllint` filter output.
+        if: needs.changes.outputs.yamllint == 'true'
+        run: mise exec -- yamllint .github/
+
+      - name: zizmor + pinact (.github/workflows)
+        # `lint:yaml` slice parts 2-3 (same zizmor + pinact commands the
+        # pre-commit hook runs via `mise run lint:yaml`): gate on `actions`.
         # GITHUB_TOKEN keeps pinact's tag-lookup API calls authenticated
         # (5k/hr vs 60/hr anonymous — the anonymous pool exhausts on busy
         # repos). Local runs stay tokenless; CI-only difference.
+        if: needs.changes.outputs.actions == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: mise run lint:yaml
+        run: |
+          set -euo pipefail
+          mise exec -- zizmor -o --config .github/zizmor.yml .github/workflows/
+          mise exec -- pinact run --check
 
       - name: Lint-parity drift guard
+        if: needs.changes.outputs.actions == 'true'
         # Same `mise run lint:parity` slice the pre-commit hook runs (via
         # `mise run lint:fast`): hook/docs refs resolve, TODO location
         # contract holds, fast-set stays seconds-scale.
         run: mise run lint:parity
       - name: Validate pre-commit config
+        if: needs.changes.outputs.actions == 'true'
         run: mise exec -- pre-commit validate-config
+
+      - name: YAML scope note (#132)
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
+        if: always()
+        env:
+          YAMLLINT_SCOPE: ${{ needs.changes.outputs.yamllint }}
+          ACTIONS_SCOPE: ${{ needs.changes.outputs.actions }}
+        run: |
+          echo "yamllint scope: $YAMLLINT_SCOPE"
+          echo "actions scope: $ACTIONS_SCOPE"
+          if [ "$YAMLLINT_SCOPE" = "true" ] || [ "$ACTIONS_SCOPE" = "true" ]; then
+            echo "yaml slice ran (at least one scope true)."
+          else
+            echo "yaml job skipped: no changed files in scope."
+          fi
 
   markdown:
     name: Markdown (changed files)
+    needs: [changes]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -264,7 +326,15 @@ jobs:
           # checkout can't diff against it.
           fetch-depth: 0
 
+      - name: Check markdown scope (#132)
+        # Reads the `markdown` filter output; heavy steps below no-op
+        # unless *.md changed.
+        env:
+          MARKDOWN_SCOPE: ${{ needs.changes.outputs.markdown }}
+        run: echo "markdown=$MARKDOWN_SCOPE"
+
       - name: Install mise and tools
+        if: needs.changes.outputs.markdown == 'true'
         # No third-party action (org allowlist): official installer script;
         # mise provides node + python + markdownlint-cli2 from mise.toml.
         run: |
@@ -275,6 +345,7 @@ jobs:
           mise install
 
       - name: Markdown lint (changed hand-maintained docs)
+        if: needs.changes.outputs.markdown == 'true'
         # Scope lives in scripts/lint-markdown-changed.py (single source of
         # truth with `mise run lint:markdown`): all *.md except CHANGELOG.md
         # (generator-rewritten each release). Grandfathered: only changed
@@ -291,6 +362,20 @@ jobs:
             BASE="${{ github.event.before }}"
           fi
           mise exec -- python scripts/lint-markdown-changed.py --base "$BASE"
+
+      - name: Markdown scope note (#132)
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
+        if: always()
+        env:
+          MARKDOWN_SCOPE: ${{ needs.changes.outputs.markdown }}
+        run: |
+          echo "markdown scope: $MARKDOWN_SCOPE"
+          if [ "$MARKDOWN_SCOPE" = "true" ]; then
+            echo "markdown slice ran."
+          else
+            echo "markdown slice skipped: no changed files in scope."
+          fi
 
   frontend:
     name: Frontend type-check and build
