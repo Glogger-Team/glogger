@@ -16,7 +16,7 @@
           </div>
 
           <!-- Two-panel layout -->
-          <div class="flex-1 flex gap-4 px-4 pb-4 min-h-0">
+          <div class="flex-1 flex flex-col md:flex-row gap-4 px-4 pb-4 min-h-0 overflow-y-auto md:overflow-hidden">
             <!-- Left: item search/browse -->
             <div class="flex-1 min-w-0 flex flex-col min-h-0">
               <SlotItemPicker
@@ -26,7 +26,7 @@
             </div>
 
             <!-- Right: item preview -->
-            <div class="w-96 shrink-0 flex flex-col min-h-0 border-l border-border-default/50 pl-4">
+            <div class="w-full md:w-96 shrink-0 flex flex-col min-h-0 border-l-0 md:border-l border-t md:border-t-0 border-border-default/50 pt-4 md:pt-0 pl-0 md:pl-4 max-h-[45%] md:max-h-none overflow-y-auto">
               <template v-if="previewItem">
                 <div class="flex-1 overflow-y-auto">
                   <ItemTooltip :item="previewItem" :icon-src="previewIconSrc" />
@@ -80,7 +80,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { useBuildPlannerStore } from '../../../stores/buildPlannerStore'
 import { useGameDataStore } from '../../../stores/gameDataStore'
@@ -90,7 +90,7 @@ import type { ItemInfo } from '../../../types/gameData'
 import SlotItemPicker from './SlotItemPicker.vue'
 import ItemTooltip from '../../Shared/Item/ItemTooltip.vue'
 
-defineProps<{
+const props = defineProps<{
   show: boolean
 }>()
 
@@ -151,6 +151,14 @@ function close() {
   previewIconSrc.value = null
   emit('update:show', false)
 }
+
+// Window-level Esc in capture phase: the search input owns focus on open,
+// so a dialog-level handler would never fire. Guarded to this dialog's open state.
+function onWindowKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && props.show) close()
+}
+onMounted(() => window.addEventListener('keydown', onWindowKeydown, true))
+onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown, true))
 
 watch(() => store.selectedSlot, () => {
   previewItem.value = null
