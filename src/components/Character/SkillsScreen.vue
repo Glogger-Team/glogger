@@ -73,17 +73,21 @@ const settingsStore = useSettingsStore()
 const selectedSkill = ref<string | null>(null)
 const skillListPanelRef = ref<InstanceType<typeof SkillListPanel> | null>(null)
 
-/** Consume a pending search drill-in: select the named skill if known, else no-op. Always clears pending. */
-function consumePendingSkillSelection() {
-  const name = pendingSkillSelection.value
-  if (!name) return
-  pendingSkillSelection.value = null
-  if (!store.skillsByName[name] && !store.sessionSkills[name]) return
-  selectedSkill.value = name
-  nextTick(() => {
-    skillListPanelRef.value?.revealSkill(name)
-  })
-}
+/** Skill named by the last search drill-in; kept so late layout shifts (CDN load) can re-reveal it. Cleared on manual select. */
+const drilledSkill = ref<string | null>(null)
+
+ /** Consume a pending search drill-in: select the named skill if known, else no-op. Always clears pending. */
+ function consumePendingSkillSelection() {
+   const name = pendingSkillSelection.value
+   if (!name) return
+   pendingSkillSelection.value = null
+   if (!store.skillsByName[name] && !store.sessionSkills[name]) return
+   selectedSkill.value = name
+  drilledSkill.value = name
+   nextTick(() => {
+     skillListPanelRef.value?.revealSkill(name)
+   })
+ }
 
 // CDN skill data cache for the list panel
 const cdnSkillMap = ref<Record<string, SkillInfo>>({})
@@ -128,6 +132,7 @@ const selectedGameStateSkill = computed<GameStateSkill | null>(() => {
 
 function selectSkill(name: string) {
   selectedSkill.value = name
+  drilledSkill.value = null
 }
 
 // Load all CDN skills for grouping/icons
@@ -151,6 +156,10 @@ onMounted(() => {
 
 watch(pendingSkillSelection, () => {
   consumePendingSkillSelection()
+})
+watch(cdnSkillMap, () => {
+  // Late CDN arrival regroups/resizes rows, invalidating the drill-in scroll — re-reveal.
+  if (drilledSkill.value) skillListPanelRef.value?.revealSkill(drilledSkill.value)
 })
 
 watch(() => gameData.status, (s) => {

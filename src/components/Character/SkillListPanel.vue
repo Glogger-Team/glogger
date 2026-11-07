@@ -95,7 +95,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { useGameStateStore } from '../../stores/gameStateStore'
 import { skillTotalLevel, type GameStateSkill } from '../../types/gameState'
 import type { SkillInfo } from '../../types/gameData'
@@ -150,10 +150,16 @@ function revealSkill(skillName: string): boolean {
   }
   const group = groupedSkills.value.find(g => g.skills.some(r => r.skill_name === skillName))
   if (group?.label && collapsedGroups.value.has(group.label)) toggleGroup(group.label)
-  requestAnimationFrame(() => {
-    listRoot.value
-      ?.querySelector(`[data-skill-name="${CSS.escape(skillName)}"]`)
-      ?.scrollIntoView({ block: 'nearest' })
+  // Scroll after Vue flushes the filter/group changes AND the browser lays out:
+  // nextTick flushes reactive updates, double-rAF waits out style/layout.
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        listRoot.value
+          ?.querySelector(`[data-skill-name="${CSS.escape(skillName)}"]`)
+          ?.scrollIntoView({ block: 'center' })
+      })
+    })
   })
   return true
 }
