@@ -1,3 +1,7 @@
+# PR path filter: the `changes` job (first job) classifies changed files
+# into per-slice filter outputs (one boolean per scope) with pinned
+# dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad (# v4.0.3).
+# No job gates on these outputs yet — gating lands in #132/#133/#134.
 # PR gates on PRs and main pushes: frontend type-check/build, Rust tests
 # (plus clippy `-D warnings` on all targets), plus fast local-feedback
 # linters. CI calls each `mise run lint:*` slice individually (the check
@@ -30,6 +34,91 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Path filter
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      ruff: ${{ steps.filter.outputs.ruff }}
+      yamllint: ${{ steps.filter.outputs.yamllint }}
+      actions: ${{ steps.filter.outputs.actions }}
+      markdown: ${{ steps.filter.outputs.markdown }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      grids: ${{ steps.filter.outputs.grids }}
+      review: ${{ steps.filter.outputs.review }}
+      rust: ${{ steps.filter.outputs.rust }}
+      audit: ${{ steps.filter.outputs.audit }}
+      run-all: ${{ steps.filter.outputs.run-all }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Path filter
+        id: filter
+        uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v4.0.3
+        with:
+          filters: |
+            ruff:
+              - 'scripts/**'
+            yamllint:
+              - '**/*.yml'
+              - '**/*.yaml'
+            actions:
+              - '.github/**'
+            markdown:
+              - '**/*.md'
+            frontend:
+              - 'src/**'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'vite.config.ts'
+              - 'index.html'
+              - 'dev-panel.html'
+            grids:
+              - 'src/**/*.vue'
+            review:
+              - 'src-tauri/src/db/migrations.rs'
+            rust:
+              - 'src-tauri/**'
+              - 'src-tauri/Cargo.toml'
+              - 'src-tauri/Cargo.lock'
+            audit:
+              - 'src-tauri/Cargo.toml'
+              - 'src-tauri/Cargo.lock'
+              - 'scripts/cargo-audit-gate.py'
+            run-all:
+              - '.github/workflows/lint.yml'
+
+      - name: Log filter outputs
+        env:
+          FILTER_RUFF: ${{ steps.filter.outputs.ruff }}
+          FILTER_YAMLLINT: ${{ steps.filter.outputs.yamllint }}
+          FILTER_ACTIONS: ${{ steps.filter.outputs.actions }}
+          FILTER_MARKDOWN: ${{ steps.filter.outputs.markdown }}
+          FILTER_FRONTEND: ${{ steps.filter.outputs.frontend }}
+          FILTER_GRIDS: ${{ steps.filter.outputs.grids }}
+          FILTER_REVIEW: ${{ steps.filter.outputs.review }}
+          FILTER_RUST: ${{ steps.filter.outputs.rust }}
+          FILTER_AUDIT: ${{ steps.filter.outputs.audit }}
+          FILTER_RUN_ALL: ${{ steps.filter.outputs.run-all }}
+        run: |
+          echo "ruff=$FILTER_RUFF"
+          echo "yamllint=$FILTER_YAMLLINT"
+          echo "actions=$FILTER_ACTIONS"
+          echo "markdown=$FILTER_MARKDOWN"
+          echo "frontend=$FILTER_FRONTEND"
+          echo "grids=$FILTER_GRIDS"
+          echo "review=$FILTER_REVIEW"
+          echo "rust=$FILTER_RUST"
+          echo "audit=$FILTER_AUDIT"
+          echo "run-all=$FILTER_RUN_ALL"
+
   ruff:
     name: Ruff (Python)
     runs-on: ubuntu-latest
