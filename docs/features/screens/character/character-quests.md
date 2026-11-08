@@ -2,7 +2,9 @@
 
 ## Overview
 
-The Quests screen is a snapshot-driven quest reference that cross-references CDN quest data against the player's latest character report import. It answers "What quests do I have active?", "Which work orders are done or still todo?", and "What requirements or rewards does this quest have?" Character state comes from the selected snapshot; quest details come from the CDN quest list.
+The Quests screen is a snapshot-driven quest reference that cross-references CDN quest data against the player's latest character report import. It answers "What quests do I have active?", "Which work orders are done or still todo?", and "What requirements or rewards does this quest have?"
+
+Character state comes from the selected snapshot; quest details come from the CDN quest list. Requirement checks and work-order skill scoping read live game state (`gameStateStore`), so those results can change without a new snapshot while tab membership stays pinned to the snapshot.
 
 ## Layout
 
@@ -15,7 +17,7 @@ The Quests screen is a snapshot-driven quest reference that cross-references CDN
 │  QUEST LIST (w-80)               │  QUEST DETAIL PANEL          │
 │  Filter: [________]              │                              │
 │  [By Area ▾] [Name ▾]  142 shown │  Kill Aberrant Spiders       │
-│                                  │  [Active]                    │
+│                                  │  [Eligible]                  │
 │  ▼ Serbule (28)                  │  KillAberrantSpiders · Lv 30 │
 │    Kill Rats     Lv 5   [Active]  │  Eltibule                    │
 │    Bring Bones   Lv 8   [Done]    │                              │
@@ -32,7 +34,7 @@ The Quests screen is a snapshot-driven quest reference that cross-references CDN
 - Empty state when no snapshot is selected: import a character report to see quests.
 - Loading state while the CDN quest list is still empty for a selected snapshot.
 - Four tabs share a two-panel layout (quest list + detail). The Uncompleted WOs tab replaces it with its own backlog layout.
-- Hint banner on the Completed and Uncompleted tabs when the export carries no completed-quest data (older game clients omit it): re-export in-game via Export Character as JSON in Settings → VIP.
+- Hint banner on the Completed and Uncompleted tabs when `completedKeys` is empty (older game clients omit the completed-quest arrays — re-export in-game via Export Character as JSON in Settings → VIP; a newer export whose character genuinely completed nothing shows the same banner and needs no re-export).
 
 ## Data Sources
 
@@ -138,7 +140,7 @@ Panel features:
 
 Right panel composing the header and three section sub-components. Sections displayed:
 
-- **Header** — Quest name, category badge, internal name, level, area (via `AreaInline`).
+- **Header** — Quest name, eligibility badge (shown when the quest has requirements), internal name, level, area (via `AreaInline`).
 - **Description** — Italic quest description text.
 - **Quest Giver Dialog** — Preface text in a styled quote block.
 - **Quest Info** — Grid with favor NPC (via `NpcInline`), cancellable, reuse time, work order skill (via `SkillInline`).
