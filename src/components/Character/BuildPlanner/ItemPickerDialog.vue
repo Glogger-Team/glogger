@@ -156,8 +156,8 @@ function close() {
 // Esc scoping: registers on the shared overlay Esc stack while open, so one
 // Esc with stacked overlays closes only the topmost. The stack owns the
 // capture-phase window listener (the search input owns focus on open).
-// StyledSelect contains its own open-dropdown Esc (stopPropagation), so an
-// open dropdown closes first; the dialog closes on the next Esc.
+// An open StyledSelect registers its own `close` above the dialog, so the
+// dropdown closes first; the dialog closes on the next Esc.
 useOverlayEscape(() => props.show, close);
 
 watch(() => store.selectedSlot, () => {

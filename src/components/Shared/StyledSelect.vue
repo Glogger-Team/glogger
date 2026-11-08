@@ -73,7 +73,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onBeforeUnmount } from 'vue'
+import { ref, computed, nextTick, onBeforeUnmount, watch } from 'vue'
+import { registerOverlayEscape } from '../../composables/useOverlayEscape'
 
 export interface SelectOption {
   value: string
@@ -200,6 +201,19 @@ function close() {
   open.value = false
 }
 
+// Esc ordering vs parent overlays: while the dropdown is open it registers
+// `close` on the shared overlay Esc stack, so the topmost entry is the
+// dropdown — not the dialog underneath. The stack's window capture-phase
+// listener fires before any in-component (bubble) handler, so without this
+// the dialog would close first and the dropdown's own Esc would never run.
+// Registration order keeps stacking semantics: the dropdown opened after
+// (above) its dialog, so it sits on top.
+let unregisterDropdownEscape: (() => void) | null = null
+watch(open, (isOpen) => {
+  unregisterDropdownEscape?.()
+  unregisterDropdownEscape = isOpen ? registerOverlayEscape(close) : null
+})
+
 // Esc from an option button: contain the dropdown (don't bubble to a
 // parent dialog's window-level Esc) and return focus to the toggle.
 function closeAndRefocus() {
@@ -245,5 +259,9 @@ function selectNext() {
   }
 }
 
-onBeforeUnmount(close)
+onBeforeUnmount(() => {
+  unregisterDropdownEscape?.()
+  unregisterDropdownEscape = null
+  close()
+})
 </script>
