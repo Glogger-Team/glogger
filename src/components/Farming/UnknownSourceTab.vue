@@ -79,6 +79,7 @@ async function load() {
   const character = settingsStore.settings.activeCharacterName
   const server = settingsStore.settings.activeServerName
   const request = ++latestRequest.value
+  rows.value = []
    if (!character || !server) {
      rows.value = []
      error.value = ''
