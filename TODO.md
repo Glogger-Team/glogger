@@ -18,7 +18,7 @@ Small tasks and notes that don't belong in a dedicated plan.
 
 ## Deferred tuning (needs real-world data)
 
-- [ ] rez-dedup 30s window calibration — see `docs/plans/deferred-tuning.md` (needs a captured rez pair; window still forward-only so backward-ordered pairs fail open; no fixture contains either phrasing; watch for duplicate `character_resuscitations` rows, cosmetic only).
+- [ ] rez-dedup 30s window calibration — see `docs/plans/deferred-tuning.md` (bidirectional `abs()<=30s` window shipped in `rez_within_dedup_window`; still needs a captured rez pair to calibrate 30s vs 60s; no fixture contains either phrasing; watch for duplicate `character_resuscitations` rows, cosmetic only).
 
 ---
 

@@ -17,9 +17,9 @@ Related plan files: none yet — promote an item to its own
 (~L1500), tests in `mod rez_dedup_tests`.
 
 **Why deferred:** The guard suppresses the second phrasing of one rez
-("X resuscitates Y" → "Y comes back to life!") only if the pair is ≤30s
-apart and forward-ordered. Both assumptions are unverified against real
-game behavior — tuning requires a capture of actual paired lines.
+("X resuscitates Y" → "Y comes back to life!") when the pair is ≤30s
+apart either direction (`|cur - prev| <= WINDOW`). The 30s value itself
+is unverified against real game behavior — tuning requires a capture of actual paired lines.
 
 **Concrete open items:**
 
@@ -27,14 +27,7 @@ game behavior — tuning requires a capture of actual paired lines.
       the actual timestamp gap between the two phrasings. If any pair
       exceeds 30s, widen `WINDOW` (there's no re-rez-cooldown evidence
       either way yet, so the ceiling is unknown).
-- [ ] Backward-ordered pairs fail OPEN (both rows persist): if the
-      paired line's timestamp is *earlier* than the first persisted
-      event, `rez_within_dedup_window` returns false (guard is
-      forward-only, documented as deliberate in the code + test
-      `distinct_events_and_malformed`). Fix options: make the window
-      bidirectional (`|cur - prev| <= WINDOW`), or first prove chat-log
-      timestamps are monotonic within a file and document that as an
-      invariant instead.
+- [x] ~~Backward-ordered pairs fail OPEN~~ — **DONE: window is now bidirectional (`(cur - prev).abs() <= WINDOW` in `rez_within_dedup_window`); backward pairs within the window suppress (out-of-order replay / clock skew), covered by `distinct_events_and_malformed` + `legitimate_re_rez_is_kept` reversed cases.**
 - [ ] Symptom to watch for: duplicate rez rows / inflated "times rezzed"
       counts in the death-tracker widget. `character_resuscitations` has
       no UNIQUE key, so dupes are silent — cosmetic only, no corruption.
