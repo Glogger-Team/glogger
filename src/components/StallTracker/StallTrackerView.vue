@@ -129,6 +129,7 @@ import StallInventoryTab from './StallInventoryTab.vue'
 import StallTrendsTab from './StallTrendsTab.vue'
 import StallShopLogTab from './StallShopLogTab.vue'
 import { useStallTrackerStore } from '../../stores/stallTrackerStore'
+import { useOverlayEscape } from '../../composables/useOverlayEscape'
 import { useViewPrefs } from '../../composables/useViewPrefs'
 import { useSettingsStore } from '../../stores/settingsStore'
 import type { ImportResult, ExportResult } from '../../types/stallTracker'
@@ -357,22 +358,23 @@ function openShopLog() {
   shopLogOpen.value = true
 }
 
-function onKeydown(e: KeyboardEvent) {
-  if (e.key !== 'Escape' || !shopLogOpen.value) return
-  // CRITICAL: don't swallow Escape inside text inputs or SearchableSelect
-  // dropdowns. The dropdowns handle their own Escape-to-close; intercepting
-  // here would tear down the whole modal instead of just closing the dropdown.
-  // Date inputs are exempted — Escape from a date input should close the
-  // modal, since native date pickers don't have their own Escape behavior
-  // worth preserving.
-  const target = e.target as HTMLElement | null
+// Esc scoping: registers on the shared overlay Esc stack while open, so one
+// Esc with stacked overlays closes only the topmost (z-[60] paints above the
+// MenuBar and any z-50 overlay). The stack owns the capture-phase window
+// listener. CRITICAL, preserved from the old bubble-phase handler: don't
+// swallow Escape inside text inputs or SearchableSelect dropdowns. The
+// dropdowns contain their own Escape-to-close (stopPropagation); intercepting
+// here would tear down the whole modal instead of just closing the dropdown.
+// Date inputs are exempted — Escape from a date input closes the modal,
+// since native date pickers don't have their own Escape behavior.
+function closeShopLog() {
+  const target = document.activeElement as HTMLElement | null
   if (target && target.tagName === 'TEXTAREA') return
   if (target && target.tagName === 'INPUT' && (target as HTMLInputElement).type !== 'date') return
   shopLogOpen.value = false
 }
-window.addEventListener('keydown', onKeydown)
+useOverlayEscape(() => shopLogOpen.value, closeShopLog);
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', onKeydown)
   if (messageTimer) clearTimeout(messageTimer)
   // Reset in case the user navigates away mid-import. Otherwise the flag
   // could persist across remounts (Pinia store survives) and leave the

@@ -7,8 +7,16 @@ import { onBeforeUnmount, watch } from "vue";
 // while open; one shared capture-phase listener invokes only the topmost
 // entry. Registration order = stacking order (newest on top).
 type EscapeCloser = () => void;
+type EscapeStack = { close: EscapeCloser }[];
 
-const stack: { close: EscapeCloser }[] = [];
+// The stack array itself lives on globalThis so a hot-swapped module reuses
+// the live stack instead of orphaning entries registered by the previous
+// evaluation. (Entries are still unregistered on close/unmount, so a stale
+// closer can only linger while its overlay is open.)
+const STACK_KEY = "__gloggerOverlayEscapeStack";
+const stack: EscapeStack =
+  (globalThis as Record<string, unknown>)[STACK_KEY] as EscapeStack ?? [];
+(globalThis as Record<string, unknown>)[STACK_KEY] = stack;
 
 function onKeydown(event: KeyboardEvent): void {
   if (event.key !== "Escape" || stack.length === 0) return;

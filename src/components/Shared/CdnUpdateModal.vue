@@ -51,6 +51,7 @@
 
 <script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
+import { useOverlayEscape } from '../../composables/useOverlayEscape'
 
 const props = defineProps<{
   show: boolean
@@ -66,9 +67,15 @@ const emit = defineEmits<{
 
 // Esc maps to `dismiss` (same as Remind Me Later) — but never while
 // `restarting` is true (buttons disabled; the modal must stay until done).
+// Registered on the shared overlay Esc stack while open, so one Esc with
+// stacked overlays dismisses only the topmost. The dialog keeps its
+// tabindex focus + @keydown.escape handler: Esc with focus inside the modal
+// dismisses synchronously (incl. while restarting-guarded); the stack entry
+// covers Esc from anywhere else (e.g. focus outside the dialog).
 function onEscape() {
   if (!props.restarting) emit('dismiss')
 }
+useOverlayEscape(() => props.show, onEscape);
 
 const dialogRef = ref<HTMLElement | null>(null)
 let previouslyFocused: HTMLElement | null = null
