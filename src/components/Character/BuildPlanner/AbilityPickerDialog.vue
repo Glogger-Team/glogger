@@ -126,8 +126,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
 import { useBuildPlannerStore } from '../../../stores/buildPlannerStore'
+import { useOverlayEscape } from '../../../composables/useOverlayEscape'
 import { useGameDataStore } from '../../../stores/gameDataStore'
 import { useCharacterStore } from '../../../stores/characterStore'
 import { useBuildCrossRef } from '../../../composables/useBuildCrossRef'
@@ -438,13 +439,10 @@ function close() {
   emit('update:show', false)
 }
 
-// Window-level Esc: the search input owns focus on open, so a dialog-level
-// handler would never fire. Guarded to this dialog's open state.
-function onWindowKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && props.show) close()
-}
-onMounted(() => window.addEventListener('keydown', onWindowKeydown))
-onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
+// Esc scoping: registers on the shared overlay Esc stack while open, so one
+// Esc with stacked overlays closes only the topmost. The stack owns the
+// capture-phase window listener (the search input owns focus on open).
+useOverlayEscape(() => props.show, close);
 
 // ── Watchers ─────────────────────────────────────────────────────────────────
 

@@ -63,7 +63,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, watch, nextTick } from 'vue'
+import { useOverlayEscape } from '../../../composables/useOverlayEscape'
 import { EQUIPMENT_SLOTS, getRarityTextColor } from '../../../types/buildPlanner'
 import type { EquippedSlotCandidates, EquippedCandidate, EquippedSelection } from '../../../types/buildPlanner'
 import StyledSelect from '../../Shared/StyledSelect.vue'
@@ -157,13 +158,12 @@ function cancel() {
   emit('update:show', false)
 }
 
-// Window-level Esc: focus sits inside per-slot StyledSelects, so a
-// dialog-level handler would rarely fire. Guarded to open state.
-function onWindowKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && props.show) cancel()
-}
-onMounted(() => window.addEventListener('keydown', onWindowKeydown))
-onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown))
+// Esc scoping: registers on the shared overlay Esc stack while open, so one
+// Esc with stacked overlays closes only the topmost. The stack owns the
+// capture-phase window listener (focus sits inside per-slot StyledSelects).
+// An open StyledSelect registers its own `close` above the dialog, so the
+// dropdown closes first; the dialog closes on the next Esc.
+useOverlayEscape(() => props.show, cancel);
 </script>
 
 <style scoped>

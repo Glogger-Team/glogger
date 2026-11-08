@@ -80,7 +80,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { useOverlayEscape } from '../../../composables/useOverlayEscape'
 import { convertFileSrc } from '@tauri-apps/api/core'
 import { useBuildPlannerStore } from '../../../stores/buildPlannerStore'
 import { useGameDataStore } from '../../../stores/gameDataStore'
@@ -152,13 +153,12 @@ function close() {
   emit('update:show', false)
 }
 
-// Window-level Esc in capture phase: the search input owns focus on open,
-// so a dialog-level handler would never fire. Guarded to this dialog's open state.
-function onWindowKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && props.show) close()
-}
-onMounted(() => window.addEventListener('keydown', onWindowKeydown, true))
-onBeforeUnmount(() => window.removeEventListener('keydown', onWindowKeydown, true))
+// Esc scoping: registers on the shared overlay Esc stack while open, so one
+// Esc with stacked overlays closes only the topmost. The stack owns the
+// capture-phase window listener (the search input owns focus on open).
+// An open StyledSelect registers its own `close` above the dialog, so the
+// dropdown closes first; the dialog closes on the next Esc.
+useOverlayEscape(() => props.show, close);
 
 watch(() => store.selectedSlot, () => {
   previewItem.value = null
