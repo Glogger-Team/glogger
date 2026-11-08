@@ -367,6 +367,10 @@ function toggleChannel(ch: string) {
 }
 
 function saveRule() {
+  const existingSource =
+    editingId.value !== null
+      ? (rules.value.find((r) => r.id === editingId.value)?.source ?? null)
+      : null
   const rule: WatchRule = {
     id: editingId.value ?? Date.now(),
     name: form.value.name.trim(),
@@ -381,6 +385,7 @@ function saveRule() {
       toast: form.value.toast,
       sound: form.value.sound,
     },
+    source: existingSource,
   }
 
   let updated: WatchRule[]

@@ -306,6 +306,7 @@ export interface WatchRule {
   match_mode: ConditionMatch;
   conditions: WatchCondition[];
   notify: WatchNotifyConfig;
+  source: string | null;
 }
 
 export interface WatchCondition {

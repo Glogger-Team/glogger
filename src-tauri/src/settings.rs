@@ -296,6 +296,10 @@ pub struct WatchRule {
     pub match_mode: ConditionMatch,
     pub conditions: Vec<WatchCondition>,
     pub notify: WatchNotifyConfig,
+    /// Origin of the rule: `None` = manual/user-created rule,
+    /// `Some("auto_skillbook")` = auto-generated skillbook rule.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// A single condition within a watch rule
