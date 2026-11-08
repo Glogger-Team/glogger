@@ -211,7 +211,20 @@ function close() {
 let unregisterDropdownEscape: (() => void) | null = null
 watch(open, (isOpen) => {
   unregisterDropdownEscape?.()
-  unregisterDropdownEscape = isOpen ? registerOverlayEscape(close) : null
+  // Refocus only when an option button holds focus (arrow-key navigation):
+  // the stack fires at window capture phase, before the option handler's
+  // own Esc can run `closeAndRefocus`. Esc from anywhere else (search input,
+  // toggle) must not yank focus — bare `close` keeps it where it is.
+  unregisterDropdownEscape = isOpen
+    ? registerOverlayEscape(() => {
+        const focused = document.activeElement
+        if (focused instanceof HTMLButtonElement && dropdownRef.value?.contains(focused)) {
+          closeAndRefocus()
+        } else {
+          close()
+        }
+      })
+    : null
 })
 
 // Esc from an option button: contain the dropdown (don't bubble to a
