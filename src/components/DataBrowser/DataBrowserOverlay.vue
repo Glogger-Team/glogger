@@ -32,10 +32,11 @@
               </button>
             </template>
             <div class="flex-1" />
-            <button class="shrink-0 text-xs text-text-muted hover:text-text-primary border border-border-default rounded px-1.5 py-0.5" :title="sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'" @click="sidebarCollapsed = !sidebarCollapsed">{{ sidebarCollapsed ? '☰' : '✕' }}</button>
+            <button class="shrink-0 text-xs text-text-muted hover:text-text-primary border border-border-default rounded px-1.5 py-0.5" :title="sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'" :aria-label="sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'" @click="sidebarCollapsed = !sidebarCollapsed">{{ sidebarCollapsed ? '☰' : '✕' }}</button>
             <button
               class="bg-transparent border-none text-text-muted cursor-pointer text-sm hover:text-accent-red transition-colors px-1.5 py-0.5 rounded hover:bg-surface-elevated"
               title="Close"
+              aria-label="Close"
               @click="store.close()"
             >&#x2715;</button>
           </div>

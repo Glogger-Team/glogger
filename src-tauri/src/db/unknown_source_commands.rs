@@ -29,6 +29,7 @@ fn query_unknown_source(
              FROM item_transactions
              WHERE character_name = ?1 AND server_name = ?2
                AND (source_kind = 'unknown' OR source_kind = 'uncertain' OR source_kind IS NULL)
+               AND quantity > 0 AND context != 'storage_deposit'
              ORDER BY timestamp DESC
              LIMIT ?3",
         )
@@ -54,8 +55,11 @@ fn query_unknown_source(
 }
 
 /// Diagnostic report: every gain for this character/server whose source is
-/// unresolved, newest first. Helps find drops the provenance pipeline missed
-/// (bad taxonomy, untagged chat loot) instead of silently lumping them.
+/// unresolved, newest first. Gains-only: deletes/withdrawals (negative
+/// quantities) and storage deposits (vault moves, not loot) are excluded so
+/// they can't displace real loot from the capped result. Helps find drops the
+/// provenance pipeline missed (bad taxonomy, untagged chat loot) instead of
+/// silently lumping them.
 #[tauri::command]
 pub fn get_unknown_source_transactions(
     db: State<'_, DbPool>,

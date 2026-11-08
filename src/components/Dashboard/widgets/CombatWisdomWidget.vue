@@ -130,10 +130,16 @@ const session = computed(() => store.combatWisdomSession)
 /** Named/boss reuse timer cap (wiki: named soloable = once per 24h). */
 const WIKI_MAX_COOLDOWN_SECS = 24 * 3600
 
+/** Elite check shared by the badge and the timer: "Defeated" is the elite verb,
+ * and the name rule covers Elite-named monsters reported via a "Killed" line. */
+function isElite(m: { verb: string; name: string }): boolean {
+  // "Defeated" = elite: chance-based each kill, no real cooldown.
+  return m.verb === 'Defeated' || /^Elite\b/i.test(m.name)
+}
+
 /** Cooldown in seconds for a monster: observed minimum, else wiki default. */
 function cooldownSecs(m: CombatWisdomMonster): number {
-  // "Defeated" = elite: chance-based each kill, no real cooldown.
-  if (m.verb === 'Defeated') return 0
+  if (isElite(m)) return 0
   // Named/boss: the observed shortest gap is an *upper bound* on the true
   // cooldown, so cap it at the wiki max (24h). This lets a real boss timer
   // shorten below 24h (e.g. ~3h) while preventing a rarely-killed mob — whose
@@ -158,12 +164,7 @@ const cooldowns = computed(() => {
       const readyAt = m.last_earned_ms + cooldownSecs(m) * 1000
       const remainMs = readyAt - now.value
       const ready = remainMs <= 0
-      const kind =
-        m.verb === 'Defeated' || /^Elite\b/i.test(m.name)
-          ? 'elite'
-          : m.min_gap_secs != null
-            ? 'named'
-            : 'unknown'
+      const kind = isElite(m) ? 'elite' : m.min_gap_secs != null ? 'named' : 'unknown'
       return {
         name: m.name,
         verb: m.verb,
@@ -184,7 +185,7 @@ const cooldowns = computed(() => {
 function cooldownTitle(m: { verb: string; min_gap_secs: number | null; kind?: string }): string {
   if (m.kind === 'elite' || m.verb === 'Defeated') return 'Elite — chance each kill'
   if (m.min_gap_secs != null) {
-    return `Named lockout — observed ${formatDuration(m.min_gap_secs)} (learned from your kills)`
+    return `Shortest gap seen ${formatDuration(m.min_gap_secs)} — timer capped at 24h wiki default`
   }
   return 'Likely named — 24h wiki default until observed'
 }

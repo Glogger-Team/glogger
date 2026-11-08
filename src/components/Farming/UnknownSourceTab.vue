@@ -54,6 +54,9 @@ const settingsStore = useSettingsStore()
 const rows = ref<UnknownSourceRow[]>([])
 const loading = ref(false)
 const error = ref('')
+// Latest selection key: a superseded request must not overwrite rows, error,
+// or loading belonging to a newer selection (character/server switch mid-flight).
+const latestRequest = ref('')
 
 const characterLabel = computed(() => {
   const c = settingsStore.settings.activeCharacterName
@@ -74,22 +77,29 @@ const characterLabel = computed(() => {
 async function load() {
   const character = settingsStore.settings.activeCharacterName
   const server = settingsStore.settings.activeServerName
+  const request = `${character ?? ''}\0${server ?? ''}`
+  latestRequest.value = request
    if (!character || !server) {
      rows.value = []
      error.value = ''
+    if (latestRequest.value === request) loading.value = false
      return
    }
    loading.value = true
-   try {
-    rows.value = await invoke<UnknownSourceRow[]>('get_unknown_source_transactions', {
+  try {
+    const result = await invoke<UnknownSourceRow[]>('get_unknown_source_transactions', {
       characterName: character,
       serverName: server,
       limit: 100,
     })
+    if (latestRequest.value !== request) return
+    rows.value = result
+    error.value = ''
   } catch (e) {
+    if (latestRequest.value !== request) return
     error.value = String(e)
   } finally {
-    loading.value = false
+    if (latestRequest.value === request) loading.value = false
   }
 }
 
