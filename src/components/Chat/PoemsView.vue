@@ -306,6 +306,7 @@ function renderPoem(text: string): string {
   return sanitizeRich(text, true)
 }
 
+// Intentionally local (not on the overlay Esc stack): detail mode is view content, not an overlay — stacking here would block Ctrl+D via the stack-empty gate, and the stack's capture listener already preempts this handler when an overlay sits above.
 function onKeydown(e: KeyboardEvent) {
   if (selectedIndex.value === -1) return
   if (e.key === 'Escape') {

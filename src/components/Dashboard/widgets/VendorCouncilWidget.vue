@@ -348,6 +348,7 @@ import { useCharacterStore } from '../../../stores/characterStore'
 import { useSettingsStore } from '../../../stores/settingsStore'
 import { useViewPrefs } from '../../../composables/useViewPrefs'
 import { hasBuyCapacity, getStoreService, goldCapAtTier } from '../../../composables/useNpcServices'
+import { registerOverlayEscape } from '../../../composables/useOverlayEscape'
 import VendorRow from './VendorRow.vue'
 import EarnedVendorRow from './EarnedVendorRow.vue'
 
@@ -654,6 +655,12 @@ const ctxMenu = ref<{ visible: boolean; x: number; y: number; entry: VendorEntry
   entry: null,
 })
 
+// Esc ordering vs overlays above: while the menu is open `closeContextMenu`
+// sits on the shared overlay Esc stack (dropdown-first reference:
+// DatePicker's stopPropagation), so one Esc closes only the topmost — the
+// menu when alone — instead of also firing a stacked dialog underneath.
+let unregisterCtxMenuEscape: (() => void) | null = null
+
 function openContextMenu(payload: { entry: VendorEntry; x: number; y: number }) {
   // Clamp so the menu never spills off the right/bottom edge.
   const menuW = 170
@@ -664,7 +671,8 @@ function openContextMenu(payload: { entry: VendorEntry; x: number; y: number }) 
     y: Math.min(payload.y, window.innerHeight - menuH),
     entry: payload.entry,
   }
-  window.addEventListener('keydown', onCtxKeydown)
+  unregisterCtxMenuEscape?.()
+  unregisterCtxMenuEscape = registerOverlayEscape(closeContextMenu)
   window.addEventListener('scroll', closeContextMenu, true)
 }
 
@@ -672,14 +680,10 @@ function closeContextMenu() {
   if (!ctxMenu.value.visible) return
   ctxMenu.value.visible = false
   ctxMenu.value.entry = null
-  window.removeEventListener('keydown', onCtxKeydown)
+  unregisterCtxMenuEscape?.()
+  unregisterCtxMenuEscape = null
   window.removeEventListener('scroll', closeContextMenu, true)
 }
-
-function onCtxKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') closeContextMenu()
-}
-
 async function setToZeroFromMenu() {
   const entry = ctxMenu.value.entry
   closeContextMenu()
