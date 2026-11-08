@@ -56,7 +56,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
+import { ref, watch } from 'vue'
+import { useOverlayEscape } from '../../composables/useOverlayEscape'
 import { useUpdateStore } from '../../stores/updateStore'
 import AboutTab from './AboutTab.vue'
 import HelpSetupTab from './HelpSetupTab.vue'
@@ -91,31 +92,19 @@ function close() {
   emit('update:show', false)
 }
 
-// Focus trap: listen for escape globally when open. Capture phase: tab buttons
-// may own focus, so a bubble-phase listener can miss the key. Guarded to open state.
-watch(() => props.show, async (open) => {
+// Esc scoping: HelpOverlay registers on the shared overlay Esc stack while
+// open, so one Esc with stacked overlays closes only the topmost. The stack
+// owns the capture-phase window listener (tab buttons may own focus, so a
+// bubble-phase listener can miss the key).
+useOverlayEscape(() => props.show, close);
+
+watch(() => props.show, (open) => {
   if (open) {
     if (updateStore.updateAvailable) {
       activeTab.value = 'changelog'
     }
-    await nextTick()
-    window.addEventListener('keydown', handleKeydown, true)
-  } else {
-    window.removeEventListener('keydown', handleKeydown, true)
   }
 })
-
-onBeforeUnmount(() => {
-  window.removeEventListener('keydown', handleKeydown, true)
-})
-
-function handleKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape' && props.show) {
-    e.preventDefault()
-    e.stopPropagation()
-    close()
-  }
-}
 </script>
 
 <style scoped>

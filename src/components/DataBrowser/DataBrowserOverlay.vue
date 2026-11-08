@@ -103,6 +103,7 @@ import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } 
 import { useDataBrowserStore, browserTypes, entityTypeToTab } from "../../stores/dataBrowserStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useViewPrefs } from "../../composables/useViewPrefs";
+import { useOverlayEscape } from "../../composables/useOverlayEscape";
 import type { EntityNavigationTarget } from "../../composables/useEntityNavigation";
 import ItemSearch from "./ItemSearch.vue";
 import SkillBrowser from "./SkillBrowser.vue";
@@ -184,18 +185,18 @@ watch(() => store.activeType, () => {
   if (store.isOpen) focusSearchInput();
 });
 
-// Global keydown for Ctrl+D and ESC. Capture phase: the browser search input owns
-// focus on open, so a bubble-phase listener would never fire. Guarded to open state.
+// Esc scoping: DataBrowser registers on the shared overlay Esc stack while
+// open, so one Esc with stacked overlays closes only the topmost. This
+// listener keeps only the Ctrl+D toggle and stays capture-phase (the browser
+// search input owns focus on open, so bubble-phase would never fire).
+useOverlayEscape(() => store.isOpen, () => store.close());
+
+// Global keydown for Ctrl+D. Capture phase: the browser search input owns
+// focus on open, so a bubble-phase listener would never fire.
 function handleGlobalKeydown(event: KeyboardEvent) {
   if ((event.ctrlKey || event.metaKey) && event.key === "d") {
     event.preventDefault();
     store.toggle();
-    return;
-  }
-  if (event.key === "Escape" && store.isOpen) {
-    event.preventDefault();
-    event.stopPropagation();
-    store.close();
   }
 }
 

@@ -96,7 +96,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from "vue"
+import { ref, watch, nextTick, computed } from "vue"
+import { useOverlayEscape } from "../../composables/useOverlayEscape"
 import ItemInline from "../Shared/Item/ItemInline.vue"
 import RecipeInline from "../Shared/Recipe/RecipeInline.vue"
 import NpcInline from "../Shared/NPC/NpcInline.vue"
@@ -166,28 +167,16 @@ function close() {
   emit("update:show", false)
 }
 
-// Window-level Esc: the footer promises `esc closes`, but the input-only
-// handler orphans Esc as soon as focus lands on a result button.
-// Capture phase + stopPropagation: QuickSearch sits above picker dialogs
-// (global Ctrl+F layer), so its Esc must not reach their window listeners —
-// one Esc closes only the topmost overlay.
-function onWindowKeydown(event: KeyboardEvent) {
-  if (event.key === "Escape" && props.show) {
-    close()
-    event.preventDefault()
-    event.stopPropagation()
-  }
-}
-onMounted(() => window.addEventListener("keydown", onWindowKeydown, true))
-onBeforeUnmount(() => window.removeEventListener("keydown", onWindowKeydown, true))
+// Esc scoping: QuickSearch registers on the shared overlay Esc stack while
+// open. The stack owns the capture-phase window listener (the input-only
+// handler orphans Esc once focus lands on a result button); one Esc closes
+// only the topmost overlay and never reaches the picker dialogs underneath.
+useOverlayEscape(() => props.show, close)
 
 function handleKeydown(event: KeyboardEvent) {
   const total = allResults.value.length
 
-  if (event.key === "Escape") {
-    close()
-    event.preventDefault()
-  } else if (event.key === "ArrowDown") {
+  if (event.key === "ArrowDown") {
     selectedIndex.value = Math.min(total - 1, selectedIndex.value + 1)
     scrollSelectedIntoView()
     event.preventDefault()
