@@ -144,6 +144,7 @@ mod tests {
                 toast: true,
                 highlight: true,
             },
+            source: None,
         }
     }
 
@@ -164,6 +165,7 @@ mod tests {
                 toast: true,
                 highlight: true,
             },
+            source: None,
         }
     }
 
