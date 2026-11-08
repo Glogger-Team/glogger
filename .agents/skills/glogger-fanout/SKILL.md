@@ -16,10 +16,10 @@ Owns the fan-out recipe: TODO slices → branches → worktrees → panes → A�
 
 ## 2. Cut worktrees + panes
 
-- One per slice: `herdr worktree create --branch feature/<slug> --base main --no-focus`. Read checkout paths back from the command's JSON response (branch slashes become hyphens on disk: `feature-esc-stack-guard`).
+- One per slice: verify `feature/<slug>` does not already exist (`git branch --list feature/<slug>` empty), then `herdr worktree create --branch feature/<slug> --base main --no-focus` (an existing branch is checked out as-is, stale commits included — never reuse a slug). Read checkout paths back from the command's JSON response (branch slashes become hyphens on disk: `feature-esc-stack-guard`).
 - Split panes in the current tab: `herdr pane split --current --direction right|down --cwd <worktree-path> --no-focus` (wide→right, narrow/tall→down). Split with the slice's worktree as `--cwd` BEFORE `agent start` — start inherits the pane cwd. Parse new pane IDs from `.result.pane.pane_id`.
 - Start one agent per pane: `herdr agent start <name> --kind omp --pane <id>` (`omp` is this repo's kind — verify against `herdr agent start --help`; `muse-spark` is a model, not a `--kind` value).
-- Brief via `herdr agent prompt <name> "<brief>" --wait --timeout <ms>` (`--timeout` requires `--wait`).
+- Dispatch every brief first (`herdr agent prompt <name> "<brief>"` with no `--wait`), then monitor all agents (`herdr agent wait <name>`, `--timeout` requires `--wait` on `prompt` only). Sequential `--wait` stalls each slice behind the last; `wait` can return before a fresh turn starts, so inspect each agent before treating its work as done.
 
 ## 3. Brief shape (paste verbatim slots)
 
@@ -30,15 +30,15 @@ Each brief MUST contain: existing checkout path + branch (Do NOT create another 
 - **Pane cwd defaults to main.** Agents spawn in the main checkout, NOT their worktree — their status lines read `main`. Every brief must `cd` to the worktree path first; verify with `git branch --show-current`. Herdr's `agent list` `cwd` field is the launch cwd and never updates — trust the shell, not the listing. (A worker editing main misfired a whole slice once; caught via `git status` in main, moved via patch, main restored.) Order matters: `--cwd` (or `cd`) BEFORE `agent start`, never after — a later shell `cd` cannot move the omp session root, so the status line keeps reading `main` until respawn. Fix = respawn idle workers in their worktrees.
 - **Each worktree needs its own `node_modules`.** `npm install` once per checkout (lockfile-pinned). The `npm` shim dies in this shell (`/dev/null`); use `mise exec -- npm install`.
 - **Don't trust self-reported hashes.** Workers report stale hashes; read commit IDs from branch HEAD (`git rev-parse --short HEAD`) before freezing reviews.
-- **Pre-existing drift is not yours.** `package-lock.json` version stamp and similar worktree dirt: verify via `git show --stat HEAD` (3 files only = drift excluded), leave uncommitted, say so in reports.
+- **Pre-existing drift is not yours.** `package-lock.json` version stamp and similar worktree dirt: leave uncommitted and say so in reports. But stash/remove it BEFORE freezing a review — with a dirty tree `/skill:frozen-review` reads `git diff HEAD` (drift only) instead of the committed range and the slice commit goes unreviewed. Restore afterward.
 - **Pre-push hook needs node_modules too.** A worktree without install fails `lint:typecheck` on push (`vue-tsc not recognized`) — install before first push.
-- **Pane-close doesn't free worktrees (husks).** Closing a pane leaves the worktree dir locked. Teardown order: close the owning Herdr workspace (`wX`) first, then `worktree remove`/prune, then delete files — pane-close alone ends in Permission denied.
+- **Pane-close doesn't free worktrees (husks).** Closing a pane leaves the worktree dir locked. Teardown order: stop/close the worker pane first (it still holds the checkout as cwd), then close the owning Herdr workspace (`wX`), then `worktree remove`/prune, then delete files — pane-close alone ends in Permission denied.
 
 ## 5. A–D per slice (values: `AGENTS.md` Code review loop)
 
-- **A (parent):** `vue-tsc --noEmit` per worktree; markdownlint for docs slices; record freeze (`rev-parse --short HEAD`, `status --porcelain`, `log --oneline base..HEAD`, `diff --stat`).
+- **A (parent):** `mise run lint:full` per worktree + pre-commit self-review checklist before B, re-gated after each fix batch; record freeze (`rev-parse --short HEAD`, `status --porcelain`, `log --oneline base..HEAD`, `diff --stat`).
 - **B (task reviewers, read-only):** 1 reviewer per slice at this size (<100 lines or ≤2 files → 1). Paste frozen hunks into briefs with "do not re-run git diff"; carry facts sheet + three intake categories + report contract. Tag the behaviour slice "may run the thing".
 - **Fix batch (pane author, in its worktree):** forward findings only; one batch; re-gate; commit; never point a reviewer at its own fix (delta-only verification pass at most once).
-- **C (pane author, local):** capacity first (`coderabbit usage`, CLI ≥0.9.1); `coderabbit review --agent --gate major --base main`. Never C on a revision with D in flight or on the same push as D.
+- **C (pane author, local):** capacity first (`coderabbit usage`, CLI ≥0.9.1); `coderabbit review --agent --gate major --base main` — on exhausted quota use the simulated-C fallback (frozen subagent review at major threshold) instead of a paid run. Never C on a revision with D in flight or on the same push as D.
 - **D (parent):** push branch → open PR (title carries `impv:`/`fix:`/`docs:` prefix — squash subjects feed `next-version.py`) → `@coderabbitai full review` alone on its line, top-level comment. After findings: `skill://autofix` verbatim, fix batch returns to A gates → B-delta → `@coderabbitai review`. Push mid-D can auto-pause the bot ("branch under active development") — post one `@coderabbitai review`; `already reviewed the last commit` + zero threads is clean.
 - **Close:** 0 critical / 0 high / 0 fix-now mediums in changed code. Any commit past the B freeze — even a 4-line D-fix — needs its own delta A/B before merge; no new A–B = the loop silently skips two steps. Marker `review-last` is local, never pushed.
