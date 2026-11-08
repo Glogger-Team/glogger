@@ -123,6 +123,17 @@ const summaryMode = ref<SummaryMode>('top5')
 const period = ref<TrendsPeriod>('7d')
 const metric = ref<Metric>('gold')
 
+// Chart label colors resolve theme.css text tokens at runtime: vue-data-ui
+// config takes plain color strings, so read the custom properties with
+// getComputedStyle (fallbacks match the token values in theme.css).
+function themeText(token: string, fallback: string): string {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(token).trim()
+  return value || fallback
+}
+
+const textPrimary = themeText('--color-text-primary', '#d4d4d4')
+const textSecondary = themeText('--color-text-secondary', '#a0a0a0')
+
 // Dropdown 2 — summary view. "Total sales" maps to the all-label (null).
 const summaryOptions = ['Top 5 grossing', 'Top 10 grossing']
 const summaryModel = computed<string | null>({
@@ -299,14 +310,14 @@ const config = computed<VueUiXyConfig>(() => {
     chart: {
       fontFamily: 'inherit',
       backgroundColor: 'transparent',
-      color: '#a1a1aa',
+      color: textSecondary,
       padding: { top: 24, right: 24, bottom: 56, left: 64 },
       grid: {
         stroke: '#3f3f46',
         showHorizontalLines: true,
         showVerticalLines: false,
         labels: {
-          color: '#a1a1aa',
+          color: textSecondary,
           fontSize: 11,
           axis: {
             yLabel: metric.value === 'gold' ? 'Councils' : 'Units',
@@ -317,7 +328,7 @@ const config = computed<VueUiXyConfig>(() => {
             formatter: ({ value }) => formatCompact(value),
           },
           xAxisLabels: {
-            color: '#a1a1aa',
+            color: textSecondary,
             show: true,
             values: periodLabels.value,
             fontSize: 10,
@@ -329,7 +340,7 @@ const config = computed<VueUiXyConfig>(() => {
       },
       legend: {
         show: true,
-        color: '#d4d4d8',
+        color: textPrimary,
         fontSize: 12,
         position: 'top',
       },
@@ -337,7 +348,7 @@ const config = computed<VueUiXyConfig>(() => {
       tooltip: {
         show: true,
         backgroundColor: '#27272a',
-        color: '#d4d4d8',
+        color: textPrimary,
         borderColor: '#3f3f46',
         borderWidth: 1,
         borderRadius: 4,
