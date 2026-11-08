@@ -125,7 +125,7 @@ import { useGameStateStore } from "./stores/gameStateStore";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { provideEntityNavigation } from "./composables/useEntityNavigation";
 import { useDataBrowserStore, entityTypeToTab } from "./stores/dataBrowserStore";
-import { provideViewNavigation } from "./composables/useViewNavigation";
+import { provideViewNavigation, pendingSkillSelection } from "./composables/useViewNavigation";
 import MenuBar, { type AppView } from "./components/MenuBar.vue";
 import DashboardView from "./components/Dashboard/DashboardView.vue";
 import CharacterView from "./components/Character/CharacterView.vue";
@@ -223,6 +223,9 @@ function handleSearchNavigate(result: SearchResult) {
     const resolved = menuBarRef.value.resolveSubTab(result.navigation.view, result.navigation.subTab);
     menuBarRef.value.activeSubTabs[result.navigation.view] = resolved;
     activeSubTab.value = resolved;
+  }
+  if (result.navigation.view === "character" && result.navigation.skillName) {
+    pendingSkillSelection.value = result.navigation.skillName;
   }
 }
 

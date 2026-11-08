@@ -24,3 +24,6 @@ export function useViewNavigation() {
 
 /** Pending watchword rule ID to navigate to — set by the widget, consumed by WatchwordsView */
 export const pendingWatchwordRuleId = ref<number | null>(null);
+
+/** Pending skill name to select — set by search navigation, consumed by SkillsScreen */
+export const pendingSkillSelection = ref<string | null>(null)
