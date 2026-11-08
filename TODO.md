@@ -2,17 +2,7 @@
 
 Small tasks and notes that don't belong in a dedicated plan.
 
-- DONE: Mushroom Substrate recommendations — backend-owned reference table (`game_data/mushroom_farming.rs`, #113 Mortaferus fix).
-- NPC widget refactor — **SUPERSEDED by GiftWatcher zone grouping (no tag field exists).** Favor feed is dark/hidden (`FavorChangesWidget.vue:1`); zone is the grouping proxy (`resolveNpcZone` keys on `area_friendly_name`; `NpcInfo` has no tags). Shipped: zone filter + grouping (#112 `6ed0be5`), bulk add-all in zone + giftable-quantity sort (#143 `f198166` — `GiftWatcherWidget.vue:270 addAllInZone`, `:403 groupedMatches` qty-desc sort).
-- DONE: Better release notes — player-first pipeline shipped (`scripts/release_notes.py` classifier + `Release-Note:` trailer, `generate-changelog.py` humanizer, `release.py` triage editor + `--dry-run` + protected-main PR fallback; `release-notes/v1.13.0+.md` player-shaped).
-- DONE: `package-lock.json` version stamp — `bump-version.py` syncs it via `npm version` primary + regex fallback (#122).
-- DONE: Cooking search drill-in — FIXED 2026-11-07 (#142 `c2503fa`): Your-Skills result carries `skillName` through `App.vue pendingSkillSelection` into `SkillsScreen`, which clears hiding filters, expands the group, and scrolls the row into view.
-- Release tooling hardening (from the v1.13.0 walk-through, 2026-11-05 — first `release.py` triage run hit every Windows trap at once):
-  - DONE: CRLF writes in `release.py` — `newline="\n"` on both notes writes + triage temp (this branch).
-  - DONE: triage temp `.md` → `.txt` + `shlex.split($EDITOR)` for multi-word editors (this branch).
-  - DONE: `--dry-run` skips clean-tree + sync gates, preview-only warning off `main` (this branch).
-  - DONE: branch-protection fallback — failed `main` push routes through `release/<tag>-notes` branch + PR (this branch).
-  - DONE 2026-11-05: `release-notes/*.md` exempted from the markdown gate (`lint-markdown-changed.py in_scope`) — same class as `CHANGELOG.md` (generator-shaped `##` + `###` fragments CI consumes verbatim, not hand docs).
+- Completed work (mushroom substrates, player-first release notes, version stamp, cooking drill-in, release-tooling hardening, NPC zone grouping): in git history — pruned 2026-11-08.
 
 > **Signal contract (2026-11-03):** the 10/21 client removed verbose `LocalPlayer:` events from Player.log — that stream is dark and not coming back. Replacements for the dark stream arrive via richer character-report exports (Chat.log and game-written `Books/` files, e.g. `Books/PlayerShopLog_*.txt`, remain supported sources — the `hired` action below arrives that way). Entries below say *report-only* where they wait on a new report field, and *dropped* where the only source was the log. The 10/21-10/28 triage history (`Player.log game-event outage triage`, per-tracker casualty verdicts) is in git history, not repeated here.
 
@@ -22,21 +12,13 @@ Small tasks and notes that don't belong in a dedicated plan.
 
 ---
 
-## Product decisions (all four decided 2026-11-03 — no LocalPlayer: dependency)
+## Product decisions (decided 2026-11-03 — in git history, pruned 2026-11-08)
 
-- [x] ~~Rename-orphan history on Rename-Golem/server-merge~~ — **DECIDED + BUILT (option b, move): `rename_character` (`setup_commands.rs`, registered `lib.rs`) UPDATEs the shared `GAME_STATE_TABLES` + `SCOPED_TABLES` consts (+ snapshot parents, whose children follow) in one `BEGIN IMMEDIATE` tx. Refuses missing source and occupied target (UNIQUE guard — no silent merge); refuses when owner labels are ambiguous across servers, or when the target name has retained owner rows from a deleted character; active identity follows the rename. Delete reuses the same consts so the lists can't drift. FE lives in Settings → General → Characters (per-row Rename/move, same-name no-op, busy gates); session reload only when the renamed character is active. Caveat: game-written `Reports/Character_<Old>_*.json` files still name the old character — the next report scan re-imports them and recreates the old identity. Remove or re-export old files after renaming (surfaced in the rename success copy); the backend deliberately does not touch the game's report files.**
-- [x] ~~"No stall rented" vs "rented, zero sales"~~ — **DECIDED + BUILT (option b, minimal): hire lines parse as `action='hired'` (`shop_log_parser.rs` `HIRED_RE`, owner-eligible hint). Flows through the Books-files path (`books_watcher.rs` reads game-written `Books/PlayerShopLog_*.txt` — no log line needed), surfaces in the Shop Log list, excluded from every sales/inventory aggregation. "Hired + zero bought" = rented-empty; zero rows = never rented.**
-- [x] ~~No-Resell flag with no item-model counterpart~~ — **DECIDED: dropped.** The only observable source was `ProcessPlayerVendorScreen` listing data, which never carried listing contents — nothing to model. Static half already covered by the `NoPlayerShops` CDN keyword. `vendor_prices` SQL table (dead — sole repo hit was its own `CREATE TABLE`, zero readers/writers, vendor pricing lives in the in-memory `vendor_items_by_npc` index at `value × 1.5`) dropped in migration v85. Do not revive.
-- [x] ~~Angling Perfect Catches as a new loot signal~~ — **DECIDED: dropped.** Nothing parses angling, no angling signal was ever captured, and the only transport was the log. Revisit only if a report field ever carries it.
+Rename-orphan move, stall-hired surfacing, No-Resell drop, angling drop: all decided + built in history. Live caveat: rename leaves game-written `Reports/Character_<Old>_*.json` files in place; re-export or remove old files after renaming (surfaced in the rename success copy).
 
-## Character-scoped work (report-backed, actionable)
+## Character-scoped work (report-backed — landed, pruned 2026-11-08)
 
-- [x] ~~Show work order completion state in tooltips for all characters~~ — **DONE: `QuestTooltip.vue:53` + `ItemTooltip.vue:172` render `Done:/Active:` via `characterStore.workOrderStateFor` (`:608`) backed by `get_all_character_work_orders` (`crafting_commands.rs:957`, `lib.rs:180`) over `character_active_quests` work-order categories. Remainder (report-gated): cooldown state — no report field carries per-quest cooldown timers, so tooltips cover completion/active only.**
-- [x] ~~Persist dropped report fields from character/inventory exports (added 2026-10-20; audited against `test_data/inventory/completeState/Character_TestPlayer_Dreva.json` + `TestPlayer_Dreva_items_2026-04-14-15-57-59Z.json`)~~ — **FIXED 2026-10-28: character half landed in v74; inventory half landed in v81 (4 of 5 keys) + deliberate `IngredientItemTypeIds` skip.**
-  - **Character (Export Character as JSON in Settings → VIP): only `Skills.<Skill>.Abilities` was dropped — now persisted (migration v74, 2026-10-21).** Everything else top-level is stored and game-state-seeded (skills, recipe_completions, current_stats, currencies, NPCs→favor: `character_commands.rs:217-332,690-823`). Caveats, not drops: NPC entries carry only `FavorLevel` strings (384 in the fixture, no point totals — the seeder preserves `cumulative_delta` instead of overwriting, `:771-772`), and older exports predate `CompletedQuests` (key absent → `#[serde(default)]` → zero completed non-WO quests). Abilities land in `snapshot_skill_abilities(snapshot_id, skill_name, ability_key)` (`migrations.rs` v74) via the import write path (`character_commands.rs` §7b, deduped per skill, `None`/empty skipped), readable through `get_snapshot_skill_abilities(snapshot_id)` (`lib.rs`). Backfill decision: skipped — old reports simply have no rows; re-import the export to populate (`raw_json` already contains the arrays).
-  - **Inventory (Export Storage as JSON in Settings → VIP): 4 of 5 dropped keys now persisted (migration v81, this branch).** `StorageItem` and `SnapshotItem` (`inventory_commands.rs:23-57,88-114`) carry `IsAugmented`, `DyeCount`, `Inscription`, `Inscriber`; v81 adds the columns and backfills them from stored `raw_json`, and the duplicate-import path refreshes them fill-only (`duplicate_import_backfill_never_clobbers_newer_values`). Only `IngredientItemTypeIds` stays unpersisted — deliberate (single-occurrence curiosity; brewing already scans it straight off `raw_json`, `brewing_commands.rs:405`). No UI owed.
-  - **Unblocks:** the Skillbook autowatchwords prerequisite (Larger Efforts — its audit names the missing `snapshot_skill_abilities` table explicitly), an honest "Hide unlearned abilities" in `AbilityPickerDialog.vue:52` (currently a `level <= skill level` proxy, `:246-248`), and a true "My abilities" filter in `ModBrowser.vue:16` (currently scoped to the build's assigned bars).
-  - **Effort: Trivial (inventory half landed; only deliberate `IngredientItemTypeIds` omission remains) | Impact: Low (closes the report audit)**
+WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history. Live caveats: `IngredientItemTypeIds` stays unpersisted (deliberate — brewing scans `raw_json`); "Hide unlearned abilities" (`AbilityPickerDialog.vue:52`) is a `level <= skill level` proxy; "My abilities" (`ModBrowser.vue:16`) is scoped to assigned bars.
 
 ## Blocked on VIP export fields (game writes the export, we import it)
 
@@ -91,8 +73,7 @@ Small tasks and notes that don't belong in a dedicated plan.
   - **Report-gated remainder:** (c) repeatable completion timestamps + (d) Statehelm quests wait on Character-export completion records (see "Blocked on VIP export fields"). Work orders + active quests shipped from exports. Plan §1/§3 log-parsing steps are dead — rewrite against the report when fields land.
 
 - [ ] Interactive zone maps — see `docs/plans/interactive-maps.md`
-  - kaeus is working on this i believe.
-  - **Audit: verified as "no code exists" — drop the unverified Kaeus claim.** No map dependency (`package.json`), no map/zone-map component, no map assets; the plan is an unstarted spec with no phase markers. Zone-adjacent UI is survey analytics (`Surveying/AnalyticsZoneView.vue`, `CrossZoneComparison.vue`) and the Zone NPCs widget (`Dashboard/widgets/ZoneNpcsWidget.vue`) — not maps. Point at an external branch/PR if one exists.
+  - No code exists yet (no map dependency, component, or assets); the plan is an unstarted spec. Point at an external branch/PR if one exists.
   - **Effort: Large (mostly frontend) | Impact: High**
 
 - [ ] Statehelm favor planner
@@ -137,54 +118,15 @@ Small tasks and notes that don't belong in a dedicated plan.
   - **Audit: verified open — but the candidate list is now identifiable.** Largest TS logic: `craftingStore.ts` (1746 lines — recursive ingredient tree + material aggregation with per-node IPC and hand-rolled caches), `gameStateStore.ts` (1301), `buildPlannerStore.ts` (951), `useStorageConsolidation.ts` (944 — cross-alt vault math), `useRecipeCost.ts` (per-ingredient recursion + IPC). The target pattern already exists in-tree: `aggregateStore.ts` (thin IPC shim) and `useAbilityBuildStats.ts` ("the math lives in the Rust `compute_ability_build_stats` command").
   - **Effort: Large (research) | Impact: Medium (performance/architecture)**
 
-## Review backlog (from PR #54 frozen-review + CodeRabbit rounds; tracked, not punted)
+## Review backlog (PR #54 / CodeRabbit rounds — closed, pruned 2026-11-08)
 
-- [x] ~~`loadAllCharacterItems` unkeyed cache~~ — **FIXED this branch: server key (`allCharacterItemsServer`) + generation guard (`fetchAllCharacterItems` re-reads on same-server invalidation, no rescan) + reset on imports + null-server guard (clears cache).**
-- [x] ~~Ordinal-order divergence guard~~ — **DONE 2026-11-01: per-group file-vs-stored count guard in both ordinal paths (live `inventory_commands.rs`, one-shot `migrations.rs` v81) — divergent groups skipped with `eprintln`, surviving groups stay aligned; `duplicate_import_backfill_skips_divergent_group` regression test. No `debug_assert` (would trip in debug test builds); detection = skip + log. Full suite 791 green.**
-  - **Effort: Small | Impact: Low (latent misattribution)**
-- [x] ~~Multihit manual-use coverage~~ — **DONE 2026-11-01: `test_record_manual_use_multihit_queues_for_mining_adopt` (pending-use queue + node open + chain + `PendingLoot`); full suite 791 green.**
-  - **Effort: Small | Impact: Low (untested path)**
-- [x] ~~Stale-FK transparent retry~~ — **DONE 2026-11-01: `record_manual_use` loops the tx + `insert_use` once on FK failure (drop cache, re-resolve/auto-start fresh, re-insert); `test_record_manual_use_retries_after_session_deleted_midflight`. Full suite 791 green.**
-  - **Effort: Small | Impact: Low (UX papercut)**
-- [x] ~~`startSession`/`endSession` error surfacing~~ — **DONE 2026-11-01: dedicated `sessionError` ref (separate from record-use `recordError`) set in both catch arms, exported, rendered under Start button; `vue-tsc` clean.**
-  - **Effort: Small | Impact: Low**
-- [x] ~~Debug-capture + login-skill-list `snapshot` wording~~ — **CLOSED 2026-11-03: kept deliberately — debug-capture `GameStateSnapshot` (point-in-time DB dump at capture start/stop, `debug_capture.rs:41`) and login `SkillsLoaded`/`SkillSnapshot` (in-memory full skill dump seeding the running table, `player_event_parser.rs:55-58`) are transient live-state captures, not persisted VIP export reports (`character_snapshots` / `character_item_snapshots`). Reopen only if users confuse the terms.**
-  - **Effort: Trivial | Impact: Nil (decision record)**
-- [ ] Tier-2 identifier rename (`SnapshotItem`, `get_snapshot_items`, `source='snapshot'`, table names) — explicitly out of scope for the tier-1 pass. A breaking IPC/DB migration; needs its own plan if ever wanted.
-  - **Effort: Large | Impact: Low (cosmetic, high blast radius)**
-- [x] ~~Scoped Rust discard lint for migrations~~ — **FIXED: `scripts/check-review-patterns.py` gates `db/migrations.rs` bodies against `let _ =` on DB handles and `filter_map(|x| x.ok())` row reads; wired into `lint.yml` + `mise run lint`.** Rustfmt stays advisory. Sanctioned exceptions: `EXISTS` guards with `.unwrap_or(false)`, serde defaults, `continue` on malformed JSON.
+Cache guards, ordinal divergence guard, multihit/Stale-FK/error-surfacing fixes, discard + clippy gates: all landed in history.
 
-- [x] ~~Clippy advisory baseline~~ — **FIXED this branch: all warnings resolved (110 lib + ~60 test-only), `cargo clippy --all-targets -- -D warnings` green; wired as a gate (`lint.yml:rust-tests` clippy step + `mise run lint` entry, portable `python -c` form). AGENTS.md Rust row updated (rustfmt stays advisory).**
-  - **Effort: Medium (tombstone table + delete-path + backfill filter) | Impact: Low (narrow race window) — declined**
+## Small fixes (Oct batch — landed, pruned 2026-11-08)
 
-## Small fixes (verified open)
-
-- [x] ~~Roulette number CHECK~~ — **FIXED 2026-10-26: migration v77 (table rebuild per v38 precedent, out-of-range rows purged, `CHECK (number BETWEEN 0 AND 36)`); `record_roulette_result` rejects >36, backfill skips bad rows.**
-- [x] ~~NpcResolve case-insensitive match~~ — **FIXED 2026-10-26: `COLLATE NOCASE` + trim at both sites; mixed-case test.**
-- [x] ~~Trip-router nits~~ — **FIXED 2026-10-26: case-insensitive `casino_portal`, unresolved-name `eprintln`, `AreaDesert2` friendly name, `AreaCaves1`→Eltibule-dungeon relabel, score-`1`/monster-skip docs, `trip-routing.md` refresh.**
-- [x] ~~Stall aggregation validation~~ — **FIXED 2026-10-26: trigram empty-set identity, OCR/chrome/price gate docs, day-aware year wrap + single-wrap limit, aggregation items documented as by-design, `StallScanRow.quantity: None` by-design.**
-- [x] ~~Shop-log docs + arena payout trigger~~ — **FIXED 2026-10-26: stacked-path comment narrowed, BOM symmetric, owner defaults to active character; result-line resolve documented as the payout trigger.**
-- [x] ~~Chat-status parity~~ — **FIXED 2026-10-26: wisdom comma-grouping, timestamp digit gate, `try_level_up` empty-skill reject; steal-anchor + empty-arm guards verified already present.**
-- [x] ~~setup/gst validation~~ — **FIXED 2026-10-26: blank name/server rejected with column named; GST 256MiB cap + integrity-limit docs.**
-- [x] ~~ParseFixB read-error follow-up~~ — **DECIDED 2026-10-26: keep `continue` (one undecodable line ≠ dead file); recorded at site.**
-- [x] ~~stall_ocr edge + year wrap~~ — **FIXED 2026-10-26 (see stall validation line).**
-- [x] ~~game_state_commands audits~~ — **FIXED 2026-10-26: `get_currency_estimate_for` split + anchor/delta test; normalization + fetch + traversal audits as code comments.**
-- [x] ~~Scan-path Status dispatch loss~~ — **FIXED 2026-10-26: shared `chat_status_dispatch` module (live drain + all three scan/tail paths run the same arms with per-session identity; re-scan inserts nothing). ReportSaved intentionally excluded on scans (path may not exist locally); survey rows stay untagged for retro-claim.**
+Roulette CHECK, NpcResolve NOCASE, trip-router nits, stall aggregation, shop-log/arena, chat-status parity, setup/GST validation, ParseFixB, scan-path dispatch: all landed in history.
 
 ## UI backlog
 
 - [ ] Portrait-mode / narrow-window friendly (user-requested 2026-10-28): closable panels/dialogs can end up off-screen with no reachable close affordance when the app gets narrow. Scope: audit dialogs/overlays/drawers for min-width/overflow traps; keep a close control reachable at narrow widths (responsive layout, scrollable content, sticky/fallback close, Esc handling).
-  - **Batch-1 DONE 2026-11-01 (close/Esc/clamps, `vue-tsc` clean):** Esc on `ModalDialog` confirm + 4 MarketView dialogs + `BreweryRecipeDetail` project dialog + `AbilityPickerDialog`/`ImportEquippedDialog` (window-level, focus-safe) + `QuickSearchOverlay` (window-level, footer promises it) + `CdnUpdateModal`→`dismiss`; viewport clamps on `DatePicker`/`SearchableSelect`/`StyledSelect`/`ItemMinicard` popups; `max-h-[85vh]` scroll guards on Market/Brewery/`CdnUpdateModal`; toast `max-w-[min(350px,calc(100vw-2rem))]`. **Batch-2 DONE 2026-11-07 (#144): `ItemPickerDialog` stacks portrait-narrow (preview capped 45%, Select pinned) + window-level Esc.** **Batch-3 DONE (this branch): `DataBrowserOverlay` header scrolls + persisted sidebar collapse (portrait bottom sheet) + guarded window-level Esc; `HelpOverlay` rail collapses to top strip portrait-narrow + guarded window-level Esc.** Remaining: 390px visual proof pass + overlay Esc-stack scoping (one Esc with stacked overlays can close both — needs a shared topmost-owner guard).**
-- [x] ~~NPC gift calculator rework (user-requested 2026-10-28)~~ — **DONE 2026-10-30 (batch-1): option (a) — deleted `NpcGiftCalculatorSection.vue` + `NpcDetailPanel.vue` wiring; sibling sections untouched.**
-
-- [x] ~~Combine XP Rate + Prodigy Tracker into one widget (user-requested 2026-10-28)~~ — **DONE 2026-10-30 (batch-1): dropped `xp-rate` registry entry + deleted `XpRateWidget.vue`; one-time `DashboardView.vue` prefs migration strips `xp-rate` from `cardOrder`/`hiddenCards`/`cardSpans` and unhides `prodigy-tracker` if the user would otherwise lose the widget. Shared `xpRateSession`/`xpRateOf`/`prodigyEta` store fns unchanged.**
-
-- [x] ~~Stray "???" still rendering (user-requested 2026-10-28)~~ — **DONE 2026-11-01: no stray found in prod code — sole `???` was the intentional market-missing affordance (`ItemMinicard.vue:29-33`), relabeled to `set price` (+ `title`); wealth-view `???` names already purged backend-side (`b6d26d4`); `DebugCaptureTab.vue:199` is dev-panel-only. `LootOverviewPanel.vue` comment updated.**
-
-- [x] ~~Stall-price capture back to backlog, remove experimental surface (user-requested 2026-10-28)~~ — **DONE 2026-10-30 (batch-1): deleted FE (`StallPriceCapturePanel.vue`, `stallPriceStore.ts`, `ocrStore.ts` sole-consumer, `stallPrices.ts` types), BE (`db/stall_commands.rs`, `stall_ocr.rs`, 8 handler registrations, coordinator auto-detect + `record_purchase_observation`), `ItemTooltip` hookup. Kept migration v68 table + rows. Note: OCR stack fully removed (no other consumers — zero `ocrStore`/`stall_ocr` refs remained); re-introduction needs the OCR path rebuilt too.**
-
-- [x] ~~Dynamic Items tab slow initial load (user-requested 2026-10-28)~~ — **DONE 2026-11-01: `get_recipe_ingredient_keywords` now returns `item_count` per keyword (single-pass count over the catalog, same case-insensitive match; `cdn_commands.rs:440-496`); FE seeds `itemCountCache` from the payload, preload loop deleted (`DynamicItemsTab.vue:222-228`). 1 IPC instead of 1+N; item lists still lazy-load per selection. `cargo check` + `vue-tsc` clean, 35 cdn tests green.**
-
-- [x] ~~Hide Live inventory tab outright (user-requested 2026-10-28)~~ — **DONE 2026-10-30 (batch-1 fix batch): tab wiring was already gone (`InventoryWrapper.vue` has only `storage/vaults/consolidate`, zero importers) — deleted the orphan `LiveInventoryTab.vue` component outright; `LiveInventoryItem` game-state map retained for re-enable. Inventory docs (`inventory.md`, `inventory-live.md`) updated.**
-
-- [x] ~~NPC list from CDN, report as overlay (user-requested 2026-10-28)~~ — **DONE 2026-11-01 (verified in-tree: `f6a5538 NPC list goes CDN-first`; `NpcsScreen.vue:122` `cdnNpcKeys()` from `gameData.npcsByKey`, `NpcFilterPanel.vue:252` CDN-universe pass, orphans counted card-less).**
+  - **Batches 1–3 DONE (in history, pruned 2026-11-08).** Remaining: 390px visual proof pass + overlay Esc-stack scoping (one Esc with stacked overlays can close both — needs a shared topmost-owner guard).
