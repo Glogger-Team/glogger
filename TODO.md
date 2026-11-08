@@ -3,21 +3,16 @@
 Small tasks and notes that don't belong in a dedicated plan.
 
 - DONE: Mushroom Substrate recommendations — backend-owned reference table (`game_data/mushroom_farming.rs`, #113 Mortaferus fix).
-- NPC widget refactor.
-  - Add all NPCs to the to favor widget
-  - NPC grouping by tags
-  - ie. add/view all serbule NPCs at once
-  - Grouping and sorting refinements, user story:
-    - It would be nice to look at it more generically. ie. you have 49 object in inv that can be gifted to 7 NPC in tag "serbule" and then its easier to do group favour runs
-- Better release notes
+- NPC widget refactor — **SUPERSEDED by GiftWatcher zone grouping (no tag field exists).** Favor feed is dark/hidden (`FavorChangesWidget.vue:1`); zone is the grouping proxy (`resolveNpcZone` keys on `area_friendly_name`; `NpcInfo` has no tags). Shipped: zone filter + grouping (#112 `6ed0be5`), bulk add-all in zone + giftable-quantity sort (#143 `f198166` — `GiftWatcherWidget.vue:270 addAllInZone`, `:403 groupedMatches` qty-desc sort).
+- DONE: Better release notes — player-first pipeline shipped (`scripts/release_notes.py` classifier + `Release-Note:` trailer, `generate-changelog.py` humanizer, `release.py` triage editor + `--dry-run` + protected-main PR fallback; `release-notes/v1.13.0+.md` player-shaped).
 - DONE: `package-lock.json` version stamp — `bump-version.py` syncs it via `npm version` primary + regex fallback (#122).
-- BUG (user-reported 2026-11-05): searching for cooking lands on the Skills page but does not open Cooking — expect search to navigate *into* the Cooking skill (same as clicking it), not just the parent page.
+- DONE: Cooking search drill-in — FIXED 2026-11-07 (#142 `c2503fa`): Your-Skills result carries `skillName` through `App.vue pendingSkillSelection` into `SkillsScreen`, which clears hiding filters, expands the group, and scrolls the row into view.
 - Release tooling hardening (from the v1.13.0 walk-through, 2026-11-05 — first `release.py` triage run hit every Windows trap at once):
   - DONE: CRLF writes in `release.py` — `newline="\n"` on both notes writes + triage temp (this branch).
   - DONE: triage temp `.md` → `.txt` + `shlex.split($EDITOR)` for multi-word editors (this branch).
   - DONE: `--dry-run` skips clean-tree + sync gates, preview-only warning off `main` (this branch).
   - DONE: branch-protection fallback — failed `main` push routes through `release/<tag>-notes` branch + PR (this branch).
-  - DONE 2026-11-05: `release-notes/*.md` exempted from the markdown gate (`lint-markdown-changed.py in_scope`) — same class as `CHANGELOG.md` (generator-shaped `##` + `###` fragments CI consumes verbatim, not hand docs). Document the `$EDITOR` raw-text override (`code --wait`, Notepad++) in the AGENTS.md release section when touching it next.
+  - DONE 2026-11-05: `release-notes/*.md` exempted from the markdown gate (`lint-markdown-changed.py in_scope`) — same class as `CHANGELOG.md` (generator-shaped `##` + `###` fragments CI consumes verbatim, not hand docs).
 
 > **Signal contract (2026-11-03):** the 10/21 client removed verbose `LocalPlayer:` events from Player.log — that stream is dark and not coming back. Replacements for the dark stream arrive via richer character-report exports (Chat.log and game-written `Books/` files, e.g. `Books/PlayerShopLog_*.txt`, remain supported sources — the `hired` action below arrives that way). Entries below say *report-only* where they wait on a new report field, and *dropped* where the only source was the log. The 10/21-10/28 triage history (`Player.log game-event outage triage`, per-tracker casualty verdicts) is in git history, not repeated here.
 
@@ -36,41 +31,40 @@ Small tasks and notes that don't belong in a dedicated plan.
 
 ## Character-scoped work (report-backed, actionable)
 
-- [ ] Show work order completion state in tooltips for all characters
-  - Work order tooltips should show completion/cooldown state across all tracked characters.
-  - **Audit: verified (still unimplemented).** `QuestTooltip.vue` and `ItemTooltip.vue` render no state; WO completion exists only inside the Quests screen for the selected character (`QuestsScreen.vue:167-173`), and the only cross-character command (`get_all_character_items`, `inventory_commands.rs:566`) is inventory-items-only (used by `ConsolidateTab`).
-  - **Effort: Medium | Impact: Medium (multi-character awareness)**
-
+- [x] ~~Show work order completion state in tooltips for all characters~~ — **DONE: `QuestTooltip.vue:53` + `ItemTooltip.vue:172` render `Done:/Active:` via `characterStore.workOrderStateFor` (`:608`) backed by `get_all_character_work_orders` (`crafting_commands.rs:957`, `lib.rs:180`) over `character_active_quests` work-order categories. Remainder (report-gated): cooldown state — no report field carries per-quest cooldown timers, so tooltips cover completion/active only.**
 - [x] ~~Persist dropped report fields from character/inventory exports (added 2026-10-20; audited against `test_data/inventory/completeState/Character_TestPlayer_Dreva.json` + `TestPlayer_Dreva_items_2026-04-14-15-57-59Z.json`)~~ — **FIXED 2026-10-28: character half landed in v74; inventory half landed in v81 (4 of 5 keys) + deliberate `IngredientItemTypeIds` skip.**
   - **Character (Export Character as JSON in Settings → VIP): only `Skills.<Skill>.Abilities` was dropped — now persisted (migration v74, 2026-10-21).** Everything else top-level is stored and game-state-seeded (skills, recipe_completions, current_stats, currencies, NPCs→favor: `character_commands.rs:217-332,690-823`). Caveats, not drops: NPC entries carry only `FavorLevel` strings (384 in the fixture, no point totals — the seeder preserves `cumulative_delta` instead of overwriting, `:771-772`), and older exports predate `CompletedQuests` (key absent → `#[serde(default)]` → zero completed non-WO quests). Abilities land in `snapshot_skill_abilities(snapshot_id, skill_name, ability_key)` (`migrations.rs` v74) via the import write path (`character_commands.rs` §7b, deduped per skill, `None`/empty skipped), readable through `get_snapshot_skill_abilities(snapshot_id)` (`lib.rs`). Backfill decision: skipped — old reports simply have no rows; re-import the export to populate (`raw_json` already contains the arrays).
   - **Inventory (Export Storage as JSON in Settings → VIP): 4 of 5 dropped keys now persisted (migration v81, this branch).** `StorageItem` and `SnapshotItem` (`inventory_commands.rs:23-57,88-114`) carry `IsAugmented`, `DyeCount`, `Inscription`, `Inscriber`; v81 adds the columns and backfills them from stored `raw_json`, and the duplicate-import path refreshes them fill-only (`duplicate_import_backfill_never_clobbers_newer_values`). Only `IngredientItemTypeIds` stays unpersisted — deliberate (single-occurrence curiosity; brewing already scans it straight off `raw_json`, `brewing_commands.rs:405`). No UI owed.
   - **Unblocks:** the Skillbook autowatchwords prerequisite (Larger Efforts — its audit names the missing `snapshot_skill_abilities` table explicitly), an honest "Hide unlearned abilities" in `AbilityPickerDialog.vue:52` (currently a `level <= skill level` proxy, `:246-248`), and a true "My abilities" filter in `ModBrowser.vue:16` (currently scoped to the build's assigned bars).
   - **Effort: Trivial (inventory half landed; only deliberate `IngredientItemTypeIds` omission remains) | Impact: Low (closes the report audit)**
 
-## Waiting on richer character reports or other non-log sources (no log path)
+## Blocked on VIP export fields (game writes the export, we import it)
 
-- [ ] Current gear display — no source flags what's worn (log path was nameless appearance keys; Character report path can't distinguish worn from carried; appearance-only view built and reverted).
-  - **Unblocks when:** a report/VIP flag or per-slot item-identity field for equipped items lands in the Character export. **Effort: unknown | Impact: Medium**
-- [ ] Quest tracking: repeatable-cooldown timestamps + Statehelm quests + renown possible-vs-earned — work orders + active quests shipped from exports (`get_work_orders_from_snapshot`, `crafting_commands.rs:836`; `character_active_quests`, `migrations.rs:2062-2070`); repeatables carry only `isRepeatable()` from `ReuseTime_Minutes/_Days`. Renown is a context-bar currency balance only.
-  - **Unblocks when:** the Character export gains quest-completion records (completion timestamps per repeatable; Statehelm quest completions; renown-possible schedule). No log parsing — fold Statehelm repeatable tracking here (same plan `docs/plans/quest-tracking.md` §3, same dependency). **Effort: Large | Impact: High**
-- [ ] Gardening helper Phase 1 (plot tracker) — see `docs/plans/gardening-helper.md:52-56`. Parser events exist (`EntityDescriptionUpdated`), plan written, garden almanac (Phase 0) complete. Missing Phase 1+ code: no `EntityDescriptionUpdated` arm, no `garden_plots` table, no `get_garden_plots` command.
-  - **Unblocks when:** the Character export (or another report) gains garden-plot state. Phase 0 almanac stays. **Effort: Medium | Impact: High**
-- [ ] Nightmare cave challenge door tracker — fixture/effect research stays actionable (effect/CDN join on fixtures: `ProcessAddEffects`/`ProcessRemoveEffects`/`ProcessUpdateEffectName` + `effects.json` `effect_12602-12608` Spawn-Premonition family; Letters of Authority via inventory reports).
+- [ ] Current gear display — **report-gated, not log-gated.** The `ProcessUpdateItemCode` appearance-key path is dead, but the replacement is an export field, not a parser: per-slot equipped item identity in the Character export. Report already carries full inventory; only worn-vs-carried is missing. Appearance-only view built and reverted.
+  - **Unblocks when:** a per-slot equipped-item field lands in the Character export. **Effort: unknown (game-side) + Small (import + view) | Impact: Medium**
+- [ ] Quest tracking: repeatable-cooldown timestamps + Statehelm quests + renown possible-vs-earned — **report-gated.** Work orders + active quests shipped from exports (`get_work_orders_from_snapshot`, `crafting_commands.rs:836`; `character_active_quests`, `migrations.rs:2062-2070`); repeatables carry only `isRepeatable()` from `ReuseTime_Minutes/_Days`. Renown is a context-bar currency balance only. The log-parsing steps of `docs/plans/quest-tracking.md` §1/§3 are dead; rewrite against the report when fields land.
+  - **Unblocks when:** the Character export gains quest-completion records (completion timestamps per repeatable; Statehelm quest completions; renown-possible schedule). **Effort: Large | Impact: High**
+- [ ] Gardening helper Phase 1 (plot tracker) — see `docs/plans/gardening-helper.md:52-56`. `EntityDescriptionUpdated` log path is dead, but the feature is plot *state*, which an export field can carry. Plan written, garden almanac (Phase 0) complete. Missing: a `garden_plots` source, `get_garden_plots` command, widget tab.
+  - **Unblocks when:** the Character export (or another report) gains garden-plot state (area, crop, growth stage per plot). Phase 0 almanac stays. **Effort: Medium | Impact: High**
+- [ ] Vendor purchase receipts — see Analytical features below. The ledger path is dead with the log; the replacement is an export purchase log, not a parser. Tracked as an analytical feature, not here.
+- [ ] Nightmare cave challenge door tracker — **report-gated.** The `ProcessAddEffects`/`ProcessRemoveEffects`/`ProcessUpdateEffectName` log path is dead, but the replacement is a static identifier, not a stream: a challenge-door ID in fixtures, CDN, or a report. Effect/CDN fixture research stays actionable (`effect_12602-12608` Spawn-Premonition family, `effects.json`); Letters of Authority via inventory reports.
   - **Unblocks when:** a challenge-door identifier appears in fixtures, CDN, or a report. **Effort: Large (research + implementation) | Impact: Medium (niche but useful)**
 
 ## Dropped with the log (no report path — dead unless the game re-emits)
 
 - Per-attacker damage on a specific monster (other players' outgoing attacks were never logged: 215 own / 1 pet / 0 other). Reverted build is the template if a source ever appears.
 - Angling Perfect Catches (decided above — no signal ever captured).
-- Inventory miscount causes (1)–(3) (chat-correlation ±2s window, `pending_deletes` reorder, catch-up stack-correction ordering) and gamestate login-batch residual (inventory dump flag): fixture-replay-only value, no live effect. Cause (4) already fixed (live tailing clears the inventory family on login, `game_state.rs:176-201`). Keep the Critical Resources warning text as-is.
 - Log-based quest parsing, log-based completion signals, live door-identifier capture (folded into the report-only entries above).
+- Session mining-yield stats (needs `ProcessStartInteraction` + `ProcessDoDelayLoop` mining labels + `ProcessAddItem`, all `LocalPlayer:`; node identity is positional, no export field could carry it). Session survey yield survives via chat-backed attribution (`survey_chat` rows from Status `ItemGained` lines).
+- Kill-loot denominators for new kills (corpse-search rows are `LocalPlayer: ProcessTalkScreen` lines). Existing rows stand; chat `EnemyKilled` keeps only the live session UI.
+- Inventory miscount causes (1)–(3) (chat-correlation ±2s window, `pending_deletes` reorder, catch-up stack-correction ordering) and gamestate login-batch residual (inventory dump flag): fixture-replay-only value, no live effect. Cause (4) already fixed (live tailing clears the inventory family on login, `game_state.rs:176-201`). Keep the Critical Resources warning text as-is.
 
 ## Cross-cutting
 
 - [ ] Ingestion architecture: no shared schema contract for Tauri event payloads (no specta/ts-rs/typeshare). Coordinator is a manual dispatch hub; history tables exist per-domain except `game_state_*`. Future re-source designs belong here.
   - **Effort: Medium | Impact: Medium (reliability)**
 
-- [ ] UI/UX standardization: Table sweep done — **32 instances across 29 files** (`ux-standards.md` checklist owns it; was 35 — batch-1 removed the MarketView stall-observations table and the orphan LiveInventoryTab table; stall inventory rework removed the Recently Sold Out table). Remaining: heading-class standardization (`typography-audit.md`), color Tier 3 cleanup (`color-standards.md`).
+- [ ] UI/UX standardization: Table sweep done — **33 instances across 30 files** (`ux-standards.md` checklist owns it; was 35 — batch-1 removed the MarketView stall-observations table and the orphan LiveInventoryTab table; stall inventory rework removed the Recently Sold Out table; +1 Farming Sources report). Remaining: heading-class standardization (`typography-audit.md`), color Tier 3 cleanup (`color-standards.md`).
   - **Effort: Medium (iterative) | Impact: Medium**
 
 ---
@@ -78,13 +72,13 @@ Small tasks and notes that don't belong in a dedicated plan.
 ## Analytical features (report/chat-backed)
 
 - [ ] Item provenance downstream features
-  - Now that provenance is in the transaction ledger (item-provenance plan phases 1-5 complete), new analytics become possible: mining node yield stats per node type, vendor purchase history with total spend, kill loot breakdown by mob type, crafting yield analysis per recipe, "unknown source" diagnostic reports for discovering new signal patterns.
-  - **Audit: re-scoped — two of the five already shipped, just not on top of provenance.** Kill-loot-by-mob exists (`enemy_kills`/`enemy_kill_loot`, `migrations.rs:2900-2927`; `kill_tracking_commands.rs:156,312`; `EnemyBrowser.vue`); mining/survey yield ships **session-only** in Farming (`farmingStore.ts:814-840`, `FarmingSessionCard.vue:268-290`). Still absent: vendor-purchase total spend (0 production consumers of `source_kind='vendor_browsing'`), ledger-based craft yield (`HistoryTab.vue` uses `game_state_recipes.completion_count` instead), and the unknown/uncertain-source report (all production `source_kind` consumers are survey).
+  - **Audit: re-scoped — ledger halves are LocalPlayer:-gated, two features survive.** Mining/survey session yield dies with the log (`ItemAdded`/`ItemStackChanged` in `farmingStore.ts:814-840` are `LocalPlayer:` events). What survives: kill-loot-by-mob is already shipped **outside** provenance (`enemy_kills`/`enemy_kill_loot` denominators come from corpse-search rows — themselves `LocalPlayer:`-gated `ProcessTalkScreen` lines, but the shipped feature stands on existing rows; the chat `EnemyKilled` arm at `chat_status_dispatch.rs:265-268` feeds only the live farming-session UI). Ledger-based craft yield survives via the report (`HistoryTab` reads `game_state_recipes.completion_count`, seeded from the Character export `character_recipe_completions` → `character_commands.rs:855`, `source='snapshot'`; only the `ProcessUpdateRecipe` live-delta path is gated). Unknown/uncertain-source report partially survives (chat-backed `ItemGained` Status lines still land via `insert_item_transaction_guarded`, `:516`; Player.log-pipeline `UnknownSource`/`uncertain` rows stop).
   - **Effort: Medium per feature | Impact: Medium-High (analytics depth)**
+- [ ] Vendor purchase receipts — **report-gated.** The `source_kind='vendor_browsing'` ledger path is dead with the log (stamp needs `ProcessVendorScreen` + `ProcessAddItem`, both `LocalPlayer:`). Revives if the Character export gains a purchase log (item, qty, price, timestamp per buy). Until then the surviving signal is the per-NPC `councils_spent_at_vendor` snapshot anchor (`character_npc_favor`, `character_commands.rs:308`) — a point-in-time balance, already shipped.
+  - **Effort: Medium | Impact: Medium**
 
 - [ ] Boss kill loot timers
-  - Reverse tracking exists (`chat_combat_parser.rs:9-30` `PlayerDeath`/`EnemyKilled`/`DamageOnPlayer`; `EnemyKilled` → `enemy-killed` → `farmingStore.handleEnemyKilled`; corpse-search drop attribution via `coordinator.rs:1910`, migration v49). Genuinely missing: **boss/named classification** (no log class signal — `combat_wisdom_commands.rs:8-11`) and the timer/lockout layer (0 hits for `loot_timer`). A heuristic + UI item, not a parser extension.
-  - **Effort: Medium (classification heuristic + UI) | Impact: Medium**
+  - Reverse tracking exists (`chat_combat_parser.rs:9-30` `PlayerDeath`/`EnemyKilled`/`DamageOnPlayer`; `EnemyKilled` → `enemy-killed` → `farmingStore.handleEnemyKilled`; corpse-search drop attribution via `coordinator.rs:1910`, migration v49). Combat Wisdom cooldowns shipped (`CombatWisdomWidget.vue:132-176`, `combat_wisdom_commands.rs:8-11`). Genuinely missing: **boss/named classification** (no log class signal) and per-boss timer/lockout UI. A heuristic + UI item, not a parser extension.
 
 ---
 
@@ -94,7 +88,7 @@ Small tasks and notes that don't belong in a dedicated plan.
   - **See `docs/plans/quest-tracking.md`** — consolidated plan covering quest event parsing, repeatable cooldown tracking, work order cooldowns, Statehelm quest tracking, and active quest browsing. Prerequisite (report-era): Character-export quest-completion records — the plan's log-parsing steps (§1/§3) are dead.
   - **Audit: re-scoped — four features across three states, two already shipped.** (a) **Work orders — shipped**, but from character export, not the log (`get_work_orders_from_snapshot`, `crafting_commands.rs:836`; `QuestsScreen.vue:167-214`). (b) **Active quests — shipped**, also from export (`character_active_quests`, `migrations.rs:2062-2070`; `QuestsScreen.vue:154`). (c) **Repeatables — partial**: a `isRepeatable()` flag from `ReuseTime_Minutes/_Days` (`QuestsScreen.vue:118-120`), no completion timestamps, so no cooldown state. (d) **Statehelm quests + report-based parsing — not started**: plan §1/§3 log-parsing steps dead; rewrite against the report when completion records land. Also stale: `docs/features/screens/character/character-quests.md` still describes the pre-snapshot two-panel screen.
   - **Effort: Large | Impact: High**
-  - **Report-only remainder:** (c) repeatable completion timestamps + (d) Statehelm quests wait on Character-export completion records (see "Waiting on richer character reports"). Work orders + active quests shipped from exports. Plan §1/§3 log-parsing steps are dead — rewrite against the report when fields land.
+  - **Report-gated remainder:** (c) repeatable completion timestamps + (d) Statehelm quests wait on Character-export completion records (see "Blocked on VIP export fields"). Work orders + active quests shipped from exports. Plan §1/§3 log-parsing steps are dead — rewrite against the report when fields land.
 
 - [ ] Interactive zone maps — see `docs/plans/interactive-maps.md`
   - kaeus is working on this i believe.
@@ -180,8 +174,7 @@ Small tasks and notes that don't belong in a dedicated plan.
 ## UI backlog
 
 - [ ] Portrait-mode / narrow-window friendly (user-requested 2026-10-28): closable panels/dialogs can end up off-screen with no reachable close affordance when the app gets narrow. Scope: audit dialogs/overlays/drawers for min-width/overflow traps; keep a close control reachable at narrow widths (responsive layout, scrollable content, sticky/fallback close, Esc handling).
-  - **Batch-1 DONE 2026-11-01 (close/Esc/clamps, `vue-tsc` clean):** Esc on `ModalDialog` confirm + 4 MarketView dialogs + `BreweryRecipeDetail` project dialog + `AbilityPickerDialog`/`ImportEquippedDialog` (window-level, focus-safe) + `QuickSearchOverlay` (window-level, footer promises it) + `CdnUpdateModal`→`dismiss`; viewport clamps on `DatePicker`/`SearchableSelect`/`StyledSelect`/`ItemMinicard` popups; `max-h-[85vh]` scroll guards on Market/Brewery/`CdnUpdateModal`; toast `max-w-[min(350px,calc(100vw-2rem))]`. Deferred: `ItemPickerDialog` two-panel stacking, `DataBrowserOverlay` header/sidebar collapse, `HelpOverlay` tab rail — layout reworks needing visual proof.**
-
+  - **Batch-1 DONE 2026-11-01 (close/Esc/clamps, `vue-tsc` clean):** Esc on `ModalDialog` confirm + 4 MarketView dialogs + `BreweryRecipeDetail` project dialog + `AbilityPickerDialog`/`ImportEquippedDialog` (window-level, focus-safe) + `QuickSearchOverlay` (window-level, footer promises it) + `CdnUpdateModal`→`dismiss`; viewport clamps on `DatePicker`/`SearchableSelect`/`StyledSelect`/`ItemMinicard` popups; `max-h-[85vh]` scroll guards on Market/Brewery/`CdnUpdateModal`; toast `max-w-[min(350px,calc(100vw-2rem))]`. **Batch-2 DONE 2026-11-07 (#144): `ItemPickerDialog` stacks portrait-narrow (preview capped 45%, Select pinned) + window-level Esc.** **Batch-3 DONE (this branch): `DataBrowserOverlay` header scrolls + persisted sidebar collapse (portrait bottom sheet) + guarded window-level Esc; `HelpOverlay` rail collapses to top strip portrait-narrow + guarded window-level Esc.** Remaining: 390px visual proof pass + overlay Esc-stack scoping (one Esc with stacked overlays can close both — needs a shared topmost-owner guard).**
 - [x] ~~NPC gift calculator rework (user-requested 2026-10-28)~~ — **DONE 2026-10-30 (batch-1): option (a) — deleted `NpcGiftCalculatorSection.vue` + `NpcDetailPanel.vue` wiring; sibling sections untouched.**
 
 - [x] ~~Combine XP Rate + Prodigy Tracker into one widget (user-requested 2026-10-28)~~ — **DONE 2026-10-30 (batch-1): dropped `xp-rate` registry entry + deleted `XpRateWidget.vue`; one-time `DashboardView.vue` prefs migration strips `xp-rate` from `cardOrder`/`hiddenCards`/`cardSpans` and unhides `prodigy-tracker` if the user would otherwise lose the widget. Shared `xpRateSession`/`xpRateOf`/`prodigyEta` store fns unchanged.**

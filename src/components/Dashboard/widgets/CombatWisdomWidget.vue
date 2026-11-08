@@ -50,14 +50,12 @@
         No monster history yet.
       </div>
       <div v-else class="flex flex-col gap-1 overflow-y-auto pr-1">
-        <div
-          v-for="m in cooldowns"
-          :key="m.name"
-          class="flex items-baseline justify-between gap-2">
-          <span class="text-text-primary truncate" :title="cooldownTitle(m)">{{ m.name }}</span>
-          <span
-            class="tabular-nums whitespace-nowrap text-xs"
-            :class="m.ready ? 'text-emerald-400' : 'text-text-dim'">
+        <div v-for="m in cooldowns" :key="m.name" class="flex items-baseline justify-between gap-2">
+          <span class="text-text-primary truncate" :title="cooldownTitle(m)">
+            <span class="mr-1.5 rounded border px-1 py-px text-[10px] font-medium uppercase tracking-wide" :class="m.kind === 'elite' ? 'border-accent-gold/40 text-accent-gold' : m.kind === 'named' ? 'border-accent-blue/40 text-accent-blue' : 'border-border-default text-text-dim'">{{ m.kind }}</span>
+            {{ m.name }}
+          </span>
+          <span class="tabular-nums whitespace-nowrap text-xs" :class="m.ready ? 'text-emerald-400' : 'text-text-dim'">
             {{ m.ready ? 'Ready' : m.label }}
           </span>
         </div>
@@ -132,10 +130,16 @@ const session = computed(() => store.combatWisdomSession)
 /** Named/boss reuse timer cap (wiki: named soloable = once per 24h). */
 const WIKI_MAX_COOLDOWN_SECS = 24 * 3600
 
+/** Elite check shared by the badge and the timer: "Defeated" is the elite verb,
+ * and the name rule covers Elite-named monsters reported via a "Killed" line. */
+function isElite(m: { verb: string; name: string }): boolean {
+  // "Defeated" = elite: chance-based each kill, no real cooldown.
+  return m.verb === 'Defeated' || /^Elite\b/i.test(m.name)
+}
+
 /** Cooldown in seconds for a monster: observed minimum, else wiki default. */
 function cooldownSecs(m: CombatWisdomMonster): number {
-  // "Defeated" = elite: chance-based each kill, no real cooldown.
-  if (m.verb === 'Defeated') return 0
+  if (isElite(m)) return 0
   // Named/boss: the observed shortest gap is an *upper bound* on the true
   // cooldown, so cap it at the wiki max (24h). This lets a real boss timer
   // shorten below 24h (e.g. ~3h) while preventing a rarely-killed mob — whose
@@ -160,10 +164,12 @@ const cooldowns = computed(() => {
       const readyAt = m.last_earned_ms + cooldownSecs(m) * 1000
       const remainMs = readyAt - now.value
       const ready = remainMs <= 0
+      const kind = isElite(m) ? 'elite' : m.min_gap_secs != null ? 'named' : 'unknown'
       return {
         name: m.name,
         verb: m.verb,
         min_gap_secs: m.min_gap_secs,
+        kind,
         ready,
         remainMs,
         label: formatDuration(Math.ceil(remainMs / 1000)),
@@ -176,12 +182,11 @@ const cooldowns = computed(() => {
     })
 })
 
-function cooldownTitle(m: { verb: string; min_gap_secs: number | null }): string {
+function cooldownTitle(m: { verb: string; min_gap_secs: number | null; kind?: string }): string {
+  if (m.kind === 'elite' || m.verb === 'Defeated') return 'Elite — chance each kill'
   if (m.min_gap_secs != null) {
-    return `Observed cooldown: ${formatDuration(m.min_gap_secs)} (learned from your kills)`
+    return `Shortest gap seen ${formatDuration(m.min_gap_secs)} — timer capped at 24h wiki default`
   }
-  return m.verb === 'Defeated'
-    ? 'Elite — no cooldown (wiki default)'
-    : 'Wiki default: 24h until a shorter gap is observed'
+  return 'Likely named — 24h wiki default until observed'
 }
 </script>
