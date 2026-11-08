@@ -925,6 +925,7 @@ pub fn run() {
             survey::commands::survey_tracker_delete_session,
             survey::commands::survey_tracker_analytics,
             survey::commands::survey_tracker_item_cost_analysis,
+            db::unknown_source_commands::get_unknown_source_transactions,
             // Character import
             import_character_report,
             get_characters,

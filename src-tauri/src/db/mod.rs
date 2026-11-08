@@ -37,6 +37,7 @@ pub mod statehelm_commands;
 #[allow(dead_code)]
 pub mod survey_commands;
 pub mod timer_commands;
+pub mod unknown_source_commands;
 pub mod word_of_power_catalog;
 pub mod words_of_power_commands;
 

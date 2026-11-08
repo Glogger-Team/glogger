@@ -1,5 +1,5 @@
 <template>
-  <div class="flex h-full overflow-hidden" :style="{ width: `${sidebarWidth}px` }">
+  <div class="db-sidebar-root flex h-full overflow-hidden" :style="{ width: `${sidebarWidth}px` }">
     <!-- Drag handle -->
     <div
       class="w-1.5 shrink-0 cursor-col-resize flex items-center justify-center hover:bg-accent-gold/20 rounded transition-colors"
@@ -166,7 +166,7 @@ const shelf = useReferenceShelfStore();
 
 // Resizable sidebar
 const DEFAULT_WIDTH = 288; // w-72
-const { prefs: sidebarPrefs, update: updateSidebarPrefs } = useViewPrefs("db-sidebar", { width: DEFAULT_WIDTH });
+const { prefs: sidebarPrefs, update: updateSidebarPrefs } = useViewPrefs("db-sidebar", { width: DEFAULT_WIDTH, collapsed: false });
 const sidebarWidth = ref(sidebarPrefs.value.width as number);
 
 const { isResizing, startResize, resetWidth } = usePaneResize({
@@ -178,6 +178,11 @@ const { isResizing, startResize, resetWidth } = usePaneResize({
   onWidthChange: (w) => { sidebarWidth.value = w; },
   onResizeEnd: (w) => { sidebarWidth.value = w; updateSidebarPrefs({ width: w }); },
 });
+const sidebarCollapsed = computed({
+  get: () => (sidebarPrefs.value.collapsed as boolean) ?? false,
+  set: (val: boolean) => updateSidebarPrefs({ collapsed: val }),
+});
+defineExpose({ sidebarCollapsed });
 
 const { prefs: tabPrefs, update: updateTabPrefs } = useViewPrefs("db-sidebar.tab", { activeTab: "history" as string });
 const activeTab = computed({
@@ -288,3 +293,16 @@ function relativeTime(timestamp: number): string {
   return `${days}d ago`;
 }
 </script>
+  
+  <style scoped>
+  /* Portrait: sidebar becomes a bottom sheet under the stacked body. The md:
+     breakpoint matches the overlay body's flex-col -> flex-row switch. */
+  @media (max-width: 767px) {
+    .db-sidebar-root {
+      width: 100% !important;
+      max-height: 45%;
+      border-top: 1px solid var(--border-default);
+      overflow-y: auto;
+    }
+  }
+  </style>

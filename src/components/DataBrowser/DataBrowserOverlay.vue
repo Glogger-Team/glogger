@@ -6,9 +6,9 @@
         <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="store.close()" />
 
         <!-- Overlay panel -->
-        <div class="absolute inset-6 lg:inset-10 flex flex-col bg-surface-base border border-border-hover rounded-xl shadow-[0_25px_60px_-12px_rgba(0,0,0,0.5)] overflow-hidden">
+        <div class="absolute inset-2 sm:inset-6 lg:inset-10 flex flex-col bg-surface-base border border-border-hover rounded-xl shadow-[0_25px_60px_-12px_rgba(0,0,0,0.5)] overflow-hidden">
           <!-- Header: type selector + close -->
-          <div class="shrink-0 flex items-center gap-1.5 border-b border-border-default bg-surface-dark/50 px-4 py-2">
+          <div class="shrink-0 flex items-center gap-1.5 border-b border-border-default bg-surface-dark/50 px-4 py-2 overflow-x-auto">
             <span class="text-text-muted text-xs font-mono mr-1">Data Browser</span>
             <div class="w-px h-4 bg-border-default" />
             <button
@@ -32,7 +32,7 @@
               </button>
             </template>
             <div class="flex-1" />
-            <kbd class="text-[10px] text-text-dim bg-surface-elevated border border-border-default rounded px-1.5 py-0.5">ESC</kbd>
+            <button class="shrink-0 text-xs text-text-muted hover:text-text-primary border border-border-default rounded px-1.5 py-0.5" :title="sidebarCollapsed ? 'Show sidebar' : 'Hide sidebar'" @click="sidebarCollapsed = !sidebarCollapsed">{{ sidebarCollapsed ? '☰' : '✕' }}</button>
             <button
               class="bg-transparent border-none text-text-muted cursor-pointer text-sm hover:text-accent-red transition-colors px-1.5 py-0.5 rounded hover:bg-surface-elevated"
               title="Close"
@@ -41,7 +41,7 @@
           </div>
 
           <!-- Body: browser area + sidebar -->
-          <div class="flex-1 flex min-h-0">
+          <div class="flex-1 flex flex-col md:flex-row min-h-0">
             <!-- Browser area -->
             <div ref="browserAreaRef" class="flex-1 min-w-0 min-h-0">
               <div v-if="visitedTypes.has('items')" v-show="store.activeType === 'items'" class="h-full">
@@ -89,7 +89,7 @@
             </div>
 
             <!-- Sidebar (hidden on CDN Diff since it has its own right pane) -->
-            <DataBrowserSidebar v-show="store.activeType !== 'cdn-diff'" class="shrink-0 border-l border-border-default bg-surface-dark/30" @navigate="handleSidebarNavigate" />
+            <DataBrowserSidebar v-show="store.activeType !== 'cdn-diff' && !sidebarCollapsed" class="shrink-0 border-l border-border-default bg-surface-dark/30" @navigate="handleSidebarNavigate" />
           </div>
         </div>
       </div>
@@ -101,6 +101,7 @@
 import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } from "vue";
 import { useDataBrowserStore, browserTypes, entityTypeToTab } from "../../stores/dataBrowserStore";
 import { useSettingsStore } from "../../stores/settingsStore";
+import { useViewPrefs } from "../../composables/useViewPrefs";
 import type { EntityNavigationTarget } from "../../composables/useEntityNavigation";
 import ItemSearch from "./ItemSearch.vue";
 import SkillBrowser from "./SkillBrowser.vue";
@@ -125,6 +126,13 @@ const store = useDataBrowserStore();
 const navTarget = ref<EntityNavigationTarget | null>(null);
 const visitedTypes = reactive(new Set<string>());
 const browserAreaRef = ref<HTMLElement | null>(null);
+// Sidebar collapse shares the "db-sidebar" view prefs with DataBrowserSidebar
+// (same screenKey -> same shared ref), so the toggle persists across sessions.
+const sidebarPrefs = useViewPrefs("db-sidebar", { width: 288, collapsed: false });
+const sidebarCollapsed = computed({
+  get: () => (sidebarPrefs.prefs.value.collapsed as boolean) ?? false,
+  set: (val: boolean) => sidebarPrefs.update({ collapsed: val }),
+});
 
 // Track visited types for lazy mounting
 watch(() => store.activeType, (type) => {
@@ -175,7 +183,8 @@ watch(() => store.activeType, () => {
   if (store.isOpen) focusSearchInput();
 });
 
-// Global keydown for Ctrl+D and ESC
+// Global keydown for Ctrl+D and ESC. Capture phase: the browser search input owns
+// focus on open, so a bubble-phase listener would never fire. Guarded to open state.
 function handleGlobalKeydown(event: KeyboardEvent) {
   if ((event.ctrlKey || event.metaKey) && event.key === "d") {
     event.preventDefault();
@@ -191,11 +200,11 @@ function handleGlobalKeydown(event: KeyboardEvent) {
 
 onMounted(() => {
   store.load();
-  window.addEventListener("keydown", handleGlobalKeydown);
+  window.addEventListener("keydown", handleGlobalKeydown, true);
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener("keydown", handleGlobalKeydown);
+  window.removeEventListener("keydown", handleGlobalKeydown, true);
 });
 
 // Expose for App.vue to call when entity navigation is triggered

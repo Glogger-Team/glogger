@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="help-overlay">
-      <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center" @keydown.escape="close">
+      <div v-if="show" class="fixed inset-0 z-50 flex items-center justify-center">
         <!-- Backdrop -->
         <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="close" />
 
@@ -22,8 +22,8 @@
           </div>
 
           <!-- Body: side tabs + content -->
-          <div class="flex flex-1 min-h-0">
-            <nav class="flex flex-col gap-0.5 min-w-48 border-r border-border-default p-3 bg-surface-dark">
+          <div class="flex flex-col md:flex-row flex-1 min-h-0">
+            <nav class="flex flex-row md:flex-col gap-0.5 w-full md:w-auto md:min-w-48 border-b md:border-b-0 md:border-r border-border-default p-3 bg-surface-dark overflow-x-auto">
               <button
                 v-for="tab in tabs"
                 :key="tab.id"
@@ -56,7 +56,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue'
+import { ref, watch, nextTick, onBeforeUnmount } from 'vue'
 import { useUpdateStore } from '../../stores/updateStore'
 import AboutTab from './AboutTab.vue'
 import HelpSetupTab from './HelpSetupTab.vue'
@@ -91,22 +91,26 @@ function close() {
   emit('update:show', false)
 }
 
-// Focus trap: listen for escape globally when open
-// Auto-navigate to changelog when opened with an update available
+// Focus trap: listen for escape globally when open. Capture phase: tab buttons
+// may own focus, so a bubble-phase listener can miss the key. Guarded to open state.
 watch(() => props.show, async (open) => {
   if (open) {
     if (updateStore.updateAvailable) {
       activeTab.value = 'changelog'
     }
     await nextTick()
-    window.addEventListener('keydown', handleKeydown)
+    window.addEventListener('keydown', handleKeydown, true)
   } else {
-    window.removeEventListener('keydown', handleKeydown)
+    window.removeEventListener('keydown', handleKeydown, true)
   }
 })
 
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleKeydown, true)
+})
+
 function handleKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') {
+  if (e.key === 'Escape' && props.show) {
     e.preventDefault()
     e.stopPropagation()
     close()
