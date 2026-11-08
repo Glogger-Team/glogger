@@ -46,6 +46,13 @@ export function registerOverlayEscape(close: EscapeCloser): () => void {
   };
 }
 
+// True when no overlay currently holds the Esc stack. Lets global hotkeys
+// (e.g. DataBrowser's Ctrl+D toggle) refuse to open underneath another
+// overlay, where open order would stack them above the existing one.
+export function isOverlayEscapeStackEmpty(): boolean {
+  return stack.length === 0;
+}
+
 // Registers `close` while `isOpen()` is true; unregisters on close/unmount.
 // `close` must be stable for the component lifetime.
 export function useOverlayEscape(isOpen: () => boolean, close: EscapeCloser): void {

@@ -103,7 +103,7 @@ import { ref, reactive, computed, watch, nextTick, onMounted, onBeforeUnmount } 
 import { useDataBrowserStore, browserTypes, entityTypeToTab } from "../../stores/dataBrowserStore";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useViewPrefs } from "../../composables/useViewPrefs";
-import { useOverlayEscape } from "../../composables/useOverlayEscape";
+import { isOverlayEscapeStackEmpty, useOverlayEscape } from "../../composables/useOverlayEscape";
 import type { EntityNavigationTarget } from "../../composables/useEntityNavigation";
 import ItemSearch from "./ItemSearch.vue";
 import SkillBrowser from "./SkillBrowser.vue";
@@ -195,6 +195,10 @@ useOverlayEscape(() => store.isOpen, () => store.close());
 // focus on open, so a bubble-phase listener would never fire.
 function handleGlobalKeydown(event: KeyboardEvent) {
   if ((event.ctrlKey || event.metaKey) && event.key === "d") {
+    // Refuse to open underneath another overlay: open order would stack us
+    // above it while paint order keeps us below, so Esc would close a
+    // hidden DataBrowser. Closing while open is always allowed.
+    if (!store.isOpen && !isOverlayEscapeStackEmpty()) return;
     event.preventDefault();
     store.toggle();
   }
