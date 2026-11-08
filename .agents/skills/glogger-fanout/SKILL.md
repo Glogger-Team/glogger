@@ -16,9 +16,9 @@ Owns the fan-out recipe: TODO slices → branches → worktrees → panes → A�
 
 ## 2. Cut worktrees + panes
 
-- One per slice: `herdr worktree create --branch feature/<slug> --base main --no-focus`. Read checkout paths from `.result` (branch slashes become hyphens on disk: `feature-esc-stack-guard`).
+- One per slice: `herdr worktree create --branch feature/<slug> --base main --no-focus`. Read checkout paths back from the command's JSON response (branch slashes become hyphens on disk: `feature-esc-stack-guard`).
 - Split panes in the current tab: `herdr pane split --current --direction right|down --cwd "$PWD" --no-focus` (wide→right, narrow/tall→down). Keep user focus; parse new pane IDs from `.result.pane.pane_id`.
-- Start one agent per pane: `herdr agent start <name> --kind omp --pane <id>` (`omp` is this repo's kind; workers run `muse-spark`).
+- Start one agent per pane: `herdr agent start <name> --kind omp --pane <id>` (`omp` is this repo's kind — verify against `herdr agent start --help`; `muse-spark` is a model, not a `--kind` value).
 - Brief via `herdr agent prompt <name> "<brief>" --wait --timeout <ms>` (`--timeout` requires `--wait`).
 
 ## 3. Brief shape (paste verbatim slots)
