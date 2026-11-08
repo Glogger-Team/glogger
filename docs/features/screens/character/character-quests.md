@@ -2,9 +2,9 @@
 
 ## Overview
 
-The Quests screen is a snapshot-driven quest reference that cross-references CDN quest data against the player's latest character report import. It answers "What quests do I have active?", "Which work orders are done or still todo?", and "What requirements or rewards does this quest have?"
+The Quests screen is a snapshot-driven quest reference that cross-references CDN quest data against the player's selected character report snapshot. It answers "What quests do I have active?", "Which work orders are done or still todo?", and "What requirements or rewards does this quest have?"
 
-Character state comes from the selected snapshot; quest details come from the CDN quest list. Requirement checks and work-order skill scoping read live game state (`gameStateStore`), so those results can change without a new snapshot while tab membership stays pinned to the snapshot.
+Character state comes from the selected snapshot; quest details come from the CDN quest list. Requirement checks and work-order skill scoping read live game state (`gameStateStore`), so those results can change without a new snapshot. Tab membership stays pinned to the snapshot, except the Uncompleted WOs backlog, whose membership also depends on live skill levels.
 
 ## Layout
 
@@ -20,8 +20,8 @@ Character state comes from the selected snapshot; quest details come from the CD
 │                                  │  [Eligible]                  │
 │  ▼ Serbule (28)                  │  KillAberrantSpiders · Lv 30 │
 │    Kill Rats     Lv 5   [Active]  │  Eltibule                    │
-│    Bring Bones   Lv 8   [Done]    │                              │
-│    Find Herbs    Lv 10  [Repeat.] │  "These spiders have been..."│
+│    Bring Bones   Lv 8   [Active]  │                              │
+│    Find Herbs    Lv 10  [Active]  │  "These spiders have been..."│
 │    ...                           │                              │
 │                                  │  ── Quest Info ──            │
 │  ▼ Eltibule (15)                 │  Favor NPC: Joeh             │
