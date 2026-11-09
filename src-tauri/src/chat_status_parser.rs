@@ -444,11 +444,11 @@ fn try_councils_changed(text: &str, ts: &str) -> Option<ChatStatusEvent> {
 /// basics. The wallet is ONE currency (internal `GOLD`, shown in-game as
 /// "councils"), so these all map to a signed `CouncilsChanged`. Gains are
 /// positive; the mugger theft is negative. From a real-log audit, these are the
-/// remaining visible wallet deltas (spends are mostly invisible in the logs):
 ///   "You receive N coins."                       (+)  autoloot / coin-sack open
 ///   "You recovered N Councils stolen by <mob>."  (+)
 ///   "You retrieve N stolen coins."               (+)
 ///   "You were given N coins by <player>!"        (+)
+///   "Sent N coins to <player>"                   (−)  outgoing gift
 ///   "<mob> stole N Councils!"                    (−)
 fn try_councils_misc(text: &str, ts: &str) -> Option<ChatStatusEvent> {
     /// Parse a comma-grouped integer ("1,700" → 1700).
@@ -497,6 +497,16 @@ fn try_councils_misc(text: &str, ts: &str) -> Option<ChatStatusEvent> {
             // Prefix anchor: reject quoted/channel chatter
             // (e.g. `Bob says "Rat stole 5 Councils!"` must not parse as theft).
             if !t.is_empty() && !t.contains('"') && !t.contains(" says ") && !amount.trim().is_empty() {
+                return num(amount).map(|a| signed(-a));
+            }
+        }
+
+    // "Sent N coins to <player>" — outgoing gift, a wallet loss. Prefix-
+    // anchored like the theft arm so quoted chatter never parses.
+    if let Some(rest) = text.strip_prefix("Sent ")
+        && let Some(idx) = rest.find(" coins to ") {
+            let (amount, who) = (&rest[..idx], &rest[idx + " coins to ".len()..]);
+            if !who.trim().is_empty() && !who.contains('"') {
                 return num(amount).map(|a| signed(-a));
             }
         }
@@ -964,12 +974,29 @@ mod tests {
 
     #[test]
     fn test_misc_mugger_stole_councils() {
-        // The only visible wallet *loss* in chat — must be negative.
+        // A visible wallet *loss* in chat — must be negative.
         let msg = status_msg("Ratkin Mugger stole 320 Councils!");
         match parse_status_message(&msg).unwrap() {
             ChatStatusEvent::CouncilsChanged { amount, .. } => assert_eq!(amount, -320),
             other => panic!("Expected CouncilsChanged(-320), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_misc_sent_coins_to_player() {
+        // Outgoing gift — wallet loss (live shape: 122-log census).
+        let msg = status_msg("Sent 693 coins to GorgonoidNeurodivergente");
+        match parse_status_message(&msg).unwrap() {
+            ChatStatusEvent::CouncilsChanged { amount, .. } => assert_eq!(amount, -693),
+            other => panic!("Expected CouncilsChanged(-693), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_misc_sent_coins_quoted_is_not_loss() {
+        // Quoted chatter must not parse as a gift.
+        let msg = status_msg("Bob says \"Sent 5 coins to Alice\"");
+        assert!(parse_status_message(&msg).is_none());
     }
 
     #[test]
