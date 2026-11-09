@@ -46,7 +46,7 @@ The Stall Tracker has four visible tabs plus a fifth view behind a modal:
 
 ![Inventory tab — In Stock table with multi-tier prices, Clear unsure row](../../../screenshots/economics/stall-tracker/inventory.png)
 
-*Reconstructed from the event log via per-item tier-stack replay. Multi-tier price column shows `qty × price` rows when an item is listed at multiple tiers. Rows whose quantity is a guess (mid-history ⚠ or `~` fallback-priced) roll up into a Clear-unsure row that zeroes each via a zeroed manual count; recount anything still stocked in Manual stock entry below.*
+*Reconstructed from the event log via per-item tier-stack replay. Multi-tier price column shows `qty × price` rows when an item is listed at multiple tiers. Each In Stock row has a per-row Clear (✕) that zeroes just that item behind a confirm dialog; the Zero-all row below the table zeroes every in-stock row behind a confirm (both write zeroed manual counts, same mechanism). Rows whose quantity is a guess (mid-history ⚠ or `~` fallback-priced) roll up into a Clear-unsure row that zeroes each via a zeroed manual count; recount anything still stocked in Manual stock entry below.*
 
 ### Shop Log modal
 
@@ -236,6 +236,7 @@ the same item at the same price) would otherwise collapse into a single row.
 | `save_stall_baseline(input)` | Upsert one manual count row (qty 0 stores a zeroed count that clears the item). Re-stamps `recorded_at` to now. |
 | `get_stall_baselines(owner)` | List manual count rows for the active character. |
 | `delete_stall_baseline(id, owner)` | Delete one manual count row by id, owner-scoped. |
+| `delete_all_stall_baselines(owner)` | Delete every manual count for a character without touching shop-log events. Inventory reverts to pure log estimates. |
 | `get_stall_filter_options(owner)` | Distinct buyers, players, items, dates, actions for filter dropdowns. |
 | `toggle_stall_event_ignored(id, ignored)` | Soft-mute or unmute a single event. |
 | `clear_stall_events(owner)` | Delete every row for a specific character. Requires `owner`. Holds `StallOpsLock`. |
@@ -385,6 +386,18 @@ narrow the gap without a live `LocalPlayer:` feed:
 - **Clear unsure** — one-click eviction for the rows above: every ⚠ / `~`
   in-stock row gets a zeroed manual count at once. Guesses leave together;
   recount survivors individually.
+- **Per-row Clear + Zero all** — each In Stock row has a ✕ that zeroes just
+  that item behind a confirm; the Zero-all row zeroes every in-stock row
+  behind a confirm naming the count. Both write zeroed manual counts (same
+  mechanism as Clear unsure); recount survivors in Manual stock entry.
+- **Remove all (rebuild from log)** — the Manual stock entry header has a
+  Remove-all button that deletes every manual count WITHOUT touching
+  shop-log events. With no baselines in the way, all `added` / `visible` /
+  `bought` / `removed` events replay from the start, so a fresh log rebuilds
+  today's stock from its `added` lines. Use this (not Zero-all) to start over
+  from the log: Zero-all stamps zero-counts that drop older events per item,
+  while Remove-all drops the cutoffs entirely. `visible` alone never creates
+  stock — only `added` (or a manual count) does.
 - The parser treats entries that don't match any action regex as `"unknown"`.
   These are hidden from the default Shop Log view and excluded from every
   aggregation, but remain available via the action filter (select `unknown`
