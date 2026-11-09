@@ -13,7 +13,7 @@
     >
       [{{ message.channel }}]
     </span>
-    <span v-if="message.sender" class="flex-shrink-0 font-semibold text-blue-400">
+    <span v-if="message.sender" class="flex-shrink-0 font-semibold text-sender">
       {{ message.sender }}:
     </span>
     <span class="flex-1 break-words" :class="messageTextClass">
@@ -72,6 +72,6 @@ const channelClass = computed(() => {
     'lfg': 'text-channel-lfg',
   }
 
-  return channelColors[channel || ''] || 'text-gray-400'
+  return channelColors[channel || ''] || 'text-text-secondary'
 })
 </script>
