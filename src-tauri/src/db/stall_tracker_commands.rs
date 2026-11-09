@@ -1347,6 +1347,29 @@ pub fn delete_stall_baseline(
     .map_err(|e| format!("Baseline delete failed: {e}"))
 }
 
+/// Delete every manual count for one character WITHOUT touching shop-log
+/// events. The Inventory tab reverts to pure log estimates: all `added`,
+/// `visible`, `bought`, and `removed` events replay with no timestamp
+/// cutoff, so a fresh log rebuilds today's stock from its `added` lines.
+/// Requires non-empty owner — never a cross-character wipe.
+#[tauri::command]
+pub fn delete_all_stall_baselines(
+    db: State<'_, DbPool>,
+    owner: Option<String>,
+) -> Result<usize, String> {
+    let Some(owner) = opt_nonempty(&owner).map(str::to_string) else {
+        return Err("delete_all_stall_baselines requires an owner".to_string());
+    };
+    let conn = db
+        .get_write()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    conn.execute(
+        "DELETE FROM stall_inventory_baseline WHERE owner = ?1",
+        rusqlite::params![owner],
+    )
+    .map_err(|e| format!("Baseline delete failed: {e}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1605,5 +1628,29 @@ mod tests {
             )
             .expect("count");
         assert_eq!(count, 2);
+    }
+    #[test]
+    fn delete_all_baselines_is_owner_scoped() {
+        let db = baseline_pool();
+        let conn = db.get_write().expect("write conn");
+        save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 5)).expect("save");
+        save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Saddle", 2)).expect("save");
+        save_stall_baseline_internal(&conn, &baseline_input("Alvida", "Reins", 7)).expect("save");
+        // Same predicate the command uses: one owner's rows go, the other's stay.
+        let deleted = conn
+            .execute(
+                "DELETE FROM stall_inventory_baseline WHERE owner = 'Deradon'",
+                [],
+            )
+            .expect("delete");
+        assert_eq!(deleted, 2);
+        let remaining: Vec<(String, String)> = conn
+            .prepare("SELECT owner, item FROM stall_inventory_baseline")
+            .expect("prepare")
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(remaining, vec![("Alvida".to_string(), "Reins".to_string())]);
     }
 }
