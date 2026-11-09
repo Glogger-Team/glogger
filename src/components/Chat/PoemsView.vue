@@ -151,6 +151,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { formatDateTimeFull as formatTs } from '../../composables/useTimestamp'
 import DataTable from '../Shared/DataTable.vue'
+import { isOverlayEscapeStackEmpty } from '../../composables/useOverlayEscape'
 
 interface Poem {
   id: number
@@ -306,12 +307,18 @@ function renderPoem(text: string): string {
   return sanitizeRich(text, true)
 }
 
-// Intentionally local (not on the overlay Esc stack): detail mode is view content, not an overlay — stacking here would block Ctrl+D via the stack-empty gate, and the stack's capture listener already preempts this handler when an overlay sits above.
+// Split: Esc stays local — detail mode is view content, not an overlay, so it
+// never joins the overlay Esc stack (stacking here would block Ctrl+D via the
+// stack-empty gate). Arrow keys are stack-gated: with an overlay above
+// (QuickSearch, DataBrowser, dialog), page-flip must not run underneath it.
 function onKeydown(e: KeyboardEvent) {
   if (selectedIndex.value === -1) return
   if (e.key === 'Escape') {
     closePoem()
-  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    return
+  }
+  if (!isOverlayEscapeStackEmpty()) return
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
     prev()
     e.preventDefault()
   } else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
