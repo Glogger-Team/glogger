@@ -46,7 +46,7 @@ The Stall Tracker has four visible tabs plus a fifth view behind a modal:
 
 ![Inventory tab — In Stock table with multi-tier prices, Clear unsure row](../../../screenshots/economics/stall-tracker/inventory.png)
 
-*Reconstructed from the event log via per-item tier-stack replay. Multi-tier price column shows `qty × price` rows when an item is listed at multiple tiers. Rows whose quantity is a guess (mid-history ⚠ or `~` fallback-priced) roll up into a Clear-unsure row that zeroes each via a zeroed manual count; recount anything still stocked in Manual stock entry below.*
+*Reconstructed from the event log via per-item tier-stack replay. Multi-tier price column shows `qty × price` rows when an item is listed at multiple tiers. Each In Stock row has a per-row Clear (✕) that zeroes just that item behind a confirm dialog; the Zero-all row below the table zeroes every in-stock row behind a confirm (both write zeroed manual counts, same mechanism). Rows whose quantity is a guess (mid-history ⚠ or `~` fallback-priced) roll up into a Clear-unsure row that zeroes each via a zeroed manual count; recount anything still stocked in Manual stock entry below.*
 
 ### Shop Log modal
 
@@ -62,7 +62,7 @@ The Stall Tracker has four visible tabs plus a fifth view behind a modal:
 - `src-tauri/src/shop_log_parser.rs` — regex parser: splits book content into entries, extracts fields per action type, assigns stable indices, detects owner.
 - `src-tauri/src/stall_year_resolver.rs` — resolves the game's year-less `"Mon Apr 13 14:29"` timestamps into ISO 8601 by walking forward through the entries and handling year-boundary crossings.
 - `src-tauri/src/stall_aggregations.rs` — pure aggregation logic for Revenue pivot and Inventory tier-stack reconstruction. No DB access.
-- `src-tauri/src/db/stall_tracker_commands.rs` — Tauri commands, filter shape, `StallOpsLock`, insert helper, import/export.
+- `src-tauri/src/db/stall_tracker_commands.rs` — Tauri commands, filter shape, insert helper, import/export.
 - `src-tauri/src/db/migrations.rs` — `stall_events` table creation.
 - `src-tauri/src/coordinator.rs` — intercepts `PlayerEvent::BookOpened { book_type: "PlayerShopLog", … }` and persists the parsed events.
 
@@ -236,9 +236,10 @@ the same item at the same price) would otherwise collapse into a single row.
 | `save_stall_baseline(input)` | Upsert one manual count row (qty 0 stores a zeroed count that clears the item). Re-stamps `recorded_at` to now. |
 | `get_stall_baselines(owner)` | List manual count rows for the active character. |
 | `delete_stall_baseline(id, owner)` | Delete one manual count row by id, owner-scoped. |
+| `delete_all_stall_baselines(owner)` | Delete every manual count for a character without touching shop-log events. Inventory reverts to pure log estimates. |
 | `get_stall_filter_options(owner)` | Distinct buyers, players, items, dates, actions for filter dropdowns. |
 | `toggle_stall_event_ignored(id, ignored)` | Soft-mute or unmute a single event. |
-| `clear_stall_events(owner)` | Delete every row for a specific character. Requires `owner`. Holds `StallOpsLock`. |
+| `clear_stall_events(owner)` | Delete every row for a specific character. Requires `owner`. Serialized with live ingest by the single-write pool + `BEGIN IMMEDIATE`. |
 | `import_shop_log_file(path, current_owner)` | Read a `.txt` file, parse, insert. Returns counts + effective owner + `owner_claimed` flag. |
 | `export_shop_log_files(directory, owner)` | Write one file per (owner, date) in exact book format for round-trip. Requires `owner`. |
 | `seed_stall_events_dev(count, owner)` | Dev-only bulk insert for benchmarking at 10k/100k scale. |
@@ -274,8 +275,10 @@ and Export + Clear data (gated on `hasData && currentOwner`).
 Guessed quantities (mid-history ⚠ rows plus `~` fallback-priced rows) roll up
 into a Clear-unsure row under the In Stock table. One click writes a zeroed
 manual count per unsure item — the zeroed count supersedes pre-clear history
-so the guess never returns. Recount anything still stocked in Manual stock
-entry below (re-counting replaces the zeroed count and resumes replay from now).
+so the guess never returns unless you Rebuild from log (which deletes the
+zeroed cutoffs and restores pure log estimates). Recount anything still
+stocked in Manual stock entry below (re-counting replaces the zeroed count
+and resumes replay from now).
 
 ### Import
 
@@ -301,8 +304,8 @@ rows (the UNIQUE key + INSERT OR IGNORE makes the round-trip a no-op).*
 
 *Native warning dialog that names the active character explicitly and
 recommends Export first, since in-game shop log books only hold recent
-history. Holds `StallOpsLock` for the duration of the DELETE so a
-concurrent live-ingest batch can't write after the clear.*
+history. Serialized with live ingest by the single-write pool +
+`BEGIN IMMEDIATE`, so a concurrent batch can't write after the clear.*
 
 ## Frontend Events
 
@@ -312,12 +315,12 @@ concurrent live-ingest batch can't write after the clear.*
 
 ## Concurrency & Race Protection
 
-`StallOpsLock(Mutex<()>)` is registered as Tauri managed state. Both
-`insert_stall_events()` (coordinator's live-ingest path) and
-`clear_stall_events()` acquire it around their DB mutation, so a Clear can
-never interleave with a concurrent `PlayerShopLog` insert and leave partial or
-orphaned rows behind. Critical sections are intentionally small (one batch /
-one DELETE); contention is invisible in practice.
+Clear-vs-insert serialization comes from the single-write pool plus
+`BEGIN IMMEDIATE` transactions (`src-tauri/src/db/mod.rs` owns the
+pool-is-the-lock invariant): Clear is two `DELETE`s (events + baselines) in
+one `BEGIN IMMEDIATE` transaction, live ingest is one transaction per batch,
+so SQLite serializes the two atomically. No app-level lock — a second mutex
+would only add deadlock shape for zero extra safety.
 
 ## Character Scoping
 
@@ -385,6 +388,18 @@ narrow the gap without a live `LocalPlayer:` feed:
 - **Clear unsure** — one-click eviction for the rows above: every ⚠ / `~`
   in-stock row gets a zeroed manual count at once. Guesses leave together;
   recount survivors individually.
+- **Per-row Clear + Zero all** — each In Stock row has a ✕ that zeroes just
+  that item behind a confirm; the Zero-all row zeroes every in-stock row
+  behind a confirm naming the count. Both write zeroed manual counts (same
+  mechanism as Clear unsure); recount survivors in Manual stock entry.
+- **Remove all (rebuild from log)** — the Manual stock entry header has a
+  Remove-all button that deletes every manual count WITHOUT touching
+  shop-log events. With no baselines in the way, all `added` / `visible` /
+  `bought` / `removed` events replay from the start, so a fresh log rebuilds
+  today's stock from its `added` lines. Use this (not Zero-all) to start over
+  from the log: Zero-all stamps zero-counts that drop older events per item,
+  while Remove-all drops the cutoffs entirely. `visible` alone never creates
+  stock — only `added` (or a manual count) does.
 - The parser treats entries that don't match any action regex as `"unknown"`.
   These are hidden from the default Shop Log view and excluded from every
   aggregation, but remain available via the action filter (select `unknown`

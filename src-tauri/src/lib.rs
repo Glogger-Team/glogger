@@ -1068,6 +1068,7 @@ pub fn run() {
             db::stall_tracker_commands::rescan_stall_books,
             db::stall_tracker_commands::save_stall_baseline,
             db::stall_tracker_commands::get_stall_baselines,
+            db::stall_tracker_commands::delete_all_stall_baselines,
             db::stall_tracker_commands::delete_stall_baseline,
             db::stall_tracker_commands::toggle_stall_event_ignored,
             db::stall_tracker_commands::clear_stall_events,
