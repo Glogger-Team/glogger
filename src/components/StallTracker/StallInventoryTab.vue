@@ -78,12 +78,11 @@
               ⚠
             </span>
             <button
-              v-if="(row as unknown as InventoryItem).baseline_at != null"
               type="button"
-              class="text-text-secondary hover:text-accent-gold bg-transparent border-none cursor-pointer text-xs flex-shrink-0"
-              :title="`Recount ${(row as unknown as InventoryItem).item} — prefill Manual stock entry below`"
+              class="text-[11px] text-text-secondary hover:text-accent-gold bg-transparent border border-border-default hover:border-accent-gold/50 rounded px-1.5 py-0.5 cursor-pointer flex-shrink-0"
+              :title="`Edit count for ${(row as unknown as InventoryItem).item} — fill in Manual stock entry below`"
               @click="startRecount((row as unknown as InventoryItem))">
-              ↻
+              Edit count
             </button>
             <span
               v-if="(row as unknown as InventoryItem).baseline_at != null"
@@ -123,6 +122,16 @@
         <template #cell-last_activity_at="{ value }">
           <span class="text-text-secondary whitespace-nowrap">{{ formatShortDate(value as string | null) }}</span>
         </template>
+        <template #cell-action="{ row }">
+          <button
+            type="button"
+            class="text-text-secondary hover:text-red-400 bg-transparent border-none cursor-pointer text-xs disabled:opacity-50"
+            :disabled="zeroingItem != null || clearingUnsure || zeroingAll || loading"
+            :title="`Clear stock for ${(row as unknown as InventoryItem).item} (set to zero)`"
+            @click="clearOneItem((row as unknown as InventoryItem))">
+            {{ zeroingItem === (row as unknown as InventoryItem).item ? '…' : '✕' }}
+          </button>
+        </template>
       </DataTable>
     </div>
     <!-- Clear unsure — one click to zero-out every row whose quantity is a
@@ -144,6 +153,44 @@
       </button>
     </div>
 
+    <!-- Zero all — confirm-guarded bulk reset. Every in-stock row gets a
+         zeroed manual count (same mechanism as per-row Clear); recount
+         survivors in Manual stock entry below. Always visible so a full
+         recount from a known-empty stall is one safe step. -->
+    <div
+      v-if="inStockCount > 0"
+      class="flex items-center justify-between gap-2 flex-shrink-0 border border-border-default rounded px-3 py-2">
+      <p class="text-xs text-text-secondary italic m-0">
+        Start over: set every item above to zero, then enter new counts for what is in your stall.
+      </p>
+      <button
+        type="button"
+        class="px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-red-500/50 hover:text-red-400 text-text-primary disabled:opacity-50 flex-shrink-0"
+        :disabled="zeroingAll || clearingUnsure || loading"
+        @click="zeroAllStock">
+        {{ zeroingAll ? 'Zeroing…' : `Zero all stock (${inStockCount})` }}
+      </button>
+    </div>
+    <!-- Rebuild from log — delete every manual count WITHOUT touching
+         shop-log events. With no baselines in the way, all `added` /
+         `visible` / `bought` / `removed` events replay from the start, so a
+         fresh log rebuilds stock from its `added` lines. The opposite of
+         Zero-all above (which stamps zero-counts that drop older events). -->
+    <div
+      v-if="baselines.length > 0"
+      class="flex items-center justify-between gap-2 flex-shrink-0 border border-border-default rounded px-3 py-2">
+      <p class="text-xs text-text-secondary italic m-0">
+        Rebuild counts from the shop log instead? Removes every manual count — history stays.
+      </p>
+      <button
+        type="button"
+        class="px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-accent-gold/50 text-text-primary disabled:opacity-50 flex-shrink-0"
+        :disabled="baselineSaving || loading"
+        @click="removeAllBaselines">
+        {{ baselineSaving ? 'Removing…' : `Rebuild from log (${baselines.length})` }}
+      </button>
+    </div>
+
     <!-- Manual stock entry — counted qty + price for items whose log history
          scrolled out, and the store for Clear-unsure evictions. One row per
          item. Re-counting replaces the row; qty 0 marks the item cleared. -->
@@ -162,8 +209,8 @@
             Manual stock entry ({{ visibleBaselines.length }})
           </h4>
         </button>
-        <span class="text-[10px] text-text-secondary italic hidden sm:inline">
-          Enter what is in your stall now. Count all price tiers as one number. Count again after you restock or remove items.
+        <span class="text-xs text-text-secondary italic hidden sm:inline">
+          Count what is in your stall in-game and enter it here. If one item is listed at more than one price, enter the combined total. Enter a new count each time you add or remove items in-game.
         </span>
       </div>
       <div
@@ -176,7 +223,8 @@
               v-model="baselineItem"
               type="text"
               placeholder="e.g. Quality Reins"
-              class="bg-surface-elevated border border-border-default rounded px-2 py-1 text-xs text-text-primary focus:outline-none focus:border-accent-gold/50" />
+              class="bg-surface-elevated border border-border-default rounded px-2 py-1 text-xs text-text-primary focus:outline-none focus:border-accent-gold/50"
+              @keyup.enter="saveBaseline" />
           </label>
           <label class="flex flex-col gap-1 text-[11px] text-text-secondary w-20">
             Qty
@@ -187,7 +235,8 @@
               min="0"
               max="1000000"
               placeholder="5"
-              class="bg-surface-elevated border border-border-default rounded px-2 py-1 text-xs text-text-primary focus:outline-none focus:border-accent-gold/50" />
+              class="bg-surface-elevated border border-border-default rounded px-2 py-1 text-xs text-text-primary focus:outline-none focus:border-accent-gold/50"
+              @keyup.enter="saveBaseline" />
           </label>
           <label class="flex flex-col gap-1 text-[11px] text-text-secondary w-28">
             Price each (g)
@@ -196,7 +245,8 @@
               type="number"
               min="0"
               placeholder="4500"
-              class="bg-surface-elevated border border-border-default rounded px-2 py-1 text-xs text-text-primary focus:outline-none focus:border-accent-gold/50" />
+              class="bg-surface-elevated border border-border-default rounded px-2 py-1 text-xs text-text-primary focus:outline-none focus:border-accent-gold/50"
+              @keyup.enter="saveBaseline" />
           </label>
           <button
             type="button"
@@ -288,6 +338,7 @@ const inStockColumns = [
   { key: 'period_sold', label: 'SOLD', sortable: true, numeric: true },
   { key: 'avg_per_day', label: 'AVG/DAY', sortable: true, numeric: true },
   { key: 'last_activity_at', label: 'LAST', sortable: true, align: 'right' as const },
+  { key: 'action', label: '', sortable: false, align: 'right' as const, width: '36px' },
 ]
 
 const periodDays = ref<number>(7)
@@ -384,38 +435,85 @@ const unsureItems = computed<InventoryItem[]>(() =>
 )
 const unsureCount = computed(() => unsureItems.value.length)
 const clearingUnsure = ref(false)
+const zeroingAll = ref(false)
+const zeroingItem = ref<string | null>(null)
 
-/** Zero-out every unsure row via a qty-0 baseline each. Sequential invokes
+/** Shared zero-out loop: one qty-0 baseline per item, sequential invokes
  * (not Promise.all): each save is one write-pool checkout and the set is
- * small (<100 rows), so serialization is cheap and avoids pool contention. */
+ * small (<100 rows), so serialization is cheap and avoids pool contention.
+ * Snapshots the owner; aborts if the active character changes mid-loop. */
+async function zeroItems(targets: InventoryItem[]) {
+  const owner = store.currentOwner
+  if (!owner || targets.length === 0) return
+  for (const item of targets) {
+    if (store.currentOwner !== owner) break
+    await invoke('save_stall_baseline', {
+      input: {
+        owner,
+        item: item.item,
+        quantity: 0,
+        priceUnit: null,
+        note: null,
+      } satisfies StallBaselineInput,
+    })
+  }
+  await Promise.all([reload(), loadBaselines()])
+  await store.refresh()
+}
+
+/** Clear unsure — zero-out every unsure row via the shared loop. */
 async function clearUnsure() {
-  // Snapshot the owner: a character switch mid-loop must not write char A's
-  // unsure items as qty-0 rows under char B (same shape as the store's
-  // ownerAtCall guard — abort when the active character moves on).
   const owner = store.currentOwner
   const targets = [...unsureItems.value]
   if (!owner || clearingUnsure.value || targets.length === 0) return
   clearingUnsure.value = true
   try {
-    for (const item of targets) {
-      if (store.currentOwner !== owner) break
-      await invoke('save_stall_baseline', {
-        input: {
-          owner,
-          item: item.item,
-          quantity: 0,
-          priceUnit: null,
-          note: null,
-        } satisfies StallBaselineInput,
-      })
-    }
-    await Promise.all([reload(), loadBaselines()])
-    await store.refresh()
+    await zeroItems(targets)
   } catch (e) {
     error.value = String(e)
     console.error('[StallInventoryTab] clearUnsure failed:', e)
   } finally {
     clearingUnsure.value = false
+  }
+}
+
+/** Per-row Clear: confirm-guarded so a stray click can't wipe a count. */
+async function clearOneItem(item: InventoryItem) {
+  if (!store.currentOwner || loading.value || zeroingItem.value != null || clearingUnsure.value || zeroingAll.value) return
+  const ok = await confirm(
+    `Set the stock of ${item.item} to zero for ${store.currentOwner}? Enter a new count in Manual stock entry below if you still sell this item.`,
+    { title: 'Clear stock', kind: 'warning' },
+  )
+  if (!ok) return
+  zeroingItem.value = item.item
+  try {
+    await zeroItems([item])
+  } catch (e) {
+    error.value = String(e)
+    console.error('[StallInventoryTab] clearOneItem failed:', e)
+  } finally {
+    zeroingItem.value = null
+  }
+}
+
+/** Zero all: confirm-guarded bulk reset of every in-stock row. */
+async function zeroAllStock() {
+  const owner = store.currentOwner
+  const targets = [...inStockItems.value]
+  if (!owner || loading.value || zeroingAll.value || clearingUnsure.value || zeroingItem.value != null || targets.length === 0) return
+  const ok = await confirm(
+    `Set the stock of all ${targets.length} in-stock items to zero for ${owner}? Enter new counts in Manual stock entry below for items you still sell.`,
+    { title: 'Zero all stock', kind: 'warning' },
+  )
+  if (!ok) return
+  zeroingAll.value = true
+  try {
+    await zeroItems(targets)
+  } catch (e) {
+    error.value = String(e)
+    console.error('[StallInventoryTab] zeroAllStock failed:', e)
+  } finally {
+    zeroingAll.value = false
   }
 }
 
@@ -456,7 +554,10 @@ async function startRecount(item: InventoryItem) {
   baselineError.value = null
   baselineOpen.value = true
   await nextTick()
-  document.getElementById('baseline-qty-input')?.focus()
+  const qtyInput = document.getElementById('baseline-qty-input') as HTMLInputElement | null
+  qtyInput?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  qtyInput?.focus()
+  qtyInput?.select()
 }
 
 async function saveBaseline() {
@@ -526,6 +627,28 @@ async function removeBaseline(b: StallBaseline) {
   } catch (e) {
     baselineError.value = String(e)
     console.error('[StallInventoryTab] removeBaseline failed:', e)
+  } finally {
+    baselineSaving.value = false
+  }
+}
+
+async function removeAllBaselines() {
+  const owner = store.currentOwner
+  if (!owner || baselineSaving.value || baselines.value.length === 0) return
+  const confirmed = await confirm(
+    `Remove all ${baselines.value.length} manual count${baselines.value.length === 1 ? '' : 's'} for ${owner}? Counts rebuild from the shop log, including today's added lines.`,
+    { title: 'Manual stock entry', kind: 'warning' },
+  )
+  if (!confirmed) return
+  baselineSaving.value = true
+  baselineError.value = null
+  try {
+    await invoke('delete_all_stall_baselines', { owner })
+    await Promise.all([reload(), loadBaselines()])
+    await store.refresh()
+  } catch (e) {
+    baselineError.value = String(e)
+    console.error('[StallInventoryTab] removeAllBaselines failed:', e)
   } finally {
     baselineSaving.value = false
   }
