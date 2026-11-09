@@ -84,29 +84,10 @@ import type {
   StallTimeseriesParams,
   TrendsPeriod,
 } from '../../types/stallTracker'
+import { chartPalette as PALETTE, themeText } from '../../composables/useChartTheme'
 
 const store = useStallTrackerStore()
 
-// Ten muted, matte mid-tone hues — one per line. Top-10 mode draws all ten;
-// Top-5 uses the first five; single-item and Total use the first.
-// Index-based so each line on the chart is a distinct color.
-//
-// These sit a notch deeper/more saturated than true pastels on purpose: very
-// light pale colors wash out toward white on the dark background and — more so
-// — under Windows HDR SDR-tone-mapping. Mid-tone (≈55-65% lightness, moderate
-// chroma) keeps them matte/non-vivid while holding a readable hue.
-const PALETTE = [
-  '#5f9ad4', // blue
-  '#d18585', // dusty rose
-  '#82c07b', // sage green
-  '#a98fd6', // muted violet
-  '#d9bd6e', // ochre / gold
-  '#6dc0b6', // teal
-  '#dca06e', // clay / amber
-  '#c98cbf', // orchid
-  '#a4b86e', // olive
-  '#8395cc', // indigo / periwinkle
-]
 
 type SummaryMode = 'top5' | 'top10' | 'total'
 type Metric = 'gold' | 'units'
@@ -122,14 +103,6 @@ const selectedItem = ref<string | null>(null)
 const summaryMode = ref<SummaryMode>('top5')
 const period = ref<TrendsPeriod>('7d')
 const metric = ref<Metric>('gold')
-
-// Chart label colors resolve theme.css text tokens at runtime: vue-data-ui
-// config takes plain color strings, so read the custom properties with
-// getComputedStyle (fallbacks match the token values in theme.css).
-function themeText(token: string, fallback: string): string {
-  const value = getComputedStyle(document.documentElement).getPropertyValue(token).trim()
-  return value || fallback
-}
 
 const textPrimary = themeText('--color-text-primary', '#d4d4d4')
 const textSecondary = themeText('--color-text-secondary', '#a0a0a0')

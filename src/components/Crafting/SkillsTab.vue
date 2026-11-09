@@ -223,6 +223,7 @@ import ItemInline from "../Shared/Item/ItemInline.vue";
 import { useMarketStore } from "../../stores/marketStore";
 import { VueUiDonut } from "vue-data-ui";
 import type { VueUiDonutConfig, VueUiDonutDatasetItem } from "vue-data-ui";
+import { chartPalette, themeText } from "../../composables/useChartTheme";
 
 const craftingStore = useCraftingStore();
 const gameData = useGameDataStore();
@@ -340,20 +341,6 @@ function formatCompact(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
   if (n >= 10_000) return (n / 1_000).toFixed(1) + "K";
   return n.toLocaleString();
-}
-
-// Chart palette — muted tones that work on dark backgrounds
-const chartPalette = [
-  "#6366f1", "#f59e0b", "#10b981", "#ef4444", "#8b5cf6",
-  "#ec4899", "#14b8a6", "#f97316",
-];
-
-// Chart label colors resolve theme.css text tokens at runtime: vue-data-ui
-// config takes plain color strings, so read the custom properties with
-// getComputedStyle (fallbacks match the token values in theme.css).
-function themeText(token: string, fallback: string): string {
-  const value = getComputedStyle(document.documentElement).getPropertyValue(token).trim();
-  return value || fallback;
 }
 
 const textPrimary = themeText("--color-text-primary", "#d4d4d4");
