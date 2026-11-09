@@ -35,10 +35,10 @@
         <div
           v-for="session in sessions"
           :key="session.id"
-          class="bg-[#1a1a2e] border border-border-light rounded-lg overflow-hidden">
+          class="bg-surface-card border border-border-light rounded-lg overflow-hidden">
           <!-- Summary row -->
           <div
-            class="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-[#2a2a3e] transition-colors"
+            class="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-border-subtle transition-colors"
             @click="toggleExpanded(session.id)">
             <div class="flex items-center gap-3">
               <span class="text-xs text-text-dim">{{ formatDate(session.created_at) }}</span>
@@ -83,7 +83,7 @@
                 <input
                   :value="session.name"
                   @change="updateSession(session, 'name', ($event.target as HTMLInputElement).value)"
-                  class="text-sm font-bold text-entity-item bg-transparent border-none outline-none w-full hover:bg-[#2a2a3e] focus:bg-[#2a2a3e] rounded px-1 -mx-1"
+                  class="text-sm font-bold text-entity-item bg-transparent border-none outline-none w-full hover:bg-border-subtle focus:bg-border-subtle rounded px-1 -mx-1"
                 />
                 <textarea
                   :value="session.notes"

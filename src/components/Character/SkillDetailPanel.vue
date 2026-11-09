@@ -142,7 +142,7 @@
             <div
               v-for="ability in abilities"
               :key="ability.id"
-              class="text-xs flex items-center gap-2 px-2 py-0.5 border-b border-[#151515] hover:bg-surface-base">
+              class="text-xs flex items-center gap-2 px-2 py-0.5 border-b border-surface-inset hover:bg-surface-base">
               <span class="text-text-muted text-[0.72rem] min-w-10 shrink-0">[Lv {{ ability.level || 0 }}]</span>
               <AbilityInline :ability="ability" class="flex-1" />
               <span v-if="abilitySourceLabels[ability.id]" class="text-text-dim text-[0.6rem] shrink-0">
