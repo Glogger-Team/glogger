@@ -134,3 +134,10 @@ Roulette CHECK, NpcResolve NOCASE, trip-router nits, stall aggregation, shop-log
 
 - [ ] Portrait-mode / narrow-window friendly (user-requested 2026-10-28): closable panels/dialogs can end up off-screen with no reachable close affordance when the app gets narrow. Scope: audit dialogs/overlays/drawers for min-width/overflow traps; keep a close control reachable at narrow widths (responsive layout, scrollable content, sticky/fallback close, Esc handling).
   - **Batches 1–3 DONE (in history, pruned 2026-11-08).** 390px visual proof pass DONE 2026-11-09 (verify-only slice, no commit — full screen tour at 390px via CDP, every closable keeps a reachable close; DataBrowser header `overflow-x-auto` + scrollIntoView + Esc + backdrop = reachable, not a trap; no redesign). Esc-stack scoping for the vendor context menu DONE 2026-11-08 (PR #154 — menu routes via shared stack; poem detail Esc intentionally local). Poem arrow-key stack-gating DONE 2026-11-09 (PR #161 — arrows yield when an overlay sits above; Esc stays local).
+
+## Backlog audits (2026-11-09)
+
+- [ ] Help Known Issues list — audit every entry against current behavior; remove fixed, reword stale.
+- [ ] Settings text and entries — audit for stale copy and already-implemented items; remove or update.
+- [ ] Hopology widget "to study" list — users report studied pieces still listed; verify studied-state tracking and fix.
+- [ ] LocalPlayer collection routes — remove old vestiges; VIP reports are the only future source for that data.
