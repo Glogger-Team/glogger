@@ -14,6 +14,11 @@ next-version.py and asks for confirmation unless --yes is given.
 --notes-file). The triage pass opens $EDITOR with one draft line per
 in-range feat/fix/impv commit (trailer verbatim when present, else a
 humanized guess); --yes skips the editor and approves drafts as-is.
+--yes with an empty range writes the stability-update stub (the pre-rewrite
+flow wrote nothing and let CI fall back to generated notes).
+
+Must run from the repo root: the repo root is the cwd, and helper scripts
+load from ./scripts.
 
 Agent recipe (see AGENTS.md release row):
     python scripts/release.py --dry-run                 # rows to humanize
@@ -21,7 +26,6 @@ Agent recipe (see AGENTS.md release row):
     # ste-lint.py reports 0 hard violations), then:
     python scripts/release.py vX.Y.Z --notes-file /tmp/notes.txt
     # merge the notes PR, then:
-    python scripts/release.py vX.Y.Z --tag-only
 """
 
 import argparse
@@ -82,11 +86,14 @@ def parse_approved_lines(text, rows):
     return pairs
 
 
-def write_notes_file(root, tag, prev_tag, pairs):
+def write_notes_file(root, tag, prev_tag, pairs, raw_count=None):
     """Write release-notes/<tag>.md from approved pairs; commit it.
 
     Returns True when a new commit landed, False when the file was
     already current (idempotent re-run).
+    The stability stub fires on empty *pairs* (all draft lines dropped),
+    and the Wrote count covers raw approved lines: a row whose text was
+    deleted still counts as triaged, matching the old editor path.
     """
     order = [("feat", "### New"), ("fix", "### Fixed"), ("impv", "### Improved")]
     header = f"## What's Changed since {prev_tag}"
@@ -105,7 +112,6 @@ def write_notes_file(root, tag, prev_tag, pairs):
     notes_dir.mkdir(exist_ok=True)
     notes_file = notes_dir / f"{tag}.md"
     notes_file.write_text(body, encoding="utf-8", newline="\n")
-    git(["add", str(notes_file.relative_to(root))], root)
     if not git(["status", "--porcelain", "--", str(notes_file)], root).stdout.strip():
         print(f"Notes unchanged ({notes_file}); skipping commit")
         return False
@@ -329,10 +335,10 @@ def resolve_tag(args, root):
             print(f"Usage: {__file__} vX.Y.Z (e.g. {__file__} v1.6.0)")
             return None
         return args.version
-    if args.notes_file or args.tag_only:
+    if args.notes_file is not None or args.tag_only:
         print("Error: --notes-file/--tag-only require an explicit version")
         return None
-    script_dir = Path(__file__).resolve().parent
+    script_dir = root / "scripts"
     suggestion = subprocess.run(
         [sys.executable, str(script_dir / "next-version.py")],
         cwd=root,
@@ -516,10 +522,15 @@ def triage_editor_path(rows, root, tag):
         with open(triage_path, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
         pairs = parse_approved_lines(text, rows)
-        committed = write_notes_file(root, tag, prev_tag_global, pairs)
+        raw_count = sum(
+            1
+            for ln in text.splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        )
+        committed = write_notes_file(root, tag, prev_tag_global, pairs, raw_count)
         if committed is None:
             return 1
-        print(f"Wrote {notes_file} ({len(pairs)} lines)")
+        print(f"Wrote {notes_file} ({raw_count} lines)")
         return 0
     finally:
         os.unlink(triage_path)
@@ -543,13 +554,16 @@ def triage_notes_file(rows, root, tag, prev_tag, notes_path):
         print(f"Error: cannot read --notes-file {notes_path}: {e}")
         return 1
     pairs = parse_approved_lines(text, rows)
+    raw_lines = [
+        ln for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")
+    ]
     if not pairs:
         print(f"Error: --notes-file {notes_path} approved no lines - tag not created.")
         return 1
-    committed = write_notes_file(root, tag, prev_tag, pairs)
+    committed = write_notes_file(root, tag, prev_tag, pairs, len(raw_lines))
     if committed is None:
         return 1
-    print(f"Wrote {notes_file} ({len(pairs)} lines from {notes_path})")
+    print(f"Wrote {notes_file} ({len(raw_lines)} lines from {notes_path})")
     return 0
 
 
@@ -561,10 +575,10 @@ def main():
     root = Path.cwd()
     script_dir = root / "scripts"
 
-    if args.notes_file and args.yes:
+    if args.notes_file is not None and args.yes:
         print("Error: --notes-file and --yes are mutually exclusive")
         return 1
-    if args.tag_only and (args.notes_file or args.yes or args.dry_run):
+    if args.tag_only and (args.notes_file is not None or args.yes or args.dry_run):
         print("Error: --tag-only takes no triage flags (--notes-file/--yes/--dry-run)")
         return 1
 
@@ -601,13 +615,13 @@ def main():
 
     rows = triage_draft_rows(range_ref, script_dir)
     if args.dry_run:
-        if args.notes_file:
+        if args.notes_file is not None:
             print("Error: --dry-run renders drafts only; --notes-file is not consumed")
             return 1
         for r in rows:
             print(f"[{r['section']}] {r['draft']}")
         return 0
-    if args.notes_file:
+    if args.notes_file is not None:
         if triage_notes_file(rows, root, tag, prev_tag, args.notes_file) != 0:
             return 1
     elif rows and not args.yes and triage_editor_path(rows, root, tag) != 0:
