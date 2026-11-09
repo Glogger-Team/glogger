@@ -1183,6 +1183,28 @@ mod tests {
     }
 
     #[test]
+    fn rez_cross_phrasing_reverse_order_dedups() {
+        // Mirror of death_persists_once_and_rez_dedups_pair: suppression is
+        // symmetric, so Unknown→named collapses too, not just named→Unknown.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let mut cow = None;
+
+        let r1 = emote_msg("Alice comes back to life!", "26-04-01 05:31:00");
+        let r2 = emote_msg("Goblin resuscitates Alice", "26-04-01 05:31:10");
+        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        dispatch(&pool, &gd, Some(&id()), &r1, "26-04-01 05:31:00", &mut st);
+        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let out = dispatch(&pool, &gd, Some(&id()), &r2, "26-04-01 05:31:10", &mut st);
+        assert!(out.character_resuscitated.is_none());
+        let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM character_resuscitations", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
     fn scan_loot_claimable_by_survey_use() {
         let (pool, _guard) = test_pool();
         let gd = game_data();
