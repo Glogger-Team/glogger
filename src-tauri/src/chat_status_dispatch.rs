@@ -93,9 +93,12 @@ pub struct DispatchIdentity {
 /// needs: the arena narration tracker and the rez-dedup map.
 pub struct DispatchState<'a> {
     pub arena_tracker: &'a mut ArenaTracker,
-    /// Last persisted successful-rez timestamp per target (rolling 30s
-    /// dedup window, same as the coordinator's `last_rez_dedup`).
-    pub last_rez_dedup: &'a mut std::collections::HashMap<String, String>,
+    /// Last persisted successful rez per target: (timestamp, caster name).
+    /// The caster distinguishes the two phrasings — named ("X resuscitates
+    /// Y") vs "Unknown" ("Y comes back to life!") — so only cross-phrasing
+    /// pairs suppress (rolling 30s dedup window, same as the coordinator's
+    /// `last_rez_dedup`).
+    pub last_rez_dedup: &'a mut std::collections::HashMap<String, (String, String)>,
     /// Rolling buffer of recent damage-on-player events (max 10),
     /// snapshotted into the DB when a death persists.
     pub recent_damage: &'a mut Vec<ChatCombatEvent>,
@@ -694,7 +697,7 @@ fn persist_rez_event(
     db: &DbPool,
     id: &DispatchIdentity,
     event: &ChatResuscitateEvent,
-    last_rez_dedup: &mut std::collections::HashMap<String, String>,
+    last_rez_dedup: &mut std::collections::HashMap<String, (String, String)>,
     current_area: &Option<String>,
 ) -> bool {
     let (timestamp, caster_name, target_name, success) = match event {
@@ -706,11 +709,22 @@ fn persist_rez_event(
         }
     };
     if success {
-        if let Some(prev) = last_rez_dedup.get(target_name)
-            && crate::coordinator::rez_within_dedup_window(prev, timestamp) {
+        // Cross-phrasing suppression only: the game emits "X resuscitates Y"
+        // (named caster) and "Y comes back to life!" (caster "Unknown") for
+        // one rez in different contexts (pet rez vs player/group rez). When
+        // both phrasings fire for the same target within the window, only the
+        // first row is kept. Same-phrasing repeats always record — an 8s-apart
+        // re-rez is a genuine second death (observed live), and an exact
+        // double-emit shares the identical timestamp, which the replay guard
+        // below already catches. (122-log census 2026-11-09: the two phrasings
+        // never co-occurred — pet targets vs player names — so the window is
+        // uncalibrated but also unexercised.)
+        if let Some((prev_ts, prev_caster)) = last_rez_dedup.get(target_name)
+            && crate::coordinator::rez_within_dedup_window(prev_ts, timestamp)
+            && (*prev_caster == "Unknown") != (*caster_name == "Unknown") {
                 return false;
             }
-        last_rez_dedup.retain(|_, prev| crate::coordinator::rez_within_dedup_window(prev, timestamp));
+        last_rez_dedup.retain(|_, (prev_ts, _)| crate::coordinator::rez_within_dedup_window(prev_ts, timestamp));
     }
     let Ok(conn) = db.get_write() else {
         return false;
@@ -731,7 +745,7 @@ fn persist_rez_event(
         // phrasing (same target within 30s, different caster/stamp) dedups
         // against this run's memory instead of inserting a second row.
         if success {
-            last_rez_dedup.insert(target_name.clone(), timestamp.clone());
+            last_rez_dedup.insert(target_name.clone(), (timestamp.clone(), caster_name.clone()));
         }
         return false;
     }
@@ -747,7 +761,7 @@ fn persist_rez_event(
         )
         .is_ok();
     if ok && success {
-        last_rez_dedup.insert(target_name.clone(), timestamp.clone());
+        last_rez_dedup.insert(target_name.clone(), (timestamp.clone(), caster_name.clone()));
     }
     ok
 }
@@ -831,7 +845,7 @@ mod tests {
 
     fn state<'a>(
         arena: &'a mut ArenaTracker,
-        rez: &'a mut std::collections::HashMap<String, String>,
+        rez: &'a mut std::collections::HashMap<String, (String, String)>,
         dmg: &'a mut Vec<ChatCombatEvent>,
         cow: &'a mut Option<String>,
     ) -> DispatchState<'a> {
@@ -849,7 +863,7 @@ mod tests {
     /// Scan-equivalent state: currency accrual off, like `run_scan_dispatch`.
     fn state_scan<'a>(
         arena: &'a mut ArenaTracker,
-        rez: &'a mut std::collections::HashMap<String, String>,
+        rez: &'a mut std::collections::HashMap<String, (String, String)>,
         dmg: &'a mut Vec<ChatCombatEvent>,
         cow: &'a mut Option<String>,
     ) -> DispatchState<'a> {
@@ -1136,6 +1150,51 @@ mod tests {
         // Paired rez phrasings within 30s collapse to one row.
         let r1 = emote_msg("Goblin resuscitates Alice", "26-04-01 05:31:00");
         let r2 = emote_msg("Alice comes back to life!", "26-04-01 05:31:10");
+        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        dispatch(&pool, &gd, Some(&id()), &r1, "26-04-01 05:31:00", &mut st);
+        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let out = dispatch(&pool, &gd, Some(&id()), &r2, "26-04-01 05:31:10", &mut st);
+        assert!(out.character_resuscitated.is_none());
+        let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM character_resuscitations", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn rez_same_phrasing_repeat_records() {
+        // Live shape (Chat-26-06-11, Bumblebutt 8s apart): a pet rezzed,
+        // alive mid-fight, dead again. Same-phrasing repeats are genuine
+        // re-rezzes and must both persist — only cross-phrasing pairs dedup.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let mut cow = None;
+
+        let r1 = emote_msg("Zabael resuscitates Bumblebutt", "26-06-11 22:19:33");
+        let r2 = emote_msg("Zabael resuscitates Bumblebutt", "26-06-11 22:19:41");
+        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        dispatch(&pool, &gd, Some(&id()), &r1, "26-06-11 22:19:33", &mut st);
+        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let out = dispatch(&pool, &gd, Some(&id()), &r2, "26-06-11 22:19:41", &mut st);
+        assert!(out.character_resuscitated.is_some());
+        let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM character_resuscitations", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn rez_cross_phrasing_reverse_order_dedups() {
+        // Mirror of death_persists_once_and_rez_dedups_pair: suppression is
+        // symmetric, so Unknown→named collapses too, not just named→Unknown.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let mut cow = None;
+
+        let r1 = emote_msg("Alice comes back to life!", "26-04-01 05:31:00");
+        let r2 = emote_msg("Goblin resuscitates Alice", "26-04-01 05:31:10");
         let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
         dispatch(&pool, &gd, Some(&id()), &r1, "26-04-01 05:31:00", &mut st);
         let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);

@@ -153,17 +153,19 @@ pub struct DataIngestCoordinator {
     /// Casino arena narration tracker — resolves Kuzavek's `[NPC Chatter]`
     /// intro/result lines into completed matches for the Arena widget.
     arena_tracker: crate::arena_parser::ArenaTracker,
-    /// Rez dedup: last persisted successful-rez timestamp per target. The
-    /// game emits "X resuscitates Y" and "Y comes back to life!" in
-    /// different contexts; if both ever fire for the same rez (same
-    /// target, seconds apart) only the first row is kept. Keyed PER
-    /// TARGET (not a single last-tuple): interleaved rezzes of different
-    /// targets within the window each still dedup (`rez A`, `rez B`,
-    /// `A back`, `B back`). Timestamps are compared with a rolling
+    /// Rez dedup: last persisted successful rez per target as (timestamp,
+    /// caster). The game emits "X resuscitates Y" (named caster, pet rezzes)
+    /// and "Y comes back to life!" (caster "Unknown", player/group rezzes)
+    /// in different contexts; if both phrasings ever fire for the same rez
+    /// (same target, seconds apart) only the first row is kept — same-phrasing
+    /// repeats always record (a rapid re-rez is a genuine second death).
+    /// Keyed PER TARGET (not a single last-tuple): interleaved rezzes of
+    /// different targets within the window each still dedup (`rez A`,
+    /// `rez B`, `A back`, `B back`). Timestamps are compared with a rolling
     /// 30-second window (`rez_within_dedup_window`), not minute buckets —
     /// a pair straddling a minute boundary is still one rez. Pruned to a
     /// bounded window below so it never grows unbounded.
-    last_rez_dedup: std::collections::HashMap<String, String>,
+    last_rez_dedup: std::collections::HashMap<String, (String, String)>,
     /// `character -> server` scanned from the chat logs at the start of the
     /// catch-up window (`refresh_catch_up_session_servers`); cleared once live.
     catch_up_chat_servers: std::collections::HashMap<String, String>,
