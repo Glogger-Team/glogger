@@ -58,11 +58,15 @@ pub fn parse_resuscitate_message(msg: &ChatMessage) -> Option<ChatResuscitateEve
         });
     }
 
-    // "<Target> comes back to life!" — a second rez phrasing (observed in real
-    // logs alongside `resuscitates`, e.g. group/shrine rezzes) with no caster
-    // named in the line. Record the event with an unknown caster so rez
-    // counting stays complete; the caster-name UIs simply won't credit
-    // anyone. The trailing "!" is stripped.
+    // "<Target> comes back to life!" — the player/group-rez phrasing, with no
+    // caster named in the line. In a 122-log census (2026-11-09) the two
+    // phrasings never co-occurred for one rez: `resuscitates` targets are
+    // pets, `comes back` names are players — different mechanics, not two
+    // lines for one event. Recorded with caster "Unknown" so rez counting
+    // stays complete; the caster-name UIs simply won't credit anyone.
+    // The dedup guard suppresses only cross-phrasing pairs for one target,
+    // so same-phrasing repeats (rapid genuine re-rezzes) always record.
+    // The trailing "!" is stripped.
     if let Some(target) = text.strip_suffix(" comes back to life!") {
         let target = target.trim();
         // Any non-empty remainder is a target name (may contain spaces,
