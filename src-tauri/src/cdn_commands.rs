@@ -15,8 +15,8 @@ use crate::db::DbPool;
 use crate::game_data::{
     self, AbilityFamily, AbilityInfo, AiSummary, AreaInfo, BrewingIngredient, BrewingRecipe,
     EffectInfo, GameData, ItemInfo, LorebookCategoryInfo, LorebookEntry, MushroomFarmingInfo,
-    NpcInfo, PlayerTitleInfo, QuestInfo, RecipeInfo, SkillInfo, SourceEntry, TsysClientInfo,
-    TsysTierInfo,
+    NpcInfo, PlayerTitleInfo, QuestInfo, RecipeInfo, SkillInfo, SkillbookInfo, SourceEntry,
+    TsysClientInfo, TsysTierInfo,
 };
 
 /// Timestamped log line for startup diagnostics.
@@ -3843,6 +3843,22 @@ pub async fn get_npcs_wanting_item(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     Ok(results)
+}
+
+/// Get all skillbooks for a given skill (keyed by skill internal name).
+/// Accepts display name, internal name, or numeric ID; resolves via
+/// `resolve_skill` and reads the prebuilt `skillbooks_by_skill` index.
+#[tauri::command]
+pub async fn get_skillbooks_for_skill(
+    skill_name: String,
+    state: State<'_, GameDataState>,
+) -> Result<Vec<SkillbookInfo>, String> {
+    let data = state.read().await;
+    let key = data
+        .resolve_skill(&skill_name)
+        .map(|s| s.internal_name.clone())
+        .unwrap_or(skill_name);
+    Ok(data.skillbooks_by_skill.get(&key).cloned().unwrap_or_default())
 }
 
 /// Get all NPCs that train a given skill.

@@ -43,6 +43,18 @@ mod sources;
 mod storage_vaults;
 mod tsys;
 mod xp_tables;
+/// A skillbook item: teaches an ability via `BestowAbility`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SkillbookInfo {
+    /// Numeric item ID.
+    pub item_id: u32,
+    /// Display name (appears in chat links as `[Item: <name>]`).
+    pub name: String,
+    /// Skill internal name (e.g. `Unarmed`, `BattleChemistry`).
+    pub skill: String,
+    /// Bestowed ability internal name (item `BestowAbility` field).
+    pub ability: String,
+}
 
 // ── Re-exports so cdn_commands.rs doesn't need updating ──────────────────────
 pub use abilities::AbilityFamily;
@@ -221,6 +233,8 @@ pub struct GameData {
     pub recipes_by_ingredient_keyword: HashMap<String, Vec<u32>>,
     /// NPC key → item IDs sold by that NPC (from Vendor/Barter source entries)
     pub vendor_items_by_npc: HashMap<String, Vec<u32>>,
+    /// skill internal name → skillbook items for that skill (see struct docs)
+    pub skillbooks_by_skill: HashMap<String, Vec<SkillbookInfo>>,
     /// item ID → NPC keys that sell/barter it
     pub vendors_for_item: HashMap<u32, Vec<String>>,
 
@@ -261,6 +275,7 @@ struct GameDataIndices {
     npc_favor_by_keyword: HashMap<String, Vec<(String, String, f32)>>,
     quests_by_npc: HashMap<String, Vec<String>>,
     quests_by_work_order_skill: HashMap<String, Vec<String>>,
+    skillbooks_by_skill: HashMap<String, Vec<SkillbookInfo>>,
     recipes_by_ingredient_keyword: HashMap<String, Vec<u32>>,
     vendor_items_by_npc: HashMap<String, Vec<u32>>,
     vendors_for_item: HashMap<u32, Vec<String>>,
@@ -323,6 +338,7 @@ impl GameData {
             npc_favor_by_keyword: HashMap::new(),
             quests_by_npc: HashMap::new(),
             quests_by_work_order_skill: HashMap::new(),
+            skillbooks_by_skill: HashMap::new(),
             recipes_by_ingredient_keyword: HashMap::new(),
             vendor_items_by_npc: HashMap::new(),
             vendors_for_item: HashMap::new(),
@@ -868,6 +884,7 @@ pub async fn load_from_cache_with_progress(
             npc_favor_by_keyword: indices.npc_favor_by_keyword,
             quests_by_npc: indices.quests_by_npc,
             quests_by_work_order_skill: indices.quests_by_work_order_skill,
+            skillbooks_by_skill: indices.skillbooks_by_skill,
             recipes_by_ingredient_keyword: indices.recipes_by_ingredient_keyword,
             vendor_items_by_npc: indices.vendor_items_by_npc,
             vendors_for_item: indices.vendors_for_item,
@@ -1224,11 +1241,54 @@ fn build_all_indices(src: &GameDataSources<'_>) -> GameDataIndices {
                 .push(npc_key.clone());
         }
     }
+    // ── Build skillbook index: skill internal name → skillbook items ──────
+    // Any item with a `BestowAbility` teaches that ability. Primary skill
+    // keying is the single key of the item's `SkillReqs` object (always
+    // single-key in the CDN). Items without `SkillReqs` (cosmetic pets,
+    // event boxes like FoxInABox) fall back to the bestowed ability's
+    // `Skill` field; abilities whose skill is unknown land under "Unknown".
+    let ability_skill_by_internal: HashMap<&str, &str> = abilities
+        .values()
+        .filter_map(|a| {
+            let internal = a.internal_name.as_deref()?;
+            let skill = a.skill.as_deref()?;
+            Some((internal, skill))
+        })
+        .collect();
+    let mut skillbooks_by_skill: HashMap<String, Vec<SkillbookInfo>> = HashMap::new();
+    for (item_id, item) in items {
+        let ability = match item.bestow_ability.as_deref() {
+            Some(a) => a,
+            None => continue,
+        };
+        let skill = item
+            .skill_reqs
+            .as_ref()
+            .and_then(|reqs| reqs.as_object())
+            .and_then(|obj| obj.keys().next().cloned())
+            .or_else(|| {
+                ability_skill_by_internal
+                    .get(ability)
+                    .map(|s| (*s).to_string())
+            })
+            .unwrap_or_else(|| "Unknown".to_string());
+        skillbooks_by_skill
+            .entry(skill.clone())
+            .or_default()
+            .push(SkillbookInfo {
+                item_id: *item_id,
+                name: item.name.clone(),
+                skill,
+                ability: ability.to_string(),
+            });
+    }
+    for books in skillbooks_by_skill.values_mut() {
+        books.sort_by_key(|b| b.item_id);
+    }
     for npc_keys in vendors_for_item.values_mut() {
         npc_keys.sort();
         npc_keys.dedup();
     }
-
     // ── Build ability family index ──────────────────────────────────────
     // Map internal_name → ability_id for lookup
     let ability_internal_name_map: HashMap<&str, u32> = abilities
@@ -1391,6 +1451,7 @@ fn build_all_indices(src: &GameDataSources<'_>) -> GameDataIndices {
         npc_favor_by_keyword,
         quests_by_npc,
         quests_by_work_order_skill,
+        skillbooks_by_skill,
         recipes_by_ingredient_keyword,
         vendor_items_by_npc,
         vendors_for_item,
@@ -1821,5 +1882,124 @@ mod tests {
         ]);
         let index = build_ability_name_index(&abilities, &families);
         assert_eq!(index.get("Screech"), Some(&100));
+    }
+
+    /// Skillbook index: primary keying via item `SkillReqs`, fallback to the
+    /// bestowed ability's `Skill` (the `Skillbook_FoxInABox` edge case).
+    #[test]
+    fn skillbook_index_keys_by_skill_reqs_with_ability_fallback() {
+        use serde_json::json;
+        let items: HashMap<u32, items::ItemInfo> = [
+            (
+                1u32,
+                items::ItemInfo {
+                    id: 1,
+                    name: "Unarmed: Headbutt 2".to_string(),
+                    description: None,
+                    icon_id: None,
+                    value: None,
+                    max_stack_size: None,
+                    keywords: vec!["AbilityRecipe".to_string()],
+                    effect_descs: vec![],
+                    internal_name: Some("SkillBook_Headbutt2".to_string()),
+                    food_desc: None,
+                    equip_slot: None,
+                    num_uses: None,
+                    skill_reqs: Some(json!({"Unarmed": 15})),
+                    behaviors: None,
+                    bestow_recipes: None,
+                    bestow_ability: Some("Headbutt2".to_string()),
+                    bestow_quest: None,
+                    bestow_title: None,
+                    craft_points: None,
+                    crafting_target_level: None,
+                    tsys_profile: None,
+                    raw_json: serde_json::Value::Null,
+                },
+            ),
+            (
+                2u32,
+                items::ItemInfo {
+                    id: 2,
+                    name: "Event: Vendor Fox in a Box".to_string(),
+                    description: None,
+                    icon_id: None,
+                    value: None,
+                    max_stack_size: None,
+                    keywords: vec!["AbilityRecipe".to_string()],
+                    effect_descs: vec![],
+                    internal_name: Some("Skillbook_FoxInABox".to_string()),
+                    food_desc: None,
+                    equip_slot: None,
+                    num_uses: None,
+                    skill_reqs: None,
+                    behaviors: None,
+                    bestow_recipes: None,
+                    bestow_ability: Some("FoxInABox".to_string()),
+                    bestow_quest: None,
+                    bestow_title: None,
+                    craft_points: None,
+                    crafting_target_level: None,
+                    tsys_profile: None,
+                    raw_json: serde_json::Value::Null,
+                },
+            ),
+            (
+                3u32,
+                items::ItemInfo {
+                    id: 3,
+                    name: "Mystery: Lost Technique".to_string(),
+                    description: None,
+                    icon_id: None,
+                    value: None,
+                    max_stack_size: None,
+                    keywords: vec!["AbilityRecipe".to_string()],
+                    effect_descs: vec![],
+                    internal_name: Some("SkillBook_LostTechnique".to_string()),
+                    food_desc: None,
+                    equip_slot: None,
+                    num_uses: None,
+                    skill_reqs: None,
+                    behaviors: None,
+                    bestow_recipes: None,
+                    bestow_ability: Some("NoSuchAbility".to_string()),
+                    bestow_quest: None,
+                    bestow_title: None,
+                    craft_points: None,
+                    crafting_target_level: None,
+                    tsys_profile: None,
+                    raw_json: serde_json::Value::Null,
+                },
+            ),
+        ]
+        .into();
+        let mut fox = ability(3, "Vendor Fox in a Box", false);
+        fox.internal_name = Some("FoxInABox".to_string());
+        fox.skill = Some("Unknown".to_string());
+        let mut headbutt = ability(4, "Headbutt 2", false);
+        headbutt.internal_name = Some("Headbutt2".to_string());
+        headbutt.skill = Some("Unarmed".to_string());
+        let abilities: HashMap<u32, abilities::AbilityInfo> =
+            [(3u32, fox), (4u32, headbutt)].into();
+        let src = GameDataSources {
+            items: &items,
+            skills: &HashMap::new(),
+            abilities: &abilities,
+            recipes: &HashMap::new(),
+            npcs: &HashMap::new(),
+            quests: &HashMap::new(),
+            sources: &sources::SourcesData::empty(),
+            areas: &HashMap::new(),
+            tsys: &tsys::TsysData::empty(),
+        };
+        let indices = build_all_indices(&src);
+        let unarmed = indices.skillbooks_by_skill.get("Unarmed").cloned().unwrap_or_default();
+        assert_eq!(unarmed.len(), 1);
+        assert_eq!(unarmed[0].item_id, 1);
+        assert_eq!(unarmed[0].ability, "Headbutt2");
+        let unknown = indices.skillbooks_by_skill.get("Unknown").cloned().unwrap_or_default();
+        assert_eq!(unknown.len(), 2);
+        assert_eq!(unknown[0].item_id, 2);
+        assert_eq!(unknown[1].item_id, 3);
     }
 }
