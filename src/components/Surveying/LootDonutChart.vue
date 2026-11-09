@@ -25,27 +25,16 @@ import { computed } from 'vue'
 import { VueUiDonut } from 'vue-data-ui'
 import type { VueUiDonutConfig, VueUiDonutDatasetItem } from 'vue-data-ui'
 import type { LootSummaryRow } from '../../stores/surveyTrackerStore'
+import { chartPalette, themeText } from '../../composables/useChartTheme'
 
 const props = defineProps<{
   rows: LootSummaryRow[]
 }>()
 
-// Chart label colors resolve theme.css text tokens at runtime: vue-data-ui
-// config takes plain color strings, so read the custom properties with
-// getComputedStyle (fallbacks match the token values in theme.css).
-function themeText(token: string, fallback: string): string {
-  const value = getComputedStyle(document.documentElement).getPropertyValue(token).trim()
-  return value || fallback
-}
 
 const textPrimary = themeText('--color-text-primary', '#d4d4d4')
 const textSecondary = themeText('--color-text-secondary', '#a0a0a0')
 const textDim = themeText('--color-text-dim', '#6a6a6a')
-
-const chartPalette = [
-  '#7ec8e3', '#c87e7e', '#6366f1', '#f59e0b', '#10b981',
-  '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316',
-]
 
 const dataset = computed<VueUiDonutDatasetItem[]>(() => {
   if (props.rows.length === 0) return []
