@@ -126,7 +126,7 @@
           <button
             type="button"
             class="text-text-secondary hover:text-red-400 bg-transparent border-none cursor-pointer text-xs disabled:opacity-50"
-            :disabled="zeroingItem != null || clearingUnsure || zeroingAll || loading"
+            :disabled="stockBusy || loading"
             :title="`Clear stock for ${(row as unknown as InventoryItem).item} (set to zero)`"
             @click="clearOneItem((row as unknown as InventoryItem))">
             {{ zeroingItem === (row as unknown as InventoryItem).item ? '…' : '✕' }}
@@ -147,7 +147,7 @@
       <button
         type="button"
         class="px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-red-500/50 hover:text-red-400 text-text-primary disabled:opacity-50 flex-shrink-0"
-        :disabled="clearingUnsure || loading"
+        :disabled="stockBusy || loading"
         @click="clearUnsure">
         {{ clearingUnsure ? 'Clearing…' : `Clear unsure (${unsureCount})` }}
       </button>
@@ -155,8 +155,7 @@
 
     <!-- Zero all — confirm-guarded bulk reset. Every in-stock row gets a
          zeroed manual count (same mechanism as per-row Clear); recount
-         survivors in Manual stock entry below. Always visible so a full
-         recount from a known-empty stall is one safe step. -->
+         survivors in Manual stock entry below. Shown while stock remains. -->
     <div
       v-if="inStockCount > 0"
       class="flex items-center justify-between gap-2 flex-shrink-0 border border-border-default rounded px-3 py-2">
@@ -166,7 +165,7 @@
       <button
         type="button"
         class="px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-red-500/50 hover:text-red-400 text-text-primary disabled:opacity-50 flex-shrink-0"
-        :disabled="zeroingAll || clearingUnsure || loading"
+        :disabled="stockBusy || loading"
         @click="zeroAllStock">
         {{ zeroingAll ? 'Zeroing…' : `Zero all stock (${inStockCount})` }}
       </button>
@@ -180,12 +179,12 @@
       v-if="baselines.length > 0"
       class="flex items-center justify-between gap-2 flex-shrink-0 border border-border-default rounded px-3 py-2">
       <p class="text-xs text-text-secondary italic m-0">
-        Rebuild counts from the shop log instead? Removes every manual count — history stays.
+        Rebuild counts from the shop log instead? Removes every manual count, including hidden zeroed ones — history stays.
       </p>
       <button
         type="button"
         class="px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-accent-gold/50 text-text-primary disabled:opacity-50 flex-shrink-0"
-        :disabled="baselineSaving || loading"
+        :disabled="stockBusy || loading"
         @click="removeAllBaselines">
         {{ baselineSaving ? 'Removing…' : `Rebuild from log (${baselines.length})` }}
       </button>
@@ -251,7 +250,7 @@
           <button
             type="button"
             class="px-3 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-accent-gold/50 text-text-primary disabled:opacity-50"
-            :disabled="baselineSaving || !baselineItem.trim()"
+            :disabled="stockBusy || !baselineItem.trim()"
             @click="saveBaseline">
             {{ baselineSaving ? 'Saving…' : 'Save count' }}
           </button>
@@ -275,7 +274,7 @@
             <button
               type="button"
               class="text-text-secondary hover:text-red-400 bg-transparent border-none cursor-pointer text-xs flex-shrink-0 disabled:opacity-50"
-              :disabled="baselineSaving"
+              :disabled="stockBusy"
               :title="`Remove manual count for ${b.item}`"
               @click="removeBaseline(b)">
               ✕
@@ -465,7 +464,7 @@ async function zeroItems(targets: InventoryItem[]) {
 async function clearUnsure() {
   const owner = store.currentOwner
   const targets = [...unsureItems.value]
-  if (!owner || clearingUnsure.value || targets.length === 0) return
+  if (!owner || stockBusy.value || targets.length === 0) return
   clearingUnsure.value = true
   try {
     await zeroItems(targets)
@@ -479,7 +478,7 @@ async function clearUnsure() {
 
 /** Per-row Clear: confirm-guarded so a stray click can't wipe a count. */
 async function clearOneItem(item: InventoryItem) {
-  if (!store.currentOwner || loading.value || zeroingItem.value != null || clearingUnsure.value || zeroingAll.value) return
+  if (!store.currentOwner || loading.value || stockBusy.value) return
   const ok = await confirm(
     `Set the stock of ${item.item} to zero for ${store.currentOwner}? Enter a new count in Manual stock entry below if you still sell this item.`,
     { title: 'Clear stock', kind: 'warning' },
@@ -500,7 +499,7 @@ async function clearOneItem(item: InventoryItem) {
 async function zeroAllStock() {
   const owner = store.currentOwner
   const targets = [...inStockItems.value]
-  if (!owner || loading.value || zeroingAll.value || clearingUnsure.value || zeroingItem.value != null || targets.length === 0) return
+  if (!owner || loading.value || stockBusy.value || targets.length === 0) return
   const ok = await confirm(
     `Set the stock of all ${targets.length} in-stock items to zero for ${owner}? Enter new counts in Manual stock entry below for items you still sell.`,
     { title: 'Zero all stock', kind: 'warning' },
@@ -532,6 +531,11 @@ const baselinePrice = ref<number | '' | null>(null)
 const baselineSaving = ref(false)
 const baselineError = ref<string | null>(null)
 
+/** Any stock write in flight (zero-loop, save, or delete). All six entry
+ * points gate on this so a bulk zero-out can never interleave with a bulk
+ * DELETE or a single save — the final set would match neither operation. */
+const stockBusy = computed(() => clearingUnsure.value || zeroingAll.value || zeroingItem.value != null || baselineSaving.value)
+
 async function loadBaselines() {
   if (!store.currentOwner) {
     baselines.value = []
@@ -562,7 +566,7 @@ async function startRecount(item: InventoryItem) {
 
 async function saveBaseline() {
   const item = baselineItem.value.trim()
-  if (!store.currentOwner || !item || baselineSaving.value) return
+  if (!store.currentOwner || !item || stockBusy.value) return
   // `v-model.number` yields `''` (not null) when the field is cleared —
   // without this, `'' < 0` / `'' > 1000000` are both false and
   // `Math.floor('')` is 0, silently clearing the item.
@@ -612,7 +616,7 @@ async function saveBaseline() {
 }
 
 async function removeBaseline(b: StallBaseline) {
-  if (baselineSaving.value) return
+  if (stockBusy.value) return
   const confirmed = await confirm(
     `Remove the manual count for ${b.item}? The quantity will go back to the log estimate (which may be a guess again).`,
     { title: 'Manual stock entry', kind: 'warning' },
@@ -634,7 +638,7 @@ async function removeBaseline(b: StallBaseline) {
 
 async function removeAllBaselines() {
   const owner = store.currentOwner
-  if (!owner || baselineSaving.value || baselines.value.length === 0) return
+  if (!owner || stockBusy.value || baselines.value.length === 0) return
   const confirmed = await confirm(
     `Remove all ${baselines.value.length} manual count${baselines.value.length === 1 ? '' : 's'} for ${owner}? Counts rebuild from the shop log, including today's added lines.`,
     { title: 'Manual stock entry', kind: 'warning' },
