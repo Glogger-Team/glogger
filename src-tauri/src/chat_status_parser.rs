@@ -507,10 +507,11 @@ fn try_councils_misc(text: &str, ts: &str) -> Option<ChatStatusEvent> {
         && let Some(idx) = rest.find(" coins to ") {
             let (amount, who) = (&rest[..idx], &rest[idx + " coins to ".len()..]);
             if !who.trim().is_empty() && !who.contains('"') {
-                return num(amount).map(|a| signed(-a));
+                // Reject negative amounts before negating: "Sent -1 coins"
+                // would otherwise accrue a +1 gain.
+                return num(amount).filter(|a| *a >= 0).map(|a| signed(-a));
             }
         }
-
     None
 }
 
@@ -996,6 +997,13 @@ mod tests {
     fn test_misc_sent_coins_quoted_is_not_loss() {
         // Quoted chatter must not parse as a gift.
         let msg = status_msg("Bob says \"Sent 5 coins to Alice\"");
+        assert!(parse_status_message(&msg).is_none());
+    }
+
+    #[test]
+    fn test_misc_sent_negative_coins_is_no_delta() {
+        // "Sent -1 coins" must not accrue a +1 gain.
+        let msg = status_msg("Sent -1 coins to Bob");
         assert!(parse_status_message(&msg).is_none());
     }
 
