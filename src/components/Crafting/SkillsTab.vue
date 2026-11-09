@@ -223,7 +223,7 @@ import ItemInline from "../Shared/Item/ItemInline.vue";
 import { useMarketStore } from "../../stores/marketStore";
 import { VueUiDonut } from "vue-data-ui";
 import type { VueUiDonutConfig, VueUiDonutDatasetItem } from "vue-data-ui";
-import { chartPalette, themeText } from "../../composables/useChartTheme";
+import { chartPalette, themeText, themeTooltipBg, themeTooltipBorder } from "../../composables/useChartTheme";
 
 const craftingStore = useCraftingStore();
 const gameData = useGameDataStore();
@@ -346,6 +346,8 @@ function formatCompact(n: number): string {
 const textPrimary = themeText("--color-text-primary", "#d4d4d4");
 const textSecondary = themeText("--color-text-secondary", "#a0a0a0");
 const textDim = themeText("--color-text-dim", "#6a6a6a");
+const tooltipBg = themeTooltipBg();
+const tooltipBorder = themeTooltipBorder();
 
 const donutConfig = computed<VueUiDonutConfig>(() => ({
   responsive: true,
@@ -414,9 +416,9 @@ const donutConfig = computed<VueUiDonutConfig>(() => ({
         showPercentage: true,
         roundingValue: 0,
         roundingPercentage: 1,
-        backgroundColor: "#27272a",
+        backgroundColor: tooltipBg,
         color: textPrimary,
-        borderColor: "#3f3f46",
+        borderColor: tooltipBorder,
         borderWidth: 1,
         borderRadius: 4,
         fontSize: 12,

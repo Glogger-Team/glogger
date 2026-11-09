@@ -28,3 +28,16 @@ export function themeText(token: string, fallback: string): string {
   const value = getComputedStyle(document.documentElement).getPropertyValue(token).trim()
   return value || fallback
 }
+
+// Tooltip chrome resolves surface/border tokens at runtime (same
+// getComputedStyle pattern as themeText). Token choice: #27272a (zinc-800)
+// is closest to --color-surface-elevated (#2a2a2a), #3f3f46 (zinc-700) to
+// --color-border-light (#444444). Fallbacks keep the current hexes for
+// themes that do not define these tokens.
+export function themeTooltipBg(): string {
+  return themeText('--color-surface-elevated', '#27272a')
+}
+
+export function themeTooltipBorder(): string {
+  return themeText('--color-border-light', '#3f3f46')
+}
