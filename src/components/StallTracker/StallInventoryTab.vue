@@ -440,10 +440,12 @@ const zeroingItem = ref<string | null>(null)
 /** Shared zero-out loop: one qty-0 baseline per item, sequential invokes
  * (not Promise.all): each save is one write-pool checkout and the set is
  * small (<100 rows), so serialization is cheap and avoids pool contention.
- * Snapshots the owner; aborts if the active character changes mid-loop. */
-async function zeroItems(targets: InventoryItem[]) {
+ * Snapshots the owner; stops at the first item after a character switch
+ * and returns how many were zeroed so the caller can say so. */
+async function zeroItems(targets: InventoryItem[]): Promise<number> {
   const owner = store.currentOwner
-  if (!owner || targets.length === 0) return
+  if (!owner || targets.length === 0) return 0
+  let zeroed = 0
   for (const item of targets) {
     if (store.currentOwner !== owner) break
     await invoke('save_stall_baseline', {
@@ -455,9 +457,11 @@ async function zeroItems(targets: InventoryItem[]) {
         note: null,
       } satisfies StallBaselineInput,
     })
+    zeroed += 1
   }
   await Promise.all([reload(), loadBaselines()])
   await store.refresh()
+  return zeroed
 }
 
 /** Clear unsure — zero-out every unsure row via the shared loop. */
@@ -467,7 +471,8 @@ async function clearUnsure() {
   if (!owner || stockBusy.value || targets.length === 0) return
   clearingUnsure.value = true
   try {
-    await zeroItems(targets)
+    const zeroed = await zeroItems(targets)
+    if (zeroed < targets.length) error.value = `Stopped early: character changed after ${zeroed} of ${targets.length} items were zeroed.`
   } catch (e) {
     error.value = String(e)
     console.error('[StallInventoryTab] clearUnsure failed:', e)
@@ -507,7 +512,8 @@ async function zeroAllStock() {
   if (!ok) return
   zeroingAll.value = true
   try {
-    await zeroItems(targets)
+    const zeroed = await zeroItems(targets)
+    if (zeroed < targets.length) error.value = `Stopped early: character changed after ${zeroed} of ${targets.length} items were zeroed.`
   } catch (e) {
     error.value = String(e)
     console.error('[StallInventoryTab] zeroAllStock failed:', e)
