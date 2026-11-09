@@ -1363,6 +1363,16 @@ pub fn delete_all_stall_baselines(
     let conn = db
         .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
+    delete_all_stall_baselines_internal(&conn, &owner)
+}
+
+/// Owner-scoped bulk delete behind `delete_all_stall_baselines`. Takes a
+/// plain `Connection` so tests exercise the real predicate without a Tauri
+/// `State` (same shape as `save_stall_baseline_internal`).
+fn delete_all_stall_baselines_internal(
+    conn: &rusqlite::Connection,
+    owner: &str,
+) -> Result<usize, String> {
     conn.execute(
         "DELETE FROM stall_inventory_baseline WHERE owner = ?1",
         rusqlite::params![owner],
@@ -1636,13 +1646,8 @@ mod tests {
         save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 5)).expect("save");
         save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Saddle", 2)).expect("save");
         save_stall_baseline_internal(&conn, &baseline_input("Alvida", "Reins", 7)).expect("save");
-        // Same predicate the command uses: one owner's rows go, the other's stay.
-        let deleted = conn
-            .execute(
-                "DELETE FROM stall_inventory_baseline WHERE owner = 'Deradon'",
-                [],
-            )
-            .expect("delete");
+        // Same helper the command uses: one owner's rows go, the other's stay.
+        let deleted = delete_all_stall_baselines_internal(&conn, "Deradon").expect("delete");
         assert_eq!(deleted, 2);
         let remaining: Vec<(String, String)> = conn
             .prepare("SELECT owner, item FROM stall_inventory_baseline")
