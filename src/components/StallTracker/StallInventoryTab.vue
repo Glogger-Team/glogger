@@ -488,7 +488,7 @@ async function clearOneItem(item: InventoryItem) {
     `Set the stock of ${item.item} to zero for ${store.currentOwner}? Enter a new count in Manual stock entry below if you still sell this item.`,
     { title: 'Clear stock', kind: 'warning' },
   )
-  if (!ok) return
+  if (!ok || stockBusy.value) return
   zeroingItem.value = item.item
   try {
     await zeroItems([item])
@@ -509,7 +509,7 @@ async function zeroAllStock() {
     `Set the stock of all ${targets.length} in-stock items to zero for ${owner}? Enter new counts in Manual stock entry below for items you still sell.`,
     { title: 'Zero all stock', kind: 'warning' },
   )
-  if (!ok) return
+  if (!ok || stockBusy.value) return
   zeroingAll.value = true
   try {
     const zeroed = await zeroItems(targets)
@@ -627,7 +627,7 @@ async function removeBaseline(b: StallBaseline) {
     `Remove the manual count for ${b.item}? The quantity will go back to the log estimate (which may be a guess again).`,
     { title: 'Manual stock entry', kind: 'warning' },
   )
-  if (!confirmed) return
+  if (!confirmed || stockBusy.value) return
   baselineSaving.value = true
   baselineError.value = null
   try {
@@ -649,7 +649,7 @@ async function removeAllBaselines() {
     `Remove all ${baselines.value.length} manual count${baselines.value.length === 1 ? '' : 's'} for ${owner}? Counts rebuild from the shop log, including today's added lines.`,
     { title: 'Manual stock entry', kind: 'warning' },
   )
-  if (!confirmed) return
+  if (!confirmed || stockBusy.value) return
   baselineSaving.value = true
   baselineError.value = null
   try {
