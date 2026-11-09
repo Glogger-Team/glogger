@@ -1270,18 +1270,17 @@ fn build_all_indices(src: &GameDataSources<'_>) -> GameDataIndices {
                 ability_skill_by_internal
                     .get(ability)
                     .map(|s| (*s).to_string())
+            })
+            .unwrap_or_else(|| "Unknown".to_string());
+        skillbooks_by_skill
+            .entry(skill.clone())
+            .or_default()
+            .push(SkillbookInfo {
+                item_id: *item_id,
+                name: item.name.clone(),
+                skill,
+                ability: ability.to_string(),
             });
-        if let Some(skill) = skill {
-            skillbooks_by_skill
-                .entry(skill.clone())
-                .or_default()
-                .push(SkillbookInfo {
-                    item_id: *item_id,
-                    name: item.name.clone(),
-                    skill,
-                    ability: ability.to_string(),
-                });
-        }
     }
     for books in skillbooks_by_skill.values_mut() {
         books.sort_by_key(|b| b.item_id);
@@ -1945,6 +1944,33 @@ mod tests {
                     raw_json: serde_json::Value::Null,
                 },
             ),
+            (
+                3u32,
+                items::ItemInfo {
+                    id: 3,
+                    name: "Mystery: Lost Technique".to_string(),
+                    description: None,
+                    icon_id: None,
+                    value: None,
+                    max_stack_size: None,
+                    keywords: vec!["AbilityRecipe".to_string()],
+                    effect_descs: vec![],
+                    internal_name: Some("SkillBook_LostTechnique".to_string()),
+                    food_desc: None,
+                    equip_slot: None,
+                    num_uses: None,
+                    skill_reqs: None,
+                    behaviors: None,
+                    bestow_recipes: None,
+                    bestow_ability: Some("NoSuchAbility".to_string()),
+                    bestow_quest: None,
+                    bestow_title: None,
+                    craft_points: None,
+                    crafting_target_level: None,
+                    tsys_profile: None,
+                    raw_json: serde_json::Value::Null,
+                },
+            ),
         ]
         .into();
         let mut fox = ability(3, "Vendor Fox in a Box", false);
@@ -1972,7 +1998,8 @@ mod tests {
         assert_eq!(unarmed[0].item_id, 1);
         assert_eq!(unarmed[0].ability, "Headbutt2");
         let unknown = indices.skillbooks_by_skill.get("Unknown").cloned().unwrap_or_default();
-        assert_eq!(unknown.len(), 1);
+        assert_eq!(unknown.len(), 2);
         assert_eq!(unknown[0].item_id, 2);
+        assert_eq!(unknown[1].item_id, 3);
     }
 }
