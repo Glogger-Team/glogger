@@ -112,6 +112,7 @@ def write_notes_file(root, tag, prev_tag, pairs, raw_count=None):
     notes_dir.mkdir(exist_ok=True)
     notes_file = notes_dir / f"{tag}.md"
     notes_file.write_text(body, encoding="utf-8", newline="\n")
+    git(["add", str(notes_file.relative_to(root))], root)
     if not git(["status", "--porcelain", "--", str(notes_file)], root).stdout.strip():
         print(f"Notes unchanged ({notes_file}); skipping commit")
         return False
@@ -628,7 +629,7 @@ def main():
         return 1
     # --yes: non-interactive automation path. Approve drafts as-is so CI
     # uses the triaged file instead of silently falling back.
-    if rows:
+    if args.yes and rows:
         print("Warning: --yes skips the triage editor; approving drafts as-is")
         committed = write_notes_file(
             root, tag, prev_tag, [(r["section"], r["draft"]) for r in rows]
