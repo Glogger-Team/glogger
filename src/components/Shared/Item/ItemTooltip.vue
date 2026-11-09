@@ -34,7 +34,7 @@
     <span
       v-for="keyword in item.keywords"
       :key="keyword"
-      class="bg-entity-item/10 text-entity-item px-1.5 py-0.5 rounded-sm text-[0.65rem] uppercase tracking-wide"
+      class="bg-entity-item/10 text-entity-item px-1.5 py-0.5 rounded-sm text-[10px] leading-tight uppercase tracking-wide"
     >
       {{ keyword }}
     </span>
@@ -51,7 +51,7 @@
   </div>
 
   <div v-if="vendorNpcs.length" class="mt-2 pt-2 border-t border-[#2a2a3e]">
-    <div class="text-text-muted text-[0.65rem] uppercase tracking-wide mb-1">Sold by</div>
+    <div class="text-text-muted text-[10px] leading-tight uppercase tracking-wide mb-1">Sold by</div>
     <div class="flex flex-wrap gap-x-0.5 gap-y-0 text-xs">
       <template v-for="(npc, idx) in vendorNpcs" :key="npc.npc_key">
         <NpcInline :reference="npc.npc_key" /><span v-if="idx < vendorNpcs.length - 1" class="text-text-dim">,</span>
@@ -60,47 +60,47 @@
   </div>
 
   <div v-if="interestedNpcs.length" class="mt-2 pt-2 border-t border-[#2a2a3e]">
-    <div class="text-text-muted text-[0.65rem] uppercase tracking-wide mb-1">Wanted as gift by</div>
+    <div class="text-text-muted text-[10px] leading-tight uppercase tracking-wide mb-1">Wanted as gift by</div>
     <div v-for="entry in interestedNpcs" :key="entry.npc.key" class="flex items-center gap-1.5 text-xs leading-relaxed">
       <NpcInline :reference="entry.npc.key" />
       <span
-        class="text-[0.6rem] px-1 rounded-sm font-semibold"
+        class="text-[10px] px-1 rounded-sm font-semibold"
         :class="entry.bestPref.desire === 'Love' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-sky-500/20 text-sky-400'"
       >
         {{ entry.bestPref.desire }}
       </span>
-      <span class="text-text-dim text-[0.6rem]">+{{ entry.bestPref.pref }}</span>
+      <span class="text-text-dim text-[10px]">+{{ entry.bestPref.pref }}</span>
     </div>
   </div>
 
   <div v-if="matchingVendors.length" class="mt-2 pt-2 border-t border-[#2a2a3e]">
-    <div class="text-text-muted text-[0.65rem] uppercase tracking-wide mb-1">Vendors buying this</div>
+    <div class="text-text-muted text-[10px] leading-tight uppercase tracking-wide mb-1">Vendors buying this</div>
     <div v-for="v in matchingVendors" :key="v.npc.key" class="flex items-center gap-1.5 text-xs leading-relaxed">
       <NpcInline :reference="v.npc.key" />
-      <span class="text-text-dim text-[0.6rem]">
+      <span class="text-text-dim text-[10px]">
         <template v-if="v.currentGold !== null">{{ v.currentGold.toLocaleString() }} / {{ v.maxGold.toLocaleString() }}g</template>
         <template v-else>{{ v.maxGold.toLocaleString() }}g cap</template>
       </span>
     </div>
   </div>
 
-  <div v-if="(item.max_stack_size && item.max_stack_size > 1) || ownedCount > 0 || woState" class="text-text-muted text-[0.7rem] mt-2 pt-2 border-t border-[#2a2a3e] flex justify-between">
+  <div v-if="(item.max_stack_size && item.max_stack_size > 1) || ownedCount > 0 || woState" class="text-text-muted text-[10px] mt-2 pt-2 border-t border-[#2a2a3e] flex justify-between">
     <span v-if="item.max_stack_size && item.max_stack_size > 1">Max Stack: {{ item.max_stack_size }}</span>
     <span v-if="ownedCount > 0" class="text-accent-gold">Owned: {{ ownedCount.toLocaleString() }}</span>
     <span v-if="woState" class="text-text-secondary"><template v-if="woState.completedBy.length">Done: {{ woState.completedBy.join(', ') }}</template><template v-if="woState.completedBy.length && woState.activeBy.length"> • </template><template v-if="woState.activeBy.length">Active: {{ woState.activeBy.join(', ') }}</template></span>
   </div>
 
   <!-- Set Market Value -->
-  <div class="text-[0.7rem] mt-1.5 pt-1.5 border-t border-[#2a2a3e]">
+  <div class="text-[10px] mt-1.5 pt-1.5 border-t border-[#2a2a3e]">
     <div v-if="!editingMarket" class="flex items-center gap-2">
       <button
-        class="text-text-muted hover:text-text-primary bg-transparent border-none cursor-pointer text-[0.65rem] p-0 underline"
+        class="text-text-muted hover:text-text-primary bg-transparent border-none cursor-pointer text-[10px] p-0 underline"
         @click.stop="startEditMarket">
         {{ marketValue !== null ? 'Edit market value' : 'Set market value' }}
       </button>
       <button
         v-if="marketValue !== null"
-        class="text-text-muted hover:text-red-400 bg-transparent border-none cursor-pointer text-[0.65rem] p-0 underline"
+        class="text-text-muted hover:text-red-400 bg-transparent border-none cursor-pointer text-[10px] p-0 underline"
         @click.stop="removeMarketValue">
         Remove
       </button>
@@ -111,18 +111,18 @@
         v-model="marketEditValue"
         type="number"
         min="0"
-        class="w-20 bg-surface-dark border border-border-default rounded px-1 py-0.5 text-[0.65rem] text-text-primary"
+        class="w-20 bg-surface-dark border border-border-default rounded px-1 py-0.5 text-[10px] text-text-primary"
         placeholder="Price"
         @keydown.enter="saveMarketValue"
         @keydown.escape="editingMarket = false" />
       <span class="text-text-muted">g</span>
       <button
-        class="text-accent-green hover:text-green-400 bg-transparent border-none cursor-pointer text-[0.65rem] px-1"
+        class="text-accent-green hover:text-green-400 bg-transparent border-none cursor-pointer text-[10px] px-1"
         @click.stop="saveMarketValue">
         Save
       </button>
       <button
-        class="text-text-muted hover:text-text-primary bg-transparent border-none cursor-pointer text-[0.65rem] px-1"
+        class="text-text-muted hover:text-text-primary bg-transparent border-none cursor-pointer text-[10px] px-1"
         @click.stop="editingMarket = false">
         Cancel
       </button>

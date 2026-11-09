@@ -29,13 +29,13 @@
     <span
       v-for="keyword in quest.raw.Keywords"
       :key="keyword"
-      class="bg-entity-quest/10 text-entity-quest px-1.5 py-0.5 rounded-sm text-[0.65rem] uppercase tracking-wide"
+      class="bg-entity-quest/10 text-entity-quest px-1.5 py-0.5 rounded-sm text-[10px] leading-tight uppercase tracking-wide"
     >
       {{ keyword }}
     </span>
   </div>
 
-  <div v-if="quest.raw.IsCancellable === false" class="text-accent-red text-[0.65rem] mt-2 pt-1 border-t border-border-subtle">
+  <div v-if="quest.raw.IsCancellable === false" class="text-accent-red text-[10px] mt-2 pt-1 border-t border-border-subtle">
     Not cancellable
   </div>
 </template>
