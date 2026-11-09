@@ -665,7 +665,7 @@ async function removeAllBaselines() {
     `Remove all ${baselines.value.length} manual count${baselines.value.length === 1 ? '' : 's'} for ${owner}? Counts rebuild from the shop log, including today's added lines.`,
     { title: 'Manual stock entry', kind: 'warning' },
   )
-  if (!confirmed || stockBusy.value) return
+  if (!confirmed || stockBusy.value || store.currentOwner !== owner) return
   baselineSaving.value = true
   baselineError.value = null
   try {
