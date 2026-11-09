@@ -5,13 +5,27 @@ updater channel, Flatpak).
 
 Usage:
     python scripts/release.py [--yes|-y] [--dry-run] [vX.Y.Z]
+    python scripts/release.py vX.Y.Z --notes-file PATH   # agent triage path
+    python scripts/release.py vX.Y.Z --tag-only          # post-merge re-run
 
 With no version argument, suggests the next tag from commit history via
 next-version.py and asks for confirmation unless --yes is given.
---dry-run renders the triage draft and tags nothing. The triage pass opens
-$EDITOR with one draft line per in-range feat/fix/impv commit (trailer
-verbatim when present, else a humanized guess); --yes skips the editor and
-approves drafts as-is.
+--dry-run renders the triage draft and tags nothing (it consumes no
+--notes-file). The triage pass opens $EDITOR with one draft line per
+in-range feat/fix/impv commit (trailer verbatim when present, else a
+humanized guess); --yes skips the editor and approves drafts as-is.
+--yes with an empty range writes the stability-update stub (the pre-rewrite
+flow wrote nothing and let CI fall back to generated notes).
+
+Must run from the repo root: the repo root is the cwd, and helper scripts
+load from ./scripts.
+
+Agent recipe (see AGENTS.md release row):
+    python scripts/release.py --dry-run                 # rows to humanize
+    # write /tmp/notes.txt (STE-flavored; the asd-ste100 skill's external
+    # ste-lint.py reports 0 hard violations), then:
+    python scripts/release.py vX.Y.Z --notes-file /tmp/notes.txt
+    # merge the notes PR, then:
 """
 
 import argparse
@@ -46,6 +60,162 @@ def git(args, root):
     return subprocess.run(
         ["git"] + args, cwd=root, capture_output=True, text=True, check=False
     )
+
+
+def parse_approved_lines(text, rows):
+    """Parse editor-format triage text into [(section, text)] pairs.
+
+    Same format $EDITOR produces: `[n] edited text` keeps the draft's
+    section, bare lines go to Improved, `#`/blank lines ignored, and a
+    `[n]` with deleted text drops the row.
+    """
+    import re as _re
+
+    tag_re = _re.compile(r"^\[(\d+)\]\s*(.*)$")
+    pairs = []
+    for ln in text.splitlines():
+        stripped = ln.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        m = tag_re.match(stripped)
+        if m and int(m.group(1)) < len(rows) and m.group(2).strip():
+            pairs.append((rows[int(m.group(1))]["section"], m.group(2)))
+        elif not m or m.group(2).strip():
+            pairs.append(("impv", tag_re.sub(r"\2", stripped)))
+        # else: [n] with deleted text — dropped, not an empty bullet.
+    return pairs
+
+
+def write_notes_file(root, tag, prev_tag, pairs, raw_count=None):
+    """Write release-notes/<tag>.md from approved pairs; commit it.
+
+    Returns True when a new commit landed, False when the file was
+    already current (idempotent re-run).
+    The stability stub fires on empty *pairs* (all draft lines dropped),
+    and the Wrote count covers raw approved lines: a row whose text was
+    deleted still counts as triaged, matching the old editor path.
+    """
+    order = [("feat", "### New"), ("fix", "### Fixed"), ("impv", "### Improved")]
+    header = f"## What's Changed since {prev_tag}"
+    out = [header.rstrip("\n"), ""]
+    for key, title in order:
+        lines = [text for section, text in pairs if section == key]
+        if lines:
+            out += [title] + [f"- {t}" for t in lines] + [""]
+    body = "\n".join(out) + "\n"
+    if not pairs:
+        body = (
+            header
+            + "\n\n### Improved\n- No visible changes — stability and maintenance update.\n"
+        )
+    notes_dir = root / "release-notes"
+    notes_dir.mkdir(exist_ok=True)
+    notes_file = notes_dir / f"{tag}.md"
+    notes_file.write_text(body, encoding="utf-8", newline="\n")
+    git(["add", str(notes_file.relative_to(root))], root)
+    if not git(["status", "--porcelain", "--", str(notes_file)], root).stdout.strip():
+        print(f"Notes unchanged ({notes_file}); skipping commit")
+        return False
+    noted = subprocess.run(
+        ["git", "commit", "-m", f"release: notes for {tag}", "--no-verify"],
+        cwd=root,
+        check=False,
+    )
+    if noted.returncode != 0:
+        print("Error: could not commit triage notes")
+        return None
+    return True
+
+
+def cut_tag(root, tag):
+    """Create + push the annotated tag. Returns 0 on success."""
+    tagged = subprocess.run(
+        ["git", "tag", "-a", tag, "-m", "glogger " + tag], cwd=root, check=False
+    )
+    if tagged.returncode != 0:
+        return 1
+    pushed = subprocess.run(["git", "push", "origin", tag], cwd=root, check=False)
+    if pushed.returncode != 0:
+        print(f"Error: failed to push {tag} - the local tag is kept.")
+        print(f"Verify with: git ls-remote --tags origin refs/tags/{tag}")
+        print(f"Then retry with: git push origin {tag}")
+        return 1
+    print(
+        f"Pushed {tag} - the Release workflow builds, publishes, and refreshes the channel."
+    )
+    return 0
+
+
+def push_notes_or_pr(root, tag):
+    """Push main, else route the notes commit through a PR branch.
+
+    Returns 0 when main (with the notes commit) is on origin, 1 when a
+    PR was opened instead (caller must stop; tag comes after the merge).
+    """
+    if (
+        git(["rev-parse", "HEAD"], root).stdout.strip()
+        == git(["rev-parse", "origin/main"], root).stdout.strip()
+    ):
+        print("Notes already current - proceeding straight to tag.")
+        return 0
+    branch_push = None
+    if main_protected(root):
+        # Protected main (the normal case here): never attempt the doomed
+        # push. Fall through to try-push only when the ruleset check is
+        # itself inconclusive (no gh / offline), preserving old behavior.
+        print("main is protected - routing notes through a PR, skipping direct push.")
+    else:
+        branch_push = subprocess.run(
+            ["git", "push", "origin", "main"], cwd=root, check=False
+        )
+    if branch_push is not None and branch_push.returncode == 0:
+        return 0
+    # Reached either by a failed direct push or by the pre-check above
+    # (protected: push never attempted). The tree was clean at entry
+    # and the sync gate held, so the notes commit is the only commit
+    # ahead of origin/main.
+    notes_branch = f"release/{tag}-notes"
+    if (
+        git(["rev-parse", "--verify", f"refs/heads/{notes_branch}"], root).returncode
+        == 0
+    ):
+        print(f"Error: failed to push main, and {notes_branch} already exists.")
+        print("Delete it or push it manually, then retry: git push origin main")
+        return 1
+    if git(["checkout", "-b", notes_branch], root).returncode != 0:
+        print("Error: failed to push main - tag not created.")
+        print("Then retry with: git push origin main")
+        return 1
+    if (
+        subprocess.run(
+            ["git", "push", "-u", "origin", notes_branch], cwd=root, check=False
+        ).returncode
+        != 0
+    ):
+        print(f"Error: pushed neither main nor {notes_branch} - tag not created.")
+        print(f"You are on {notes_branch}; push it manually, then retry.")
+        return 1
+    pr = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "create",
+            "--title",
+            f"release: notes for {tag}",
+            "--body",
+            f"Release notes for {tag}. Merge, then re-run `python scripts/release.py {tag} --tag-only` to tag.",
+        ],
+        cwd=root,
+        check=False,
+    )
+    if pr.returncode != 0:
+        print(f"Pushed {notes_branch} - open a PR manually, merge it, then re-run:")
+        print(f"  gh pr create --title 'release: notes for {tag}'")
+    else:
+        print(f"Pushed {notes_branch} - merge the PR, then re-run to tag:")
+    print(f"  python scripts/release.py {tag} --tag-only")
+    git(["checkout", "main"], root)
+    return 1
 
 
 def main_protected(root):
@@ -135,90 +305,124 @@ def main_protected(root):
         return False
 
 
-def main():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Cut a release tag and push it.")
     parser.add_argument("version", nargs="?")
     parser.add_argument("--yes", "-y", action="store_true")
     parser.add_argument(
         "--dry-run", action="store_true", help="render triage draft, tag nothing"
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--notes-file",
+        metavar="PATH",
+        default=None,
+        help="read approved triage lines from PATH instead of opening $EDITOR "
+        "(agent path: write the file programmatically, same format the editor "
+        "produces). Mutually exclusive with --yes.",
+    )
+    parser.add_argument(
+        "--tag-only",
+        action="store_true",
+        help="skip triage; require committed release-notes/<tag>.md and cut "
+        "the tag (post-merge re-run path).",
+    )
+    return parser.parse_args(argv)
 
-    root = Path(__file__).resolve().parent.parent
 
+def resolve_tag(args, root):
+    """Return the version tag, or None with an error already printed."""
     if args.version is not None:
         if not TAG_RE.match(args.version):
             print(f"Usage: {__file__} vX.Y.Z (e.g. {__file__} v1.6.0)")
-            return 1
-        tag = args.version
-    else:
-        script_dir = Path(__file__).resolve().parent
-        suggestion = subprocess.run(
-            [sys.executable, str(script_dir / "next-version.py")],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if suggestion.returncode != 0:
-            sys.stderr.write(suggestion.stderr)
-            print("Error: could not suggest a version - pass one explicitly")
-            return 1
-        tag = (
-            suggestion.stdout.strip().splitlines()[0]
-            if suggestion.stdout.strip()
-            else ""
-        )
-        if not TAG_RE.match(tag):
-            print("Error: could not suggest a version - pass one explicitly")
-            return 1
+            return None
+        return args.version
+    if args.notes_file is not None or args.tag_only:
+        print("Error: --notes-file/--tag-only require an explicit version")
+        return None
+    script_dir = root / "scripts"
+    suggestion = subprocess.run(
+        [sys.executable, str(script_dir / "next-version.py")],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if suggestion.returncode != 0:
         sys.stderr.write(suggestion.stderr)
-        print(f"Suggesting {tag} ...")
-        if args.dry_run:
-            pass  # triage block below renders and exits before any prompt
-        elif not args.yes:
-            answer = input(f"Tag and push {tag} from main? [y/N] ")
-            if not re.match(r"^[Yy]$", answer):
-                print("Aborted.")
-                return 1
+        print("Error: could not suggest a version - pass one explicitly")
+        return None
+    tag = suggestion.stdout.strip().splitlines()[0] if suggestion.stdout.strip() else ""
+    if not TAG_RE.match(tag):
+        print("Error: could not suggest a version - pass one explicitly")
+        return None
+    sys.stderr.write(suggestion.stderr)
+    print(f"Suggesting {tag} ...")
+    if not args.dry_run and not args.yes:
+        answer = input(f"Tag and push {tag} from main? [y/N] ")
+        if not re.match(r"^[Yy]$", answer):
+            print("Aborted.")
+            return None
+    return tag
 
-    script_dir = Path(__file__).resolve().parent
 
+def entry_gates(args, root, tag):
+    """Branch, tree, sync, and tag-existence gates. Returns 0 to proceed."""
     branch = git(["rev-parse", "--abbrev-ref", "HEAD"], root)
     if branch.stdout.strip() != "main" and not args.dry_run:
         print(
             f"Error: must be on the 'main' branch (currently '{branch.stdout.strip()}')"
         )
         return 1
-    if branch.stdout.strip() != "main":
+    branch_name = branch.stdout.strip()
+    if branch_name != "main":
         print(
-            f"Warning: not on main (currently '{branch.stdout.strip()}') - "
+            f"Warning: not on main (currently '{branch_name}') - "
             "tag suggestion reads main's history, preview only"
         )
-    if not args.dry_run:
-        if git(["status", "--porcelain"], root).stdout.strip():
-            print("Error: working tree not clean")
-            print(git(["status", "--short"], root).stdout, end="")
+    if args.dry_run:
+        return 0
+    if git(["status", "--porcelain"], root).stdout.strip():
+        print("Error: working tree not clean")
+        print(git(["status", "--short"], root).stdout, end="")
+        return 1
+    fetch = git(["fetch", "origin"], root)
+    if fetch.returncode != 0:
+        print("Error: could not fetch origin - refusing to tag on stale refs.")
+        print((fetch.stderr or "").strip()[:200])
+        return 1
+    head = git(["rev-parse", "HEAD"], root).stdout.strip()
+    origin_head = git(["rev-parse", "origin/main"], root).stdout.strip()
+    if head != origin_head:
+        # A merged notes PR leaves the same file content under a different
+        # hash (squash-merge): resetting there is safe and the script says
+        # so instead of failing on a merge no --tag-only run should create.
+        notes_path = f"release-notes/{tag}.md"
+        same_notes = (
+            git(["diff", "HEAD", "origin/main", "--", notes_path], root).stdout.strip()
+            == ""
+            and git(["show", f"origin/main:{notes_path}"], root).returncode == 0
+        )
+        if same_notes:
+            print(
+                f"Error: notes for {tag} already merged via PR "
+                f"(same {notes_path} content, different commit)."
+            )
+            print("Run: git reset --hard origin/main")
+            print(f"Then: python scripts/release.py {tag} --tag-only")
             return 1
-        fetch = git(["fetch", "origin"], root)
-        if fetch.returncode != 0:
-            print("Error: could not fetch origin - refusing to tag on stale refs.")
-            print((fetch.stderr or "").strip()[:200])
-            return 1
-        if (
-            git(["rev-parse", "HEAD"], root).stdout.strip()
-            != git(["rev-parse", "origin/main"], root).stdout.strip()
-        ):
-            print("Error: main is not up to date with origin/main - pull/rebase first")
-            return 1
-        local_exists = git(["rev-parse", tag], root).returncode == 0
-        remote_out = git(["ls-remote", "--tags", "origin", "refs/tags/" + tag], root)
-        remote_exists = bool(remote_out.stdout.strip())
-        if local_exists or remote_exists:
-            print(f"Error: tag {tag} already exists (locally or on origin)")
-            return 1
+        print("Error: main is not up to date with origin/main - pull/rebase first")
+        return 1
+    local_exists = git(["rev-parse", tag], root).returncode == 0
+    remote_out = git(["ls-remote", "--tags", "origin", "refs/tags/" + tag], root)
+    remote_exists = bool(remote_out.stdout.strip())
+    if local_exists or remote_exists:
+        print(f"Error: tag {tag} already exists (locally or on origin)")
+        return 1
+    return 0
 
-    # Gate hardening (vue lesson): warn when latest main CI run is red.
+
+def warn_ci_status(root):
+    """Warn when the latest main CI run is red (vue lesson, non-blocking)."""
     gh = subprocess.run(
         [
             "gh",
@@ -244,8 +448,9 @@ def main():
     else:
         print("Warning: could not check CI status (gh unavailable?)")
 
-    # Release-time triage pass: draft every in-range line, edit in $EDITOR,
-    # approved lines land in release-notes/<tag>.md for the generator.
+
+def prevailing_tag(script_dir, root):
+    """Return the last published tag, or None with an error printed."""
     prev_proc = subprocess.run(
         [
             sys.executable,
@@ -262,219 +467,184 @@ def main():
         print(
             "Error: could not determine last published tag - refusing to guess the range."
         )
-        return 1
+        return None
     prev_tag = prev_proc.stdout.strip().splitlines()
-    prev_tag = prev_tag[0] if prev_tag else ""
-    range_ref = f"{prev_tag}..HEAD" if prev_tag else "HEAD"
+    return prev_tag[0] if prev_tag else ""
 
-    def render_grouped(pairs, header):
-        order = [("feat", "### New"), ("fix", "### Fixed"), ("impv", "### Improved")]
-        out = [header.rstrip("\n"), ""]
-        for key, title in order:
-            lines = [text for section, text in pairs if section == key]
-            if lines:
-                out += [title] + [f"- {t}" for t in lines] + [""]
-        return "\n".join(out) + "\n"
+
+def triage_editor_path(rows, root, tag):
+    """Classic human path: write the triage temp file, open $EDITOR."""
+    import os
+    import tempfile
+
+    notes_file = root / "release-notes" / f"{tag}.md"
+    if notes_file.exists():
+        # v1.14.0 lesson: never overwrite humanized notes with raw drafts.
+        # The re-run that burned us hit exactly this path.
+        print(
+            f"Error: {notes_file} already exists in the worktree - refusing to re-triage."
+        )
+        print("Delete it to start triage over, or commit it and use --tag-only.")
+        return 1
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".txt", delete=False, encoding="utf-8", newline="\n"
+    ) as f:
+        f.write(TRIAGE_PREFIX)
+        f.write("# Format: [n] draft text — keep the [n] tag, edit the text.\n")
+        f.write("# Delete a line to drop it. Lines without a tag go to Improved.\n")
+        for n, r in enumerate(rows):
+            marker = " (trailer)" if r["has_trailer"] else " (draft)"
+            f.write(f"# [{r['section']}]{marker} {r['subject']}\n")
+            f.write(f"[{n}] {r['draft']}\n\n")
+        triage_path = f.name
+    # Empty EDITOR ("") must behave like unset: getenv's default only
+    # fires on a missing key, and split("") yields [] (WinError 2 on
+    # launch). which() names the next failure class instead of the
+    # bare traceback.
+    raw_editor = os.environ.get("EDITOR") or ("notepad" if os.name == "nt" else "vi")
+    # POSIX shlex strips backslashes from Windows paths
+    # (C:\WINDOWS\... -> C:WINDOWS...). posix=False keeps them.
+    editor = shlex.split(raw_editor, posix=(os.name != "nt"))
+    if not editor or shutil.which(editor[0]) is None:
+        print(
+            f"Error: editor {editor[0] if editor else ''!r} not found "
+            f"(EDITOR={os.environ.get('EDITOR')!r}) - set EDITOR, use --yes, "
+            "or pass --notes-file."
+        )
+        os.unlink(triage_path)
+        return 1
+    try:
+        edited = subprocess.run([*editor, triage_path], check=False)
+        if edited.returncode != 0:
+            print(
+                f"Error: editor exited {edited.returncode} - notes not saved, tag not created."
+            )
+            return 1
+        with open(triage_path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        pairs = parse_approved_lines(text, rows)
+        raw_count = sum(
+            1
+            for ln in text.splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        )
+        committed = write_notes_file(root, tag, prev_tag_global, pairs, raw_count)
+        if committed is None:
+            return 1
+        print(f"Wrote {notes_file} ({raw_count} lines)")
+        return 0
+    finally:
+        os.unlink(triage_path)
+
+
+prev_tag_global = ""
+
+
+def triage_notes_file(rows, root, tag, prev_tag, notes_path):
+    """Agent path: approved lines come from a file, never an editor."""
+    notes_file = root / "release-notes" / f"{tag}.md"
+    if notes_file.exists():
+        print(
+            f"Error: {notes_file} already exists in the worktree - refusing to re-triage."
+        )
+        print("Delete it to start triage over, or commit it and use --tag-only.")
+        return 1
+    try:
+        text = Path(notes_path).read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        print(f"Error: cannot read --notes-file {notes_path}: {e}")
+        return 1
+    pairs = parse_approved_lines(text, rows)
+    raw_lines = [
+        ln for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")
+    ]
+    if not pairs:
+        print(f"Error: --notes-file {notes_path} approved no lines - tag not created.")
+        return 1
+    committed = write_notes_file(root, tag, prev_tag, pairs, len(raw_lines))
+    if committed is None:
+        return 1
+    print(f"Wrote {notes_file} ({len(raw_lines)} lines from {notes_path})")
+    return 0
+
+
+def main():
+    args = parse_args()
+    # Repo root is the cwd, not the script's dir: agents may invoke a copy
+    # from outside the checkout (guard verification, probes). The script
+    # reads git state from the cwd throughout.
+    root = Path.cwd()
+    script_dir = root / "scripts"
+
+    if args.notes_file is not None and args.yes:
+        print("Error: --notes-file and --yes are mutually exclusive")
+        return 1
+    if args.tag_only and (args.notes_file is not None or args.yes or args.dry_run):
+        print("Error: --tag-only takes no triage flags (--notes-file/--yes/--dry-run)")
+        return 1
+
+    if args.tag_only:
+        # Post-merge re-run: notes are committed, nothing to triage.
+        if args.version is None or not TAG_RE.match(args.version):
+            print(f"Usage: {__file__} vX.Y.Z --tag-only")
+            return 1
+        tag = args.version
+        if entry_gates(args, root, tag) != 0:
+            return 1
+        notes_path = f"release-notes/{tag}.md"
+        if git(["show", f"HEAD:{notes_path}"], root).returncode != 0:
+            print(f"Error: {notes_path} is not committed - cannot --tag-only.")
+            print(
+                f"Run triage first: python scripts/release.py {tag} [--notes-file PATH]"
+            )
+            return 1
+        return cut_tag(root, tag)
+
+    tag = resolve_tag(args, root)
+    if tag is None:
+        return 1
+    if entry_gates(args, root, tag) != 0:
+        return 1
+    warn_ci_status(root)
+
+    prev_tag = prevailing_tag(script_dir, root)
+    if prev_tag is None:
+        return 1
+    global prev_tag_global
+    prev_tag_global = prev_tag
+    range_ref = f"{prev_tag}..HEAD" if prev_tag else "HEAD"
 
     rows = triage_draft_rows(range_ref, script_dir)
     if args.dry_run:
+        if args.notes_file is not None:
+            print("Error: --dry-run renders drafts only; --notes-file is not consumed")
+            return 1
         for r in rows:
             print(f"[{r['section']}] {r['draft']}")
         return 0
-    if rows and not args.yes:
-        import os
-        import tempfile
-
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".txt", delete=False, encoding="utf-8", newline="\n"
-        ) as f:
-            f.write(TRIAGE_PREFIX)
-            f.write("# Format: [n] draft text — keep the [n] tag, edit the text.\n")
-            f.write("# Delete a line to drop it. Lines without a tag go to Improved.\n")
-            for n, r in enumerate(rows):
-                marker = " (trailer)" if r["has_trailer"] else " (draft)"
-                f.write(f"# [{r['section']}]{marker} {r['subject']}\n")
-                f.write(f"[{n}] {r['draft']}\n\n")
-            triage_path = f.name
-        # Empty EDITOR ("") must behave like unset: getenv's default only
-        # fires on a missing key, and split("") yields [] (WinError 2 on
-        # launch). which() names the next failure class instead of the
-        # bare traceback.
-        raw_editor = os.environ.get("EDITOR") or (
-            "notepad" if os.name == "nt" else "vi"
-        )
-        # POSIX shlex strips backslashes from Windows paths
-        # (C:\WINDOWS\... -> C:WINDOWS...). posix=False keeps them.
-        editor = shlex.split(raw_editor, posix=(os.name != "nt"))
-        if not editor or shutil.which(editor[0]) is None:
-            print(
-                f"Error: editor {editor[0] if editor else ''!r} not found "
-                f"(EDITOR={os.environ.get('EDITOR')!r}) - set EDITOR or use --yes."
-            )
-            os.unlink(triage_path)
+    if args.notes_file is not None:
+        if triage_notes_file(rows, root, tag, prev_tag, args.notes_file) != 0:
             return 1
-        try:
-            edited = subprocess.run([*editor, triage_path], check=False)
-            if edited.returncode != 0:
-                print(
-                    f"Error: editor exited {edited.returncode} - notes not saved, tag not created."
-                )
-                return 1
-            with open(triage_path, encoding="utf-8", errors="replace") as fh:
-                approved = [
-                    ln.strip()
-                    for ln in fh
-                    if ln.strip() and not ln.strip().startswith("#")
-                ]
-            import re as _re
-
-            tag_re = _re.compile(r"^\[(\d+)\]\s*(.*)$")
-            pairs = []
-            for ln in approved:
-                m = tag_re.match(ln)
-                if m and int(m.group(1)) < len(rows) and m.group(2).strip():
-                    pairs.append((rows[int(m.group(1))]["section"], m.group(2)))
-                elif not m or m.group(2).strip():
-                    pairs.append(("impv", tag_re.sub(r"\2", ln)))
-                # else: [n] with deleted text — dropped, not an empty bullet.
-        finally:
-            os.unlink(triage_path)
-        notes_dir = root / "release-notes"
-        notes_dir.mkdir(exist_ok=True)
-        notes_file = notes_dir / f"{tag}.md"
-        header = f"## What's Changed since {prev_tag}"
-        body = (
-            render_grouped(pairs, header)
-            if approved
-            else header
-            + "\n\n### Improved\n- No visible changes — stability and maintenance update.\n"
-        )
-        notes_file.write_text(body, encoding="utf-8", newline="\n")
-        print(f"Wrote {notes_file} ({len(approved)} lines)")
-        git(["add", str(notes_file.relative_to(root))], root)
-        if not git(
-            ["status", "--porcelain", "--", str(notes_file)], root
-        ).stdout.strip():
-            print(f"Notes unchanged ({notes_file}); skipping commit")
-        else:
-            noted = subprocess.run(
-                ["git", "commit", "-m", f"release: notes for {tag}", "--no-verify"],
-                cwd=root,
-                check=False,
-            )
-            if noted.returncode != 0:
-                print("Error: could not commit triage notes")
-                return 1
-    elif rows:
-        # --yes: non-interactive automation path. Approve drafts as-is so CI
-        # uses the triaged file instead of silently falling back.
+    elif rows and not args.yes and triage_editor_path(rows, root, tag) != 0:
+        return 1
+    # --yes: non-interactive automation path. Approve drafts as-is so CI
+    # uses the triaged file instead of silently falling back.
+    if args.yes and rows:
         print("Warning: --yes skips the triage editor; approving drafts as-is")
-        notes_dir = root / "release-notes"
-        notes_dir.mkdir(exist_ok=True)
-        notes_file = notes_dir / f"{tag}.md"
-        body = render_grouped(
-            [(r["section"], r["draft"]) for r in rows],
-            f"## What's Changed since {prev_tag}",
+        committed = write_notes_file(
+            root, tag, prev_tag, [(r["section"], r["draft"]) for r in rows]
         )
-        notes_file.write_text(body, encoding="utf-8", newline="\n")
-        git(["add", str(notes_file.relative_to(root))], root)
-        if not git(
-            ["status", "--porcelain", "--", str(notes_file)], root
-        ).stdout.strip():
-            print(f"Notes unchanged ({notes_file}); skipping commit")
-        else:
-            noted = subprocess.run(
-                ["git", "commit", "-m", f"release: notes for {tag}", "--no-verify"],
-                cwd=root,
-                check=False,
-            )
-            if noted.returncode != 0:
-                print("Error: could not commit triage notes")
-                return 1
+        if committed is None:
+            return 1
+    # Empty range: still write the stability-update stub via the helper.
+    elif not (root / "release-notes" / f"{tag}.md").exists():
+        committed = write_notes_file(root, tag, prev_tag, [])
+        if committed is None:
+            return 1
 
-    # Idempotent re-run: triage produced no new commit (empty range,
-    # unchanged notes, or the notes PR already merged). Nothing to push,
-    # so skip the push/PR dance and proceed straight to tag.
-    in_sync = (
-        git(["rev-parse", "HEAD"], root).stdout.strip()
-        == git(["rev-parse", "origin/main"], root).stdout.strip()
-    )
-    if in_sync:
-        print("Notes already current - proceeding straight to tag.")
-    elif main_protected(root):
-        # Protected main (the normal case here): never attempt the doomed
-        # push. Fall through to try-push only when the ruleset check is
-        # itself inconclusive (no gh / offline), preserving old behavior.
-        print("main is protected - routing notes through a PR, skipping direct push.")
-        branch_push = None
-    else:
-        branch_push = subprocess.run(
-            ["git", "push", "origin", "main"], cwd=root, check=False
-        )
-    if not in_sync and (branch_push is None or branch_push.returncode != 0):
-        # Reached either by a failed direct push or by the pre-check above
-        # (protected: push never attempted). The tree was clean at entry
-        # and the sync gate held, so the notes commit is the only commit
-        # ahead of origin/main.
-        notes_branch = f"release/{tag}-notes"
-        if (
-            git(
-                ["rev-parse", "--verify", f"refs/heads/{notes_branch}"], root
-            ).returncode
-            == 0
-        ):
-            print(f"Error: failed to push main, and {notes_branch} already exists.")
-            print("Delete it or push it manually, then retry: git push origin main")
-            return 1
-        if git(["checkout", "-b", notes_branch], root).returncode != 0:
-            print("Error: failed to push main - tag not created.")
-            print("Then retry with: git push origin main")
-            return 1
-        if (
-            subprocess.run(
-                ["git", "push", "-u", "origin", notes_branch], cwd=root, check=False
-            ).returncode
-            != 0
-        ):
-            print(f"Error: pushed neither main nor {notes_branch} - tag not created.")
-            print(f"You are on {notes_branch}; push it manually, then retry.")
-            return 1
-        pr = subprocess.run(
-            [
-                "gh",
-                "pr",
-                "create",
-                "--title",
-                f"release: notes for {tag}",
-                "--body",
-                f"Release notes for {tag}. Merge, then re-run `python scripts/release.py {tag}` to tag.",
-            ],
-            cwd=root,
-            check=False,
-        )
-        if pr.returncode != 0:
-            print(f"Pushed {notes_branch} - open a PR manually, merge it, then re-run:")
-            print(f"  gh pr create --title 'release: notes for {tag}'")
-        else:
-            print(f"Pushed {notes_branch} - merge the PR, then re-run to tag:")
-        print(f"  python scripts/release.py {tag}")
-        git(["checkout", "main"], root)
+    if push_notes_or_pr(root, tag) != 0:
         return 1
-    tagged = subprocess.run(
-        ["git", "tag", "-a", tag, "-m", "glogger " + tag], cwd=root, check=False
-    )
-    if tagged.returncode != 0:
-        return 1
-    pushed = subprocess.run(["git", "push", "origin", tag], cwd=root, check=False)
-    if pushed.returncode != 0:
-        print(f"Error: failed to push {tag} - the local tag is kept.")
-        print(f"Verify with: git ls-remote --tags origin refs/tags/{tag}")
-        print(f"Then retry with: git push origin {tag}")
-        return 1
-    print(
-        f"Pushed {tag} - the Release workflow builds, publishes, and refreshes the channel."
-    )
-    return 0
+    return cut_tag(root, tag)
 
 
 if __name__ == "__main__":
