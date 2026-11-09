@@ -275,8 +275,10 @@ and Export + Clear data (gated on `hasData && currentOwner`).
 Guessed quantities (mid-history ⚠ rows plus `~` fallback-priced rows) roll up
 into a Clear-unsure row under the In Stock table. One click writes a zeroed
 manual count per unsure item — the zeroed count supersedes pre-clear history
-so the guess never returns. Recount anything still stocked in Manual stock
-entry below (re-counting replaces the zeroed count and resumes replay from now).
+so the guess never returns unless you Rebuild from log (which deletes the
+zeroed cutoffs and restores pure log estimates). Recount anything still
+stocked in Manual stock entry below (re-counting replaces the zeroed count
+and resumes replay from now).
 
 ### Import
 
@@ -315,10 +317,10 @@ history. Serialized with live ingest by the single-write pool +
 
 Clear-vs-insert serialization comes from the single-write pool plus
 `BEGIN IMMEDIATE` transactions (`src-tauri/src/db/mod.rs` owns the
-pool-is-the-lock invariant): Clear is a single `DELETE`, live ingest is one
-transaction per batch, so SQLite serializes the two atomically. No
-app-level lock — a second mutex would only add deadlock shape for zero
-extra safety.
+pool-is-the-lock invariant): Clear is two `DELETE`s (events + baselines) in
+one `BEGIN IMMEDIATE` transaction, live ingest is one transaction per batch,
+so SQLite serializes the two atomically. No app-level lock — a second mutex
+would only add deadlock shape for zero extra safety.
 
 ## Character Scoping
 
