@@ -156,7 +156,7 @@
               <li
                 v-for="ability in relatedAbilities"
                 :key="ability.id"
-                class="text-xs text-text-secondary px-2 py-0.5 flex gap-2 border-b border-[#151515] hover:bg-surface-base">
+                class="text-xs text-text-secondary px-2 py-0.5 flex gap-2 border-b border-surface-inset hover:bg-surface-base">
                 <span class="text-text-muted text-[0.72rem] min-w-14 shrink-0">[Lv {{ ability.level || 0 }}]</span>
                 <span class="text-[#7ec8e3] flex-1">{{ ability.name }}</span>
               </li>
@@ -170,7 +170,7 @@
               <li
                 v-for="recipe in relatedRecipes"
                 :key="recipe.id"
-                class="text-xs px-2 py-0.5 flex gap-2 items-center border-b border-[#151515] hover:bg-surface-base">
+                class="text-xs px-2 py-0.5 flex gap-2 items-center border-b border-surface-inset hover:bg-surface-base">
                 <span class="text-text-muted text-[0.72rem] min-w-14 shrink-0">[Lv {{ recipe.skill_level_req || 0 }}]</span>
                 <RecipeInline :reference="recipe.name" />
               </li>
@@ -192,7 +192,7 @@
               <li
                 v-for="quest in workOrderQuests"
                 :key="quest.internal_name"
-                class="text-xs px-2 py-0.5 flex gap-2 items-center border-b border-[#151515] hover:bg-surface-base">
+                class="text-xs px-2 py-0.5 flex gap-2 items-center border-b border-surface-inset hover:bg-surface-base">
                 <QuestInline :reference="quest.internal_name" />
               </li>
             </ul>

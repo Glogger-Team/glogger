@@ -44,7 +44,7 @@
           <input
             :value="s.name"
             @change="store.updateName(($event.target as HTMLInputElement).value)"
-            class="text-base font-bold text-entity-item bg-transparent border-none outline-none w-64 hover:bg-[#2a2a3e] focus:bg-[#2a2a3e] rounded px-1 -mx-1"
+            class="text-base font-bold text-entity-item bg-transparent border-none outline-none w-64 hover:bg-border-subtle focus:bg-border-subtle rounded px-1 -mx-1"
           />
           <span v-if="s.endTime" class="text-xs text-text-dim uppercase tracking-wide">(Ended)</span>
           <span v-if="s.isPaused" class="text-xs text-value-neutral-warm font-bold uppercase tracking-wide">(Paused)</span>
@@ -61,7 +61,7 @@
               'px-3 py-1.5 text-xs border rounded cursor-pointer transition-all font-medium',
               s.isPaused
                 ? 'bg-[#3a4a2a]! border-[#5a7a3a]! text-value-positive!'
-                : 'bg-[#2a2a3e] border-border-light text-text-secondary hover:bg-[#3a3a4e] hover:text-text-primary'
+                : 'bg-border-subtle border-border-light text-text-secondary hover:bg-[#3a3a4e] hover:text-text-primary'
             ]">
             {{ s.isPaused ? "Resume" : "Pause" }}
           </button>

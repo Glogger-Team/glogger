@@ -50,7 +50,7 @@
     </div>
   </div>
 
-  <div v-if="vendorNpcs.length" class="mt-2 pt-2 border-t border-[#2a2a3e]">
+  <div v-if="vendorNpcs.length" class="mt-2 pt-2 border-t border-border-subtle">
     <div class="text-text-muted text-[10px] leading-tight uppercase tracking-wide mb-1">Sold by</div>
     <div class="flex flex-wrap gap-x-0.5 gap-y-0 text-xs">
       <template v-for="(npc, idx) in vendorNpcs" :key="npc.npc_key">
@@ -59,7 +59,7 @@
     </div>
   </div>
 
-  <div v-if="interestedNpcs.length" class="mt-2 pt-2 border-t border-[#2a2a3e]">
+  <div v-if="interestedNpcs.length" class="mt-2 pt-2 border-t border-border-subtle">
     <div class="text-text-muted text-[10px] leading-tight uppercase tracking-wide mb-1">Wanted as gift by</div>
     <div v-for="entry in interestedNpcs" :key="entry.npc.key" class="flex items-center gap-1.5 text-xs leading-relaxed">
       <NpcInline :reference="entry.npc.key" />
@@ -73,7 +73,7 @@
     </div>
   </div>
 
-  <div v-if="matchingVendors.length" class="mt-2 pt-2 border-t border-[#2a2a3e]">
+  <div v-if="matchingVendors.length" class="mt-2 pt-2 border-t border-border-subtle">
     <div class="text-text-muted text-[10px] leading-tight uppercase tracking-wide mb-1">Vendors buying this</div>
     <div v-for="v in matchingVendors" :key="v.npc.key" class="flex items-center gap-1.5 text-xs leading-relaxed">
       <NpcInline :reference="v.npc.key" />
@@ -84,14 +84,14 @@
     </div>
   </div>
 
-  <div v-if="(item.max_stack_size && item.max_stack_size > 1) || ownedCount > 0 || woState" class="text-text-muted text-[10px] mt-2 pt-2 border-t border-[#2a2a3e] flex justify-between">
+  <div v-if="(item.max_stack_size && item.max_stack_size > 1) || ownedCount > 0 || woState" class="text-text-muted text-[10px] mt-2 pt-2 border-t border-border-subtle flex justify-between">
     <span v-if="item.max_stack_size && item.max_stack_size > 1">Max Stack: {{ item.max_stack_size }}</span>
     <span v-if="ownedCount > 0" class="text-accent-gold">Owned: {{ ownedCount.toLocaleString() }}</span>
     <span v-if="woState" class="text-text-secondary"><template v-if="woState.completedBy.length">Done: {{ woState.completedBy.join(', ') }}</template><template v-if="woState.completedBy.length && woState.activeBy.length"> • </template><template v-if="woState.activeBy.length">Active: {{ woState.activeBy.join(', ') }}</template></span>
   </div>
 
   <!-- Set Market Value -->
-  <div class="text-[10px] mt-1.5 pt-1.5 border-t border-[#2a2a3e]">
+  <div class="text-[10px] mt-1.5 pt-1.5 border-t border-border-subtle">
     <div v-if="!editingMarket" class="flex items-center gap-2">
       <button
         class="text-text-muted hover:text-text-primary bg-transparent border-none cursor-pointer text-[10px] p-0 underline"
