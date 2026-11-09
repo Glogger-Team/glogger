@@ -8,19 +8,19 @@
 
     <div class="grid grid-cols-2 gap-2 mb-3">
       <div>
-        <div class="text-[0.65rem] text-text-muted uppercase tracking-wide">XP Gained</div>
+        <div class="text-[10px] leading-tight text-text-muted uppercase tracking-wide">XP Gained</div>
         <div class="text-sm text-text-primary font-bold">{{ skill.xpGained.toLocaleString() }}</div>
       </div>
       <div>
-        <div class="text-[0.65rem] text-text-muted uppercase tracking-wide">XP / Hour</div>
+        <div class="text-[10px] leading-tight text-text-muted uppercase tracking-wide">XP / Hour</div>
         <div class="text-sm text-text-primary font-bold">{{ xphr }}</div>
       </div>
       <div>
-        <div class="text-[0.65rem] text-text-muted uppercase tracking-wide">Levels Gained</div>
+        <div class="text-[10px] leading-tight text-text-muted uppercase tracking-wide">Levels Gained</div>
         <div class="text-sm text-text-primary font-bold">{{ skill.levelsGained }}</div>
       </div>
       <div>
-        <div class="text-[0.65rem] text-text-muted uppercase tracking-wide">Next Level</div>
+        <div class="text-[10px] leading-tight text-text-muted uppercase tracking-wide">Next Level</div>
         <div class="text-sm text-text-primary font-bold">{{ ttl }}</div>
       </div>
     </div>
@@ -28,7 +28,7 @@
     <div class="h-1 bg-border-default rounded-sm overflow-hidden mb-1">
       <div class="h-full bg-accent-gold rounded-sm transition-all duration-300" :style="{ width: tnlPercent + '%' }"></div>
     </div>
-    <div class="text-[0.65rem] text-text-dim">{{ skill.tnl.toLocaleString() }} XP to next level</div>
+    <div class="text-[10px] text-text-dim">{{ skill.tnl.toLocaleString() }} XP to next level</div>
   </div>
 </template>
 

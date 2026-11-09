@@ -9,7 +9,7 @@
   >
     <span class="truncate max-w-40">{{ pin.label }}</span>
     <button
-      class="m-0.5 pl-1 pr-1 size-4 inline-flex items-center justify-center rounded-full text-[0.65rem] leading-none text-current/50 hover:text-current bg-current/10 hover:bg-current/20 transition-colors"
+      class="m-0.5 pl-1 pr-1 size-4 inline-flex items-center justify-center rounded-full text-[10px] leading-none text-current/50 hover:text-current bg-current/10 hover:bg-current/20 transition-colors"
       title="Unpin"
       @click.stop="handleUnpin"
     >X</button>

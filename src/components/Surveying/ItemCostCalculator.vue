@@ -3,7 +3,7 @@
     <!-- Inputs -->
     <div class="flex flex-col gap-2">
       <div class="flex flex-col gap-1">
-        <label class="text-[0.6rem] uppercase tracking-wide text-text-secondary font-semibold">
+        <label class="text-[10px] leading-tight uppercase tracking-wide text-text-secondary font-semibold">
           Item
         </label>
         <SearchableSelect
@@ -17,7 +17,7 @@
 
       <div class="grid grid-cols-2 gap-2">
         <div class="flex flex-col gap-1">
-          <label class="text-[0.6rem] uppercase tracking-wide text-text-secondary font-semibold">
+          <label class="text-[10px] leading-tight uppercase tracking-wide text-text-secondary font-semibold">
             Target Qty
           </label>
           <NumberInput
@@ -30,7 +30,7 @@
           />
         </div>
         <div class="flex flex-col gap-1">
-          <label class="text-[0.6rem] uppercase tracking-wide text-text-secondary font-semibold">
+          <label class="text-[10px] leading-tight uppercase tracking-wide text-text-secondary font-semibold">
             Sell Price
           </label>
           <NumberInput
@@ -45,14 +45,14 @@
       </div>
 
       <div class="flex flex-col gap-1">
-        <label class="text-[0.6rem] uppercase tracking-wide text-text-secondary font-semibold">
+        <label class="text-[10px] leading-tight uppercase tracking-wide text-text-secondary font-semibold">
           Sort By
         </label>
         <div class="flex gap-0.5 bg-surface-elevated border border-border-default rounded p-0.5">
           <button
             v-for="opt in sortOptions"
             :key="opt.key"
-            class="flex-1 px-2 py-1 text-[0.7rem] rounded transition-colors"
+            class="flex-1 px-2 py-1 text-[10px] rounded transition-colors"
             :class="
               sortMode === opt.key
                 ? 'bg-accent-gold/20 text-accent-gold font-semibold'
@@ -99,13 +99,13 @@
           <span v-if="idx === 0" class="text-[10px] leading-tight uppercase tracking-wider text-accent-gold font-bold">
             Best
           </span>
-          <span v-if="r.zone" class="text-[0.6rem] text-text-dim ml-auto">
+          <span v-if="r.zone" class="text-[10px] text-text-dim ml-auto">
             <AreaInline :reference="r.zone" />
           </span>
         </div>
 
         <!-- Numbers grid -->
-        <div class="grid grid-cols-[repeat(auto-fit,minmax(64px,1fr))] gap-1 text-[0.7rem] tabular-nums">
+        <div class="grid grid-cols-[repeat(auto-fit,minmax(64px,1fr))] gap-1 text-[10px] tabular-nums">
           <div>
             <div class="text-[10px] leading-tight uppercase tracking-wider text-text-dim">Yield</div>
             <div class="text-text-primary font-semibold">{{ r.effective_yield.toFixed(1) }}</div>
@@ -149,7 +149,7 @@
         </div>
 
         <!-- Yield breakdown footer -->
-        <div class="text-[0.6rem] text-text-dim flex flex-wrap gap-x-3">
+        <div class="text-[10px] text-text-dim flex flex-wrap gap-x-3">
           <span v-if="r.primary_avg > 0">
             Primary: <span class="text-text-secondary">{{ r.primary_avg.toFixed(1) }}/survey</span>
             ({{ r.primary_times_seen }}/{{ r.total_completions }})
@@ -164,7 +164,7 @@
         </div>
       </div>
 
-      <p class="text-[0.6rem] text-text-dim italic">
+      <p class="text-[10px] text-text-dim italic">
         Yield includes primary loot + expected speed-bonus contribution. Time estimates are averaged
         from ended sessions only — they improve as you complete more runs.
       </p>

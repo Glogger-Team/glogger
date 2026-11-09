@@ -11,8 +11,8 @@
         <div v-if="recipe.skill" class="text-text-muted text-xs">
           {{ recipe.skill }}<span v-if="recipe.skill_level_req"> · Lv {{ recipe.skill_level_req }}</span>
         </div>
-        <span v-if="isLearned === true" class="text-accent-green text-[0.65rem]">✓ Learned</span>
-        <span v-else-if="isLearned === false" class="text-text-dim text-[0.65rem]">Not learned</span>
+        <span v-if="isLearned === true" class="text-accent-green text-[10px]">✓ Learned</span>
+        <span v-else-if="isLearned === false" class="text-text-dim text-[10px]">Not learned</span>
       </div>
     </div>
   </div>
@@ -22,7 +22,7 @@
   </div>
 
   <div v-if="recipe.ingredients.length" class="mb-2">
-    <div class="text-text-muted text-[0.65rem] uppercase tracking-wide mb-1">Ingredients</div>
+    <div class="text-text-muted text-[10px] leading-tight uppercase tracking-wide mb-1">Ingredients</div>
     <div
       v-for="(ing, i) in recipe.ingredients"
       :key="i"
@@ -44,7 +44,7 @@
 
   <!-- Currency costs when the recipe has no item ingredients at all -->
   <div v-else-if="recipe.costs?.length" class="mb-2">
-    <div class="text-text-muted text-[0.65rem] uppercase tracking-wide mb-1">Cost</div>
+    <div class="text-text-muted text-[10px] leading-tight uppercase tracking-wide mb-1">Cost</div>
     <div
       v-for="(cost, i) in recipe.costs"
       :key="i"
@@ -55,7 +55,7 @@
   </div>
 
   <div v-if="recipe.result_items.length" class="mb-2">
-    <div class="text-text-muted text-[0.65rem] uppercase tracking-wide mb-1">Results</div>
+    <div class="text-text-muted text-[10px] leading-tight uppercase tracking-wide mb-1">Results</div>
     <div
       v-for="(res, i) in recipe.result_items"
       :key="i"
@@ -68,28 +68,28 @@
     </div>
   </div>
 
-  <div v-if="recipe.reward_skill_xp" class="text-text-muted text-[0.7rem] mt-2 pt-2 border-t border-border-subtle">
+  <div v-if="recipe.reward_skill_xp" class="text-text-muted text-[10px] mt-2 pt-2 border-t border-border-subtle">
     {{ recipe.reward_skill ?? recipe.skill }} +{{ recipe.reward_skill_xp }} XP
     <span v-if="recipe.reward_skill_xp_first_time" class="text-text-dim">
       (first time: +{{ recipe.reward_skill_xp_first_time }})
     </span>
   </div>
 
-  <div v-if="costBreakdown" class="text-text-muted text-[0.7rem] mt-2 pt-2 border-t border-border-subtle flex items-center gap-2">
+  <div v-if="costBreakdown" class="text-text-muted text-[10px] mt-2 pt-2 border-t border-border-subtle flex items-center gap-2">
     <span>Cost:</span>
     <span v-if="costBreakdown.total_cost !== null" class="text-accent-gold">{{ formatGold(costBreakdown.total_cost) }}</span>
     <span v-else class="text-text-dim italic">unknown</span>
     <span v-if="costBreakdown.cost_per_unit !== null && (recipe.result_items[0]?.stack_size ?? 1) > 1" class="text-text-dim">
       ({{ formatGold(costBreakdown.cost_per_unit) }}/ea)
     </span>
-    <span v-if="costBreakdown.has_unknown_prices" class="text-text-dim text-[0.6rem]">*partial</span>
+    <span v-if="costBreakdown.has_unknown_prices" class="text-text-dim text-[10px]">*partial</span>
   </div>
 
   <div v-if="recipe.keywords?.length" class="flex flex-wrap gap-1 mt-2">
     <span
       v-for="keyword in recipe.keywords"
       :key="keyword"
-      class="bg-entity-recipe/10 text-entity-recipe px-1.5 py-0.5 rounded-sm text-[0.65rem] uppercase tracking-wide"
+      class="bg-entity-recipe/10 text-entity-recipe px-1.5 py-0.5 rounded-sm text-[10px] leading-tight uppercase tracking-wide"
     >
       {{ keyword }}
     </span>
