@@ -84,7 +84,7 @@ import type {
   StallTimeseriesParams,
   TrendsPeriod,
 } from '../../types/stallTracker'
-import { chartPalette as PALETTE, themeText } from '../../composables/useChartTheme'
+import { chartPalette as PALETTE, themeText, themeTooltipBg, themeTooltipBorder } from '../../composables/useChartTheme'
 
 const store = useStallTrackerStore()
 
@@ -106,6 +106,8 @@ const metric = ref<Metric>('gold')
 
 const textPrimary = themeText('--color-text-primary', '#d4d4d4')
 const textSecondary = themeText('--color-text-secondary', '#a0a0a0')
+const tooltipBg = themeTooltipBg()
+const tooltipBorder = themeTooltipBorder()
 
 // Dropdown 2 — summary view. "Total sales" maps to the all-label (null).
 const summaryOptions = ['Top 5 grossing', 'Top 10 grossing']
@@ -320,9 +322,9 @@ const config = computed<VueUiXyConfig>(() => {
       title: { show: false },
       tooltip: {
         show: true,
-        backgroundColor: '#27272a',
+        backgroundColor: tooltipBg,
         color: textPrimary,
-        borderColor: '#3f3f46',
+        borderColor: tooltipBorder,
         borderWidth: 1,
         borderRadius: 4,
         fontSize: 12,
