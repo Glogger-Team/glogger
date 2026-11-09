@@ -3,6 +3,7 @@
 Small tasks and notes that don't belong in a dedicated plan.
 
 Completed slices (fanout 2026-11-08 — PRs #152/#153/#154, all MERGED to main): WatchRule nullable `source` tag for auto_skillbook rules (`settings.rs`, `WatchwordsView.vue`; #152); character-quests screen doc refreshed to the 5-tab snapshot model (`character-quests.md`; #153); vendor context-menu Esc routed via shared overlay stack, poems Esc stays intentionally local (`VendorCouncilWidget.vue`, `PoemsView.vue`; #154).
+Completed slices (fanout 2026-11-09 — PRs #159/#160/#161, all MERGED to main): tooltip/shared micro text sizes consolidated to type scale (`SkillCard.vue`, `SourcesPanel.vue`, `ItemTooltip.vue`, `RecipeTooltip.vue`, `QuestTooltip.vue`, `ShelfChip.vue`, `ItemCostCalculator.vue`; #159); chart palette + theme reader deduped into shared `useChartTheme.ts` (`SkillsTab.vue`, `LootDonutChart.vue`, `StallTrendsTab.vue`; #160); poem detail arrow keys gated on overlay Esc stack (`PoemsView.vue`; #161).
 
 > **Signal contract (2026-11-03):** the 10/21 client removed verbose `LocalPlayer:` events from Player.log — that stream is dark and not coming back. Replacements for the dark stream arrive via richer character-report exports (Chat.log and game-written `Books/` files, e.g. `Books/PlayerShopLog_*.txt`, remain supported sources — the `hired` action below arrives that way). Entries below say *report-only* where they wait on a new report field, and *dropped* where the only source was the log. The 10/21-10/28 triage history (`Player.log game-event outage triage`, per-tracker casualty verdicts) is in git history, not repeated here.
 
@@ -46,7 +47,7 @@ WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history.
 - [ ] Ingestion architecture: no shared schema contract for Tauri event payloads (no specta/ts-rs/typeshare). Coordinator is a manual dispatch hub; history tables exist per-domain except `game_state_*`. Future re-source designs belong here.
   - **Effort: Medium | Impact: Medium (reliability)**
 
-- [ ] UI/UX standardization: Table sweep done — **33 instances across 30 files** (`ux-standards.md` checklist owns it; was 35 — batch-1 removed the MarketView stall-observations table and the orphan LiveInventoryTab table; stall inventory rework removed the Recently Sold Out table; +1 Farming Sources report). Remaining: heading-class standardization (`typography-audit.md`), color Tier 3 cleanup (`color-standards.md`).
+- [ ] UI/UX standardization: Table sweep done — **33 instances across 30 files** (`ux-standards.md` checklist owns it; was 35 — batch-1 removed the MarketView stall-observations table and the orphan LiveInventoryTab table; stall inventory rework removed the Recently Sold Out table; +1 Farming Sources report). Remaining: heading-class standardization (`typography-audit.md`), color Tier 3 leftovers (`color-standards.md`). Done 2026-11-09: tooltip/shared/surveying micro sizes consolidated to type scale (#159); chart palette + theme reader deduped into `useChartTheme.ts` (#160). Open backlog from #159 review: fixed `text-[10px]` captions don't scale with Interface Size — needs a scale-owner decision (reconcile audit scale with root-font scaling, migrate all ~400 sites together).
   - **Effort: Medium (iterative) | Impact: Medium**
 
 ---
@@ -129,4 +130,4 @@ Roulette CHECK, NpcResolve NOCASE, trip-router nits, stall aggregation, shop-log
 ## UI backlog
 
 - [ ] Portrait-mode / narrow-window friendly (user-requested 2026-10-28): closable panels/dialogs can end up off-screen with no reachable close affordance when the app gets narrow. Scope: audit dialogs/overlays/drawers for min-width/overflow traps; keep a close control reachable at narrow widths (responsive layout, scrollable content, sticky/fallback close, Esc handling).
-  - **Batches 1–3 DONE (in history, pruned 2026-11-08).** Remaining: 390px visual proof pass. Esc-stack scoping for the vendor context menu DONE 2026-11-08 (PR #154 — menu routes via shared stack; poem detail Esc intentionally local). Poem arrow-keys-not-stack-gated stays backlog (minor).
+  - **Batches 1–3 DONE (in history, pruned 2026-11-08).** Remaining: 390px visual proof pass. Esc-stack scoping for the vendor context menu DONE 2026-11-08 (PR #154 — menu routes via shared stack; poem detail Esc intentionally local). Poem arrow-key stack-gating DONE 2026-11-09 (PR #161 — arrows yield when an overlay sits above; Esc stays local).
