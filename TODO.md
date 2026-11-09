@@ -139,5 +139,5 @@ Roulette CHECK, NpcResolve NOCASE, trip-router nits, stall aggregation, shop-log
 
 - [ ] Help Known Issues list — audit every entry against current behavior; remove fixed, reword stale.
 - [ ] Settings text and entries — audit for stale copy and already-implemented items; remove or update.
-- [ ] Hopology widget "to study" list — users report studied pieces still listed; verify studied-state tracking and fix.
+- [ ] Hoplology widget "to study" list — users report studied pieces still listed; verify studied-state tracking and fix.
 - [ ] LocalPlayer collection routes — remove old vestiges; VIP reports are the only future source for that data.
