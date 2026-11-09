@@ -610,9 +610,8 @@ def main():
     if args.notes_file:
         if triage_notes_file(rows, root, tag, prev_tag, args.notes_file) != 0:
             return 1
-    elif rows and not args.yes:
-        if triage_editor_path(rows, root, tag) != 0:
-            return 1
+    elif rows and not args.yes and triage_editor_path(rows, root, tag) != 0:
+        return 1
     # --yes: non-interactive automation path. Approve drafts as-is so CI
     # uses the triaged file instead of silently falling back.
     if rows:
