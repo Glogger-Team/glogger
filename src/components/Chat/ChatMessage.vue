@@ -72,6 +72,6 @@ const channelClass = computed(() => {
     'lfg': 'text-channel-lfg',
   }
 
-  return channelColors[channel || ''] || 'text-text-muted'
+  return channelColors[channel || ''] || 'text-text-secondary'
 })
 </script>
