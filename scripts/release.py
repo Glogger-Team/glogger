@@ -10,14 +10,15 @@ Usage:
 
 With no version argument, suggests the next tag from commit history via
 next-version.py and asks for confirmation unless --yes is given.
---dry-run renders the triage draft and tags nothing. The triage pass opens
-$EDITOR with one draft line per in-range feat/fix/impv commit (trailer
-verbatim when present, else a humanized guess); --yes skips the editor and
-approves drafts as-is.
+--dry-run renders the triage draft and tags nothing (it consumes no
+--notes-file). The triage pass opens $EDITOR with one draft line per
+in-range feat/fix/impv commit (trailer verbatim when present, else a
+humanized guess); --yes skips the editor and approves drafts as-is.
 
 Agent recipe (see AGENTS.md release row):
     python scripts/release.py --dry-run                 # rows to humanize
-    # write /tmp/notes.txt (STE-flavored, ste-lint 0 hard), then:
+    # write /tmp/notes.txt (STE-flavored; the asd-ste100 skill's external
+    # ste-lint.py reports 0 hard violations), then:
     python scripts/release.py vX.Y.Z --notes-file /tmp/notes.txt
     # merge the notes PR, then:
     python scripts/release.py vX.Y.Z --tag-only
@@ -600,13 +601,18 @@ def main():
 
     rows = triage_draft_rows(range_ref, script_dir)
     if args.dry_run:
+        if args.notes_file:
+            print("Error: --dry-run renders drafts only; --notes-file is not consumed")
+            return 1
         for r in rows:
             print(f"[{r['section']}] {r['draft']}")
         return 0
     if args.notes_file:
-        return triage_notes_file(rows, root, tag, prev_tag, args.notes_file)
-    if rows and not args.yes:
-        return triage_editor_path(rows, root, tag)
+        if triage_notes_file(rows, root, tag, prev_tag, args.notes_file) != 0:
+            return 1
+    elif rows and not args.yes:
+        if triage_editor_path(rows, root, tag) != 0:
+            return 1
     # --yes: non-interactive automation path. Approve drafts as-is so CI
     # uses the triaged file instead of silently falling back.
     if rows:
