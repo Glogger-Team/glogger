@@ -446,21 +446,26 @@ async function zeroItems(targets: InventoryItem[]): Promise<number> {
   const owner = store.currentOwner
   if (!owner || targets.length === 0) return 0
   let zeroed = 0
-  for (const item of targets) {
-    if (store.currentOwner !== owner) break
-    await invoke('save_stall_baseline', {
-      input: {
-        owner,
-        item: item.item,
-        quantity: 0,
-        priceUnit: null,
-        note: null,
-      } satisfies StallBaselineInput,
-    })
-    zeroed += 1
+  try {
+    for (const item of targets) {
+      if (store.currentOwner !== owner) break
+      await invoke('save_stall_baseline', {
+        input: {
+          owner,
+          item: item.item,
+          quantity: 0,
+          priceUnit: null,
+          note: null,
+        } satisfies StallBaselineInput,
+      })
+      zeroed += 1
+    }
+  } finally {
+    // A mid-loop failure still repaints: written zero rows must show even
+    // when a later save throws, or the table reads stale stock.
+    await Promise.all([reload(), loadBaselines()])
+    await store.refresh()
   }
-  await Promise.all([reload(), loadBaselines()])
-  await store.refresh()
   return zeroed
 }
 
@@ -481,14 +486,17 @@ async function clearUnsure() {
   }
 }
 
-/** Per-row Clear: confirm-guarded so a stray click can't wipe a count. */
+/** Per-row Clear: confirm-guarded so a stray click can't wipe a count.
+ * Snapshots the owner before the dialog: a character switch while it sits
+ * open aborts instead of zeroing the old character's item under the new one. */
 async function clearOneItem(item: InventoryItem) {
-  if (!store.currentOwner || loading.value || stockBusy.value) return
+  const owner = store.currentOwner
+  if (!owner || loading.value || stockBusy.value) return
   const ok = await confirm(
-    `Set the stock of ${item.item} to zero for ${store.currentOwner}? Enter a new count in Manual stock entry below if you still sell this item.`,
+    `Set the stock of ${item.item} to zero for ${owner}? Enter a new count in Manual stock entry below if you still sell this item.`,
     { title: 'Clear stock', kind: 'warning' },
   )
-  if (!ok || stockBusy.value) return
+  if (!ok || stockBusy.value || store.currentOwner !== owner) return
   zeroingItem.value = item.item
   try {
     await zeroItems([item])
@@ -509,7 +517,7 @@ async function zeroAllStock() {
     `Set the stock of all ${targets.length} in-stock items to zero for ${owner}? Enter new counts in Manual stock entry below for items you still sell.`,
     { title: 'Zero all stock', kind: 'warning' },
   )
-  if (!ok || stockBusy.value) return
+  if (!ok || stockBusy.value || store.currentOwner !== owner) return
   zeroingAll.value = true
   try {
     const zeroed = await zeroItems(targets)
@@ -542,15 +550,23 @@ const baselineError = ref<string | null>(null)
  * DELETE or a single save — the final set would match neither operation. */
 const stockBusy = computed(() => clearingUnsure.value || zeroingAll.value || zeroingItem.value != null || baselineSaving.value)
 
+let baselinesToken = 0
+
 async function loadBaselines() {
   if (!store.currentOwner) {
     baselines.value = []
     return
   }
+  const token = ++baselinesToken
+  const ownerAtCall = store.currentOwner
   try {
-    baselines.value = await invoke<StallBaseline[]>('get_stall_baselines', {
-      owner: store.currentOwner,
+    const rows = await invoke<StallBaseline[]>('get_stall_baselines', {
+      owner: ownerAtCall,
     })
+    // A slow prior-owner response must not overwrite the new owner's list —
+    // the Rebuild confirm names baselines.length, which would then lie.
+    if (token !== baselinesToken || ownerAtCall !== store.currentOwner) return
+    baselines.value = rows
   } catch (e) {
     console.error('[StallInventoryTab] loadBaselines failed:', e)
   }
