@@ -246,7 +246,64 @@ pub async fn resolve_item(
     Ok(state.read().await.resolve_item(&reference).cloned())
 }
 
+/// Resolve one batch reference to its canonical item.
+/// Exact/internal/mod-strip first, then a double-affix fallback for crafted
+/// equipment: strip one known TSys prefix AND one known suffix, and accept
+/// only if the remainder is a known equipment item. Plain substring matching
+/// is deliberately NOT used here — any unknown name containing an equipment
+/// name (e.g. "Apple Kilt Powder" containing "Kilt") would otherwise resolve
+/// to equipment metadata it has nothing to do with, which wrongly excludes
+/// non-equipment items from storage consolidation suggestions.
+/// Returns `None` for unknowns that match no known affix pair.
+fn resolve_batch_reference(data: &GameData, reference: &str) -> Option<ItemInfo> {
+    if let Some(item) = data.resolve_item(reference) {
+        return Some(item.clone());
+    }
+    let mut prefixes: Vec<&str> = Vec::new();
+    let mut suffixes: Vec<&str> = Vec::new();
+    for info in data.tsys.client_info.values() {
+        if let Some(p) = info.prefix.as_deref()
+            && !p.is_empty()
+            && !prefixes.contains(&p) {
+                prefixes.push(p);
+            }
+        if let Some(s) = info.suffix.as_deref()
+            && !s.is_empty()
+            && !suffixes.contains(&s) {
+                suffixes.push(s);
+            }
+    }
+    for prefix in &prefixes {
+        let Some(rest) = reference.strip_prefix(*prefix) else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        if rest.is_empty() {
+            continue;
+        }
+        for suffix in &suffixes {
+            let Some(base) = rest.strip_suffix(*suffix) else {
+                continue;
+            };
+            let base = base.trim_end();
+            if base.is_empty() {
+                continue;
+            }
+            if let Some(item) = data.item_by_name(base)
+                && item.equip_slot.is_some() {
+                    return Some(item.clone());
+                }
+        }
+    }
+    None
+}
+
 /// Resolve a batch of item references.
+/// Falls back to affix-pair matching (see `resolve_batch_reference`) when
+/// exact/internal/mod-strip resolution fails: crafted names carry TSys affixes
+/// on both ends (e.g. "Hailin' Thorian Kilt of Deathspark"), and single-strip
+/// resolution recovers at most one of them. Only known affix pairs resolve, so
+/// unrelated names merely containing an equipment name stay unresolved.
 #[tauri::command]
 pub async fn resolve_items_batch(
     references: Vec<String>,
@@ -255,8 +312,8 @@ pub async fn resolve_items_batch(
     let data = state.read().await;
     let mut result = std::collections::HashMap::new();
     for ref_str in references {
-        if let Some(item) = data.resolve_item(&ref_str) {
-            result.insert(ref_str, item.clone());
+        if let Some(item) = resolve_batch_reference(&data, &ref_str) {
+            result.insert(ref_str, item);
         }
     }
     Ok(result)
@@ -6143,5 +6200,93 @@ mod build_stats_parsing_tests {
     fn select_default_tier_key_empty_is_none() {
         let t: HashMap<String, TsysTierInfo> = HashMap::new();
         assert!(select_default_tier_key(&t, 90).is_none());
+    }
+}
+
+#[cfg(test)]
+mod resolve_batch_reference_tests {
+    use super::resolve_batch_reference;
+    use crate::game_data::GameData;
+    use crate::game_data::ItemInfo;
+    use std::collections::HashMap;
+
+    fn item(id: u32, name: &str, slot: Option<&str>) -> ItemInfo {
+        ItemInfo {
+            id,
+            name: name.to_string(),
+            description: None,
+            icon_id: None,
+            value: None,
+            max_stack_size: None,
+            keywords: Vec::new(),
+            effect_descs: Vec::new(),
+            internal_name: None,
+            food_desc: None,
+            equip_slot: slot.map(str::to_string),
+            num_uses: None,
+            skill_reqs: None,
+            behaviors: None,
+            bestow_recipes: None,
+            bestow_ability: None,
+            bestow_quest: None,
+            bestow_title: None,
+            craft_points: None,
+            crafting_target_level: None,
+            tsys_profile: None,
+            raw_json: serde_json::Value::Null,
+        }
+    }
+
+    fn game_data() -> GameData {
+        let mut data = GameData::empty();
+        data.items = HashMap::from([
+            (1u32, item(1, "Thorian Kilt", Some("Legs"))),
+            (2u32, item(2, "Kilt", Some("Legs"))),
+            (3u32, item(3, "Apple", None)),
+        ]);
+        data.item_name_index = HashMap::from([
+            ("Thorian Kilt".to_string(), 1u32),
+            ("Kilt".to_string(), 2u32),
+            ("Apple".to_string(), 3u32),
+        ]);
+        data.tsys.client_info = HashMap::from([(
+            "power_test".to_string(),
+            crate::game_data::TsysClientInfo {
+                internal_name: None,
+                skill: None,
+                slots: Vec::new(),
+                prefix: Some("Hailin' ".to_string()),
+                suffix: Some(" of Deathspark".to_string()),
+                tiers: HashMap::new(),
+                is_unavailable: None,
+                is_hidden_from_transmutation: None,
+                raw_json: serde_json::Value::Null,
+            },
+        )]);
+        data
+    }
+
+    #[test]
+    fn double_affix_crafted_name_resolves_to_longest_base() {
+        // Both a prefix and a suffix wrap the base; single-strip resolution
+        // cannot recover it, but the affix-pair fallback strips one known
+        // prefix AND one known suffix, landing on "Thorian Kilt".
+        let data = game_data();
+        let got = resolve_batch_reference(&data, "Hailin' Thorian Kilt of Deathspark");
+        assert_eq!(got.map(|i| i.name).as_deref(), Some("Thorian Kilt"));
+    }
+
+    #[test]
+    fn non_equipment_unknown_resolves_to_none() {
+        let data = game_data();
+        assert!(resolve_batch_reference(&data, "Mysterious Bauble of Nowhere").is_none());
+    }
+
+    #[test]
+    fn unrelated_name_containing_equipment_name_resolves_to_none() {
+        // "Apple Kilt Powder" contains "Kilt" but carries no known affix pair,
+        // so it must not resolve to equipment metadata.
+        let data = game_data();
+        assert!(resolve_batch_reference(&data, "Apple Kilt Powder").is_none());
     }
 }

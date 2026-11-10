@@ -194,8 +194,6 @@ async function loadData() {
 async function loadToStudyItems() {
   toStudyLoading.value = true
   try {
-    const studiedNames = new Set(studies.value.map(s => s.item_name.toLowerCase()))
-
     // Collect unique item names from inventory and storage
     const candidates = new Map<string, string>() // name -> location
 
@@ -215,9 +213,16 @@ async function loadToStudyItems() {
       return
     }
 
-    // Resolve all items to get their base CDN names and check for equip_slot
-    const allNames = [...candidates.keys()]
+    // Resolve candidates AND studied names through the same batch call so both
+    // sides compare canonical CDN base names. Studied rows store base names,
+    // but resolve them anyway: a CDN rename would otherwise split the compare
+    // (raw studied vs resolved candidate). Unresolved names fall back to raw.
+    const studiedRaw = studies.value.map(s => s.item_name)
+    const allNames = [...new Set([...candidates.keys(), ...studiedRaw])]
     const resolved = await gameData.resolveItemsBatch(allNames)
+    const studiedNames = new Set(
+      studiedRaw.map(n => (resolved[n]?.name ?? n).toLowerCase()),
+    )
 
     // Deduplicate by base name: different crafted variants resolve to the same base item
     const seen = new Set<string>()
