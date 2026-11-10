@@ -1252,15 +1252,17 @@ fn migration_v89_collapse_stall_reingest_dupes(conn: &Connection) -> Result<()> 
 /// scoping as v89 (`added`/`visible`/`configured`/`removed` — NEVER
 /// `bought`/`collected`/`hired`/`unknown`, whose identical same-minute
 /// multiplicity is real revenue), owner-scoped via `COALESCE(owner, '')`,
-/// newest id wins, mute OR-ed onto the survivor. Shifted re-ingest rows
-/// come from SEPARATE ingest calls, genuine repeats from ONE call, so the
-/// collapse fires only when a group spans 2+ `created_at` values and keeps
-/// every row at the group's `MAX(created_at)` (the latest call's rows):
-/// same-call groups (one `created_at`, e.g. 4x contiguous removes in one
-/// file) are left alone. Residual: one call straddling a second boundary
-/// would misfire — 0 of 52 live groups observed; `created_at` is one
-/// INSERT batch per ingest call on every path. Idempotent: a no-op once
-/// each (owner, line) holds one `created_at`.
+/// newest id wins. Shifted re-ingest rows come from SEPARATE ingest calls,
+/// genuine repeats from ONE call, so the collapse fires only when a group
+/// spans 2+ `created_at` values and keeps every row at the group's
+/// `MAX(created_at)` (the latest call's rows): same-call groups (one
+/// `created_at`, e.g. 4x contiguous removes in one file) are left alone.
+/// Mute flags are NOT carried: the feature is days old, any mute caught in
+/// a collapsed group goes back to visible and the user re-mutes. Residual:
+/// one call straddling a second boundary would misfire — 0 of 52 live
+/// groups observed; `created_at` is one INSERT batch per ingest call on
+/// every path. Idempotent: a no-op once each (owner, line) holds one
+/// `created_at`.
 fn migration_v90_collapse_stall_same_batch_dupes(conn: &Connection) -> Result<()> {
     // Same minimal-fixture guard as v87/v88/v89: skip instead of failing.
     let table_exists: bool = conn
@@ -1276,7 +1278,7 @@ fn migration_v90_collapse_stall_same_batch_dupes(conn: &Connection) -> Result<()
     conn.execute_batch(
         "CREATE TEMPORARY TABLE stall_v90_samebatch AS
          SELECT own, event_timestamp, raw_message, MAX(id) AS keep_id,
-                MAX(ignored) AS keep_muted, MAX(created_at) AS keep_ts
+                MAX(created_at) AS keep_ts
          FROM (SELECT *, COALESCE(owner, '') AS own FROM stall_events)
          WHERE NOT (log_title = 'Imported' AND log_timestamp = 'imported')
            AND action IN ('added', 'visible', 'configured', 'removed')
@@ -1284,8 +1286,6 @@ fn migration_v90_collapse_stall_same_batch_dupes(conn: &Connection) -> Result<()
          HAVING COUNT(*) > 1
             AND COUNT(DISTINCT entry_index) > 1
             AND COUNT(DISTINCT created_at) > 1;
-         UPDATE stall_events SET ignored = 1 WHERE id IN (
-           SELECT keep_id FROM stall_v90_samebatch WHERE keep_muted = 1);
          DELETE FROM stall_events
          WHERE NOT (log_title = 'Imported' AND log_timestamp = 'imported')
            AND action IN ('added', 'visible', 'configured', 'removed')
@@ -5196,7 +5196,7 @@ mod tests {
             )
             .expect("row");
         assert_eq!(idx, 7, "latest-call dupe survives");
-        assert_eq!(muted, 1, "mute OR-ed onto the survivor");
+        assert_eq!(muted, 0, "no mute carry: collapsed mutes go back to visible");
         let repeats: i64 = c
             .query_row(
                 "SELECT COUNT(*) FROM stall_events
