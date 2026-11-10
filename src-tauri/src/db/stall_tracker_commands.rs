@@ -192,11 +192,12 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
     // if another character ALREADY holds an incoming occurrence's
     // (ts, msg, idx) triple, `INSERT OR IGNORE` would skip A's replacement
     // AFTER the witness DELETE already removed A's old row — silently
-    // losing A's sale. Bail BEFORE deleting: such a batch is by
+    // losing A's sale. Bail before inserting/committing: such a batch is by
     // construction not a same-owner re-ingest (its indexes belong to
-    // another owner's batch), so the whole call aborts with no rows
-    // touched. Re-ingest batches that reuse only their own owner's indexes
-    // are unaffected: a same-owner witness DELETE clears the slot first.
+    // another owner's batch), so the whole call aborts and the uncommitted
+    // witness DELETEs above roll back with no rows committed. Re-ingest
+    // batches that reuse only their own owner's indexes are unaffected: a
+    // same-owner witness DELETE already cleared the slot.
     {
         let mut clash = tx
             .prepare(
