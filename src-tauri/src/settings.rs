@@ -629,10 +629,12 @@ mod tests {
     use super::*;
 
     /// Every `AppSettings` key must survive being dropped from `settings.json`:
-    /// strip each serialized key in turn and assert the file still parses
-    /// (missing keys fall back to `Default` / `#[serde(default)]`). Catches
-    /// the class where the frontend stops sending a key the backend requires
-    /// (2026-11-09: `auto_watch_on_startup` removal broke every save).
+    /// strip each serialized key in turn and assert the file still parses to the
+    /// same value as the full baseline (missing keys fall back to `Default` /
+    /// `#[serde(default)]`). Catches the class where the frontend stops sending
+    /// a key the backend requires (2026-11-09: `auto_watch_on_startup` removal
+    /// broke every save), including parseable-but-wrong fallbacks (e.g. 0 for a
+    /// retention-days field whose default is 90).
     #[test]
     fn every_settings_key_has_a_deserialize_fallback() {
         let full = serde_json::to_value(AppSettings::default()).unwrap();
@@ -642,12 +644,22 @@ mod tests {
             "baseline must cover the whole struct, got {} keys",
             obj.len()
         );
+        // A parseable-but-wrong fallback is as bad as a failure: stripping every
+        // key must round-trip to the same value as the full baseline (e.g. a
+        // missing `auto_purge_days` falling back to 0 instead of 90 would silently
+        // clamp retention and evict nearly everything).
+        let defaults = AppSettings::default();
+        let defaults_value = serde_json::to_value(&defaults).unwrap();
         for key in obj.keys() {
             let mut stripped = obj.clone();
             stripped.remove(key);
-            let v = serde_json::Value::Object(stripped);
-            serde_json::from_value::<AppSettings>(v)
+            let parsed: AppSettings = serde_json::from_value(serde_json::Value::Object(stripped))
                 .unwrap_or_else(|e| panic!("settings.json without '{key}' must still parse: {e}"));
+            let reparsed = serde_json::to_value(&parsed).unwrap();
+            assert_eq!(
+                reparsed, defaults_value,
+                "settings.json without '{key}' must fall back to Default values"
+            );
         }
     }
 
