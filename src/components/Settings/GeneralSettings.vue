@@ -20,7 +20,7 @@
         <p class="mt-2 text-text-muted text-xs leading-relaxed">
           Default location: %APPDATA%\..\LocalLow\Elder Game\Project Gorgon\
           <br />
-          This folder holds Reports and (on Windows) Player.log and ChatLogs.
+          This folder holds Reports and ChatLogs. On Windows, Player.log lives here too.
           On macOS, Player.log lives separately under ~/Library/Logs/Elder Game/Project Gorgon/.
           Auto-detection works on Windows and macOS.
         </p>
