@@ -151,6 +151,8 @@ export interface InventoryResult {
 export interface StallInventoryParams {
   owner?: string | null;
   periodDays?: number | null;
+  /** History window in days; null/<=0 replays the full history. */
+  windowDays?: number | null;
 }
 
 // ── Opening-stock baseline (manual ground truth) ─────────────────────────
@@ -221,4 +223,20 @@ export interface ImportResult {
 export interface ExportResult {
   files_written: number;
   events_exported: number;
+}
+
+/** One counted line of a recount preview. camelCase to match Rust serde rename. */
+export interface RecountLine {
+  item: string
+  quantity: number
+  priceUnit: number | null
+}
+
+/** Preview of `preview_stall_recount`: counts from the fresh book plus the
+ * in-stock items the book does not cover (zeroed on apply). */
+export interface RecountPreview {
+  owner: string
+  counted: RecountLine[]
+  zeroed: string[]
+  bookEntries: number
 }

@@ -41,6 +41,19 @@
       </p>
       <div class="flex items-center gap-2">
         <label class="flex items-center gap-2 text-xs text-text-secondary">
+          History
+          <select
+            v-model.number="windowDays"
+            title="How far back the stock replay looks. Older listings age out — the game logs no takedown line, so ancient adds replay as phantom stock."
+            class="bg-surface-elevated border border-border-default rounded px-2 py-1 text-xs text-text-primary focus:outline-none focus:border-accent-gold/50">
+            <option :value="30">Last 30 days</option>
+            <option :value="60">Last 60 days</option>
+            <option :value="100">Last 100 days</option>
+            <option :value="365">Last year</option>
+            <option :value="0">All history</option>
+          </select>
+        </label>
+        <label class="flex items-center gap-2 text-xs text-text-secondary">
           Sales period
           <select
             v-model.number="periodDays"
@@ -134,66 +147,65 @@
         </template>
       </DataTable>
     </div>
-    <!-- Clear unsure — one click to zero-out every row whose quantity is a
-         guess (truncated history or fallback-priced). Each becomes a zeroed
-         manual count so the guess never returns; recount any item you
-         actually still stock below. -->
+    <!-- Stock reset — one obvious action. Recount from a fresh book is the
+         default: counts come from its lines, ghosts get zero cutoffs, sales
+         history is untouched. Preview shows the set/zero split in the
+         confirm dialog before anything writes. The old hand paths live under
+         Advanced below (single-item fix, full hand recount, undo). -->
     <div
-      v-if="unsureCount > 0"
-      class="flex items-center justify-between gap-2 flex-shrink-0 border border-amber-400/30 bg-amber-400/5 rounded px-3 py-2">
+      class="flex items-center justify-between gap-2 flex-shrink-0 border border-accent-gold/40 bg-accent-gold/5 rounded px-3 py-2">
       <p class="text-xs text-text-secondary italic m-0">
-        {{ unsureCount }} item{{ unsureCount === 1 ? '' : 's' }} {{ unsureCount === 1 ? 'has' : 'have' }} guessed {{ unsureCount === 1 ? 'quantity' : 'quantities' }} (mid-history or last-sale priced).
-      </p>
-      <button
-        type="button"
-        class="px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-red-500/50 hover:text-red-400 text-text-primary disabled:opacity-50 flex-shrink-0"
-        :disabled="stockBusy || loading"
-        @click="clearUnsure">
-        {{ clearingUnsure ? 'Clearing…' : `Clear unsure (${unsureCount})` }}
-      </button>
-    </div>
-
-    <!-- Zero all — confirm-guarded bulk reset. Every in-stock row gets a
-         zeroed manual count (same mechanism as per-row Clear); recount
-         survivors in Manual stock entry below. Shown while stock remains. -->
-    <div
-      v-if="inStockCount > 0"
-      class="flex items-center justify-between gap-2 flex-shrink-0 border border-border-default rounded px-3 py-2">
-      <p class="text-xs text-text-secondary italic m-0">
-        Start over: set every item above to zero, then enter new counts for what is in your stall.
-      </p>
-      <button
-        type="button"
-        class="px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-red-500/50 hover:text-red-400 text-text-primary disabled:opacity-50 flex-shrink-0"
-        :disabled="stockBusy || loading"
-        @click="zeroAllStock">
-        {{ zeroingAll ? 'Zeroing…' : `Zero all stock (${inStockCount})` }}
-      </button>
-    </div>
-    <!-- Rebuild from log — delete every manual count WITHOUT touching
-         shop-log events. With no baselines in the way, all `added` /
-         `visible` / `bought` / `removed` events replay from the start, so a
-         fresh log rebuilds stock from its `added` lines. The opposite of
-         Zero-all above (which stamps zero-counts that drop older events). -->
-    <div
-      v-if="baselines.length > 0"
-      class="flex items-center justify-between gap-2 flex-shrink-0 border border-border-default rounded px-3 py-2">
-      <p class="text-xs text-text-secondary italic m-0">
-        Rebuild counts from the shop log instead? Removes every manual count, including hidden zeroed ones — history stays.
+        Counts don't match your stall? Empty your stall in-game, add everything back, save the book — then fix it in one click. Sales history stays.
       </p>
       <button
         type="button"
         class="px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-accent-gold/50 text-text-primary disabled:opacity-50 flex-shrink-0"
-        :disabled="stockBusy || loading"
-        @click="removeAllBaselines">
-        {{ baselineSaving ? 'Removing…' : `Rebuild from log (${baselines.length})` }}
+        :disabled="stockBusy || loading || !store.currentOwner"
+        @click="recountFromBook">
+        {{ recounting ? 'Recounting…' : 'Fix stock from fresh log…' }}
       </button>
     </div>
-
-    <!-- Manual stock entry — counted qty + price for items whose log history
-         scrolled out, and the store for Clear-unsure evictions. One row per
-         item. Re-counting replaces the row; qty 0 marks the item cleared. -->
+    <!-- Advanced — collapsed by default. Undo (rebuild from log: removes
+         every manual count, events untouched) plus the single-item and
+         full-hand paths Recount replaces. Nothing here is needed for the
+         normal drifted-counts flow above. -->
     <div class="flex-shrink-0 border border-border-default rounded">
+      <button
+        type="button"
+        class="flex items-center gap-2 bg-transparent border-none cursor-pointer text-left w-full px-3 py-2 hover:bg-surface-elevated/50 transition-colors"
+        @click="advancedOpen = !advancedOpen">
+        <span
+          class="text-text-secondary text-xs transition-transform"
+          :class="{ 'rotate-90': advancedOpen }">
+          ▶
+        </span>
+        <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
+          Advanced
+        </h4>
+        <span class="text-xs text-text-secondary italic hidden sm:inline ml-auto">
+          Undo a recount, fix one item, or count by hand.
+        </span>
+      </button>
+      <div
+        v-show="advancedOpen"
+        class="px-3 pb-3 flex flex-col gap-2">
+        <div
+          v-if="baselines.length > 0"
+          class="flex items-center justify-between gap-2 flex-shrink-0 border border-border-default rounded px-3 py-2">
+          <p class="text-xs text-text-secondary italic m-0">
+            Undo the recount? Removes every manual count, including hidden zeroed ones — shop-log events and sales history stay.
+          </p>
+          <button
+            type="button"
+            class="px-2 py-1 text-xs bg-surface-elevated border border-border-default rounded hover:border-accent-gold/50 text-text-primary disabled:opacity-50 flex-shrink-0"
+            :disabled="stockBusy || loading"
+            @click="removeAllBaselines">
+            {{ baselineSaving ? 'Removing…' : `Undo recount (${baselines.length})` }}
+          </button>
+        </div>
+        <!-- Manual stock entry — hand counts for one-off corrections. One row per
+             item. Re-counting replaces the row; qty 0 marks the item cleared. -->
+        <div class="border border-border-default rounded">
       <div class="flex items-center justify-between px-3 py-2 hover:bg-surface-elevated/50 transition-colors">
         <button
           type="button"
@@ -286,6 +298,7 @@
           class="text-[11px] text-text-secondary italic m-0">
           No manual counts yet. Count an item in your stall and enter it above — sales after that moment replay on top. Silent take-downs without a log line stay invisible until the next count or a logged removal.
         </p>
+        </div>
       </div>
     </div>
 
@@ -309,12 +322,15 @@ import type {
   InventoryItem,
   InventoryResult,
   PriceTier,
+  RecountPreview,
   StallBaseline,
   StallBaselineInput,
   StallInventoryParams,
 } from '../../types/stallTracker'
+import { useSettingsStore } from '../../stores/settingsStore'
 
 const store = useStallTrackerStore()
+const settingsStore = useSettingsStore()
 
 /** All-time sentinel: any value >= 99999 collapses to "all time" in the
  * Rust aggregator. 100000 is the canonical UI value. */
@@ -341,6 +357,12 @@ const inStockColumns = [
 ]
 
 const periodDays = ref<number>(7)
+
+/** History window in days: replay only events newer than this. 100 is the
+ * default — measured on live 2026-11 data at 47 rows for a 41-slot stall
+ * (full history: 110 phantom rows, 62 of them stale delists). 0 = full
+ * history (reversible one click). Not yet persisted: reset per mount. */
+const windowDays = ref<number>(100)
 
 // Frontend-only sorting for the In Stock table. Inventory is computed in
 // Rust by `aggregate_inventory` and returned all-at-once (item count is
@@ -396,6 +418,7 @@ function buildParams(): StallInventoryParams {
   return {
     owner: store.currentOwner,
     periodDays: periodDays.value,
+    windowDays: windowDays.value > 0 ? windowDays.value : null,
   }
 }
 
@@ -423,25 +446,11 @@ const oldestFirstEvent = computed(() => {
   return dates.length > 0 ? formatShortDate(dates[0]) : '—'
 })
 
-/** Rows whose quantity is a guess: truncated history, or fallback-priced
- * (in-stock only — a sold-out item has qty 0 regardless of its price). */
-const unsureItems = computed<InventoryItem[]>(() =>
-  result.value
-    ? result.value.items.filter(
-        (i) => i.quantity > 0 && (i.history_truncated || i.fallback_priced_qty > 0),
-      )
-    : [],
-)
-const unsureCount = computed(() => unsureItems.value.length)
-const clearingUnsure = ref(false)
-const zeroingAll = ref(false)
 const zeroingItem = ref<string | null>(null)
 
-/** Shared zero-out loop: one qty-0 baseline per item, sequential invokes
- * (not Promise.all): each save is one write-pool checkout and the set is
- * small (<100 rows), so serialization is cheap and avoids pool contention.
- * Snapshots the owner; stops at the first item after a character switch
- * and returns how many were zeroed so the caller can say so. */
+/** Shared zero-out loop behind per-row Clear: one qty-0 baseline, one
+ * write-pool checkout at a time. A mid-loop failure still repaints so the
+ * written zero shows even when a later save throws. */
 async function zeroItems(targets: InventoryItem[]): Promise<number> {
   const owner = store.currentOwner
   if (!owner || targets.length === 0) return 0
@@ -461,34 +470,13 @@ async function zeroItems(targets: InventoryItem[]): Promise<number> {
       zeroed += 1
     }
   } finally {
-    // A mid-loop failure still repaints: written zero rows must show even
-    // when a later save throws, or the table reads stale stock.
     await Promise.all([reload(), loadBaselines()])
     await store.refresh()
   }
   return zeroed
 }
 
-/** Clear unsure — zero-out every unsure row via the shared loop. */
-async function clearUnsure() {
-  const owner = store.currentOwner
-  const targets = [...unsureItems.value]
-  if (!owner || stockBusy.value || targets.length === 0) return
-  clearingUnsure.value = true
-  try {
-    const zeroed = await zeroItems(targets)
-    if (zeroed < targets.length) error.value = `Stopped early: character changed after ${zeroed} of ${targets.length} items were zeroed.`
-  } catch (e) {
-    error.value = String(e)
-    console.error('[StallInventoryTab] clearUnsure failed:', e)
-  } finally {
-    clearingUnsure.value = false
-  }
-}
-
-/** Per-row Clear: confirm-guarded so a stray click can't wipe a count.
- * Snapshots the owner before the dialog: a character switch while it sits
- * open aborts instead of zeroing the old character's item under the new one. */
+/** Per-row Clear: confirm-guarded so a stray click can't wipe a count. */
 async function clearOneItem(item: InventoryItem) {
   const owner = store.currentOwner
   if (!owner || loading.value || stockBusy.value) return
@@ -508,47 +496,103 @@ async function clearOneItem(item: InventoryItem) {
   }
 }
 
-/** Zero all: confirm-guarded bulk reset of every in-stock row. */
-async function zeroAllStock() {
+// ── Recount from fresh log ──────────────────────────────────────────────
+const recounting = ref(false)
+
+/** One-click reset: file picker (Books dir) → preview → confirm shows the
+ * set/zero split → apply stamps baselines → repaint. Owner snapshotted
+ * before the dialogs: a character switch mid-flow aborts instead of writing
+ * the old character's counts under the new one. */
+async function recountFromBook() {
   const owner = store.currentOwner
-  const targets = [...inStockItems.value]
-  if (!owner || loading.value || stockBusy.value || targets.length === 0) return
-  const ok = await confirm(
-    `Set the stock of all ${targets.length} in-stock items to zero for ${owner}? Enter new counts in Manual stock entry below for items you still sell.`,
-    { title: 'Zero all stock', kind: 'warning' },
+  if (!owner || loading.value || stockBusy.value) return
+  // The book is a sliding window: a plain "save log" only covers recent
+  // lines, so silently-delisted ghosts stay invisible. The remove-all +
+  // re-add session forces every live listing (and every takedown) into the
+  // fresh book — that is what makes the recount exact. Tell the user BEFORE
+  // the file picker, or they will pick a stale book and wonder why ghosts
+  // survived.
+  const ready = await confirm(
+    'For an exact recount, the book must list your whole stall — not just recent changes.\n\n' +
+      'In-game, before picking the file:\n' +
+      '1. Open your shop log book.\n' +
+      '2. Remove everything from your stall.\n' +
+      '3. Add back everything you actually sell.\n' +
+      '4. Save the book (fresh PlayerShopLog file in Books).\n\n' +
+      'Then pick that fresh file next. Skipped the re-add? The recount still runs, but items missing from the book count as gone.',
+    { title: 'Fix stock from fresh log', kind: 'info' },
   )
-  if (!ok || stockBusy.value || store.currentOwner !== owner) return
-  zeroingAll.value = true
+  if (!ready || stockBusy.value || store.currentOwner !== owner) return
+  const { open } = await import('@tauri-apps/plugin-dialog')
+  const selected = await open({
+    multiple: false,
+    directory: false,
+    defaultPath: settingsStore.settings.gameDataPath || undefined,
+    filters: [{ name: 'Shop log book', extensions: ['txt'] }],
+  })
+  if (!selected || Array.isArray(selected)) return
+  const path = selected as string
+  recounting.value = true
   try {
-    const zeroed = await zeroItems(targets)
-    if (zeroed < targets.length) error.value = `Stopped early: character changed after ${zeroed} of ${targets.length} items were zeroed.`
+    const preview = await invoke<RecountPreview>('preview_stall_recount', {
+      path,
+      currentOwner: owner,
+    })
+    if (store.currentOwner !== owner) return
+    if (preview.counted.length === 0 && preview.zeroed.length === 0) {
+      error.value = 'Nothing to recount: the book lists nothing and no in-stock items are missing from it.'
+      return
+    }
+    const lines = preview.counted
+      .map((l) => `  ${l.item} ×${l.quantity}`)
+      .join('\n')
+    const ok = await confirm(
+      `Recount ${owner} from this book (${preview.bookEntries} entries)?\n\n` +
+        `Set ${preview.counted.length} item${preview.counted.length === 1 ? '' : 's'}:\n${lines}\n\n` +
+        (preview.zeroed.length > 0
+          ? `Zero ${preview.zeroed.length} in-stock but not listed (sold/delisted? hand-count any still in your stall after): ${preview.zeroed.join(', ')}\n\n`
+          : 'Everything in stock is listed — nothing zeroed.\n\n') +
+        'Sales history is untouched.',
+      { title: 'Recount from fresh log', kind: 'warning' },
+    )
+    if (!ok || stockBusy.value || store.currentOwner !== owner) return
+    const written = await invoke<number>('apply_stall_recount', {
+      path,
+      currentOwner: owner,
+    })
+    await Promise.all([reload(), loadBaselines()])
+    await store.refresh()
+    error.value = null
+    void written
   } catch (e) {
     error.value = String(e)
-    console.error('[StallInventoryTab] zeroAllStock failed:', e)
+    console.error('[StallInventoryTab] recountFromBook failed:', e)
   } finally {
-    zeroingAll.value = false
+    recounting.value = false
   }
 }
-
 // ── Manual stock entry ──────────────────────────────────────────────────
 const baselines = ref<StallBaseline[]>([])
-/** Manual counts the user entered (qty > 0). Zeroed Clear-unsure evictions
- * stay in the DB (they supersede pre-clear history) but are hidden here —
+/** Manual counts the user entered (qty > 0). Zeroed recount evictions stay
+ * in the DB (they supersede pre-recount history) but are hidden here —
  * showing them with an ✕ labeled "remove" made clearing look reversible
  * when deleting the row actually resurrects the guess. */
 const visibleBaselines = computed(() => baselines.value.filter((b) => b.quantity > 0))
 const showTruncatedList = ref(false)
 const baselineOpen = ref(false)
+/** Advanced collapsed by default: the one-click fix above is the whole flow
+ * for drifted counts. Undo + hand paths live inside, opened on demand. */
+const advancedOpen = ref(false)
 const baselineItem = ref('')
 const baselineQty = ref<number | null>(null)
 const baselinePrice = ref<number | '' | null>(null)
 const baselineSaving = ref(false)
 const baselineError = ref<string | null>(null)
 
-/** Any stock write in flight (zero-loop, save, or delete). All six entry
- * points gate on this so a bulk zero-out can never interleave with a bulk
- * DELETE or a single save — the final set would match neither operation. */
-const stockBusy = computed(() => clearingUnsure.value || zeroingAll.value || zeroingItem.value != null || baselineSaving.value)
+/** Any stock write in flight (zero-loop, recount, save, or delete). Every
+ * entry point gates on this so two bulk writes can never interleave — the
+ * final set would match neither operation. */
+const stockBusy = computed(() => recounting.value || zeroingItem.value != null || baselineSaving.value)
 
 let baselinesToken = 0
 
@@ -724,6 +768,7 @@ function formatShortDate(iso: string | null): string {
 }
 
 watch(periodDays, () => void reload())
+watch(windowDays, () => void reload())
 watch(() => store.dataVersion, () => {
   void reload()
   void loadBaselines()

@@ -476,6 +476,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         migration_v88_stamp_hire_owner(conn)?;
         super::record_migration(conn, 88)?;
     }
+
+    if current_version < 89 {
+        migration_v89_collapse_stall_reingest_dupes(conn)?;
+        super::record_migration(conn, 89)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1120,6 +1125,59 @@ fn migration_v88_stamp_hire_owner(conn: &Connection) -> Result<()> {
            AND owner IS NOT player
            AND player != ''",
         [],
+    )?;
+    Ok(())
+}
+
+/// Migration V89: collapse same-line `stall_events` duplicates from
+/// overlapping-book re-ingests.
+///
+/// The v23 UNIQUE key compares `(event_timestamp, raw_message, entry_index)`,
+/// but `entry_index` is the line's position inside its own book (oldest =
+/// 0): the same line parses to a different index in books of different
+/// lengths, so every overlapping re-ingest inserted a second row and
+/// multiplied `added` quantities (live 2026-11 case: 110 phantom in-stock
+/// rows from 3,589 events, 1,818 of them same-line duplicates). The insert
+/// path now applies the fullest-witness rule; this migration applies the
+/// same rule to rows already stored: per `(event_timestamp, raw_message)`
+/// group, the fullest batch (batch = `log_title`/`log_timestamp`, most rows;
+/// ties go to the newest batch by MAX(id)) is the witness — its rows stay,
+/// every other batch's rows for that line go. A partial-overlap batch
+/// carrying fewer copies than an earlier batch held never deletes the
+/// surplus real events; each group keeps exactly its fullest batch's rows.
+/// Re-runs converge (every group holds one batch) and then delete zero rows.
+/// A TEMP TABLE keeps the steps auditable; it vanishes with the connection
+/// (migrations run on a single checkout).
+fn migration_v89_collapse_stall_reingest_dupes(conn: &Connection) -> Result<()> {
+    // Same minimal-fixture guard as v87/v88 (roulette v77 synthetic DB has
+    // no `stall_events`): skip instead of failing. Real DBs always carry
+    // it (created in v23, long before v89 can run).
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stall_events')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TEMPORARY TABLE stall_v89_witness AS
+         SELECT event_timestamp, raw_message, log_title, log_timestamp FROM (
+           SELECT event_timestamp, raw_message, log_title, log_timestamp,
+             ROW_NUMBER() OVER (
+               PARTITION BY event_timestamp, raw_message
+               ORDER BY COUNT(*) DESC, MAX(id) DESC
+             ) AS rn
+           FROM stall_events
+           GROUP BY event_timestamp, raw_message, log_title, log_timestamp
+         ) WHERE rn = 1;
+         DELETE FROM stall_events
+         WHERE (event_timestamp, raw_message, log_title, log_timestamp)
+           NOT IN (SELECT event_timestamp, raw_message, log_title, log_timestamp
+                   FROM stall_v89_witness);
+         DROP TABLE stall_v89_witness;",
     )?;
     Ok(())
 }
@@ -4378,13 +4436,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            88,
+            89,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 88);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 89);
     }
 
     #[test]
@@ -4507,13 +4565,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 88) plus the purge itself on the three aggregate source tables.
+        // 89) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 88, "migration chain head");
+        assert_eq!(head, 89, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -4559,8 +4617,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 88 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp). Repair: a
+        // Chain wiring: full run_migrations head must be 89 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -4568,7 +4626,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 88, "migration chain head");
+        assert_eq!(head, 89, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -4770,6 +4828,90 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1, "re-run must not stamp anything new");
+    }
+
+    #[test]
+    fn migration_v89_collapses_reingest_dupes() {
+        // Fullest-witness rule per (event_timestamp, raw_message) group: keep
+        // the fullest batch's rows (ties -> newest batch), delete the rest.
+        // Full overlap (1v1 tie -> newest wins); partial overlap (2v1 keeps
+        // the earlier fuller batch wholesale — quantities identical either
+        // way, only provenance differs); same-batch genuine repeats stay.
+        // Re-run deletes nothing (every group holds one batch).
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        c.execute_batch(
+            "INSERT INTO stall_events
+                (event_timestamp, event_at, log_timestamp, log_title,
+                 action, player, owner, item, quantity,
+                 price_unit, price_total, raw_message, entry_index)
+             VALUES
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '23:22:02', 'Today''s Shop Logs',
+                 'removed', 'Deradon', 'Deradon', 'Kilderkin', 1,
+                 NULL, NULL, 'Deradon removed Kilderkin from shop', 14),
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', 'imported', 'Imported',
+                 'removed', 'Deradon', 'Deradon', 'Kilderkin', 1,
+                 NULL, NULL, 'Deradon removed Kilderkin from shop', 12),
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '23:22:02', 'Today''s Shop Logs',
+                 'removed', 'Deradon', 'Deradon', 'Old Tunic', 1,
+                 NULL, NULL, 'Deradon removed Old Tunic from shop', 15),
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '23:22:02', 'Today''s Shop Logs',
+                 'removed', 'Deradon', 'Deradon', 'Old Tunic', 1,
+                 NULL, NULL, 'Deradon removed Old Tunic from shop', 16),
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', 'imported', 'Imported',
+                 'removed', 'Deradon', 'Deradon', 'Old Tunic', 1,
+                 NULL, NULL, 'Deradon removed Old Tunic from shop', 13),
+                ('Fri Jul 17 13:56', '2026-07-17 13:56:00', '23:49:59', 'Shop Logs From 2 Days Ago',
+                 'bought', 'Deradon', 'Deradon', 'Ruined Metal Flask', 1,
+                 130.0, 130, 'Deradon bought Ruined Metal Flask at a cost of 130 per 1 = 130', 3),
+                ('Fri Jul 17 13:56', '2026-07-17 13:56:00', '23:49:59', 'Shop Logs From 2 Days Ago',
+                 'bought', 'Deradon', 'Deradon', 'Ruined Metal Flask', 1,
+                 130.0, 130, 'Deradon bought Ruined Metal Flask at a cost of 130 per 1 = 130', 4);",
+        )
+        .unwrap();
+        // v89 already ran inside run_migrations above with no dupes present;
+        // invoke the function directly against the seeded dupes.
+        migration_v89_collapse_stall_reingest_dupes(&c).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 5, "tie collapses, fuller batch kept, repeats stay");
+        let (title, idx): (String, i64) = c
+            .query_row(
+                "SELECT log_title, entry_index FROM stall_events
+                 WHERE raw_message = 'Deradon removed Kilderkin from shop'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "Imported", "tie goes to the newest batch");
+        assert_eq!(idx, 12, "newest batch index survives");
+        // Partial overlap: the earlier FULLER batch (2 rows) is the witness.
+        let tunic: Vec<(String, i64)> = c
+            .prepare(
+                "SELECT log_title, entry_index FROM stall_events
+                 WHERE raw_message = 'Deradon removed Old Tunic from shop'
+                 ORDER BY entry_index",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            tunic,
+            vec![
+                ("Today's Shop Logs".to_string(), 15),
+                ("Today's Shop Logs".to_string(), 16),
+            ],
+            "fuller batch kept wholesale"
+        );
+        // Idempotent: second run deletes nothing.
+        migration_v89_collapse_stall_reingest_dupes(&c).unwrap();
+        let n2: i64 = c
+            .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n2, 5, "re-run must delete nothing");
     }
 
     #[test]

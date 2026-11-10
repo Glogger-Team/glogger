@@ -44,9 +44,9 @@ The Stall Tracker has four visible tabs plus a fifth view behind a modal:
 
 ### Inventory tab
 
-![Inventory tab — In Stock table with multi-tier prices, Clear unsure row](../../../screenshots/economics/stall-tracker/inventory.png)
+![Inventory tab — In Stock table with multi-tier prices, stock reset row](../../../screenshots/economics/stall-tracker/inventory.png)
 
-*Reconstructed from the event log via per-item tier-stack replay. Multi-tier price column shows `qty × price` rows when an item is listed at multiple tiers. Each In Stock row has a per-row Clear (✕) that zeroes just that item behind a confirm dialog; the Zero-all row below the table zeroes every in-stock row behind a confirm (both write zeroed manual counts, same mechanism). Rows whose quantity is a guess (mid-history ⚠ or `~` fallback-priced) roll up into a Clear-unsure row that zeroes each via a zeroed manual count; recount anything still stocked in Manual stock entry below.*
+*Reconstructed from the event log via per-item tier-stack replay. Multi-tier price column shows `qty × price` rows when an item is listed at multiple tiers. One gold reset row ("Fix stock from fresh log…") is the whole drifted-counts flow: a how-to dialog states the in-game prerequisite (empty the stall, add everything back, save the book), then a file picker takes the fresh book, a preview confirm shows the set/zero split with names (sales history untouched), and apply stamps one baseline per line in a single transaction. Each In Stock row keeps a per-row Clear (✕) for single-item fixes; an Advanced section (collapsed) holds Undo-recount plus Manual stock entry for hand counts.*
 
 ### Shop Log modal
 
@@ -136,13 +136,22 @@ nothing is silently dropped.
 Shop log content arrives **newest-first** from the game. If we indexed entries
 in content order, the newest entry would be `0`, and when the user re-opened
 the same book with new entries prepended, every existing entry would shift to a
-higher index — breaking the deduplication key.
+higher index.
 
 The parser reverses the raw entries before indexing so the **oldest entry always
 gets index `0`**. New entries appended at the top later receive higher indices,
-keeping existing entries' indices stable across re-opens. The deduplication key
-is `(event_timestamp, raw_message, entry_index)`; the index is the tiebreaker
-for same-minute duplicates like two buyers of the same item at the same price.
+keeping existing entries' indices stable across re-opens of the same book.
+`entry_index` is still stored per row (sort tiebreaker, export ordering), but
+it is NOT part of the ingest identity: the same line parses to a different
+index in books of different lengths, so keying on it re-inserts every
+overlapping line. Ingest de-duplicates by fullest-witness rule per logical
+line (`event_timestamp`, `raw_message`): the fullest batch (most occurrences;
+ties go to the newest) is the witness and its rows stay, other batches' rows
+for that line go; a partial re-ingest carrying fewer copies inserts and
+deletes nothing. The storage UNIQUE key stays
+`(event_timestamp, raw_message, entry_index)` (v23, unchanged) — ingest dedup
+is enforced by the witness logic, not by the key. v89 collapsed the pre-fix
+duplicates the same way.
 
 ### Year Resolution
 
@@ -212,14 +221,15 @@ import command treats it as "owner if known, else fall back." Do not treat
 | price_unit | REAL | Price per unit (possibly fractional for `per N > 1` entries). |
 | price_total | INTEGER | Total price for `bought` and `collected`; hire fee for `hired`. |
 | raw_message | TEXT | Exact in-game phrasing, used for export round-trip. |
-| entry_index | INTEGER | Position within the book (oldest = 0). Stable across re-opens. |
+| entry_index | INTEGER | Position within the book (oldest = 0). Stable across re-opens of the same book; not part of the ingest identity (same line shifts index across books). |
 | ignored | INTEGER | 0/1 soft-mute flag. Excluded from all aggregations. |
 | created_at | TIMESTAMP | SQLite `CURRENT_TIMESTAMP` at insert time. |
 
-**Unique constraint:** `(event_timestamp, raw_message, entry_index)` — the
-deduplication key used by `INSERT OR IGNORE`. The `entry_index` component is
-essential: two identical events within the same minute (e.g., two buyers of
-the same item at the same price) would otherwise collapse into a single row.
+**Unique constraint:** `(event_timestamp, raw_message, entry_index)` (storage
+level, v23, unchanged; `entry_index` keeps same-minute repeats distinct).
+Ingest identity is the fullest-witness rule per logical line
+(`event_timestamp`, `raw_message`): the fullest batch wins (ties newest), a
+partial re-ingest inserts/deletes nothing.
 
 **Indices:** `action`, `created_at DESC`, `event_timestamp`, `event_at DESC`,
 `(action, event_at DESC)`, `player`, `item`.
@@ -238,7 +248,8 @@ the same item at the same price) would otherwise collapse into a single row.
 | `delete_stall_baseline(id, owner)` | Delete one manual count row by id, owner-scoped. |
 | `delete_all_stall_baselines(owner)` | Delete every manual count for a character without touching shop-log events. Inventory reverts to pure log estimates. |
 | `get_stall_filter_options(owner)` | Distinct buyers, players, items, dates, actions for filter dropdowns. |
-| `toggle_stall_event_ignored(id, ignored)` | Soft-mute or unmute a single event. |
+| `preview_stall_recount(path, current_owner)` | Pure-read recount preview: replay a fresh book into per-item counts, diff against in-stock. |
+| `apply_stall_recount(path, current_owner)` | Stamp the preview as baselines (counted qty + book price, zeroes for unlisted) in one transaction. Events untouched. |
 | `clear_stall_events(owner)` | Delete every row for a specific character. Requires `owner`. Serialized with live ingest by the single-write pool + `BEGIN IMMEDIATE`. |
 | `import_shop_log_file(path, current_owner)` | Read a `.txt` file, parse, insert. Returns counts + effective owner + `owner_claimed` flag. |
 | `export_shop_log_files(directory, owner)` | Write one file per (owner, date) in exact book format for round-trip. Requires `owner`. |
@@ -270,15 +281,16 @@ statelessly, with a Synced relative-time label stamped on success), Import
 (always available so a fresh character can bootstrap from an exported book),
 and Export + Clear data (gated on `hasData && currentOwner`).
 
-### Clear unsure
+### Fix stock from fresh log (recount)
 
-Guessed quantities (mid-history ⚠ rows plus `~` fallback-priced rows) roll up
-into a Clear-unsure row under the In Stock table. One click writes a zeroed
-manual count per unsure item — the zeroed count supersedes pre-clear history
-so the guess never returns unless you Rebuild from log (which deletes the
-zeroed cutoffs and restores pure log estimates). Recount anything still
-stocked in Manual stock entry below (re-counting replaces the zeroed count
-and resumes replay from now).
+The one-click reset for drifted counts. The book is a sliding window, so a
+plain save only covers recent lines — the in-game prerequisite is empty the
+stall, add everything back, save the book, and the how-to dialog states
+exactly that before the file picker opens. Preview replays the fresh book
+and the confirm shows the set/zero split with names. Apply stamps one
+baseline per line in a single transaction without touching event rows, so
+Revenue / Trends / Sales never move. Advanced (collapsed) holds the undo
+plus Manual stock entry for hand counts.
 
 ### Import
 
@@ -295,8 +307,17 @@ explicitly names any failed files.*
 ![Export flow — directory picker, per-date file output](../../../screenshots/economics/stall-tracker/export.png)
 
 *Directory picker. Writes one file per `(owner, date)` in the exact in-game
-book format so any exported file is re-importable and produces identical
-rows (the UNIQUE key + INSERT OR IGNORE makes the round-trip a no-op).*
+book format so any exported file is re-importable without duplicating rows
+(fullest-witness rule: fullest batch wins, partial re-ingest no-ops).*
+
+### History window
+
+*History dropdown beside Sales period (30 / 60 / 100 / year / all; default
+100 days). The stock replay only looks back that far: in-game takedowns log
+no `removed` line, so ancient `added` lines replay as phantom stock forever
+without a bound (live 2026-11 case: full history 110 rows for a 41-slot
+stall, 100-day window 46). Reversible one click (All history).
+Frontend-owned view state, not stored.*
 
 ### Clear data
 
@@ -368,7 +389,9 @@ Stall Tracker follows the app-wide time standards defined in
 
 ### Inventory accuracy
 
-Reconstruction is only as accurate as the shop log history. Four mechanisms
+Reconstruction is only as accurate as the shop log history. The primary fix
+is the recount above (remove-all + re-add forces the whole stall into one
+fresh book; baselines suppress everything older). Four older mechanisms
 narrow the gap without a live `LocalPlayer:` feed:
 
 - **Fallback pricing** — stock added but never made visible/configured (or
@@ -385,21 +408,10 @@ narrow the gap without a live `LocalPlayer:` feed:
   tier replay from it and drops shop-log events at-or-before its timestamp
   for that item. Set it by counting stock in-game (Inventory tab → Manual
   stock entry); qty 0 stores a zeroed count that clears the item. Re-counting re-stamps `recorded_at` to now. The count is only as true as the last count: a delist after counting without a logged removed line stays invisible until the next count or a logged removal. Recount the whole item after restocking or delisting (one count per item, not per tier).
-- **Clear unsure** — one-click eviction for the rows above: every ⚠ / `~`
-  in-stock row gets a zeroed manual count at once. Guesses leave together;
-  recount survivors individually.
-- **Per-row Clear + Zero all** — each In Stock row has a ✕ that zeroes just
-  that item behind a confirm; the Zero-all row zeroes every in-stock row
-  behind a confirm naming the count. Both write zeroed manual counts (same
-  mechanism as Clear unsure); recount survivors in Manual stock entry.
-- **Remove all (rebuild from log)** — the Manual stock entry header has a
-  Remove-all button that deletes every manual count WITHOUT touching
-  shop-log events. With no baselines in the way, all `added` / `visible` /
-  `bought` / `removed` events replay from the start, so a fresh log rebuilds
-  today's stock from its `added` lines. Use this (not Zero-all) to start over
-  from the log: Zero-all stamps zero-counts that drop older events per item,
-  while Remove-all drops the cutoffs entirely. `visible` alone never creates
-  stock — only `added` (or a manual count) does.
+- **Per-row Clear** — each In Stock row has a ✕ that zeroes just that item
+  behind a confirm (single-item fix).
+- **Undo recount** — the Advanced section deletes every manual count WITHOUT
+  touching shop-log events (the recount undo when the wrong book was picked).
 - The parser treats entries that don't match any action regex as `"unknown"`.
   These are hidden from the default Shop Log view and excluded from every
   aggregation, but remain available via the action filter (select `unknown`

@@ -41,9 +41,28 @@ pub struct StallEventInput {
     pub entry_index: i64,
 }
 
-/// Bulk-insert stall events, skipping duplicates via the UNIQUE key
-/// `(event_timestamp, raw_message, entry_index)`. Returns the number of
-/// rows actually inserted (i.e. not skipped by `INSERT OR IGNORE`).
+/// Bulk-insert stall events, de-duplicated per logical log line occurrence
+/// witness. Identity is `(event_timestamp, raw_message)` with a multiplicity
+/// rule: per line, the incoming batch becomes the witness iff its occurrence
+/// count is >= the max occurrences any single stored batch holds (batch =
+/// `log_title`/`log_timestamp`; ties go to the newest batch). A witness
+/// re-ingest replaces the line's stored rows from other batches (DELETE +
+/// INSERT in this same transaction, so a full-overlap re-ingest never grows
+/// the row count); a PARTIAL re-ingest carrying fewer copies inserts and
+/// deletes nothing — its occurrences are already witnessed, and a partial
+/// overlap must never delete real events. `entry_index` alone cannot be the
+/// identity: it is the line's position inside its own book (oldest = 0), so
+/// the same line parses to a different index in books of different lengths
+/// — keying on it re-inserts every overlapping line and multiplies `added`
+/// quantities (live 2026-11 case: 110 in-stock rows from 3,589 events, 1,818
+/// of them same-line duplicates). Genuine same-minute repeats still insert:
+/// first sighting has no stored batch, and a book holding MORE copies than
+/// stored becomes the new witness (Deradon's 8x same-minute bulk buys are 8
+/// real occurrences, not a re-ingest).
+///
+/// The storage UNIQUE key stays `(event_timestamp, raw_message, entry_index)`
+/// (v23, unchanged — rebuilding the table for millions of rows is not worth
+/// it); ingest dedup is enforced by the witness logic below, not by the key.
 ///
 /// Clear-vs-insert serialization comes from the single-write pool plus the
 /// `BEGIN IMMEDIATE` transaction below: Clear is a single `DELETE` on the
@@ -61,6 +80,70 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| format!("Failed to begin transaction: {e}"))?;
 
+    // Re-ingest guard (fullest-witness rule). Per logical line
+    // (event_timestamp, raw_message), count the incoming occurrences and the
+    // max occurrences any single stored batch holds (batch =
+    // log_title/log_timestamp; one call ingests one book/file, and every
+    // call site passes a single title+timestamp per call). If the incoming
+    // batch is at least as full (ties -> newest wins), it becomes the
+    // witness: delete the line's stored rows from other batches, insert all
+    // incoming. If it carries FEWER copies (partial overlap), its
+    // occurrences are already witnessed — insert nothing, delete nothing. A
+    // partial overlap must never delete real events. Genuine same-minute
+    // repeats still insert: first sighting has no stored batch (0 < n), and
+    // a book with MORE copies than stored becomes the new witness.
+    // Lines whose incoming batch is fully witnessed (partial overlap: fewer
+    // copies than the max stored batch holds) skip the INSERT entirely —
+    // their occurrences exist, and the shifted entry_index would otherwise
+    // re-add them as new rows under OR IGNORE.
+    let witnessed: std::collections::BTreeSet<(String, String)> = {
+        use std::collections::BTreeMap;
+        let mut incoming_count: BTreeMap<(String, String), usize> = BTreeMap::new();
+        for ev in events {
+            *incoming_count
+                .entry((ev.event_timestamp.clone(), ev.raw_message.clone()))
+                .or_default() += 1;
+        }
+        let mut max_stored = tx
+            .prepare(
+                "SELECT COUNT(*) FROM stall_events
+                 WHERE event_timestamp = ?1 AND raw_message = ?2
+                 GROUP BY log_title, log_timestamp
+                 ORDER BY COUNT(*) DESC LIMIT 1",
+            )
+            .map_err(|e| format!("Failed to prepare witness query: {e}"))?;
+        let mut del = tx
+            .prepare(
+                "DELETE FROM stall_events
+                 WHERE event_timestamp = ?1 AND raw_message = ?2
+                   AND NOT (log_title = ?3 AND log_timestamp = ?4)",
+            )
+            .map_err(|e| format!("Failed to prepare re-ingest delete: {e}"))?;
+        let mut witnessed = std::collections::BTreeSet::new();
+        for ((ts, msg), n_in) in &incoming_count {
+            let n_max: usize = max_stored
+                .query_row(rusqlite::params![ts, msg], |r| r.get::<_, i64>(0))
+                .map(|n| n as usize)
+                .unwrap_or(0);
+            if *n_in >= n_max {
+                // Witness (or first sighting): clear other batches. The
+                // incoming batch's own (title, timestamp) identifies it; a
+                // rescan of an appended file carries a new timestamp, so its
+                // rows never match the NOT clause and survive.
+                let (title, stamp) = events
+                    .iter()
+                    .find(|e| &e.event_timestamp == ts && &e.raw_message == msg)
+                    .map(|e| (e.log_title.clone(), e.log_timestamp.clone()))
+                    .unwrap_or_default();
+                del.execute(rusqlite::params![ts, msg, title, stamp])
+                    .map_err(|e| format!("Failed to delete re-ingested stall event: {e}"))?;
+            } else {
+                witnessed.insert((ts.clone(), msg.clone()));
+            }
+        }
+        witnessed
+    };
+
     let mut inserted = 0usize;
     {
         let mut stmt = tx
@@ -74,6 +157,9 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
             .map_err(|e| format!("Failed to prepare insert: {e}"))?;
 
         for ev in events {
+            if witnessed.contains(&(ev.event_timestamp.clone(), ev.raw_message.clone())) {
+                continue;
+            }
             let changed = stmt
                 .execute(rusqlite::params![
                     ev.event_timestamp,
@@ -521,6 +607,13 @@ pub struct StallRevenueParams {
 pub struct StallInventoryParams {
     pub owner: Option<String>,
     pub period_days: Option<i64>,
+    /// History window: replay only events with `event_at >= date('now', '-' || window_days || ' days')`.
+    /// `None` (or <= 0) replays the full history. The stale-delist problem
+    /// (in-game takedowns log no `removed` line) means ancient `added` lines
+    /// replay as phantom stock forever — a bounded window ages them out.
+    /// Live 2026-11 case: full history shows 110 phantom rows for a 41-slot
+    /// stall; a 100-day window shows 47. Frontend owns the value (view pref).
+    pub window_days: Option<i64>,
 }
 
 fn parse_granularity(s: &str) -> Granularity {
@@ -619,28 +712,66 @@ pub fn get_stall_inventory(
     // CRITICAL: ORDER BY event_at ASC, id ASC. Without the id tiebreaker,
     // `visible` events could be processed before `added` events within the
     // same minute, leaving the tier unpriced.
-    let sql = "SELECT item, event_at, action, quantity, price_unit, price_total \
-               FROM stall_events \
-               WHERE owner = ?1 AND ignored = 0 AND item IS NOT NULL AND event_at IS NOT NULL \
-                 AND action != 'unknown' AND action != 'collected' \
-               ORDER BY event_at ASC, id ASC";
+    //
+    // History window: `window_days > 0` bounds the replay to recent events
+    // so ancient `added` lines for long-delisted items (the game logs no
+    // `removed` on takedown) age out instead of replaying as phantom stock.
+    // `date('now', ...)` is local-time by SQLite convention, matching the
+    // local-time `event_at` stamps the year resolver writes.
+    let (sql, window_days): (String, Option<i64>) = match params.window_days {
+        Some(n) if n > 0 => (
+            "SELECT item, event_at, action, quantity, price_unit, price_total \
+             FROM stall_events \
+             WHERE owner = ?1 AND ignored = 0 AND item IS NOT NULL AND event_at IS NOT NULL \
+               AND action != 'unknown' AND action != 'collected' \
+               AND event_at >= date('now', '-' || ?2 || ' days') \
+             ORDER BY event_at ASC, id ASC"
+                .to_string(),
+            Some(n),
+        ),
+        _ => (
+            "SELECT item, event_at, action, quantity, price_unit, price_total \
+             FROM stall_events \
+             WHERE owner = ?1 AND ignored = 0 AND item IS NOT NULL AND event_at IS NOT NULL \
+               AND action != 'unknown' AND action != 'collected' \
+             ORDER BY event_at ASC, id ASC"
+                .to_string(),
+            None,
+        ),
+    };
     let mut stmt = conn
-        .prepare(sql)
+        .prepare(&sql)
         .map_err(|e| format!("Failed to prepare inventory query: {e}"))?;
-    let events = stmt
-        .query_map(rusqlite::params![owner], |row| {
-            Ok(InventoryEvent {
-                item: row.get::<_, String>(0)?,
-                event_at: row.get::<_, String>(1)?,
-                action: row.get::<_, String>(2)?,
-                quantity: row.get::<_, i64>(3)?,
-                price_unit: row.get::<_, Option<f64>>(4)?,
-                price_total: row.get::<_, Option<i64>>(5)?,
+    let events = match window_days {
+        Some(n) => stmt
+            .query_map(rusqlite::params![owner, n], |row| {
+                Ok(InventoryEvent {
+                    item: row.get::<_, String>(0)?,
+                    event_at: row.get::<_, String>(1)?,
+                    action: row.get::<_, String>(2)?,
+                    quantity: row.get::<_, i64>(3)?,
+                    price_unit: row.get::<_, Option<f64>>(4)?,
+                    price_total: row.get::<_, Option<i64>>(5)?,
+                })
             })
-        })
-        .map_err(|e| format!("Inventory query failed: {e}"))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to read inventory results: {e}"))?;
+            .map_err(|e| format!("Inventory query failed: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to read inventory results: {e}"))?,
+        None => stmt
+            .query_map(rusqlite::params![owner], |row| {
+                Ok(InventoryEvent {
+                    item: row.get::<_, String>(0)?,
+                    event_at: row.get::<_, String>(1)?,
+                    action: row.get::<_, String>(2)?,
+                    quantity: row.get::<_, i64>(3)?,
+                    price_unit: row.get::<_, Option<f64>>(4)?,
+                    price_total: row.get::<_, Option<i64>>(5)?,
+                })
+            })
+            .map_err(|e| format!("Inventory query failed: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to read inventory results: {e}"))?,
+    };
 
     // Baselines are few (one row per item the user counted) so a second
     // small query on the same read checkout is cheaper than a JOIN the
@@ -938,6 +1069,230 @@ pub fn import_shop_log_file(
     })
 }
 
+/// One counted line of a recount preview: what the fresh book says the
+/// stall holds for one item right now.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecountLine {
+    pub item: String,
+    pub quantity: i64,
+    pub price_unit: Option<f64>,
+}
+
+/// Preview of `recount_stall_from_book`: per-item counts derived from the
+/// fresh book, plus the in-stock items the book does NOT mention (they get
+/// zero cutoffs on apply). Sales history is never touched — this only
+/// stages `stall_inventory_baseline` rows.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RecountPreview {
+    pub owner: String,
+    pub counted: Vec<RecountLine>,
+    pub zeroed: Vec<String>,
+    pub book_entries: usize,
+}
+
+/// Derive per-item counts from already-parsed shop-log entries by replaying
+/// them oldest-first with the same semantics as the aggregator
+/// (`stall_aggregations.rs`): `added` pushes stock, `visible`/`configured`
+/// only price existing stock (they never add or remove units), `bought` and
+/// `removed` deplete. Two book-window realities need explicit handling:
+/// - A `visible` for stock the fresh book never `added` is the NORMAL
+///   same-day case (the adds scrolled out of this book). The stock is really
+///   there — seed one listing's worth, never 0.
+/// - A `visible` for an item the book ALSO shows being sold out (`bought`
+///   netting the adds to zero) must NOT resurrect it: seed only when the
+///   running net is exactly 0 AND no `bought`/`removed` was ever seen for
+///   the item in this book. Any depletion history means the ledger speaks.
+///
+/// Items netting <= 0 are not in the stall. The LATEST priced
+/// `visible`/`configured` event per item wins (the fresh book's own price is
+/// the current listing). `bought` carries the sale price, never the listing.
+fn recount_counts(entries: &[crate::shop_log_parser::ShopLogEntry]) -> Vec<RecountLine> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut qty: BTreeMap<String, i64> = BTreeMap::new();
+    let mut priced: BTreeMap<String, f64> = BTreeMap::new();
+    // Items the book shows leaving the stall. A later `visible` for one of
+    // these is a same-day reprice of remaining stock, never proof of fresh
+    // units — the seed below must not resurrect a sold-out item.
+    let mut depleted: BTreeSet<String> = BTreeSet::new();
+    for e in entries {
+        let Some(item) = e.item.clone() else { continue };
+        match e.action.as_str() {
+            "added" => *qty.entry(item).or_default() += e.quantity,
+            "removed" | "bought" => {
+                depleted.insert(item.clone());
+                *qty.entry(item).or_default() -= e.quantity;
+            }
+            "visible" | "configured" => {
+                if let Some(p) = e.price_unit {
+                    priced.insert(item.clone(), p);
+                    let entry = qty.entry(item.clone()).or_default();
+                    // Seed one listing's worth only for the priced-only
+                    // window case (net exactly 0, never depleted in this
+                    // book). Adds above 0 are never lowered; a depleted net
+                    // is never raised.
+                    if *entry == 0 && !depleted.contains(&item) {
+                        *entry = e.quantity;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    qty.into_iter()
+        .filter(|(_, q)| *q > 0)
+        .map(|(item, quantity)| RecountLine {
+            price_unit: priced.get(&item).copied(),
+            item,
+            quantity,
+        })
+        .collect()
+}
+
+/// Preview a one-click recount from a fresh in-game shop log book: parse the
+/// file, replay its lines into per-item counts, and diff against the current
+/// in-stock set. Pure read — writes nothing. The frontend shows the
+/// counted/zeroed split in the confirm dialog, then calls
+/// `apply_stall_recount` with the same path.
+#[tauri::command]
+pub fn preview_stall_recount(
+    db: State<'_, DbPool>,
+    path: String,
+    current_owner: Option<String>,
+) -> Result<RecountPreview, String> {
+    let path_buf = std::path::PathBuf::from(&path);
+    let content = std::fs::read_to_string(&path_buf)
+        .map_err(|e| format!("Failed to read shop log file: {e}"))?;
+    let base_year = year_from_filename(&path_buf);
+    let shop_log: ShopLog = parse_shop_log("Imported", &content, "imported", base_year);
+    let owner = shop_log
+        .owner
+        .clone()
+        .or_else(|| opt_nonempty(&current_owner).map(str::to_string))
+        .ok_or_else(|| {
+            "Cannot recount: file has no owner actions and no active character to claim it for".to_string()
+        })?;
+    let counted = recount_counts(&shop_log.entries);
+    let in_stock: std::collections::BTreeSet<String> = {
+        let conn = db
+            .get()
+            .map_err(|e| format!("Database connection error: {e}"))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT item, event_at, action, quantity, price_unit, price_total
+                 FROM stall_events
+                 WHERE owner = ?1 AND ignored = 0 AND item IS NOT NULL AND event_at IS NOT NULL
+                   AND action != 'unknown' AND action != 'collected'
+                 ORDER BY event_at ASC, id ASC",
+            )
+            .map_err(|e| format!("Failed to prepare inventory query: {e}"))?;
+        let events = stmt
+            .query_map(rusqlite::params![owner], |row| {
+                Ok(InventoryEvent {
+                    item: row.get::<_, String>(0)?,
+                    event_at: row.get::<_, String>(1)?,
+                    action: row.get::<_, String>(2)?,
+                    quantity: row.get::<_, i64>(3)?,
+                    price_unit: row.get::<_, Option<f64>>(4)?,
+                    price_total: row.get::<_, Option<i64>>(5)?,
+                })
+            })
+            .map_err(|e| format!("Inventory query failed: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to read inventory results: {e}"))?;
+        let mut bstmt = conn
+            .prepare(
+                "SELECT item, quantity, price_unit, recorded_at FROM stall_inventory_baseline \
+                 WHERE owner = ?1",
+            )
+            .map_err(|e| format!("Failed to prepare baseline query: {e}"))?;
+        let rows = bstmt
+            .query_map(rusqlite::params![owner], |row| {
+                Ok(BaselineSeed {
+                    item: row.get::<_, String>(0)?,
+                    quantity: row.get::<_, i64>(1)?,
+                    price_unit: row.get::<_, Option<f64>>(2)?,
+                    recorded_at: row.get::<_, String>(3)?,
+                })
+            })
+            .map_err(|e| format!("Baseline query failed: {e}"))?;
+        let baselines: Vec<BaselineSeed> = rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Failed to read baselines: {e}"))?;
+        let result =
+            crate::stall_aggregations::aggregate_inventory_with_baselines(events, 1, baselines);
+        result
+            .items
+            .into_iter()
+            .filter(|i| i.quantity > 0)
+            .map(|i| i.item)
+            .collect()
+    };
+    let counted_names: std::collections::BTreeSet<String> =
+        counted.iter().map(|l| l.item.clone()).collect();
+    let zeroed: Vec<String> = in_stock.difference(&counted_names).cloned().collect();
+    Ok(RecountPreview {
+        owner,
+        counted,
+        zeroed,
+        book_entries: shop_log.entries.len(),
+    })
+}
+
+/// Apply a recount previewed by `preview_stall_recount`: upsert one baseline
+/// per counted item (fresh-book quantity + price, `recorded_at` = now) and
+/// one qty-0 baseline per zeroed item, in one BEGIN IMMEDIATE transaction
+/// (pool-is-the-lock: all or nothing). Event rows are never touched — sales
+/// history survives intact. Returns the number of baseline rows written.
+#[tauri::command]
+pub fn apply_stall_recount(
+    db: State<'_, DbPool>,
+    path: String,
+    current_owner: Option<String>,
+) -> Result<usize, String> {
+    let preview = preview_stall_recount(db.clone(), path, current_owner)?;
+    // One BEGIN IMMEDIATE transaction for the whole write set (pool-is-the-
+    // lock invariant, same shape as `insert_stall_events` / Clear above):
+    // either every baseline commits or none does — a mid-loop failure can
+    // never leave a half-recounted stall.
+    let mut conn = db
+        .get_write()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| format!("Failed to begin transaction: {e}"))?;
+    let mut written = 0usize;
+    for line in &preview.counted {
+        save_stall_baseline_internal(
+            &tx,
+            &StallBaselineInput {
+                owner: Some(preview.owner.clone()),
+                item: Some(line.item.clone()),
+                quantity: Some(line.quantity),
+                price_unit: line.price_unit,
+                note: Some("recount".to_string()),
+            },
+        )?;
+        written += 1;
+    }
+    for item in &preview.zeroed {
+        save_stall_baseline_internal(
+            &tx,
+            &StallBaselineInput {
+                owner: Some(preview.owner.clone()),
+                item: Some(item.clone()),
+                quantity: Some(0),
+                price_unit: None,
+                note: Some("recount".to_string()),
+            },
+        )?;
+        written += 1;
+    }
+    tx.commit()
+        .map_err(|e| format!("Failed to commit recount: {e}"))?;
+    Ok(written)
+}
 /// Write one file per `(owner, year, month, day)` group, sorted newest-first
 /// to match the in-game book format. Round-trip contract: any file produced
 /// by Export must be re-importable by Import, landing identical rows
@@ -1657,5 +2012,189 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("collect");
         assert_eq!(remaining, vec![("Alvida".to_string(), "Reins".to_string())]);
+    }
+
+    #[test]
+    fn insert_reingest_overlapping_book_replaces_witness() {
+        // Live 2026-11 shape: the same log line ("Mon Apr 20 08:55 - removed
+        // Kilderkin") sits in two overlapping books at different positions,
+        // so it parses to a different entry_index in each. A full-overlap
+        // re-ingest (1 copy in, max 1 stored) becomes the witness: the old
+        // row is replaced, the genuinely new line inserts. Same-batch
+        // repeats are all kept: Deradon's 8x same-minute bulk buys are 8
+        // real occurrences, not a re-ingest.
+        let db = baseline_pool();
+        fn input(
+            ts: &str,
+            msg: &str,
+            idx: i64,
+            title: &str,
+            log_ts: &str,
+        ) -> StallEventInput {
+            StallEventInput {
+                event_timestamp: ts.to_string(),
+                event_at: Some("2026-04-20 08:55:00".to_string()),
+                log_timestamp: log_ts.to_string(),
+                log_title: title.to_string(),
+                action: "removed".to_string(),
+                player: "Deradon".to_string(),
+                owner: Some("Deradon".to_string()),
+                item: Some("Kilderkin".to_string()),
+                quantity: 1,
+                price_unit: None,
+                price_total: None,
+                raw_message: msg.to_string(),
+                entry_index: idx,
+            }
+        }
+        let line = "Deradon removed Kilderkin from shop";
+        // First book ingests the line at index 14.
+        let first = vec![input("Mon Apr 20 08:55", line, 14, "Today's Shop Logs", "23:22:02")];
+        assert_eq!(insert_stall_events(&db, &first).expect("first ingest"), 1);
+        // Overlapping second book holds the same line at index 12, plus one
+        // genuinely new line. The re-ingested occurrence replaces its row
+        // (DELETE + INSERT counts as inserted); the new line inserts.
+        let second = vec![
+            input("Mon Apr 20 08:55", line, 12, "Imported", "imported"),
+            input("Mon Apr 20 08:56", "Deradon added Kilderkin to shop", 13, "Imported", "imported"),
+        ];
+        assert_eq!(insert_stall_events(&db, &second).expect("re-ingest"), 2);
+        let count: i64 = db
+            .get()
+            .expect("read conn")
+            .query_row(
+                "SELECT COUNT(*) FROM stall_events WHERE owner = 'Deradon'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(count, 2);
+        // Latest batch wins: the surviving row carries the re-ingest's index
+        // and title, so a re-read line never multiplies.
+        let (title, idx): (String, i64) = db
+            .get()
+            .expect("read conn")
+            .query_row(
+                "SELECT log_title, entry_index FROM stall_events WHERE raw_message = ?1",
+                rusqlite::params![line],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("row");
+        assert_eq!(title, "Imported");
+        assert_eq!(idx, 12);
+    }
+
+    #[test]
+    fn insert_partial_reingest_inserts_nothing() {
+        // Partial overlap: the earlier batch holds TWO copies of the line,
+        // the re-ingest carries only ONE (1 < max-stored 2). Its occurrence
+        // is already witnessed — insert nothing, delete nothing, so a
+        // partial overlap can never drop real events.
+        let db = baseline_pool();
+        fn input(idx: i64, title: &str, log_ts: &str) -> StallEventInput {
+            StallEventInput {
+                event_timestamp: "Mon Apr 20 08:55".to_string(),
+                event_at: Some("2026-04-20 08:55:00".to_string()),
+                log_timestamp: log_ts.to_string(),
+                log_title: title.to_string(),
+                action: "removed".to_string(),
+                player: "Deradon".to_string(),
+                owner: Some("Deradon".to_string()),
+                item: Some("Kilderkin".to_string()),
+                quantity: 1,
+                price_unit: None,
+                price_total: None,
+                raw_message: "Deradon removed Kilderkin from shop".to_string(),
+                entry_index: idx,
+            }
+        }
+        let first = vec![
+            input(14, "Today's Shop Logs", "23:22:02"),
+            input(15, "Today's Shop Logs", "23:22:02"),
+        ];
+        assert_eq!(insert_stall_events(&db, &first).expect("first ingest"), 2);
+        let second = vec![input(12, "Imported", "imported")];
+        assert_eq!(
+            insert_stall_events(&db, &second).expect("re-ingest"),
+            0,
+            "partial re-ingest is fully witnessed: nothing inserted"
+        );
+        let rows: Vec<(String, i64)> = db
+            .get()
+            .expect("read conn")
+            .prepare(
+                "SELECT log_title, entry_index FROM stall_events
+                 WHERE raw_message = 'Deradon removed Kilderkin from shop'
+                 ORDER BY entry_index",
+            )
+            .expect("prepare")
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(
+            rows,
+            vec![
+                ("Today's Shop Logs".to_string(), 14),
+                ("Today's Shop Logs".to_string(), 15),
+            ],
+            "earlier batch untouched"
+        );
+    }
+
+    #[test]
+    fn recount_counts_matches_fresh_book_shape() {
+        // Fresh-book 2026-11-09 shape: priced-only `visible` lines whose
+        // `added` rows scrolled out of the book must still count (one
+        // listing's worth), `bought` depletes and never sets the listing
+        // price, and a bought-out priced-only item drops to zero.
+        use crate::shop_log_parser::ShopLogEntry;
+        fn e(action: &str, item: &str, qty: i64, price: Option<f64>) -> ShopLogEntry {
+            ShopLogEntry {
+                timestamp: "Mon Nov 9 16:58".to_string(),
+                event_at: Some("2026-11-09 16:58:00".to_string()),
+                action: action.to_string(),
+                player: "TwinkleofToes".to_string(),
+                item: Some(item.to_string()),
+                quantity: qty,
+                price_unit: price,
+                price_total: None,
+                raw_message: format!("{action} {item}"),
+                entry_index: 0,
+            }
+        }
+        let entries = vec![
+            e("added", "Orcish Spell Pouch", 3, None),
+            e("visible", "Orcish Spell Pouch", 3, Some(300.0)),
+            e("visible", "Unicorn Milk", 5, Some(4000.0)),
+            e("visible", "Typical Animal Fat", 1, Some(2000.0)),
+            e("bought", "Typical Animal Fat", 1, Some(2000.0)),
+            e("added", "Snail Sinews", 2, None),
+            e("visible", "Snail Sinews", 2, Some(500.0)),
+            e("removed", "Snail Sinews", 2, None),
+            e("added", "Snail Sinews", 2, None),
+            // Fae Felt 2026-11-09: bought-out in-book, then a same-day
+            // re-list `visible`. The depleted guard must win — no resurrect.
+            e("added", "Fae Felt", 2, None),
+            e("bought", "Fae Felt", 2, Some(1000.0)),
+            e("visible", "Fae Felt", 2, Some(1000.0)),
+        ];
+        let got = recount_counts(&entries);
+        let find = |name: &str| got.iter().find(|l| l.item == name).cloned();
+        // Adds + visible: full count, book price wins.
+        let pouch = find("Orcish Spell Pouch").expect("pouch counted");
+        assert_eq!(pouch.quantity, 3);
+        assert_eq!(pouch.price_unit, Some(300.0));
+        // Priced-only visible (adds scrolled out): one listing's worth.
+        let milk = find("Unicorn Milk").expect("milk counted");
+        assert_eq!(milk.quantity, 5);
+        assert_eq!(milk.price_unit, Some(4000.0));
+        // Bought out: gone, and the sale price never became the listing.
+        assert!(find("Typical Animal Fat").is_none());
+        // Remove-then-add replays to the fresh quantity.
+        let sinews = find("Snail Sinews").expect("sinews counted");
+        assert_eq!(sinews.quantity, 2);
+        // Bought-out then re-listed in the same book: stays gone.
+        assert!(find("Fae Felt").is_none());
     }
 }
