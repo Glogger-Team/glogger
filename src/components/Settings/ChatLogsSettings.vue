@@ -33,7 +33,7 @@
         </div>
         <div v-if="parseResult" class="success-box">{{ parseResult }}</div>
         <div v-if="parseError" class="error-box">{{ parseError }}</div>
-        <div v-if="props.error" class="error-box">Log parse error: {{ props.error }}</div>
+        <div v-if="props.error" class="error-box">Player.log error: {{ props.error }}</div>
       </div>
     </div>
 
