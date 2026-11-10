@@ -89,9 +89,9 @@ const knownIssues: KnownIssue[] = [
   {
     id: "statehelm-gift-counts",
     severity: "bug",
-    title: "Statehelm gift counts may be stale or empty",
+    title: "Statehelm gift counts aren't shown",
     description:
-      "Gift counts come from a per-view gift log that loads only while the Statehelm tracker is mounted. Favor data refreshes in the background, but the gift log does not reload when you return to the page, so counts can sit stale or empty until the next favor event.",
+      "The Statehelm page shows favor tiers but not per-NPC weekly gift counts — the view doesn't pass counts to its NPC cards, and the dashboard summary widget was removed. Favor data itself still refreshes in the background.",
   },
   {
     id: "item-quantities",
@@ -112,7 +112,7 @@ const knownIssues: KnownIssue[] = [
     severity: "bug",
     title: "Arena personal bets are no longer recorded",
     description:
-      "Personal bets were read from Player.log talk screens, which the current game client no longer writes. Match results still track via chat narration, and historic bets remain below.",
+      "Personal bets were read from Player.log talk screens, which the current game client no longer writes. Match results still track via chat narration, and historic bets remain visible in the Dashboard Arena widget.",
   },
   {
     id: "poems-dark",
@@ -178,7 +178,7 @@ const limitations: KnownIssue[] = [
     severity: "limitation",
     title: "Stall Tracker inventory may show incomplete or negative quantities",
     description:
-      'Inventory is reconstructed from the shop log event history. If the in-game log was truncated before an item was added (older entries scroll out of range), the baseline is lost and the quantity can briefly go negative until a fresh "added" event resets the tier stack. Count your stock in Manual stock entry to set a baseline, use Rebuild from log to replay the log after clearing stale baselines, or use Import to backfill from an exported book file.',
+      'Inventory is reconstructed from the shop log event history. If the in-game log was truncated before an item was added (older entries scroll out of range), the baseline is lost and the quantity can briefly go negative until a fresh "added" event resets the tier stack. Count your stock in Manual stock entry to set a baseline, or use Import to backfill from an exported book file. Rebuild from log removes all manual counts for the current character and cannot restore missing events — use it only when the saved log has enough history to reconstruct stock, or recount affected items afterward.',
   },
 ];
 
