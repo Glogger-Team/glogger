@@ -5,7 +5,6 @@ import type { WatchRule } from "../types/database";
 
 export interface AppSettings {
   logFilePath: string;
-  autoWatchOnStartup: boolean;
   gameDataPath: string;
   autoPurgeEnabled: boolean;
   autoPurgeDays: number;
@@ -51,7 +50,6 @@ export interface AppSettings {
 // Backend settings format (snake_case)
 interface BackendSettings {
   log_file_path: string;
-  auto_watch_on_startup: boolean;
   game_data_path: string;
   auto_purge_enabled: boolean;
   auto_purge_days: number;
@@ -98,7 +96,6 @@ interface BackendSettings {
 function toBackendSettings(settings: AppSettings): BackendSettings {
   return {
     log_file_path: settings.logFilePath,
-    auto_watch_on_startup: settings.autoWatchOnStartup,
     game_data_path: settings.gameDataPath,
     auto_purge_enabled: settings.autoPurgeEnabled,
     auto_purge_days: settings.autoPurgeDays,
@@ -216,7 +213,6 @@ export function applyUiScale(percent: number) {
 function fromBackendSettings(settings: BackendSettings): AppSettings {
   return {
     logFilePath: settings.log_file_path,
-    autoWatchOnStartup: settings.auto_watch_on_startup,
     gameDataPath: settings.game_data_path,
     autoPurgeEnabled: settings.auto_purge_enabled,
     autoPurgeDays: settings.auto_purge_days,
@@ -264,7 +260,6 @@ function fromBackendSettings(settings: BackendSettings): AppSettings {
 function getDefaultSettings(): AppSettings {
   return {
     logFilePath: "",
-    autoWatchOnStartup: false,
     gameDataPath: "",
     autoPurgeEnabled: false,
     autoPurgeDays: 90,
@@ -370,11 +365,6 @@ export const useSettingsStore = defineStore("settings", () => {
     await saveSettings(settings.value);
   }
 
-  async function updateAutoWatchOnStartup(enabled: boolean) {
-    settings.value.autoWatchOnStartup = enabled;
-    await saveSettings(settings.value);
-  }
-
   async function updateGameDataPath(path: string) {
     const oldPath = settings.value.gameDataPath;
     settings.value.gameDataPath = path;
@@ -407,28 +397,6 @@ export const useSettingsStore = defineStore("settings", () => {
     return settings.value.gameDataPath + "/Player.log";
   }
 
-  function getChatLogsPath(): string {
-    return settings.value.gameDataPath + "/ChatLogs";
-  }
-
-  function getReportsPath(): string {
-    return settings.value.gameDataPath + "/Reports";
-  }
-
-  async function updateAutoPurgeEnabled(enabled: boolean) {
-    settings.value.autoPurgeEnabled = enabled;
-    await saveSettings(settings.value);
-  }
-
-  async function updateAutoPurgeDays(days: number) {
-    settings.value.autoPurgeDays = days;
-    await saveSettings(settings.value);
-  }
-
-  async function updateAutoTailChat(enabled: boolean) {
-    settings.value.autoTailChat = enabled;
-    await saveSettings(settings.value);
-  }
 
   return {
     settings,
@@ -436,15 +404,9 @@ export const useSettingsStore = defineStore("settings", () => {
     isLoaded,
     initialize,
     updateLogFilePath,
-    updateAutoWatchOnStartup,
     updateGameDataPath,
     updateSettings,
     getPlayerLogPath,
-    getChatLogsPath,
-    getReportsPath,
-    updateAutoPurgeEnabled,
-    updateAutoPurgeDays,
-    updateAutoTailChat,
   };
 });
 

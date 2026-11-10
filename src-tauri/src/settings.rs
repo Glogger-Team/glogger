@@ -13,6 +13,7 @@ pub struct AppSettings {
     pub log_file_path: String,
 
     /// Auto-watch Player.log on startup (legacy)
+    #[serde(default)]
     pub auto_watch_on_startup: bool,
 
     /// Root game data directory.

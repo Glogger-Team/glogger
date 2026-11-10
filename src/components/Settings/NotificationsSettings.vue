@@ -3,15 +3,24 @@
     <div class="settings-section">
       <h3>Notifications</h3>
 
-      <div class="py-8 text-center">
-        <p class="text-text-muted text-base">
-          Notification settings will appear here once parts of the app begin supporting notifications.
-          You'll be able to configure global notification behavior, per-feature toggles, and alert preferences.
-        </p>
-      </div>
+      <p class="mt-2 text-text-muted text-xs leading-relaxed">
+        Notifications are live through Chat watch rules. A matching message can
+        highlight in chat, pop up a toast, and play a sound. Recent matches also
+        appear in the Watchword Alerts dashboard widget.
+      </p>
+      <button @click="openWatchwords" class="btn btn-secondary mt-3">
+        Open Chat Watchwords
+      </button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
+import { useViewNavigation } from "../../composables/useViewNavigation";
+
+const { navigateToView } = useViewNavigation();
+
+function openWatchwords() {
+  navigateToView({ view: "chat", subTab: "watchwords" });
+}
 </script>

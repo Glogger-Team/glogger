@@ -191,12 +191,9 @@
     <div class="settings-section">
       <h3>Reports Import</h3>
 
-      <div class="py-4">
-        <p class="text-text-muted text-xs leading-relaxed">
-          Auto-importing data from the game's Reports folder will be available in a future update.
-          This will allow importing market data, sales records, and other report files automatically.
-        </p>
-      </div>
+      <p class="mt-2 text-text-muted text-xs leading-relaxed">
+        Automatic report importing is live — see Advanced &gt; Character Report Watching.
+      </p>
     </div>
   </div>
 </template>
