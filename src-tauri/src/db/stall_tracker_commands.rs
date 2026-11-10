@@ -46,21 +46,20 @@ pub struct StallEventInput {
 /// rule: per line, the incoming batch becomes the witness iff its occurrence
 /// count is >= the max occurrences any single stored batch holds (batch =
 /// `log_title`/`log_timestamp`; ties go to the newest batch). A witness
-/// re-ingest replaces the line's stored rows from other batches (DELETE +
-/// INSERT in this same transaction, so a full-overlap re-ingest never grows
-/// the row count and returns 0 net-new); a PARTIAL re-ingest carrying fewer
-/// copies inserts and deletes nothing — its occurrences are already
-/// witnessed, and a partial overlap must never delete real events.
-/// `entry_index` alone cannot be the identity: it is the line's position
-/// inside its own book (oldest = 0), so the same line parses to a different
-/// index in books of different lengths — keying on it re-inserts every
-/// overlapping line and multiplies `added` quantities (live 2026-11 case:
-/// 110 in-stock rows from 3,589 events, 1,818 of them same-line duplicates).
+/// re-ingest replaces the line's stored rows outright (DELETE + INSERT in
+/// this same transaction, so a full-overlap re-ingest never grows the row
+/// count and returns 0 net-new) — INCLUDING the incoming batch's own old
+/// rows, so a same-batch re-process at shifted `entry_index` (sliding
+/// window) self-heals instead of re-adding every line; a PARTIAL re-ingest
+/// carrying fewer copies inserts and deletes nothing — its occurrences are
+/// already witnessed, and a partial overlap must never delete real events.
 /// Genuine same-minute repeats still insert: first sighting has no stored
 /// batch, and a book holding MORE copies than stored becomes the new witness
 /// (Deradon's 8x same-minute bulk buys are 8 real occurrences, not a
-/// re-ingest). Witness replacement preserves per-occurrence `ignored` flags
-/// onto the replacements (oldest-first) so muted events never leak back in.
+/// re-ingest). Witness replacement mutes the whole replacement set when any
+/// removed row was muted (per-group OR, errs toward muted and reversible
+/// via the per-row toggle) — positional carry is unsound across several
+/// losing batches.
 /// Only `QueryReturnedNoRows` means "no stored batch" — any other witness
 /// lookup error aborts instead of deleting on a failed read.
 /// Clear-vs-insert serialization comes from the single-write pool plus the
@@ -88,9 +87,11 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
     // query below via NULL-safe `IS`: an identical `bought` line in Alt B's
     // book must never delete Alt A's real sale of the same line). If the
     // incoming batch is at least as full (ties -> newest wins), it becomes
-    // the witness: delete the line's stored rows from other batches, insert
-    // all incoming. If it carries FEWER copies (partial overlap), its
-    // occurrences are already witnessed — insert nothing, delete nothing. A
+    // the witness: replace the line's stored rows outright (delete first,
+    // insert after — including the incoming batch's own old rows, so a
+    // same-batch re-process at shifted indexes self-heals). If it carries
+    // FEWER copies (partial overlap), its occurrences are already
+    // witnessed — insert nothing, delete nothing. A
     // partial overlap must never delete real events. Genuine same-minute
     // repeats still insert: first sighting has no stored batch (0 < n), and
     // a book with MORE copies than stored becomes the new witness.
@@ -98,11 +99,12 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
     // copies than the max stored batch holds) skip the INSERT entirely —
     // their occurrences exist, and the shifted entry_index would otherwise
     // re-add them as new rows under OR IGNORE.
-    // Muted-line carry: per-occurrence `ignored` flags of rows the witness
-    // DELETE removes, keyed by line. Applied to the replacements after the
-    // insert loop so a muted event never leaks back into Sales / Revenue /
-    // Inventory. Per-occurrence (oldest-first by id), never MAX over the
-    // line: identical lines can be distinct events with different mutes.
+    // Muted-line carry: when any row the witness DELETE removes was muted,
+    // the replacements inherit the mute (whole-set OR, errs toward muted —
+    // reversible via the per-row toggle). Positional mapping is unsound
+    // across several losing batches, so the carry is a set flag, never an
+    // occurrence-index zip: identical lines can be distinct events with
+    // different mutes.
     // Deleted-row count for the net-new return below.
     let mut mute_carry: std::collections::BTreeMap<(String, String), Vec<bool>> =
         std::collections::BTreeMap::new();
@@ -130,16 +132,14 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
         let mut doomed_mutes = tx
             .prepare(
                 "SELECT ignored FROM stall_events
-                 WHERE event_timestamp = ?1 AND raw_message = ?2 AND owner IS ?5
-                   AND NOT (log_title = ?3 AND log_timestamp = ?4)
+                 WHERE event_timestamp = ?1 AND raw_message = ?2 AND owner IS ?3
                  ORDER BY id ASC",
             )
             .map_err(|e| format!("Failed to prepare mute snapshot: {e}"))?;
         let mut del = tx
             .prepare(
                 "DELETE FROM stall_events
-                 WHERE event_timestamp = ?1 AND raw_message = ?2 AND owner IS ?5
-                   AND NOT (log_title = ?3 AND log_timestamp = ?4)",
+                 WHERE event_timestamp = ?1 AND raw_message = ?2 AND owner IS ?3",
             )
             .map_err(|e| format!("Failed to prepare re-ingest delete: {e}"))?;
         let mut witnessed = std::collections::BTreeSet::new();
@@ -155,20 +155,19 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
                 Err(e) => return Err(format!("Witness query failed: {e}")),
             };
             if *n_in >= n_max {
-                // Witness (or first sighting): clear other batches. The
-                // incoming batch's own (title, timestamp) identifies it; a
-                // rescan of an appended file carries a new timestamp, so its
-                // rows never match the NOT clause and survive.
-                let (title, stamp) = events
-                    .iter()
-                    .find(|e| &e.event_timestamp == ts && &e.raw_message == msg)
-                    .map(|e| (e.log_title.clone(), e.log_timestamp.clone()))
-                    .unwrap_or_default();
-                // Snapshot BEFORE the delete: per-occurrence mute flags of
-                // the rows about to go, oldest-first.
+                // Witness (or first sighting): replace the line's stored rows
+                // outright. The branch precondition (`n_in >= n_max`) makes a
+                // full replace safe, INCLUDING the incoming batch's own old
+                // rows: a same-batch re-ingest (watcher re-process, shifted
+                // `entry_index` after the sliding window dropped the oldest
+                // entry) becomes a true replace instead of re-adding every
+                // line at its new index. Ids churn; the mute carry above and
+                // the collision guard below keep that sound.
+                // Snapshot BEFORE the delete: mute flags of the rows about
+                // to go, oldest-first (whole-set OR at carry time).
                 let was_muted: Vec<bool> = doomed_mutes
                     .query_map(
-                        rusqlite::params![ts, msg, title, stamp, batch_owner.clone()],
+                        rusqlite::params![ts, msg, batch_owner.clone()],
                         |r| r.get::<_, i64>(0).map(|v| v != 0),
                     )
                     .map_err(|e| format!("Mute snapshot failed: {e}"))?
@@ -178,7 +177,7 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
                     mute_carry.insert((ts.clone(), msg.clone()), was_muted);
                 }
                 deleted_total += del
-                    .execute(rusqlite::params![ts, msg, title, stamp, batch_owner.clone()])
+                    .execute(rusqlite::params![ts, msg, batch_owner.clone()])
                     .map_err(|e| format!("Failed to delete re-ingested stall event: {e}"))?;
             } else {
                 witnessed.insert((ts.clone(), msg.clone()));
@@ -270,10 +269,13 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
         }
     }
 
-    // Carry mutes onto the replacements, oldest replacement first: a muted
-    // occurrence i mutes replacement i (when both sides hold several rows
-    // the counts agree — witness means n_in >= n_max — so index mapping is
-    // exact; a longer incoming batch leaves its extra tail unmuted).
+    // Mute carry: when any doomed row for a line was muted, mute the whole
+    // replacement set (per-group OR, errs toward muted — reversible via the
+    // per-row toggle). Positional oldest-first mapping is unsound once two
+    // or more batches lose: `doomed_mutes` spans every losing batch while
+    // the replacements are only the incoming batch, so a flat zip pairs
+    // unrelated occurrences (mute leak onto live rows, or resurrection of
+    // a deliberately muted event). Same policy as the v89 witness pass.
     if !mute_carry.is_empty() {
         let mut flag = tx
             .prepare(
@@ -281,6 +283,9 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
             )
             .map_err(|e| format!("Failed to prepare mute carry: {e}"))?;
         for ((ts, msg), mutes) in &mute_carry {
+            if !mutes.iter().any(|m| *m) {
+                continue;
+            }
             // Owner-scoped like the witness queries above: the replacements
             // just inserted carry the batch owner, so only they can match.
             let batch_owner: Option<String> = events
@@ -298,11 +303,9 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
                 .map_err(|e| format!("Mute carry lookup failed: {e}"))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("Mute carry lookup failed: {e}"))?;
-            for (id, muted) in ids.drain(..).zip(mutes.iter()) {
-                if *muted {
-                    flag.execute(rusqlite::params![id])
-                        .map_err(|e| format!("Mute carry failed: {e}"))?;
-                }
+            for id in ids.drain(..) {
+                flag.execute(rusqlite::params![id])
+                    .map_err(|e| format!("Mute carry failed: {e}"))?;
             }
         }
     }
@@ -1245,6 +1248,11 @@ pub struct RecountPreview {
     /// longer hashes the same — the confirm dialog's names only describe
     /// this content.
     pub content_hash: String,
+    /// Newest `event_at` across the book's parsed entries (`YYYY-MM-DD
+    /// HH:MM:SS`), if any. Apply stamps `recorded_at = min(now,
+    /// book_latest_at)` so events that landed after the book's snapshot
+    /// stay visible instead of being silently superseded by a now-stamp.
+    pub book_latest_at: Option<String>,
 }
 
 /// Derive per-item counts from already-parsed shop-log entries by replaying
@@ -1467,20 +1475,31 @@ fn preview_from_content(
     let counted_names: std::collections::BTreeSet<String> =
         counted.iter().map(|l| l.item.clone()).collect();
     let zeroed: Vec<String> = in_stock.difference(&counted_names).cloned().collect();
+    // Newest entry timestamp in the book (`YYYY-MM-DD HH:MM:SS` strings
+    // compare chronologically): apply stamps `min(now, this)` so post-book
+    // events are not silently superseded (F2).
+    let book_latest_at = shop_log
+        .entries
+        .iter()
+        .filter_map(|e| e.event_at.clone())
+        .max();
     Ok(RecountPreview {
         owner,
         counted,
         zeroed,
         book_entries: shop_log.entries.len(),
         content_hash: book_content_hash(content),
+        book_latest_at,
     })
 }
 
 /// Apply a recount previewed by `preview_stall_recount`: upsert one baseline
-/// per counted item (fresh-book quantity + price, `recorded_at` = now) and
-/// one qty-0 baseline per zeroed item, in one BEGIN IMMEDIATE transaction
-/// (pool-is-the-lock: all or nothing). Event rows are never touched — sales
-/// history survives intact. Returns the number of baseline rows written.
+/// per counted item (fresh-book quantity + price) and one qty-0 baseline per
+/// zeroed item, in one BEGIN IMMEDIATE transaction (pool-is-the-lock: all or
+/// nothing). Event rows are never touched — sales history survives intact.
+/// Returns the number of baseline rows written. `recorded_at` stamps
+/// `min(now, book_latest_at)`: the counts describe the book's snapshot, so
+/// post-book events stay in the replay (a now-stamp would silently drop them).
 /// The frontend echoes back the `RecountPreview` it confirmed
 /// (`expected_hash` + `confirmed_counted`/`confirmed_zeroed`): apply
 /// re-reads the book, aborts when the content hash differs (rewritten book
@@ -1525,21 +1544,26 @@ pub fn apply_stall_recount(
     // landed while the confirm sat open shifts the in-stock set, so the
     // recomputed `zeroed`/`counted` can differ from what the user saw.
     // Abort without writing rather than zeroing an item the dialog listed
-    // as counted (or counting one it listed as zeroed).
-    let confirmed_names: std::collections::BTreeSet<&str> =
-        confirmed_counted.iter().map(|l| l.item.as_str()).collect();
-    let fresh_names: std::collections::BTreeSet<&str> =
-        preview.counted.iter().map(|l| l.item.as_str()).collect();
-    let quantities_match = confirmed_counted.len() == preview.counted.len()
-        && confirmed_counted.iter().all(|l| {
-            preview
-                .counted
-                .iter()
-                .any(|f| f.item == l.item && f.quantity == l.quantity)
-        });
+    // as counted (or counting one it listed as zeroed). Multiset compare
+    // (sorted triples incl. price): a bare set + `any` match lets duplicate
+    // items collapse onto one fresh row.
+    fn counted_key<'a>(lines: &'a [RecountLine]) -> Vec<(&'a str, i64, Option<u64>)> {
+        let mut v: Vec<(&'a str, i64, Option<u64>)> = lines
+            .iter()
+            .map(|l| (l.item.as_str(), l.quantity, l.price_unit.map(f64::to_bits)))
+            .collect();
+        v.sort();
+        v
+    }
+    if counted_key(&confirmed_counted) != counted_key(&preview.counted) {
+        return Err(
+            "Stall changed since preview — re-run the recount preview before applying."
+                .to_string(),
+        );
+    }
     let zeroed_match = confirmed_zeroed.iter().collect::<std::collections::BTreeSet<_>>()
         == preview.zeroed.iter().collect::<std::collections::BTreeSet<_>>();
-    if confirmed_names != fresh_names || !quantities_match || !zeroed_match {
+    if !zeroed_match {
         return Err(
             "Stall changed since preview — re-run the recount preview before applying."
                 .to_string(),
@@ -1556,6 +1580,10 @@ pub fn apply_stall_recount(
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| format!("Failed to begin transaction: {e}"))?;
     let mut written = 0usize;
+    // `recorded_at = min(now, book_latest_at)`: the counts describe the
+    // book's snapshot, so post-book events (book_latest, now] stay in the
+    // replay instead of being silently superseded by a now-stamp (F2).
+    let stamp = preview.book_latest_at.as_deref();
     for line in &preview.counted {
         save_stall_baseline_internal(
             &tx,
@@ -1566,6 +1594,7 @@ pub fn apply_stall_recount(
                 price_unit: line.price_unit,
                 note: Some("recount".to_string()),
             },
+            stamp,
         )?;
         written += 1;
     }
@@ -1579,6 +1608,7 @@ pub fn apply_stall_recount(
                 price_unit: None,
                 note: Some("recount".to_string()),
             },
+            stamp,
         )?;
         written += 1;
     }
@@ -1869,14 +1899,19 @@ pub fn save_stall_baseline(
     let conn = db
         .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
-    save_stall_baseline_internal(&conn, &input)
+    save_stall_baseline_internal(&conn, &input, None)
 }
 
-/// Validated upsert behind `save_stall_baseline`. Takes a plain
-/// `Connection` so tests exercise the real SQL without a Tauri `State`.
+/// Validated upsert behind `save_stall_baseline` and `apply_stall_recount`.
+/// Takes a plain `Connection` so tests exercise the real SQL without a
+/// Tauri `State`. `recorded_at_override` (a `YYYY-MM-DD HH:MM:SS` stamp)
+/// replaces the now-stamp when `Some`: the recount passes
+/// `min(now, book_latest_at)` so post-book events are not silently
+/// superseded. The public command always stamps now (`None`).
 fn save_stall_baseline_internal(
     conn: &rusqlite::Connection,
     input: &StallBaselineInput,
+    recorded_at_override: Option<&str>,
 ) -> Result<Option<StallBaseline>, String> {
     let owner = opt_nonempty(&input.owner)
         .ok_or_else(|| "save_stall_baseline requires an owner".to_string())?
@@ -1904,15 +1939,44 @@ fn save_stall_baseline_internal(
     // column default): a re-count supersedes history up to *now*, not up to
     // the original count. `note` clears on each save unless re-supplied —
     // stale notes ("counted Tuesday") would otherwise outlive their count.
+    // The recount override replaces now with the book's newest entry time
+    // (validated `YYYY-MM-DD HH:MM:SS` shape, else now): counts describe the
+    // book's snapshot, so the stamp must too — otherwise events between the
+    // snapshot and apply vanish from the replay.
+    let now_now: String = conn
+        .query_row(
+            "SELECT strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("Baseline clock read failed: {e}"))?;
+    let stamp_is_sane = |s: &str| {
+        s.len() == 19
+            && s.as_bytes()[4] == b'-'
+            && s.as_bytes()[7] == b'-'
+            && s.as_bytes()[10] == b' '
+            && s.as_bytes()[13] == b':'
+            && s.as_bytes()[16] == b':'
+    };
+    let recorded_at: String = match recorded_at_override {
+        Some(s) => {
+            if stamp_is_sane(s) && s < now_now.as_str() {
+                s.to_string()
+            } else {
+                now_now
+            }
+        }
+        None => now_now,
+    };
     conn.execute(
         "INSERT INTO stall_inventory_baseline (owner, item, quantity, price_unit, recorded_at, note)
-         VALUES (?1, ?2, ?3, ?4, strftime('%Y-%m-%d %H:%M:%S', 'now', 'localtime'), ?5)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(owner, item) DO UPDATE SET
             quantity = excluded.quantity,
             price_unit = excluded.price_unit,
             recorded_at = excluded.recorded_at,
             note = excluded.note",
-        rusqlite::params![owner, item, quantity, input.price_unit, input.note],
+        rusqlite::params![owner, item, quantity, input.price_unit, recorded_at, input.note],
     )
     .map_err(|e| format!("Baseline save failed: {e}"))?;
 
@@ -2220,11 +2284,11 @@ mod tests {
     fn baseline_upsert_replaces_same_item() {
         let db = baseline_pool();
         let conn = db.get_write().expect("write conn");
-        let first = save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 5))
+        let first = save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 5), None)
             .expect("save")
             .expect("row");
         assert_eq!(first.quantity, 5);
-        let second = save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 3))
+        let second = save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 3), None)
             .expect("re-save")
             .expect("row");
         assert_eq!(second.quantity, 3);
@@ -2243,14 +2307,47 @@ mod tests {
     }
 
     #[test]
+    fn baseline_recorded_at_override_stamps_book_snapshot() {
+        // F2: the recount stamps `min(now, book_latest_at)` so post-book
+        // events stay in the replay. An old-but-sane stamp wins; a future
+        // stamp and garbage fall back to now.
+        let db = baseline_pool();
+        let conn = db.get_write().expect("write conn");
+        let old = save_stall_baseline_internal(
+            &conn,
+            &baseline_input("Deradon", "Reins", 5),
+            Some("2026-11-01 10:00:00"),
+        )
+        .expect("save")
+        .expect("row");
+        assert_eq!(old.recorded_at, "2026-11-01 10:00:00", "sane past stamp wins");
+        let now_row = save_stall_baseline_internal(
+            &conn,
+            &baseline_input("Deradon", "Saddle", 2),
+            Some("2999-01-01 00:00:00"),
+        )
+        .expect("save")
+        .expect("row");
+        assert_ne!(now_row.recorded_at, "2999-01-01 00:00:00", "future stamp falls back to now");
+        let garbage = save_stall_baseline_internal(
+            &conn,
+            &baseline_input("Deradon", "Belt", 1),
+            Some("not-a-stamp"),
+        )
+        .expect("save")
+        .expect("row");
+        assert_ne!(garbage.recorded_at, "not-a-stamp", "garbage falls back to now");
+    }
+
+    #[test]
     fn baseline_zero_quantity_stores_zero_row() {
         let db = baseline_pool();
         let conn = db.get_write().expect("write conn");
-        save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 5)).expect("save");
+        save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 5), None).expect("save");
         // qty 0 = cleared: stored as a zero row (not deleted) so the
         // aggregator supersedes pre-clear history for the item.
         let cleared =
-            save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 0))
+            save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 0), None)
                 .expect("zero-out")
                 .expect("zero row stored");
         assert_eq!(cleared.quantity, 0);
@@ -2268,8 +2365,8 @@ mod tests {
     fn baselines_are_owner_scoped() {
         let db = baseline_pool();
         let conn = db.get_write().expect("write conn");
-        save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 5)).expect("save");
-        save_stall_baseline_internal(&conn, &baseline_input("Alvida", "Reins", 2)).expect("save");
+        save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 5), None).expect("save");
+        save_stall_baseline_internal(&conn, &baseline_input("Alvida", "Reins", 2), None).expect("save");
         // Wrong-owner delete is a no-op (same predicate the command uses).
         let deleted = conn
             .execute(
@@ -2291,9 +2388,9 @@ mod tests {
     fn delete_all_baselines_is_owner_scoped() {
         let db = baseline_pool();
         let conn = db.get_write().expect("write conn");
-        save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 5)).expect("save");
-        save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Saddle", 2)).expect("save");
-        save_stall_baseline_internal(&conn, &baseline_input("Alvida", "Reins", 7)).expect("save");
+        save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Reins", 5), None).expect("save");
+        save_stall_baseline_internal(&conn, &baseline_input("Deradon", "Saddle", 2), None).expect("save");
+        save_stall_baseline_internal(&conn, &baseline_input("Alvida", "Reins", 7), None).expect("save");
         // Same helper the command uses: one owner's rows go, the other's stay.
         let deleted = delete_all_stall_baselines_internal(&conn, "Deradon").expect("delete");
         assert_eq!(deleted, 2);
@@ -2546,12 +2643,15 @@ mod tests {
             .expect("row");
         assert_eq!(kept_owner, "Deradon", "alt A's sale survives");
     }
+
     #[test]
-    fn insert_witness_replace_preserves_mute_per_occurrence() {
-        // Mute carry: two occurrences of one line, first muted. A witness
-        // re-ingest replaces both rows — the mute must ride onto the
-        // replacement (oldest-first), never reset to 0, and the muted row
-        // must stay out of the inventory replay.
+    fn insert_witness_replace_mutes_whole_set_on_any_doomed_mute() {
+        // Mute carry (per-group OR): two occurrences of one line, first
+        // muted. A witness re-ingest replaces both rows — the whole
+        // replacement set inherits the mute (errs toward muted, reversible
+        // via the per-row toggle), and muted rows stay out of the replay.
+        // Positional oldest-first mapping is unsound across several losing
+        // batches, so the carry is a set flag, never an occurrence zip.
         let db = baseline_pool();
         fn input(idx: i64, title: &str, log_ts: &str) -> StallEventInput {
             StallEventInput {
@@ -2585,7 +2685,7 @@ mod tests {
                 [],
             )
             .expect("mute one occurrence");
-        // rows, net-new 0, mute carried oldest-first.
+        // rows, net-new 0, whole replacement set muted.
         assert_eq!(
             insert_stall_events(
                 &db,
@@ -2608,7 +2708,60 @@ mod tests {
             .expect("query")
             .collect::<Result<Vec<_>, _>>()
             .expect("collect");
-        assert_eq!(mutes, vec![(12, 1), (13, 0)], "mute rides oldest-first");
+        assert_eq!(mutes, vec![(12, 1), (13, 1)], "any doomed mute mutes the set");
+    }
+
+    #[test]
+    fn insert_same_batch_shifted_reingest_replaces_without_growth() {
+        // F1: the watcher batch key is (file stem, constant "imported"), so
+        // a re-processed book after the sliding window dropped the oldest
+        // entry re-ingests the SAME batch at shifted indexes. The witness
+        // branch must replace outright (net-new 0), never re-add every line
+        // at its new index.
+        let db = baseline_pool();
+        fn input(idx: i64) -> StallEventInput {
+            StallEventInput {
+                event_timestamp: "Mon Apr 20 08:55".to_string(),
+                event_at: Some("2026-04-20 08:55:00".to_string()),
+                log_timestamp: "imported".to_string(),
+                log_title: "Imported".to_string(),
+                action: "added".to_string(),
+                player: "Deradon".to_string(),
+                owner: Some("Deradon".to_string()),
+                item: Some("Kilderkin".to_string()),
+                quantity: 1,
+                price_unit: None,
+                price_total: None,
+                raw_message: "Deradon added Kilderkin to shop".to_string(),
+                entry_index: idx,
+            }
+        }
+        assert_eq!(
+            insert_stall_events(&db, &[input(14), input(15)])
+                .expect("first ingest"),
+            2
+        );
+        // Same batch, every line shifted down one (oldest entry dropped).
+        assert_eq!(
+            insert_stall_events(&db, &[input(13), input(14)])
+                .expect("shifted re-ingest"),
+            0,
+            "same-batch re-ingest replaces, never grows"
+        );
+        let rows: Vec<i64> = db
+            .get()
+            .expect("read conn")
+            .prepare(
+                "SELECT entry_index FROM stall_events
+                 WHERE raw_message = 'Deradon added Kilderkin to shop'
+                 ORDER BY entry_index",
+            )
+            .expect("prepare")
+            .query_map([], |r| r.get(0))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(rows, vec![13, 14], "shifted indexes replace the old rows");
     }
 
     #[test]

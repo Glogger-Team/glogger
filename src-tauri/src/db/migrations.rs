@@ -481,6 +481,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         migration_v89_collapse_stall_reingest_dupes(conn)?;
         super::record_migration(conn, 89)?;
     }
+
+    if current_version < 90 {
+        migration_v90_collapse_stall_same_batch_dupes(conn)?;
+        super::record_migration(conn, 90)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1233,6 +1238,53 @@ fn migration_v89_collapse_stall_reingest_dupes(conn: &Connection) -> Result<()> 
              SELECT own, event_timestamp, raw_message FROM stall_v89_legacy)
            AND id NOT IN (SELECT keep_id FROM stall_v89_legacy);
          DROP TABLE stall_v89_legacy;",
+    )?;
+    Ok(())
+}
+
+/// Migration V90: collapse same-batch `stall_events` duplicates the v89
+/// legacy pass cannot see (F1 follow-up). The live witness path used to
+/// exclude the incoming batch's own rows from its DELETE, so a same-batch
+/// re-ingest (watcher re-process of one file at shifted `entry_index` after
+/// the sliding window dropped the oldest entry) re-added every line at its
+/// new index instead of replacing. The live path now replaces outright;
+/// this migration converges rows already stored that way. Same ledger-only
+/// scoping as v89 (`added`/`visible`/`configured`/`removed` — NEVER
+/// `bought`/`collected`/`hired`/`unknown`, whose identical same-minute
+/// multiplicity is real revenue), owner-scoped via `COALESCE(owner, '')`,
+/// newest id wins, mute OR-ed onto the survivor. Idempotent: a no-op once
+/// each (owner, line) holds one index.
+fn migration_v90_collapse_stall_same_batch_dupes(conn: &Connection) -> Result<()> {
+    // Same minimal-fixture guard as v87/v88/v89: skip instead of failing.
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stall_events')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TEMPORARY TABLE stall_v90_samebatch AS
+         SELECT own, event_timestamp, raw_message, MAX(id) AS keep_id,
+                MAX(ignored) AS keep_muted
+         FROM (SELECT *, COALESCE(owner, '') AS own FROM stall_events)
+         WHERE NOT (log_title = 'Imported' AND log_timestamp = 'imported')
+           AND action IN ('added', 'visible', 'configured', 'removed')
+         GROUP BY own, event_timestamp, raw_message
+         HAVING COUNT(*) > 1
+            AND COUNT(DISTINCT entry_index) > 1;
+         UPDATE stall_events SET ignored = 1 WHERE id IN (
+           SELECT keep_id FROM stall_v90_samebatch WHERE keep_muted = 1);
+         DELETE FROM stall_events
+         WHERE NOT (log_title = 'Imported' AND log_timestamp = 'imported')
+           AND action IN ('added', 'visible', 'configured', 'removed')
+           AND (COALESCE(owner, ''), event_timestamp, raw_message) IN (
+             SELECT own, event_timestamp, raw_message FROM stall_v90_samebatch)
+           AND id NOT IN (SELECT keep_id FROM stall_v90_samebatch);
+         DROP TABLE stall_v90_samebatch;",
     )?;
     Ok(())
 }
@@ -4491,13 +4543,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            89,
+            90,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 89);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 90);
     }
 
     #[test]
@@ -4620,13 +4672,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 89) plus the purge itself on the three aggregate source tables.
+        // 90) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 89, "migration chain head");
+        assert_eq!(head, 90, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -4672,8 +4724,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 89 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse). Repair: a
+        // Chain wiring: full run_migrations head must be 90 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -4681,7 +4733,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 89, "migration chain head");
+        assert_eq!(head, 90, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -5068,6 +5120,60 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 2, "each alt keeps its own sale");
+    }
+
+    #[test]
+    fn migration_v90_collapses_nonlegacy_same_batch_dupes() {
+        // F1 follow-up: same-batch dupes under a watcher batch key (file
+        // stem, NOT the legacy `Imported`/`imported` constant) survive v89's
+        // legacy pass. v90 collapses those for ledger actions only (newest
+        // id, mute OR-ed) while identical same-minute sales stay — and a
+        // legacy-constant dupe is left for v89's own pass, never v90.
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        c.execute_batch(
+            "INSERT INTO stall_events
+                (event_timestamp, event_at, log_timestamp, log_title,
+                 action, player, owner, item, quantity,
+                 price_unit, price_total, raw_message, entry_index, ignored)
+             VALUES
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '22:01:11', 'Today''s Shop Logs',
+                 'added', 'Deradon', 'Deradon', 'Kilderkin', 1,
+                 NULL, NULL, 'Deradon added Kilderkin to shop', 5, 1),
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '22:01:11', 'Today''s Shop Logs',
+                 'added', 'Deradon', 'Deradon', 'Kilderkin', 1,
+                 NULL, NULL, 'Deradon added Kilderkin to shop', 7, 0),
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '22:01:11', 'Today''s Shop Logs',
+                 'bought', 'MrBonq', 'Deradon', 'Quality Reins', 1,
+                 4500.0, 4500, 'MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500', 11, 0),
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '22:01:11', 'Today''s Shop Logs',
+                 'bought', 'MrBonq', 'Deradon', 'Quality Reins', 1,
+                 4500.0, 4500, 'MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500', 12, 0);",
+        )
+        .unwrap();
+        // v89 already ran inside run_migrations above with no dupes present;
+        // invoke v90 directly against the seeded dupes.
+        migration_v90_collapse_stall_same_batch_dupes(&c).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 3, "ledger dupe collapses, identical sales stay");
+        let (idx, muted): (i64, i64) = c
+            .query_row(
+                "SELECT entry_index, ignored FROM stall_events
+                 WHERE raw_message = 'Deradon added Kilderkin to shop'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(idx, 7, "newest same-batch dupe survives");
+        assert_eq!(muted, 1, "mute OR-ed onto the survivor");
+        // Re-run deletes nothing.
+        migration_v90_collapse_stall_same_batch_dupes(&c).unwrap();
+        let n2: i64 = c
+            .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n2, 3, "re-run must delete nothing");
     }
 
     #[test]

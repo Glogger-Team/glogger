@@ -234,11 +234,14 @@ export interface RecountLine {
 
 /** Preview of `preview_stall_recount`: counts from the fresh book plus the
  * in-stock items the book does not cover (zeroed on apply). `contentHash`
- * identifies the exact book bytes; apply echoes it back and aborts on drift. */
+ * identifies the exact book bytes; apply echoes it back and aborts on drift.
+ * `bookLatestAt` is the book's newest entry time; apply stamps
+ * `min(now, bookLatestAt)` so post-book events stay in the replay. */
 export interface RecountPreview {
   owner: string
   counted: RecountLine[]
   zeroed: string[]
   bookEntries: number
   contentHash: string
+  bookLatestAt: string | null
 }
