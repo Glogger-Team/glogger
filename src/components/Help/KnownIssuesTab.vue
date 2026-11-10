@@ -87,11 +87,11 @@ const knownIssues: KnownIssue[] = [
       'Items with TSys mod prefixes/suffixes (e.g., "Amazing Iron Sword") may not always link to their base item in the CDN. We\'ve added prefix/suffix stripping as a fallback, but some edge cases may remain.',
   },
   {
-    id: "statehelm-offpage",
+    id: "statehelm-gift-counts",
     severity: "bug",
-    title: "Statehelm tracker may lag behind when off-page",
+    title: "Statehelm gift counts aren't shown",
     description:
-      "The Statehelm gifting tracker updates from the database, but real-time updates rely on the favor activity feed. If you notice stale data, navigating to the Statehelm page will refresh it.",
+      "The Statehelm page shows favor tiers but not per-NPC weekly gift counts — the view doesn't pass counts to its NPC cards, and the dashboard summary widget was removed. Favor data itself still refreshes in the background.",
   },
   {
     id: "item-quantities",
@@ -106,6 +106,48 @@ const knownIssues: KnownIssue[] = [
     title: "Resurrection tracker may miss events",
     description:
       "The rez tracker parses [Action Emotes] chat messages. If this channel is disabled in your game settings, or if the game uses a different message format, rez events won't be captured.",
+  },
+  {
+    id: "arena-bets-dark",
+    severity: "bug",
+    title: "Arena personal bets are no longer recorded",
+    description:
+      "Personal bets were read from Player.log talk screens, which the current game client no longer writes. Match results still track via chat narration, and historic bets remain visible in the Dashboard Arena widget.",
+  },
+  {
+    id: "poems-dark",
+    severity: "bug",
+    title: "New poem recitals are no longer recorded",
+    description:
+      "Poems were captured from Player.log talk screens when another player recited at a poetry podium, which the current game client no longer writes. Historic poems remain, and Scan logs for past poems still finds poems in older logs.",
+  },
+  {
+    id: "survey-auto-start-dark",
+    severity: "bug",
+    title: "Survey sessions no longer auto-start",
+    description:
+      "Automatic detection needs Player.log survey events, which the current game client no longer writes. Start sessions manually with Start New Session and record each map with the Record survey use control.",
+  },
+  {
+    id: "chat-logging-required",
+    severity: "bug",
+    title: "Chat-driven features stop without in-game chat logging",
+    description:
+      'Item linking, watchwords, rez tracking, and other chat-driven features need "Log All Chat" enabled in-game (Settings → GUI) plus a game data path set. Messages on excluded channels are never stored, so check Settings → Chat Logs before resetting channels to defaults.',
+  },
+  {
+    id: "quest-completed-reexport",
+    severity: "bug",
+    title: "Completed quests may be empty on older exports",
+    description:
+      "Completed quests are only recorded by newer game clients. If the Completed tab is empty, re-export the character in-game (Export Character as JSON in Settings → VIP) to populate it.",
+  },
+  {
+    id: "rename-old-exports",
+    severity: "bug",
+    title: "Renamed characters can reappear from old export files",
+    description:
+      "Renaming moves all history, but game-written Reports/Character_<old-name>_*.json files still carry the old name. Remove them or re-export after renaming, or the next report scan recreates the old identity.",
   },
 ];
 
@@ -136,7 +178,7 @@ const limitations: KnownIssue[] = [
     severity: "limitation",
     title: "Stall Tracker inventory may show incomplete or negative quantities",
     description:
-      'Inventory is reconstructed from the shop log event history. If the in-game log was truncated before an item was added (older entries scroll out of range), the baseline is lost and the quantity can briefly go negative until a fresh "added" event resets the tier stack. Open your shop log in-game regularly, or use Import to backfill from an exported book file.',
+      'Inventory is reconstructed from the shop log event history. If the in-game log was truncated before an item was added (older entries scroll out of range), the baseline is lost and the quantity can briefly go negative until a fresh "added" event resets the tier stack. Count your stock in Manual stock entry to set a baseline, or use Import to backfill from an exported book file. Rebuild from log removes all manual counts for the current character and cannot restore missing events — use it only when the saved log has enough history to reconstruct stock, or recount affected items afterward.',
   },
 ];
 
