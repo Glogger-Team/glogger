@@ -145,14 +145,13 @@ keeping existing entries' indices stable across re-opens of the same book.
 it is NOT part of the ingest identity: the same line parses to a different
 index in books of different lengths, so keying on it re-inserts every
 overlapping line. Ingest de-duplicates by fullest-witness rule per logical
-line (`event_timestamp`, `raw_message`): the fullest batch (most occurrences;
-ties go to the newest) is the witness and its rows stay, other batches' rows
-for that line go; a partial re-ingest carrying fewer copies inserts and
-deletes nothing. The storage UNIQUE key stays
-`(event_timestamp, raw_message, entry_index)` (v23, unchanged) — ingest dedup
-is enforced by the witness logic, not by the key. v89 collapsed the pre-fix
-duplicates the same way (inventory-ledger actions only; identical same-minute
-sales are retained — ambiguous multiplicity must never delete revenue).
+line (`owner`, `event_timestamp`, `raw_message`): the fullest batch (most
+occurrences; ties go to the newest) is the witness and its rows stay, other
+batches' rows for that line go; a partial re-ingest carrying fewer copies
+inserts and deletes nothing. Owner scoping is load-bearing: an identical
+`bought` line in two alts' books is two real sales (buyer-named lines can
+match across owners), so every witness query matches on the incoming batch's
+owner (NULL-safe `IS`) and never deletes another character's rows. The storage UNIQUE key stays
 
 ### Year Resolution
 
@@ -229,8 +228,8 @@ import command treats it as "owner if known, else fall back." Do not treat
 **Unique constraint:** `(event_timestamp, raw_message, entry_index)` (storage
 level, v23, unchanged; `entry_index` keeps same-minute repeats distinct).
 Ingest identity is the fullest-witness rule per logical line
-(`event_timestamp`, `raw_message`): the fullest batch wins (ties newest), a
-partial re-ingest inserts/deletes nothing.
+(`owner`, `event_timestamp`, `raw_message`): the fullest batch wins (ties newest), a
+partial re-ingest inserts/deletes nothing, and another owner's rows never match.
 
 **Indices:** `action`, `created_at DESC`, `event_timestamp`, `event_at DESC`,
 `(action, event_at DESC)`, `player`, `item`.
