@@ -1252,8 +1252,15 @@ fn migration_v89_collapse_stall_reingest_dupes(conn: &Connection) -> Result<()> 
 /// scoping as v89 (`added`/`visible`/`configured`/`removed` — NEVER
 /// `bought`/`collected`/`hired`/`unknown`, whose identical same-minute
 /// multiplicity is real revenue), owner-scoped via `COALESCE(owner, '')`,
-/// newest id wins, mute OR-ed onto the survivor. Idempotent: a no-op once
-/// each (owner, line) holds one index.
+/// newest id wins, mute OR-ed onto the survivor. Shifted re-ingest rows
+/// come from SEPARATE ingest calls, genuine repeats from ONE call, so the
+/// collapse fires only when a group spans 2+ `created_at` values and keeps
+/// every row at the group's `MAX(created_at)` (the latest call's rows):
+/// same-call groups (one `created_at`, e.g. 4x contiguous removes in one
+/// file) are left alone. Residual: one call straddling a second boundary
+/// would misfire — 0 of 52 live groups observed; `created_at` is one
+/// INSERT batch per ingest call on every path. Idempotent: a no-op once
+/// each (owner, line) holds one `created_at`.
 fn migration_v90_collapse_stall_same_batch_dupes(conn: &Connection) -> Result<()> {
     // Same minimal-fixture guard as v87/v88/v89: skip instead of failing.
     let table_exists: bool = conn
@@ -1269,21 +1276,26 @@ fn migration_v90_collapse_stall_same_batch_dupes(conn: &Connection) -> Result<()
     conn.execute_batch(
         "CREATE TEMPORARY TABLE stall_v90_samebatch AS
          SELECT own, event_timestamp, raw_message, MAX(id) AS keep_id,
-                MAX(ignored) AS keep_muted
+                MAX(ignored) AS keep_muted, MAX(created_at) AS keep_ts
          FROM (SELECT *, COALESCE(owner, '') AS own FROM stall_events)
          WHERE NOT (log_title = 'Imported' AND log_timestamp = 'imported')
            AND action IN ('added', 'visible', 'configured', 'removed')
          GROUP BY own, event_timestamp, raw_message
          HAVING COUNT(*) > 1
-            AND COUNT(DISTINCT entry_index) > 1;
+            AND COUNT(DISTINCT entry_index) > 1
+            AND COUNT(DISTINCT created_at) > 1;
          UPDATE stall_events SET ignored = 1 WHERE id IN (
            SELECT keep_id FROM stall_v90_samebatch WHERE keep_muted = 1);
          DELETE FROM stall_events
          WHERE NOT (log_title = 'Imported' AND log_timestamp = 'imported')
            AND action IN ('added', 'visible', 'configured', 'removed')
-           AND (COALESCE(owner, ''), event_timestamp, raw_message) IN (
-             SELECT own, event_timestamp, raw_message FROM stall_v90_samebatch)
-           AND id NOT IN (SELECT keep_id FROM stall_v90_samebatch);
+           AND id NOT IN (SELECT keep_id FROM stall_v90_samebatch)
+           AND EXISTS (
+             SELECT 1 FROM stall_v90_samebatch g
+             WHERE g.own = COALESCE(stall_events.owner, '')
+               AND g.event_timestamp = stall_events.event_timestamp
+               AND g.raw_message = stall_events.raw_message
+               AND stall_events.created_at <> g.keep_ts);
          DROP TABLE stall_v90_samebatch;",
     )?;
     Ok(())
@@ -5129,26 +5141,43 @@ mod tests {
         // legacy pass. v90 collapses those for ledger actions only (newest
         // id, mute OR-ed) while identical same-minute sales stay — and a
         // legacy-constant dupe is left for v89's own pass, never v90.
+        // D round 2: the collapse fires only across 2+ ingest calls
+        // (`created_at`): the `added` pair below spans two calls, the
+        // same-call `removed` pair (one `created_at`, distinct indexes —
+        // the live 4x-Pumpkin-Turret shape) is a genuine repeat and stays.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         c.execute_batch(
             "INSERT INTO stall_events
                 (event_timestamp, event_at, log_timestamp, log_title,
                  action, player, owner, item, quantity,
-                 price_unit, price_total, raw_message, entry_index, ignored)
+                 price_unit, price_total, raw_message, entry_index, ignored,
+                 created_at)
              VALUES
                 ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '22:01:11', 'Today''s Shop Logs',
                  'added', 'Deradon', 'Deradon', 'Kilderkin', 1,
-                 NULL, NULL, 'Deradon added Kilderkin to shop', 5, 1),
+                 NULL, NULL, 'Deradon added Kilderkin to shop', 5, 1,
+                 '2026-04-20 22:01:11'),
                 ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '22:01:11', 'Today''s Shop Logs',
                  'added', 'Deradon', 'Deradon', 'Kilderkin', 1,
-                 NULL, NULL, 'Deradon added Kilderkin to shop', 7, 0),
+                 NULL, NULL, 'Deradon added Kilderkin to shop', 7, 0,
+                 '2026-04-20 22:05:00'),
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '22:01:11', 'Today''s Shop Logs',
+                 'removed', 'Deradon', 'Deradon', 'Old Tunic', 1,
+                 NULL, NULL, 'Deradon removed Old Tunic from shop', 15, 0,
+                 '2026-04-20 22:01:11'),
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '22:01:11', 'Today''s Shop Logs',
+                 'removed', 'Deradon', 'Deradon', 'Old Tunic', 1,
+                 NULL, NULL, 'Deradon removed Old Tunic from shop', 16, 0,
+                 '2026-04-20 22:01:11'),
                 ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '22:01:11', 'Today''s Shop Logs',
                  'bought', 'MrBonq', 'Deradon', 'Quality Reins', 1,
-                 4500.0, 4500, 'MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500', 11, 0),
+                 4500.0, 4500, 'MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500', 11, 0,
+                 '2026-04-20 22:01:11'),
                 ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '22:01:11', 'Today''s Shop Logs',
                  'bought', 'MrBonq', 'Deradon', 'Quality Reins', 1,
-                 4500.0, 4500, 'MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500', 12, 0);",
+                 4500.0, 4500, 'MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500', 12, 0,
+                 '2026-04-20 22:01:11');",
         )
         .unwrap();
         // v89 already ran inside run_migrations above with no dupes present;
@@ -5156,8 +5185,8 @@ mod tests {
         migration_v90_collapse_stall_same_batch_dupes(&c).unwrap();
         let n: i64 = c
             .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 3, "ledger dupe collapses, identical sales stay");
+            .expect("count");
+        assert_eq!(n, 5, "cross-call ledger dupe collapses, same-call repeats + sales stay");
         let (idx, muted): (i64, i64) = c
             .query_row(
                 "SELECT entry_index, ignored FROM stall_events
@@ -5165,15 +5194,24 @@ mod tests {
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
-            .unwrap();
-        assert_eq!(idx, 7, "newest same-batch dupe survives");
+            .expect("row");
+        assert_eq!(idx, 7, "latest-call dupe survives");
         assert_eq!(muted, 1, "mute OR-ed onto the survivor");
+        let repeats: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM stall_events
+                 WHERE raw_message = 'Deradon removed Old Tunic from shop'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(repeats, 2, "genuine same-call repeats survive v90");
         // Re-run deletes nothing.
         migration_v90_collapse_stall_same_batch_dupes(&c).unwrap();
         let n2: i64 = c
             .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n2, 3, "re-run must delete nothing");
+            .expect("count");
+        assert_eq!(n2, 5, "re-run must delete nothing");
     }
 
     #[test]
