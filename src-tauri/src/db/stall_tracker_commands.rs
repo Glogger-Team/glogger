@@ -109,6 +109,12 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
     let mut mute_carry: std::collections::BTreeMap<(String, String), Vec<bool>> =
         std::collections::BTreeMap::new();
     let mut deleted_total = 0usize;
+    // Lines for which the witness DELETE actually removed one of THIS batch's
+    // owner rows. The collision guard below aborts the whole call only for
+    // those lines; first-sighting lines with nothing deleted keep the prior
+    // single-row `INSERT OR IGNORE` skip instead of blocking the batch.
+    let mut deleted_lines: std::collections::BTreeSet<(String, String)> =
+        std::collections::BTreeSet::new();
     let witnessed: std::collections::BTreeSet<(String, String)> = {
         use std::collections::BTreeMap;
         let mut incoming_count: BTreeMap<(String, String), usize> = BTreeMap::new();
@@ -176,9 +182,13 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
                 if was_muted.iter().any(|m| *m) {
                     mute_carry.insert((ts.clone(), msg.clone()), was_muted);
                 }
-                deleted_total += del
+                let removed = del
                     .execute(rusqlite::params![ts, msg, batch_owner.clone()])
                     .map_err(|e| format!("Failed to delete re-ingested stall event: {e}"))?;
+                deleted_total += removed;
+                if removed > 0 {
+                    deleted_lines.insert((ts.clone(), msg.clone()));
+                }
             } else {
                 witnessed.insert((ts.clone(), msg.clone()));
             }
@@ -191,12 +201,14 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
     // if another character ALREADY holds an incoming occurrence's
     // (ts, msg, idx) triple, `INSERT OR IGNORE` would skip A's replacement
     // AFTER the witness DELETE already removed A's old row — silently
-    // losing A's sale. Bail before inserting/committing: such a batch is by
-    // construction not a same-owner re-ingest (its indexes belong to
-    // another owner's batch), so the whole call aborts and the uncommitted
-    // witness DELETEs above roll back with no rows committed. Re-ingest
-    // batches that reuse only their own owner's indexes are unaffected: a
-    // same-owner witness DELETE already cleared the slot.
+    // losing A's sale. Abort the whole call ONLY for lines where the
+    // witness DELETE actually removed this owner's row (`deleted_lines`):
+    // there the replacement is owed and the slot is held by someone else.
+    // First-sighting lines with nothing deleted keep the prior single-row
+    // skip (a colliding row drops, the rest of the batch inserts) instead
+    // of blocking every later scan of the book.
+    let mut collided: std::collections::BTreeSet<(String, String, i64)> =
+        std::collections::BTreeSet::new();
     {
         let mut clash = tx
             .prepare(
@@ -206,7 +218,8 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
             )
             .map_err(|e| format!("Failed to prepare owner-collision check: {e}"))?;
         for ev in events {
-            if witnessed.contains(&(ev.event_timestamp.clone(), ev.raw_message.clone())) {
+            let key = (ev.event_timestamp.clone(), ev.raw_message.clone());
+            if witnessed.contains(&key) {
                 continue;
             }
             let held: i64 = clash
@@ -221,13 +234,16 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
                 )
                 .map_err(|e| format!("Owner-collision check failed: {e}"))?;
             if held > 0 {
-                return Err(format!(
-                    "Refusing re-ingest: another character holds '{}' at index {} — \
-                     inserting would silently drop this batch's row. Re-scan that \
-                     character's book first, or pick a book that reuses only this \
-                     character's indexes.",
-                    ev.raw_message, ev.entry_index
-                ));
+                if deleted_lines.contains(&key) {
+                    return Err(format!(
+                        "Refusing re-ingest: another character holds '{}' at index {} — \
+                         inserting would silently drop this batch's row. Re-scan that \
+                         character's book first, or pick a book that reuses only this \
+                         character's indexes.",
+                        ev.raw_message, ev.entry_index
+                    ));
+                }
+                collided.insert((key.0, key.1, ev.entry_index));
             }
         }
     }
@@ -246,6 +262,16 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
 
         for ev in events {
             if witnessed.contains(&(ev.event_timestamp.clone(), ev.raw_message.clone())) {
+                continue;
+            }
+            // First-sighting collision (guard above): someone else holds the
+            // slot and this line deleted nothing of ours — skip just this
+            // row (prior `INSERT OR IGNORE` behaviour), never the batch.
+            if collided.contains(&(
+                ev.event_timestamp.clone(),
+                ev.raw_message.clone(),
+                ev.entry_index,
+            )) {
                 continue;
             }
             let changed = stmt
@@ -2595,12 +2621,86 @@ mod tests {
     }
 
     #[test]
-    fn insert_witness_refuses_cross_owner_index_collision() {
-        // Owner-blind UNIQUE guard: Alt A holds the line at index 14; Alt B
-        // re-ingests the same line at that SAME index. The witness DELETE
-        // would remove A's old row then `INSERT OR IGNORE` would skip B's
-        // replacement — losing A's sale. The call must abort BEFORE the
-        // delete with BOTH rows intact.
+    fn insert_first_sighting_collision_skips_row_keeps_batch() {
+        // Narrowed guard (D round 2): Alt A holds the line at index 14; Alt
+        // B's batch carries the same line at that SAME index as a FIRST
+        // sighting (B holds no rows, so the witness DELETE removes nothing
+        // of B's) plus a genuinely new line. The colliding row skips
+        // (prior `INSERT OR IGNORE` behaviour); the rest of the batch
+        // inserts — the call succeeds and later scans are NOT blocked.
+        let db = baseline_pool();
+        fn input(owner: &str, idx: i64, title: &str, log_ts: &str) -> StallEventInput {
+            StallEventInput {
+                event_timestamp: "Mon Apr 20 08:55".to_string(),
+                event_at: Some("2026-04-20 08:55:00".to_string()),
+                log_timestamp: log_ts.to_string(),
+                log_title: title.to_string(),
+                action: "bought".to_string(),
+                player: "MrBonq".to_string(),
+                owner: Some(owner.to_string()),
+                item: Some("Quality Reins".to_string()),
+                quantity: 1,
+                price_unit: Some(4500.0),
+                price_total: Some(4500),
+                raw_message: "MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500".to_string(),
+                entry_index: idx,
+            }
+        }
+        fn fresh(owner: &str) -> StallEventInput {
+            StallEventInput {
+                event_timestamp: "Mon Apr 20 08:56".to_string(),
+                event_at: Some("2026-04-20 08:56:00".to_string()),
+                log_timestamp: "imported".to_string(),
+                log_title: "Imported".to_string(),
+                action: "added".to_string(),
+                player: "Deradon".to_string(),
+                owner: Some(owner.to_string()),
+                item: Some("Kilderkin".to_string()),
+                quantity: 1,
+                price_unit: None,
+                price_total: None,
+                raw_message: "Deradon added Kilderkin to shop".to_string(),
+                entry_index: 20,
+            }
+        }
+        assert_eq!(
+            insert_stall_events(&db, &[input("Deradon", 14, "Today's Shop Logs", "23:22:02")])
+                .expect("alt A ingest"),
+            1
+        );
+        assert_eq!(
+            insert_stall_events(
+                &db,
+                &[input("Alvida", 14, "Imported", "imported"), fresh("Alvida")]
+            )
+            .expect("first-sighting batch with one collision"),
+            1,
+            "colliding row skips, fresh row inserts"
+        );
+        let count: i64 = db
+            .get()
+            .expect("read conn")
+            .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(count, 2, "A's sale plus B's fresh row, no dupe");
+        let kept_owner: String = db
+            .get()
+            .expect("read conn")
+            .query_row(
+                "SELECT owner FROM stall_events WHERE entry_index = 14",
+                [],
+                |r| r.get(0),
+            )
+            .expect("row");
+        assert_eq!(kept_owner, "Deradon", "alt A's sale survives");
+    }
+
+    #[test]
+    fn insert_witness_refuses_cross_owner_index_collision_after_own_delete() {
+        // Abort arm: BOTH alts hold the line (A at 14, B at 12). B
+        // re-ingests at A's index 14: the witness DELETE removes B's own old
+        // row, then the slot is held by A — the call aborts via rollback
+        // with both rows intact (nothing committed).
         let db = baseline_pool();
         fn input(owner: &str, idx: i64, title: &str, log_ts: &str) -> StallEventInput {
             StallEventInput {
@@ -2624,8 +2724,13 @@ mod tests {
                 .expect("alt A ingest"),
             1
         );
+        assert_eq!(
+            insert_stall_events(&db, &[input("Alvida", 12, "Other Book", "22:00:00")])
+                .expect("alt B ingest"),
+            1
+        );
         let err = insert_stall_events(&db, &[input("Alvida", 14, "Imported", "imported")])
-            .expect_err("colliding re-ingest must refuse");
+            .expect_err("colliding re-ingest after own delete must refuse");
         assert!(
             err.contains("another character holds"),
             "actionable refusal, got: {err}"
@@ -2635,13 +2740,7 @@ mod tests {
             .expect("read conn")
             .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
             .expect("count");
-        assert_eq!(count, 1, "nothing deleted, nothing inserted");
-        let kept_owner: String = db
-            .get()
-            .expect("read conn")
-            .query_row("SELECT owner FROM stall_events", [], |r| r.get(0))
-            .expect("row");
-        assert_eq!(kept_owner, "Deradon", "alt A's sale survives");
+        assert_eq!(count, 2, "rollback: nothing deleted, nothing inserted");
     }
 
     #[test]
