@@ -248,6 +248,7 @@ partial re-ingest inserts/deletes nothing.
 | `delete_stall_baseline(id, owner)` | Delete one manual count row by id, owner-scoped. |
 | `delete_all_stall_baselines(owner)` | Delete every manual count for a character without touching shop-log events. Inventory reverts to pure log estimates. |
 | `get_stall_filter_options(owner)` | Distinct buyers, players, items, dates, actions for filter dropdowns. |
+| `toggle_stall_event_ignored(id, ignored, owner)` | Mute/unmute one event row from aggregations (owner-scoped). |
 | `preview_stall_recount(path, current_owner)` | Pure-read recount preview: replay a fresh book into per-item counts, diff against in-stock. |
 | `apply_stall_recount(path, current_owner)` | Stamp the preview as baselines (counted qty + book price, zeroes for unlisted) in one transaction. Events untouched. |
 | `clear_stall_events(owner)` | Delete every row for a specific character. Requires `owner`. Serialized with live ingest by the single-write pool + `BEGIN IMMEDIATE`. |
@@ -316,7 +317,7 @@ book format so any exported file is re-importable without duplicating rows
 100 days). The stock replay only looks back that far: in-game takedowns log
 no `removed` line, so ancient `added` lines replay as phantom stock forever
 without a bound (live 2026-11 case: full history 110 rows for a 41-slot
-stall, 100-day window 46). Reversible one click (All history).
+stall, 100-day window 47). Reversible one click (All history).
 Frontend-owned view state, not stored.*
 
 ### Clear data

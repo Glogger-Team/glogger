@@ -607,7 +607,7 @@ pub struct StallRevenueParams {
 pub struct StallInventoryParams {
     pub owner: Option<String>,
     pub period_days: Option<i64>,
-    /// History window: replay only events with `event_at >= date('now', '-' || window_days || ' days')`.
+    /// History window: replay only events with `event_at >= date('now', 'localtime', '-' || window_days || ' days')`.
     /// `None` (or <= 0) replays the full history. The stale-delist problem
     /// (in-game takedowns log no `removed` line) means ancient `added` lines
     /// replay as phantom stock forever — a bounded window ages them out.
@@ -716,15 +716,17 @@ pub fn get_stall_inventory(
     // History window: `window_days > 0` bounds the replay to recent events
     // so ancient `added` lines for long-delisted items (the game logs no
     // `removed` on takedown) age out instead of replaying as phantom stock.
-    // `date('now', ...)` is local-time by SQLite convention, matching the
-    // local-time `event_at` stamps the year resolver writes.
+    // `date('now','localtime', ...)` is local-time by SQLite convention
+    // (bare `date('now', ...)` is UTC), matching the local-time `event_at`
+    // stamps the year resolver writes. Without `'localtime'` the boundary
+    // sits off by the TZ offset near midnight on the cutoff date.
     let (sql, window_days): (String, Option<i64>) = match params.window_days {
         Some(n) if n > 0 => (
             "SELECT item, event_at, action, quantity, price_unit, price_total \
              FROM stall_events \
              WHERE owner = ?1 AND ignored = 0 AND item IS NOT NULL AND event_at IS NOT NULL \
                AND action != 'unknown' AND action != 'collected' \
-               AND event_at >= date('now', '-' || ?2 || ' days') \
+               AND event_at >= date('now', 'localtime', '-' || ?2 || ' days') \
              ORDER BY event_at ASC, id ASC"
                 .to_string(),
             Some(n),
@@ -1022,7 +1024,21 @@ pub fn import_shop_log_file(
         .map_err(|e| format!("Failed to read shop log file: {e}"))?;
 
     let base_year = year_from_filename(&path_buf);
-    let shop_log: ShopLog = parse_shop_log("Imported", &content, "imported", base_year);
+    // Distinct batch per file: the witness rule keys batches on
+    // (log_title, log_timestamp), and every import used to stamp the same
+    // constant pair — so a second file's overlap deleted nothing and
+    // re-inserted every shifted line as a duplicate. The file stem (same
+    // shape as the Books watcher titles) plus the import moment identifies
+    // this batch; re-importing the same file replays the same stem but a
+    // newer stamp, so ties go newest and the row count never grows.
+    let import_title = path_buf
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Imported")
+        .to_string();
+    let import_stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let shop_log: ShopLog = parse_shop_log(&import_title, &content, &import_stamp, base_year);
     let total_entries = shop_log.entries.len();
 
     let parsed_owner = shop_log.owner.clone();
@@ -1100,28 +1116,35 @@ pub struct RecountPreview {
 /// - A `visible` for stock the fresh book never `added` is the NORMAL
 ///   same-day case (the adds scrolled out of this book). The stock is really
 ///   there — seed one listing's worth, never 0.
-/// - A `visible` for an item the book ALSO shows being sold out (`bought`
-///   netting the adds to zero) must NOT resurrect it: seed only when the
-///   running net is exactly 0 AND no `bought`/`removed` was ever seen for
-///   the item in this book. Any depletion history means the ledger speaks.
+/// - A `visible` for an item the book ALSO shows being sold out (`added`
+///   covering the `bought`/`removed`, netting to zero) must NOT resurrect
+///   it: seed only when the net is <= 0 AND the book's `added` lines do NOT
+///   cover its depletions. A depletion the book never stocked is a
+///   truncated ledger (adds scrolled out), not a sellout — the book's own
+///   `visible` quantity states what is listed.
 ///
 /// Items netting <= 0 are not in the stall. The LATEST priced
 /// `visible`/`configured` event per item wins (the fresh book's own price is
 /// the current listing). `bought` carries the sale price, never the listing.
 fn recount_counts(entries: &[crate::shop_log_parser::ShopLogEntry]) -> Vec<RecountLine> {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
     let mut qty: BTreeMap<String, i64> = BTreeMap::new();
     let mut priced: BTreeMap<String, f64> = BTreeMap::new();
-    // Items the book shows leaving the stall. A later `visible` for one of
-    // these is a same-day reprice of remaining stock, never proof of fresh
-    // units — the seed below must not resurrect a sold-out item.
-    let mut depleted: BTreeSet<String> = BTreeSet::new();
+    // Per-item `added` coverage: only depletions the book itself stocked
+    // block the priced-only seed below. A `bought` with no covering `added`
+    // is scrolled-out history, and a later `visible` for it is a same-day
+    // listing of live stock — the seed must not treat it as a sellout.
+    let mut added_total: BTreeMap<String, i64> = BTreeMap::new();
+    let mut depleted_total: BTreeMap<String, i64> = BTreeMap::new();
     for e in entries {
         let Some(item) = e.item.clone() else { continue };
         match e.action.as_str() {
-            "added" => *qty.entry(item).or_default() += e.quantity,
+            "added" => {
+                *added_total.entry(item.clone()).or_default() += e.quantity;
+                *qty.entry(item).or_default() += e.quantity;
+            }
             "removed" | "bought" => {
-                depleted.insert(item.clone());
+                *depleted_total.entry(item.clone()).or_default() += e.quantity;
                 *qty.entry(item).or_default() -= e.quantity;
             }
             "visible" | "configured" => {
@@ -1129,10 +1152,17 @@ fn recount_counts(entries: &[crate::shop_log_parser::ShopLogEntry]) -> Vec<Recou
                     priced.insert(item.clone(), p);
                     let entry = qty.entry(item.clone()).or_default();
                     // Seed one listing's worth only for the priced-only
-                    // window case (net exactly 0, never depleted in this
-                    // book). Adds above 0 are never lowered; a depleted net
-                    // is never raised.
-                    if *entry == 0 && !depleted.contains(&item) {
+                    // window case (net <= 0, in-book adds NOT covering
+                    // depletions means the ledger is truncated and the
+                    // book's own `visible` states live stock). Adds above 0
+                    // are never lowered; a covered sellout (adds covering
+                    // depletions, net 0) is never raised. A negative net
+                    // always means uncovered depletions (adds scrolled out),
+                    // so `<= 0` seeds both the never-stocked and the
+                    // truncated cases.
+                    let added = added_total.get(&item).copied().unwrap_or(0);
+                    let depleted = depleted_total.get(&item).copied().unwrap_or(0);
+                    if *entry <= 0 && (depleted == 0 || added < depleted) {
                         *entry = e.quantity;
                     }
                 }
@@ -2173,11 +2203,17 @@ mod tests {
             e("visible", "Snail Sinews", 2, Some(500.0)),
             e("removed", "Snail Sinews", 2, None),
             e("added", "Snail Sinews", 2, None),
-            // Fae Felt 2026-11-09: bought-out in-book, then a same-day
-            // re-list `visible`. The depleted guard must win — no resurrect.
+            // Fae Felt 2026-11-09: bought-out in-book (added covers the
+            // bought), then a same-day re-list `visible`. The covered-ledger
+            // guard must win — no resurrect.
             e("added", "Fae Felt", 2, None),
             e("bought", "Fae Felt", 2, Some(1000.0)),
             e("visible", "Fae Felt", 2, Some(1000.0)),
+            // Truncated ledger: the `bought` has no covering `added` (adds
+            // scrolled out), so the book's own `visible` states live stock
+            // and must seed — never a qty-0 wipe.
+            e("bought", "Scrolled Saddle", 1, Some(4500.0)),
+            e("visible", "Scrolled Saddle", 4, Some(4500.0)),
         ];
         let got = recount_counts(&entries);
         let find = |name: &str| got.iter().find(|l| l.item == name).cloned();
@@ -2196,5 +2232,9 @@ mod tests {
         assert_eq!(sinews.quantity, 2);
         // Bought-out then re-listed in the same book: stays gone.
         assert!(find("Fae Felt").is_none());
+        // Uncovered bought + later visible: truncated ledger, seed listed qty.
+        let saddle = find("Scrolled Saddle").expect("scrolled saddle counted");
+        assert_eq!(saddle.quantity, 4);
+        assert_eq!(saddle.price_unit, Some(4500.0));
     }
 }

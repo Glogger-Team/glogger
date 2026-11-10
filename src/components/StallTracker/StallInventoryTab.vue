@@ -532,8 +532,11 @@ async function recountFromBook() {
     filters: [{ name: 'Shop log book', extensions: ['txt'] }],
   })
   if (!selected || Array.isArray(selected)) return
+  // The native picker is modal but the check is cheap: a stock write that
+  // started while it sat open (or a character switch) must not interleave
+  // with the recount below (stockBusy invariant).
+  if (stockBusy.value || store.currentOwner !== owner) return
   const path = selected as string
-  recounting.value = true
   try {
     const preview = await invoke<RecountPreview>('preview_stall_recount', {
       path,
