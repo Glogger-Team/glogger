@@ -1191,6 +1191,25 @@ fn migration_v89_collapse_stall_reingest_dupes(conn: &Connection) -> Result<()> 
            FROM stall_events
            GROUP BY COALESCE(owner, ''), event_timestamp, raw_message, log_title, log_timestamp
          ) WHERE rn = 1;
+         -- Mute carry (same OR-shape as the legacy pass below and the live
+         -- insert path): a witness row whose group lost a muted row inherits
+         -- the mute, so a muted event never re-enters Sales/Revenue after the
+         -- cross-batch DELETE. Per-group OR errs toward muted; the user can
+         -- re-unmute the single survivor, while a dropped mute resurrects a
+         -- deliberately hidden event with no report. Runs BEFORE the DELETE
+         -- (and before the witness table drops) so both sides still exist.
+         UPDATE stall_events SET ignored = 1
+         WHERE ignored = 0
+           AND (COALESCE(owner, ''), event_timestamp, raw_message, log_title, log_timestamp)
+               IN (SELECT own, event_timestamp, raw_message, log_title, log_timestamp
+                   FROM stall_v89_witness)
+           AND EXISTS (
+             SELECT 1 FROM stall_events d
+             WHERE COALESCE(d.owner, '') = COALESCE(stall_events.owner, '')
+               AND d.event_timestamp = stall_events.event_timestamp
+               AND d.raw_message = stall_events.raw_message
+               AND NOT (d.log_title = stall_events.log_title AND d.log_timestamp = stall_events.log_timestamp)
+               AND d.ignored = 1);
          DELETE FROM stall_events
          WHERE (COALESCE(owner, ''), event_timestamp, raw_message, log_title, log_timestamp)
            NOT IN (SELECT own, event_timestamp, raw_message, log_title, log_timestamp
@@ -4880,29 +4899,29 @@ mod tests {
             "INSERT INTO stall_events
                 (event_timestamp, event_at, log_timestamp, log_title,
                  action, player, owner, item, quantity,
-                 price_unit, price_total, raw_message, entry_index)
+                 price_unit, price_total, raw_message, entry_index, ignored)
              VALUES
                 ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '23:22:02', 'Today''s Shop Logs',
                  'removed', 'Deradon', 'Deradon', 'Kilderkin', 1,
-                 NULL, NULL, 'Deradon removed Kilderkin from shop', 14),
+                 NULL, NULL, 'Deradon removed Kilderkin from shop', 14, 1),
                 ('Mon Apr 20 08:55', '2026-04-20 08:55:00', 'imported', 'Imported',
                  'removed', 'Deradon', 'Deradon', 'Kilderkin', 1,
-                 NULL, NULL, 'Deradon removed Kilderkin from shop', 12),
+                 NULL, NULL, 'Deradon removed Kilderkin from shop', 12, 0),
                 ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '23:22:02', 'Today''s Shop Logs',
                  'removed', 'Deradon', 'Deradon', 'Old Tunic', 1,
-                 NULL, NULL, 'Deradon removed Old Tunic from shop', 15),
+                 NULL, NULL, 'Deradon removed Old Tunic from shop', 15, 0),
                 ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '23:22:02', 'Today''s Shop Logs',
                  'removed', 'Deradon', 'Deradon', 'Old Tunic', 1,
-                 NULL, NULL, 'Deradon removed Old Tunic from shop', 16),
+                 NULL, NULL, 'Deradon removed Old Tunic from shop', 16, 0),
                 ('Mon Apr 20 08:55', '2026-04-20 08:55:00', 'imported', 'Imported',
                  'removed', 'Deradon', 'Deradon', 'Old Tunic', 1,
-                 NULL, NULL, 'Deradon removed Old Tunic from shop', 13),
+                 NULL, NULL, 'Deradon removed Old Tunic from shop', 13, 0),
                 ('Fri Jul 17 13:56', '2026-07-17 13:56:00', '23:49:59', 'Shop Logs From 2 Days Ago',
                  'bought', 'Deradon', 'Deradon', 'Ruined Metal Flask', 1,
-                 130.0, 130, 'Deradon bought Ruined Metal Flask at a cost of 130 per 1 = 130', 3),
+                 130.0, 130, 'Deradon bought Ruined Metal Flask at a cost of 130 per 1 = 130', 3, 0),
                 ('Fri Jul 17 13:56', '2026-07-17 13:56:00', '23:49:59', 'Shop Logs From 2 Days Ago',
                  'bought', 'Deradon', 'Deradon', 'Ruined Metal Flask', 1,
-                 130.0, 130, 'Deradon bought Ruined Metal Flask at a cost of 130 per 1 = 130', 4);",
+                 130.0, 130, 'Deradon bought Ruined Metal Flask at a cost of 130 per 1 = 130', 4, 0);",
         )
         .unwrap();
         // v89 already ran inside run_migrations above with no dupes present;
@@ -4912,16 +4931,17 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 5, "tie collapses, fuller batch kept, repeats stay");
-        let (title, idx): (String, i64) = c
+        let (title, idx, muted): (String, i64, i64) = c
             .query_row(
-                "SELECT log_title, entry_index FROM stall_events
+                "SELECT log_title, entry_index, ignored FROM stall_events
                  WHERE raw_message = 'Deradon removed Kilderkin from shop'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
         assert_eq!(title, "Imported", "tie goes to the newest batch");
         assert_eq!(idx, 12, "newest batch index survives");
+        assert_eq!(muted, 1, "muted loser's flag carries onto the witness");
         // Partial overlap: the earlier FULLER batch (2 rows) is the witness.
         let tunic: Vec<(String, i64)> = c
             .prepare(

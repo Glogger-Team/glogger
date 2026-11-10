@@ -689,12 +689,14 @@ pub struct StallRevenueParams {
 pub struct StallInventoryParams {
     pub owner: Option<String>,
     pub period_days: Option<i64>,
-    /// History window: replay only events with `event_at >= date('now', 'localtime', '-' || window_days || ' days')`.
+    /// History window: replay only ledger events with `event_at >= date('now', 'localtime', '-' || window_days || ' days')`.
     /// `None` (or <= 0) replays the full history. The stale-delist problem
     /// (in-game takedowns log no `removed` line) means ancient `added` lines
     /// replay as phantom stock forever — a bounded window ages them out.
-    /// Live 2026-11 case: full history shows 110 phantom rows for a 41-slot
-    /// stall; a 100-day window shows 47. Frontend owns the value (view pref).
+    /// `bought` rows are exempt (they feed SOLD / AVG DAILY REVENUE for any
+    /// Sales period and cannot create phantom stock). Live 2026-11 case:
+    /// full history shows 110 phantom rows for a 41-slot stall; a 100-day
+    /// window shows 47. Frontend owns the value (view pref).
     pub window_days: Option<i64>,
 }
 
@@ -795,9 +797,13 @@ pub fn get_stall_inventory(
     // `visible` events could be processed before `added` events within the
     // same minute, leaving the tier unpriced.
     //
-    // History window: `window_days > 0` bounds the replay to recent events
-    // so ancient `added` lines for long-delisted items (the game logs no
-    // `removed` on takedown) age out instead of replaying as phantom stock.
+    // History window: `window_days > 0` bounds the STOCK replay to recent
+    // events so ancient `added` lines for long-delisted items (the game logs
+    // no `removed` on takedown) age out instead of replaying as phantom
+    // stock. The window applies to ledger actions ONLY — `bought` rows
+    // always ride along so SOLD / AVG DAILY REVENUE stay true for any Sales
+    // period (an unbacked `bought` only pushes a negative tier the next
+    // `added` clears and finalize drops; it never creates phantom stock).
     // `date('now','localtime', ...)` is local-time by SQLite convention
     // (bare `date('now', ...)` is UTC), matching the local-time `event_at`
     // stamps the year resolver writes. Without `'localtime'` the boundary
@@ -808,7 +814,7 @@ pub fn get_stall_inventory(
              FROM stall_events \
              WHERE owner = ?1 AND ignored = 0 AND item IS NOT NULL AND event_at IS NOT NULL \
                AND action != 'unknown' AND action != 'collected' \
-               AND event_at >= date('now', 'localtime', '-' || ?2 || ' days') \
+               AND (action = 'bought' OR event_at >= date('now', 'localtime', '-' || ?2 || ' days')) \
              ORDER BY event_at ASC, id ASC"
                 .to_string(),
             Some(n),
@@ -1227,7 +1233,12 @@ fn recount_counts(entries: &[crate::shop_log_parser::ShopLogEntry]) -> Vec<Recou
             }
             "removed" | "bought" => {
                 *depleted_total.entry(item.clone()).or_default() += e.quantity;
-                *qty.entry(item).or_default() -= e.quantity;
+                // Clamp at zero: when earlier adds scrolled out of the book,
+                // a remove-and-re-add session must replay to the fresh
+                // quantity, not a negative hole a later `visible` cannot
+                // seed (totals still record coverage for the guard below).
+                let q = qty.entry(item).or_default();
+                *q = (*q - e.quantity).max(0);
             }
             "visible" | "configured" => {
                 if let Some(p) = e.price_unit {
@@ -1305,9 +1316,34 @@ pub fn preview_stall_recount(
     let path_buf = std::path::PathBuf::from(&path);
     let content = std::fs::read_to_string(&path_buf)
         .map_err(|e| format!("Failed to read shop log file: {e}"))?;
-    let base_year = year_from_filename(&path_buf);
-    let shop_log: ShopLog = parse_shop_log("Imported", &content, "imported", base_year);
-    let owner = recount_owner(&shop_log, &current_owner)?;
+    preview_from_content(&db, &path_buf, &content, &current_owner)
+}
+
+/// File fingerprint for the preview→apply TOCTOU guard: (mtime nanos, bytes).
+/// The game rewrites the book on every in-game save; a changed fingerprint
+/// between preview and apply means the confirmed list no longer matches.
+fn book_fingerprint(path: &std::path::Path) -> Result<(u128, u64), String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("Failed to stat shop log file: {e}"))?;
+    let mtime = meta
+        .modified()
+        .map_err(|e| format!("Failed to stat shop log file: {e}"))?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("Failed to stat shop log file: {e}"))?
+        .as_nanos();
+    Ok((mtime, meta.len()))
+}
+
+/// Content-based recount preview shared by `preview_stall_recount` (file
+/// read) and `apply_stall_recount` (read + fingerprint guard).
+fn preview_from_content(
+    db: &DbPool,
+    path_buf: &std::path::Path,
+    content: &str,
+    current_owner: &Option<String>,
+) -> Result<RecountPreview, String> {
+    let base_year = year_from_filename(path_buf);
+    let shop_log: ShopLog = parse_shop_log("Imported", content, "imported", base_year);
+    let owner = recount_owner(&shop_log, current_owner)?;
     let counted = recount_counts(&shop_log.entries);
     let in_stock: std::collections::BTreeSet<String> = {
         let conn = db
@@ -1386,7 +1422,23 @@ pub fn apply_stall_recount(
     path: String,
     current_owner: Option<String>,
 ) -> Result<usize, String> {
-    let preview = preview_stall_recount(db.clone(), path, current_owner)?;
+    // TOCTOU guard: the preview's confirm dialog lists exact names, so the
+    // file it was built from must be byte-identical at apply time. The game
+    // rewrites the book on every in-game save; a changed fingerprint means
+    // the confirmed list no longer matches — abort and ask for a re-preview
+    // rather than zeroing items the user never saw.
+    let path_buf = std::path::PathBuf::from(&path);
+    let before = book_fingerprint(&path_buf)?;
+    let content = std::fs::read_to_string(&path_buf)
+        .map_err(|e| format!("Failed to read shop log file: {e}"))?;
+    let after = book_fingerprint(&path_buf)?;
+    if before != after {
+        return Err(
+            "Shop log book changed during preview — re-run the recount preview before applying."
+                .to_string(),
+        );
+    }
+    let preview = preview_from_content(&db, &path_buf, &content, &current_owner)?;
     // One BEGIN IMMEDIATE transaction for the whole write set (pool-is-the-
     // lock invariant, same shape as `insert_stall_events` / Clear above):
     // either every baseline commits or none does — a mid-loop failure can
@@ -2445,6 +2497,12 @@ mod tests {
             // and must seed — never a qty-0 wipe.
             e("bought", "Scrolled Saddle", 1, Some(4500.0)),
             e("visible", "Scrolled Saddle", 4, Some(4500.0)),
+            // Remove-and-re-add with scrolled-out adds: depletions clamp at
+            // zero so the replay lands on the fresh quantity (5), not a
+            // negative hole the `visible` cannot seed.
+            e("removed", "Restocked Reins", 5, None),
+            e("added", "Restocked Reins", 5, None),
+            e("visible", "Restocked Reins", 5, Some(4500.0)),
         ];
         let got = recount_counts(&entries);
         let find = |name: &str| got.iter().find(|l| l.item == name).cloned();
@@ -2467,6 +2525,10 @@ mod tests {
         let saddle = find("Scrolled Saddle").expect("scrolled saddle counted");
         assert_eq!(saddle.quantity, 4);
         assert_eq!(saddle.price_unit, Some(4500.0));
+        // Remove-and-re-add with scrolled-out adds: fresh quantity, not zero.
+        let restocked = find("Restocked Reins").expect("restocked reins counted");
+        assert_eq!(restocked.quantity, 5);
+        assert_eq!(restocked.price_unit, Some(4500.0));
     }
     #[test]
     fn recount_owner_rejects_alt_book() {
