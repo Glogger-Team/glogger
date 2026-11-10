@@ -10,6 +10,7 @@ use std::sync::{Arc, RwLock};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
     /// Path to Player.log file (legacy, may deprecate)
+    #[serde(default = "get_default_player_log_path")]
     pub log_file_path: String,
 
     /// Auto-watch Player.log on startup (legacy)
@@ -19,12 +20,15 @@ pub struct AppSettings {
     /// Root game data directory.
     /// Windows: %AppData%\..\LocalLow\Elder Game\Project Gorgon\
     /// macOS:   ~/Library/Application Support/unity.Elder Game.Project Gorgon/
+    #[serde(default = "get_default_game_data_path")]
     pub game_data_path: String,
 
     /// Automatically purge old data
+    #[serde(default)]
     pub auto_purge_enabled: bool,
 
     /// Days to keep data before purging
+    #[serde(default = "default_purge_days")]
     pub auto_purge_days: u32,
 
     /// Automatically start chat log tailing on startup
@@ -342,6 +346,10 @@ fn default_true() -> bool {
     true
 }
 
+fn default_purge_days() -> u32 {
+    90
+}
+
 fn default_report_watch_interval() -> u32 {
     10
 }
@@ -353,7 +361,7 @@ impl Default for AppSettings {
             auto_watch_on_startup: false,
             game_data_path: get_default_game_data_path(),
             auto_purge_enabled: false,
-            auto_purge_days: 90,
+            auto_purge_days: default_purge_days(),
             auto_tail_chat: false,
             auto_tail_player_log: false,
             db_path: None,
@@ -619,6 +627,41 @@ pub fn get_settings_file_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every `AppSettings` key must survive being dropped from `settings.json`:
+    /// strip each serialized key in turn and assert the file still parses to the
+    /// same value as the full baseline (missing keys fall back to `Default` /
+    /// `#[serde(default)]`). Catches the class where the frontend stops sending
+    /// a key the backend requires (2026-11-09: `auto_watch_on_startup` removal
+    /// broke every save), including parseable-but-wrong fallbacks (e.g. 0 for a
+    /// retention-days field whose default is 90).
+    #[test]
+    fn every_settings_key_has_a_deserialize_fallback() {
+        let full = serde_json::to_value(AppSettings::default()).unwrap();
+        let obj = full.as_object().unwrap();
+        assert!(
+            obj.len() > 40,
+            "baseline must cover the whole struct, got {} keys",
+            obj.len()
+        );
+        // A parseable-but-wrong fallback is as bad as a failure: stripping every
+        // key must round-trip to the same value as the full baseline (e.g. a
+        // missing `auto_purge_days` falling back to 0 instead of 90 would silently
+        // clamp retention and evict nearly everything).
+        let defaults = AppSettings::default();
+        let defaults_value = serde_json::to_value(&defaults).unwrap();
+        for key in obj.keys() {
+            let mut stripped = obj.clone();
+            stripped.remove(key);
+            let parsed: AppSettings = serde_json::from_value(serde_json::Value::Object(stripped))
+                .unwrap_or_else(|e| panic!("settings.json without '{key}' must still parse: {e}"));
+            let reparsed = serde_json::to_value(&parsed).unwrap();
+            assert_eq!(
+                reparsed, defaults_value,
+                "settings.json without '{key}' must fall back to Default values"
+            );
+        }
+    }
 
     /// Existing settings.json files still carry the now-removed retention keys;
     /// `AppSettings` must not use `deny_unknown_fields`, so they keep parsing.
