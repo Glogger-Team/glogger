@@ -5139,7 +5139,7 @@ mod tests {
         // F1 follow-up: same-batch dupes under a watcher batch key (file
         // stem, NOT the legacy `Imported`/`imported` constant) survive v89's
         // legacy pass. v90 collapses those for ledger actions only (newest
-        // id, mute OR-ed) while identical same-minute sales stay — and a
+        // id, no mute carry) while identical same-minute sales stay — and a
         // legacy-constant dupe is left for v89's own pass, never v90.
         // D round 2: the collapse fires only across 2+ ingest calls
         // (`created_at`): the `added` pair below spans two calls, the
