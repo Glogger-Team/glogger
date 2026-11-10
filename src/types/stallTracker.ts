@@ -233,10 +233,12 @@ export interface RecountLine {
 }
 
 /** Preview of `preview_stall_recount`: counts from the fresh book plus the
- * in-stock items the book does not cover (zeroed on apply). */
+ * in-stock items the book does not cover (zeroed on apply). `contentHash`
+ * identifies the exact book bytes; apply echoes it back and aborts on drift. */
 export interface RecountPreview {
   owner: string
   counted: RecountLine[]
   zeroed: string[]
   bookEntries: number
+  contentHash: string
 }

@@ -569,6 +569,9 @@ async function recountFromBook() {
     const written = await invoke<number>('apply_stall_recount', {
       path,
       currentOwner: owner,
+      expectedHash: preview.contentHash,
+      confirmedCounted: preview.counted,
+      confirmedZeroed: preview.zeroed,
     })
     await Promise.all([reload(), loadBaselines()])
     await store.refresh()

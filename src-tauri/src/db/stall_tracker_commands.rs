@@ -187,6 +187,51 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
         witnessed
     };
 
+    // Cross-owner index collision guard: the storage UNIQUE key
+    // `(event_timestamp, raw_message, entry_index)` excludes the owner, so
+    // if another character ALREADY holds an incoming occurrence's
+    // (ts, msg, idx) triple, `INSERT OR IGNORE` would skip A's replacement
+    // AFTER the witness DELETE already removed A's old row — silently
+    // losing A's sale. Bail BEFORE deleting: such a batch is by
+    // construction not a same-owner re-ingest (its indexes belong to
+    // another owner's batch), so the whole call aborts with no rows
+    // touched. Re-ingest batches that reuse only their own owner's indexes
+    // are unaffected: a same-owner witness DELETE clears the slot first.
+    {
+        let mut clash = tx
+            .prepare(
+                "SELECT COUNT(*) FROM stall_events
+                 WHERE event_timestamp = ?1 AND raw_message = ?2 AND entry_index = ?3
+                   AND NOT (owner IS ?4)",
+            )
+            .map_err(|e| format!("Failed to prepare owner-collision check: {e}"))?;
+        for ev in events {
+            if witnessed.contains(&(ev.event_timestamp.clone(), ev.raw_message.clone())) {
+                continue;
+            }
+            let held: i64 = clash
+                .query_row(
+                    rusqlite::params![
+                        ev.event_timestamp,
+                        ev.raw_message,
+                        ev.entry_index,
+                        ev.owner
+                    ],
+                    |r| r.get(0),
+                )
+                .map_err(|e| format!("Owner-collision check failed: {e}"))?;
+            if held > 0 {
+                return Err(format!(
+                    "Refusing re-ingest: another character holds '{}' at index {} — \
+                     inserting would silently drop this batch's row. Re-scan that \
+                     character's book first, or pick a book that reuses only this \
+                     character's indexes.",
+                    ev.raw_message, ev.entry_index
+                ));
+            }
+        }
+    }
+
     let mut inserted = 0usize;
     {
         let mut stmt = tx
@@ -1175,7 +1220,7 @@ pub fn import_shop_log_file(
 
 /// One counted line of a recount preview: what the fresh book says the
 /// stall holds for one item right now.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecountLine {
     pub item: String,
@@ -1194,6 +1239,11 @@ pub struct RecountPreview {
     pub counted: Vec<RecountLine>,
     pub zeroed: Vec<String>,
     pub book_entries: usize,
+    /// Content hash of the exact book bytes this preview was built from.
+    /// `apply_stall_recount` must echo it back and aborts when the file no
+    /// longer hashes the same — the confirm dialog's names only describe
+    /// this content.
+    pub content_hash: String,
 }
 
 /// Derive per-item counts from already-parsed shop-log entries by replaying
@@ -1333,6 +1383,19 @@ fn book_fingerprint(path: &std::path::Path) -> Result<(u128, u64), String> {
     Ok((mtime, meta.len()))
 }
 
+/// Content hash (FNV-1a 64) of the exact book bytes a preview was built
+/// from. Mtime+len alone cannot tie apply to the previewed content (same
+/// nanos + same length after a rewrite would pass); the frontend echoes
+/// this hash back and apply aborts on mismatch.
+fn book_content_hash(content: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in content.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
 /// Content-based recount preview shared by `preview_stall_recount` (file
 /// read) and `apply_stall_recount` (read + fingerprint guard).
 fn preview_from_content(
@@ -1408,6 +1471,7 @@ fn preview_from_content(
         counted,
         zeroed,
         book_entries: shop_log.entries.len(),
+        content_hash: book_content_hash(content),
     })
 }
 
@@ -1416,17 +1480,28 @@ fn preview_from_content(
 /// one qty-0 baseline per zeroed item, in one BEGIN IMMEDIATE transaction
 /// (pool-is-the-lock: all or nothing). Event rows are never touched — sales
 /// history survives intact. Returns the number of baseline rows written.
+/// The frontend echoes back the `RecountPreview` it confirmed
+/// (`expected_hash` + `confirmed_counted`/`confirmed_zeroed`): apply
+/// re-reads the book, aborts when the content hash differs (rewritten book
+/// since preview) or when the recomputed sets differ from the confirmed
+/// ones (DB drift while the dialog sat open), and only then writes.
 #[tauri::command]
 pub fn apply_stall_recount(
     db: State<'_, DbPool>,
     path: String,
     current_owner: Option<String>,
+    expected_hash: String,
+    confirmed_counted: Vec<RecountLine>,
+    confirmed_zeroed: Vec<String>,
 ) -> Result<usize, String> {
     // TOCTOU guard: the preview's confirm dialog lists exact names, so the
     // file it was built from must be byte-identical at apply time. The game
     // rewrites the book on every in-game save; a changed fingerprint means
     // the confirmed list no longer matches — abort and ask for a re-preview
-    // rather than zeroing items the user never saw.
+    // rather than zeroing items the user never saw. The stat→read→stat
+    // check below only covers the apply-time read itself; the content-hash
+    // compare ties this apply to the exact bytes the preview (and its
+    // confirm dialog) was built from.
     let path_buf = std::path::PathBuf::from(&path);
     let before = book_fingerprint(&path_buf)?;
     let content = std::fs::read_to_string(&path_buf)
@@ -1438,7 +1513,37 @@ pub fn apply_stall_recount(
                 .to_string(),
         );
     }
+    if book_content_hash(&content) != expected_hash {
+        return Err(
+            "Shop log book changed since preview — re-run the recount preview before applying."
+                .to_string(),
+        );
+    }
     let preview = preview_from_content(&db, &path_buf, &content, &current_owner)?;
+    // Confirm-set guard: a Books-watcher ingest (or a baseline write) that
+    // landed while the confirm sat open shifts the in-stock set, so the
+    // recomputed `zeroed`/`counted` can differ from what the user saw.
+    // Abort without writing rather than zeroing an item the dialog listed
+    // as counted (or counting one it listed as zeroed).
+    let confirmed_names: std::collections::BTreeSet<&str> =
+        confirmed_counted.iter().map(|l| l.item.as_str()).collect();
+    let fresh_names: std::collections::BTreeSet<&str> =
+        preview.counted.iter().map(|l| l.item.as_str()).collect();
+    let quantities_match = confirmed_counted.len() == preview.counted.len()
+        && confirmed_counted.iter().all(|l| {
+            preview
+                .counted
+                .iter()
+                .any(|f| f.item == l.item && f.quantity == l.quantity)
+        });
+    let zeroed_match = confirmed_zeroed.iter().collect::<std::collections::BTreeSet<_>>()
+        == preview.zeroed.iter().collect::<std::collections::BTreeSet<_>>();
+    if confirmed_names != fresh_names || !quantities_match || !zeroed_match {
+        return Err(
+            "Stall changed since preview — re-run the recount preview before applying."
+                .to_string(),
+        );
+    }
     // One BEGIN IMMEDIATE transaction for the whole write set (pool-is-the-
     // lock invariant, same shape as `insert_stall_events` / Clear above):
     // either every baseline commits or none does — a mid-loop failure can
@@ -2390,6 +2495,56 @@ mod tests {
             .expect("count");
         assert_eq!(alt_a, 1, "alt A still holds exactly one row");
     }
+
+    #[test]
+    fn insert_witness_refuses_cross_owner_index_collision() {
+        // Owner-blind UNIQUE guard: Alt A holds the line at index 14; Alt B
+        // re-ingests the same line at that SAME index. The witness DELETE
+        // would remove A's old row then `INSERT OR IGNORE` would skip B's
+        // replacement — losing A's sale. The call must abort BEFORE the
+        // delete with BOTH rows intact.
+        let db = baseline_pool();
+        fn input(owner: &str, idx: i64, title: &str, log_ts: &str) -> StallEventInput {
+            StallEventInput {
+                event_timestamp: "Mon Apr 20 08:55".to_string(),
+                event_at: Some("2026-04-20 08:55:00".to_string()),
+                log_timestamp: log_ts.to_string(),
+                log_title: title.to_string(),
+                action: "bought".to_string(),
+                player: "MrBonq".to_string(),
+                owner: Some(owner.to_string()),
+                item: Some("Quality Reins".to_string()),
+                quantity: 1,
+                price_unit: Some(4500.0),
+                price_total: Some(4500),
+                raw_message: "MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500".to_string(),
+                entry_index: idx,
+            }
+        }
+        assert_eq!(
+            insert_stall_events(&db, &[input("Deradon", 14, "Today's Shop Logs", "23:22:02")])
+                .expect("alt A ingest"),
+            1
+        );
+        let err = insert_stall_events(&db, &[input("Alvida", 14, "Imported", "imported")])
+            .expect_err("colliding re-ingest must refuse");
+        assert!(
+            err.contains("another character holds"),
+            "actionable refusal, got: {err}"
+        );
+        let count: i64 = db
+            .get()
+            .expect("read conn")
+            .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(count, 1, "nothing deleted, nothing inserted");
+        let kept_owner: String = db
+            .get()
+            .expect("read conn")
+            .query_row("SELECT owner FROM stall_events", [], |r| r.get(0))
+            .expect("row");
+        assert_eq!(kept_owner, "Deradon", "alt A's sale survives");
+    }
     #[test]
     fn insert_witness_replace_preserves_mute_per_occurrence() {
         // Mute carry: two occurrences of one line, first muted. A witness
@@ -2529,6 +2684,16 @@ mod tests {
         let restocked = find("Restocked Reins").expect("restocked reins counted");
         assert_eq!(restocked.quantity, 5);
         assert_eq!(restocked.price_unit, Some(4500.0));
+    }
+
+    #[test]
+    fn book_content_hash_is_stable_and_content_sensitive() {
+        // The preview→apply tie: identical bytes hash the same (preview and
+        // apply agree), any byte change hashes differently (a game rewrite
+        // between preview and apply must abort, even at the same length).
+        assert_eq!(book_content_hash("a = 1"), book_content_hash("a = 1"));
+        assert_ne!(book_content_hash("a = 1"), book_content_hash("a = 2"));
+        assert_ne!(book_content_hash("abc"), book_content_hash("abcd"));
     }
     #[test]
     fn recount_owner_rejects_alt_book() {
