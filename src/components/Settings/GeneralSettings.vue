@@ -20,8 +20,9 @@
         <p class="mt-2 text-text-muted text-xs leading-relaxed">
           Default location: %APPDATA%\..\LocalLow\Elder Game\Project Gorgon\
           <br />
-          This folder contains Player.log, ChatLogs, and Reports subfolders.
-          Auto-detection works on Windows.
+          This folder holds Reports and (on Windows) Player.log and ChatLogs.
+          On macOS, Player.log lives separately under ~/Library/Logs/Elder Game/Project Gorgon/.
+          Auto-detection works on Windows and macOS.
         </p>
       </div>
 
@@ -107,12 +108,12 @@
             <span class="text-text-secondary">MB total</span>
           </div>
           <p class="mt-2 text-text-muted text-xs leading-relaxed">
-            Rotated sessions are archived in <code>&lt;app data&gt;/player-logs</code> so the weekly
-            Statehelm gift tracker can re-read the game's own gift counts from them, and so the
-            game's own notes reach further back than the two logs the client keeps. Whichever limit
-            is tightest wins — a session's Player.log is 30–45 MB, so the MB budget usually binds
-            first — and the oldest copies are deleted first. Lower any of them to reclaim disk space;
-            nothing else on disk is touched.
+            Rotated sessions are archived in <code>&lt;app data&gt;/player-logs</code>, which the
+            weekly Statehelm gift tracker can re-read for the game's own gift counts when that
+            data is available, and so the game's own notes reach further back than the two logs
+            the client keeps. Whichever limit is tightest wins — a session's Player.log is 30–45 MB,
+            so the MB budget usually binds first — and the oldest copies are deleted first. Lower
+            any of them to reclaim disk space; nothing else on disk is touched.
           </p>
         </div>
       </div>
