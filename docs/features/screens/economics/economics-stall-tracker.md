@@ -73,7 +73,7 @@ The Stall Tracker has four visible tabs plus a fifth view behind a modal:
 - `src/components/StallTracker/StallTrackerView.vue` — parent view with `TabBar`, action-row buttons, Shop Log modal.
 - `src/components/StallTracker/StallSalesTab.vue` — paginated sales table + stats header.
 - `src/components/StallTracker/StallRevenueTab.vue` — pivot table (Daily / Weekly / Monthly).
-- `src/components/StallTracker/StallInventoryTab.vue` — In Stock table with tier-stack pricing, Clear-unsure eviction, and the manual stock entry editor.
+- `src/components/StallTracker/StallInventoryTab.vue` — In Stock table with tier-stack pricing, fresh-log recount flow, and the manual stock entry editor.
 - `src/components/StallTracker/StallTrendsTab.vue` — sales-over-time chart (Gold/Units toggle, top-grossing and single-item modes).
 - `src/components/StallTracker/StallShopLogTab.vue` — full event log (rendered inside a teleported modal).
 
@@ -113,7 +113,7 @@ The Books-directory watcher is the live source today; the Player.log
 10/21 client update). **Chat.log is not involved** — unlike Surveying,
 stall events never need cross-log correction. A manual Refresh command
 (`rescan_stall_books`) re-runs the same ingest statelessly
-(INSERT OR IGNORE dedup) for users who just opened their log in-game.
+(fullest-witness dedup) for users who just opened their log in-game.
 
 A `PlayerShopLog` book's content is a `\n\n`-separated list of entries, each
 prefixed with a `Day Mon DD HH:MM -` timestamp. Seven action types are
