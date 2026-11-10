@@ -87,6 +87,13 @@ const knownIssues: KnownIssue[] = [
       'Items with TSys mod prefixes/suffixes (e.g., "Amazing Iron Sword") may not always link to their base item in the CDN. We\'ve added prefix/suffix stripping as a fallback, but some edge cases may remain.',
   },
   {
+    id: "statehelm-gift-counts",
+    severity: "bug",
+    title: "Statehelm gift counts may be stale or empty",
+    description:
+      "Gift counts come from a per-view gift log that loads only while the Statehelm tracker is mounted. Favor data refreshes in the background, but the gift log does not reload when you return to the page, so counts can sit stale or empty until the next favor event.",
+  },
+  {
     id: "item-quantities",
     severity: "bug",
     title: "Item quantities may be inaccurate",
