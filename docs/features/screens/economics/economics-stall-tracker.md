@@ -151,7 +151,8 @@ for that line go; a partial re-ingest carrying fewer copies inserts and
 deletes nothing. The storage UNIQUE key stays
 `(event_timestamp, raw_message, entry_index)` (v23, unchanged) — ingest dedup
 is enforced by the witness logic, not by the key. v89 collapsed the pre-fix
-duplicates the same way.
+duplicates the same way (inventory-ledger actions only; identical same-minute
+sales are retained — ambiguous multiplicity must never delete revenue).
 
 ### Year Resolution
 

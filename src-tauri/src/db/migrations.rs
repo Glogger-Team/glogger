@@ -1165,10 +1165,19 @@ fn migration_v89_collapse_stall_reingest_dupes(conn: &Connection) -> Result<()> 
     // Legacy imports all stamped the same constant batch (`Imported` /
     // `imported`), so two overlapping legacy files hold the same line as
     // same-batch duplicates at different `entry_index` — the witness GROUP
-    // BY above keeps them as if genuine repeats. Collapse those first:
+    // BY above keeps them as if genuine repeats. Collapse those for the
+    // inventory-ledger actions (`added`/`visible`/`configured`/`removed`,
+    // where dupes replay as phantom stock — the measured 110-row bug):
     // same (timestamp, message) + same legacy batch + different index keeps
     // exactly one row (newest id wins; mute OR-ed so a muted dupe never
-    // leaks back in). Genuine same-batch repeats are distinct lines
+    // leaks back in). Money/display records (`bought`/`collected`/`hired`)
+    // and `unknown` are NEVER collapsed: one legacy file can hold two
+    // genuinely identical same-minute sales at different indexes, and
+    // deleting one understates Revenue/Trends irreversibly. Ambiguous
+    // multiplicity is retained, not deleted. Residual: legacy `bought`
+    // overlap dupes may overstate revenue — pre-existing, bounded, mutable
+    // via per-row mute, and new imports are witness-clean (distinct batch
+    // per file). Genuine same-batch repeats are distinct lines
     // (different timestamps/messages), so they survive: the collapse only
     // fires when the same line holds different indexes.
     conn.execute_batch(
@@ -1192,6 +1201,7 @@ fn migration_v89_collapse_stall_reingest_dupes(conn: &Connection) -> Result<()> 
                 MAX(ignored) AS keep_muted
          FROM stall_events
          WHERE log_title = 'Imported' AND log_timestamp = 'imported'
+           AND action IN ('added', 'visible', 'configured', 'removed')
          GROUP BY event_timestamp, raw_message
          HAVING COUNT(*) > 1
             AND COUNT(DISTINCT entry_index) > 1;
@@ -1199,6 +1209,7 @@ fn migration_v89_collapse_stall_reingest_dupes(conn: &Connection) -> Result<()> 
            SELECT keep_id FROM stall_v89_legacy WHERE keep_muted = 1);
          DELETE FROM stall_events
          WHERE log_title = 'Imported' AND log_timestamp = 'imported'
+           AND action IN ('added', 'visible', 'configured', 'removed')
            AND (event_timestamp, raw_message) IN (
              SELECT event_timestamp, raw_message FROM stall_v89_legacy)
            AND id NOT IN (SELECT keep_id FROM stall_v89_legacy);
@@ -4944,9 +4955,10 @@ mod tests {
         // Legacy imports share one batch key (`Imported`/`imported`): two
         // overlapping legacy files hold the same line at different indexes,
         // which the witness GROUP BY keeps as if genuine repeats. The legacy
-        // pass collapses those to one row (newest id, mute OR-ed) while
-        // genuine same-batch repeats — distinct lines (different timestamps
-        // / quantities, e.g. two bulk buys a minute apart) — survive.
+        // pass collapses those for inventory-ledger actions only (newest id,
+        // mute OR-ed) while identical same-minute sales (`bought`) are
+        // retained — ambiguous multiplicity must never delete revenue — and
+        // genuine same-batch repeats (distinct lines) survive.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         c.execute_batch(
@@ -4966,7 +4978,13 @@ mod tests {
                  NULL, NULL, 'Deradon added Bulk Twine x5 to shop', 9, 0),
                 ('Mon Apr 20 08:56', '2026-04-20 08:56:00', 'imported', 'Imported',
                  'added', 'Deradon', 'Deradon', 'Bulk Twine', 3,
-                 NULL, NULL, 'Deradon added Bulk Twine x3 to shop', 10, 0);",
+                 NULL, NULL, 'Deradon added Bulk Twine x3 to shop', 10, 0),
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', 'imported', 'Imported',
+                 'bought', 'MrBonq', 'Deradon', 'Quality Reins', 1,
+                 4500.0, 4500, 'MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500', 11, 0),
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', 'imported', 'Imported',
+                 'bought', 'MrBonq', 'Deradon', 'Quality Reins', 1,
+                 4500.0, 4500, 'MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500', 12, 0);",
         )
         .unwrap();
         // v89 already ran inside run_migrations above with no dupes present;
@@ -4975,7 +4993,7 @@ mod tests {
         let n: i64 = c
             .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(n, 3, "legacy overlap collapses, distinct repeats stay");
+        assert_eq!(n, 5, "ledger overlap collapses, sales + distinct repeats stay");
         let (idx, muted): (i64, i64) = c
             .query_row(
                 "SELECT entry_index, ignored FROM stall_events
@@ -4986,12 +5004,23 @@ mod tests {
             .unwrap();
         assert_eq!(idx, 7, "newest legacy dupe survives");
         assert_eq!(muted, 1, "mute OR-ed onto the survivor");
+        // Identical same-minute sales are ambiguous multiplicity: retained,
+        // never collapsed (deleting one understates Revenue irreversibly).
+        let sales: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM stall_events
+                 WHERE raw_message = 'MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sales, 2, "identical legacy sales both survive");
         // Re-run deletes nothing.
         migration_v89_collapse_stall_reingest_dupes(&c).unwrap();
         let n2: i64 = c
             .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(n2, 3, "re-run must delete nothing");
+        assert_eq!(n2, 5, "re-run must delete nothing");
     }
 
     #[test]
