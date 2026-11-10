@@ -87,13 +87,6 @@ const knownIssues: KnownIssue[] = [
       'Items with TSys mod prefixes/suffixes (e.g., "Amazing Iron Sword") may not always link to their base item in the CDN. We\'ve added prefix/suffix stripping as a fallback, but some edge cases may remain.',
   },
   {
-    id: "statehelm-offpage",
-    severity: "bug",
-    title: "Statehelm tracker may lag behind when off-page",
-    description:
-      "The Statehelm gifting tracker updates from the database, but real-time updates rely on the favor activity feed. If you notice stale data, navigating to the Statehelm page will refresh it.",
-  },
-  {
     id: "item-quantities",
     severity: "bug",
     title: "Item quantities may be inaccurate",
@@ -136,7 +129,7 @@ const limitations: KnownIssue[] = [
     severity: "limitation",
     title: "Stall Tracker inventory may show incomplete or negative quantities",
     description:
-      'Inventory is reconstructed from the shop log event history. If the in-game log was truncated before an item was added (older entries scroll out of range), the baseline is lost and the quantity can briefly go negative until a fresh "added" event resets the tier stack. Open your shop log in-game regularly, or use Import to backfill from an exported book file.',
+      'Inventory is reconstructed from the shop log event history. If the in-game log was truncated before an item was added (older entries scroll out of range), the baseline is lost and the quantity can briefly go negative until a fresh "added" event resets the tier stack. Count your stock in Manual stock entry to set a baseline, use Rebuild from log to replay the log after clearing stale baselines, or use Import to backfill from an exported book file.',
   },
 ];
 
