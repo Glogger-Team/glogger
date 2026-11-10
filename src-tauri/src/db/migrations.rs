@@ -1182,27 +1182,27 @@ fn migration_v89_collapse_stall_reingest_dupes(conn: &Connection) -> Result<()> 
     // fires when the same line holds different indexes.
     conn.execute_batch(
         "CREATE TEMPORARY TABLE stall_v89_witness AS
-         SELECT event_timestamp, raw_message, log_title, log_timestamp FROM (
-           SELECT event_timestamp, raw_message, log_title, log_timestamp,
+         SELECT own, event_timestamp, raw_message, log_title, log_timestamp FROM (
+           SELECT COALESCE(owner, '') AS own, event_timestamp, raw_message, log_title, log_timestamp,
              ROW_NUMBER() OVER (
-               PARTITION BY event_timestamp, raw_message
+               PARTITION BY COALESCE(owner, ''), event_timestamp, raw_message
                ORDER BY COUNT(*) DESC, MAX(id) DESC
              ) AS rn
            FROM stall_events
-           GROUP BY event_timestamp, raw_message, log_title, log_timestamp
+           GROUP BY COALESCE(owner, ''), event_timestamp, raw_message, log_title, log_timestamp
          ) WHERE rn = 1;
          DELETE FROM stall_events
-         WHERE (event_timestamp, raw_message, log_title, log_timestamp)
-           NOT IN (SELECT event_timestamp, raw_message, log_title, log_timestamp
+         WHERE (COALESCE(owner, ''), event_timestamp, raw_message, log_title, log_timestamp)
+           NOT IN (SELECT own, event_timestamp, raw_message, log_title, log_timestamp
                    FROM stall_v89_witness);
          DROP TABLE stall_v89_witness;
          CREATE TEMPORARY TABLE stall_v89_legacy AS
-         SELECT event_timestamp, raw_message, MAX(id) AS keep_id,
+         SELECT own, event_timestamp, raw_message, MAX(id) AS keep_id,
                 MAX(ignored) AS keep_muted
-         FROM stall_events
+         FROM (SELECT *, COALESCE(owner, '') AS own FROM stall_events)
          WHERE log_title = 'Imported' AND log_timestamp = 'imported'
            AND action IN ('added', 'visible', 'configured', 'removed')
-         GROUP BY event_timestamp, raw_message
+         GROUP BY own, event_timestamp, raw_message
          HAVING COUNT(*) > 1
             AND COUNT(DISTINCT entry_index) > 1;
          UPDATE stall_events SET ignored = 1 WHERE id IN (
@@ -1210,8 +1210,8 @@ fn migration_v89_collapse_stall_reingest_dupes(conn: &Connection) -> Result<()> 
          DELETE FROM stall_events
          WHERE log_title = 'Imported' AND log_timestamp = 'imported'
            AND action IN ('added', 'visible', 'configured', 'removed')
-           AND (event_timestamp, raw_message) IN (
-             SELECT event_timestamp, raw_message FROM stall_v89_legacy)
+           AND (COALESCE(owner, ''), event_timestamp, raw_message) IN (
+             SELECT own, event_timestamp, raw_message FROM stall_v89_legacy)
            AND id NOT IN (SELECT keep_id FROM stall_v89_legacy);
          DROP TABLE stall_v89_legacy;",
     )?;
@@ -5021,6 +5021,33 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n2, 5, "re-run must delete nothing");
+    }
+    #[test]
+    fn migration_v89_keeps_cross_owner_sales() {
+        // Owner scoping: the same buyer line in two alts' stalls is two real
+        // sales, not a re-ingest. The witness partition includes the owner,
+        // so each alt keeps its own row (NULL-safe via COALESCE).
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        c.execute_batch(
+            "INSERT INTO stall_events
+                (event_timestamp, event_at, log_timestamp, log_title,
+                 action, player, owner, item, quantity,
+                 price_unit, price_total, raw_message, entry_index)
+             VALUES
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', '23:22:02', 'Today''s Shop Logs',
+                 'bought', 'MrBonq', 'Deradon', 'Quality Reins', 1,
+                 4500.0, 4500, 'MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500', 14),
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', 'imported', 'Imported',
+                 'bought', 'MrBonq', 'Alvida', 'Quality Reins', 1,
+                 4500.0, 4500, 'MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500', 12);",
+        )
+        .unwrap();
+        migration_v89_collapse_stall_reingest_dupes(&c).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 2, "each alt keeps its own sale");
     }
 
     #[test]

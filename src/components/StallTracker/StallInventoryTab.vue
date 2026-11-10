@@ -632,6 +632,10 @@ async function startRecount(item: InventoryItem) {
     ? item.price_tiers[0].price
     : ''
   baselineError.value = null
+  // Manual stock entry lives inside the collapsed Advanced panel: open both
+  // or the scroll/focus below runs on a `display: none` input and the button
+  // appears to do nothing.
+  advancedOpen.value = true
   baselineOpen.value = true
   await nextTick()
   const qtyInput = document.getElementById('baseline-qty-input') as HTMLInputElement | null

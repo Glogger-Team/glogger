@@ -80,13 +80,16 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
         .map_err(|e| format!("Failed to begin transaction: {e}"))?;
 
     // Re-ingest guard (fullest-witness rule). Per logical line
-    // (event_timestamp, raw_message), count the incoming occurrences and the
-    // max occurrences any single stored batch holds (batch =
-    // log_title/log_timestamp; one call ingests one book/file, and every
-    // call site passes a single title+timestamp per call). If the incoming
-    // batch is at least as full (ties -> newest wins), it becomes the
-    // witness: delete the line's stored rows from other batches, insert all
-    // incoming. If it carries FEWER copies (partial overlap), its
+    // (event_timestamp, raw_message) WITHIN the incoming batch's owner,
+    // count the incoming occurrences and the max occurrences any single
+    // stored batch holds (batch = log_title/log_timestamp; one call ingests
+    // one book/file, and every call site passes a single title+timestamp
+    // per call — and a single owner per call, which scopes every witness
+    // query below via NULL-safe `IS`: an identical `bought` line in Alt B's
+    // book must never delete Alt A's real sale of the same line). If the
+    // incoming batch is at least as full (ties -> newest wins), it becomes
+    // the witness: delete the line's stored rows from other batches, insert
+    // all incoming. If it carries FEWER copies (partial overlap), its
     // occurrences are already witnessed — insert nothing, delete nothing. A
     // partial overlap must never delete real events. Genuine same-minute
     // repeats still insert: first sighting has no stored batch (0 < n), and
@@ -112,10 +115,14 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
                 .entry((ev.event_timestamp.clone(), ev.raw_message.clone()))
                 .or_default() += 1;
         }
+        // Every call site stamps one owner per batch; `owner IS ?` (NULL-safe,
+        // never `=`) keeps legacy NULL-owner rows matchable.
+        let batch_owner: Option<String> =
+            events.iter().find_map(|e| e.owner.clone());
         let mut max_stored = tx
             .prepare(
                 "SELECT COUNT(*) FROM stall_events
-                 WHERE event_timestamp = ?1 AND raw_message = ?2
+                 WHERE event_timestamp = ?1 AND raw_message = ?2 AND owner IS ?3
                  GROUP BY log_title, log_timestamp
                  ORDER BY COUNT(*) DESC LIMIT 1",
             )
@@ -123,7 +130,7 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
         let mut doomed_mutes = tx
             .prepare(
                 "SELECT ignored FROM stall_events
-                 WHERE event_timestamp = ?1 AND raw_message = ?2
+                 WHERE event_timestamp = ?1 AND raw_message = ?2 AND owner IS ?5
                    AND NOT (log_title = ?3 AND log_timestamp = ?4)
                  ORDER BY id ASC",
             )
@@ -131,14 +138,16 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
         let mut del = tx
             .prepare(
                 "DELETE FROM stall_events
-                 WHERE event_timestamp = ?1 AND raw_message = ?2
+                 WHERE event_timestamp = ?1 AND raw_message = ?2 AND owner IS ?5
                    AND NOT (log_title = ?3 AND log_timestamp = ?4)",
             )
             .map_err(|e| format!("Failed to prepare re-ingest delete: {e}"))?;
         let mut witnessed = std::collections::BTreeSet::new();
         for ((ts, msg), n_in) in &incoming_count {
             let n_max: usize = match max_stored
-                .query_row(rusqlite::params![ts, msg], |r| r.get::<_, i64>(0))
+                .query_row(rusqlite::params![ts, msg, batch_owner.clone()], |r| {
+                    r.get::<_, i64>(0)
+                })
             {
                 Ok(n) => n as usize,
                 // No stored batch: first sighting, witness below.
@@ -158,9 +167,10 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
                 // Snapshot BEFORE the delete: per-occurrence mute flags of
                 // the rows about to go, oldest-first.
                 let was_muted: Vec<bool> = doomed_mutes
-                    .query_map(rusqlite::params![ts, msg, title, stamp], |r| {
-                        r.get::<_, i64>(0).map(|v| v != 0)
-                    })
+                    .query_map(
+                        rusqlite::params![ts, msg, title, stamp, batch_owner.clone()],
+                        |r| r.get::<_, i64>(0).map(|v| v != 0),
+                    )
                     .map_err(|e| format!("Mute snapshot failed: {e}"))?
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|e| format!("Mute snapshot failed: {e}"))?;
@@ -168,7 +178,7 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
                     mute_carry.insert((ts.clone(), msg.clone()), was_muted);
                 }
                 deleted_total += del
-                    .execute(rusqlite::params![ts, msg, title, stamp])
+                    .execute(rusqlite::params![ts, msg, title, stamp, batch_owner.clone()])
                     .map_err(|e| format!("Failed to delete re-ingested stall event: {e}"))?;
             } else {
                 witnessed.insert((ts.clone(), msg.clone()));
@@ -225,14 +235,20 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
             )
             .map_err(|e| format!("Failed to prepare mute carry: {e}"))?;
         for ((ts, msg), mutes) in &mute_carry {
+            // Owner-scoped like the witness queries above: the replacements
+            // just inserted carry the batch owner, so only they can match.
+            let batch_owner: Option<String> = events
+                .iter()
+                .find(|e| &e.event_timestamp == ts && &e.raw_message == msg)
+                .and_then(|e| e.owner.clone());
             let mut ids = tx
                 .prepare(
                     "SELECT id FROM stall_events
-                     WHERE event_timestamp = ?1 AND raw_message = ?2
+                     WHERE event_timestamp = ?1 AND raw_message = ?2 AND owner IS ?3
                      ORDER BY id ASC",
                 )
                 .map_err(|e| format!("Failed to prepare mute carry lookup: {e}"))?
-                .query_map(rusqlite::params![ts, msg], |r| r.get::<_, i64>(0))
+                .query_map(rusqlite::params![ts, msg, batch_owner], |r| r.get::<_, i64>(0))
                 .map_err(|e| format!("Mute carry lookup failed: {e}"))?
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("Mute carry lookup failed: {e}"))?;
@@ -2262,6 +2278,66 @@ mod tests {
         );
     }
 
+    #[test]
+    fn insert_witness_never_deletes_other_owner_sale() {
+        // Cross-owner guard: an identical `bought` line (buyer-named, so it
+        // CAN match across alts) in Alt B's book must not delete Alt A's
+        // real sale. Witness queries scope on the incoming batch's owner.
+        let db = baseline_pool();
+        fn input(owner: &str, idx: i64, title: &str, log_ts: &str) -> StallEventInput {
+            StallEventInput {
+                event_timestamp: "Mon Apr 20 08:55".to_string(),
+                event_at: Some("2026-04-20 08:55:00".to_string()),
+                log_timestamp: log_ts.to_string(),
+                log_title: title.to_string(),
+                action: "bought".to_string(),
+                player: "MrBonq".to_string(),
+                owner: Some(owner.to_string()),
+                item: Some("Quality Reins".to_string()),
+                quantity: 1,
+                price_unit: Some(4500.0),
+                price_total: Some(4500),
+                raw_message: "MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500".to_string(),
+                entry_index: idx,
+            }
+        }
+        assert_eq!(
+            insert_stall_events(&db, &[input("Deradon", 14, "Today's Shop Logs", "23:22:02")])
+                .expect("alt A ingest"),
+            1
+        );
+        // Same line, other owner, other batch: first sighting FOR THAT OWNER.
+        assert_eq!(
+            insert_stall_events(&db, &[input("Alvida", 12, "Imported", "imported")])
+                .expect("alt B ingest"),
+            1,
+            "other owner's sale inserts, never replaces"
+        );
+        let count: i64 = db
+            .get()
+            .expect("read conn")
+            .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(count, 2, "both alts keep their sale");
+        // Same-owner re-ingest still witnesses (regression guard for the
+        // scoping change): Alt A re-reads its line at a new index.
+        assert_eq!(
+            insert_stall_events(&db, &[input("Deradon", 9, "Imported", "imported")])
+                .expect("alt A re-ingest"),
+            0,
+            "same-owner witness replace is net-new 0"
+        );
+        let alt_a: i64 = db
+            .get()
+            .expect("read conn")
+            .query_row(
+                "SELECT COUNT(*) FROM stall_events WHERE owner = 'Deradon'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(alt_a, 1, "alt A still holds exactly one row");
+    }
     #[test]
     fn insert_witness_replace_preserves_mute_per_occurrence() {
         // Mute carry: two occurrences of one line, first muted. A witness
