@@ -48,22 +48,21 @@ pub struct StallEventInput {
 /// `log_title`/`log_timestamp`; ties go to the newest batch). A witness
 /// re-ingest replaces the line's stored rows from other batches (DELETE +
 /// INSERT in this same transaction, so a full-overlap re-ingest never grows
-/// the row count); a PARTIAL re-ingest carrying fewer copies inserts and
-/// deletes nothing — its occurrences are already witnessed, and a partial
-/// overlap must never delete real events. `entry_index` alone cannot be the
-/// identity: it is the line's position inside its own book (oldest = 0), so
-/// the same line parses to a different index in books of different lengths
-/// — keying on it re-inserts every overlapping line and multiplies `added`
-/// quantities (live 2026-11 case: 110 in-stock rows from 3,589 events, 1,818
-/// of them same-line duplicates). Genuine same-minute repeats still insert:
-/// first sighting has no stored batch, and a book holding MORE copies than
-/// stored becomes the new witness (Deradon's 8x same-minute bulk buys are 8
-/// real occurrences, not a re-ingest).
-///
-/// The storage UNIQUE key stays `(event_timestamp, raw_message, entry_index)`
-/// (v23, unchanged — rebuilding the table for millions of rows is not worth
-/// it); ingest dedup is enforced by the witness logic below, not by the key.
-///
+/// the row count and returns 0 net-new); a PARTIAL re-ingest carrying fewer
+/// copies inserts and deletes nothing — its occurrences are already
+/// witnessed, and a partial overlap must never delete real events.
+/// `entry_index` alone cannot be the identity: it is the line's position
+/// inside its own book (oldest = 0), so the same line parses to a different
+/// index in books of different lengths — keying on it re-inserts every
+/// overlapping line and multiplies `added` quantities (live 2026-11 case:
+/// 110 in-stock rows from 3,589 events, 1,818 of them same-line duplicates).
+/// Genuine same-minute repeats still insert: first sighting has no stored
+/// batch, and a book holding MORE copies than stored becomes the new witness
+/// (Deradon's 8x same-minute bulk buys are 8 real occurrences, not a
+/// re-ingest). Witness replacement preserves per-occurrence `ignored` flags
+/// onto the replacements (oldest-first) so muted events never leak back in.
+/// Only `QueryReturnedNoRows` means "no stored batch" — any other witness
+/// lookup error aborts instead of deleting on a failed read.
 /// Clear-vs-insert serialization comes from the single-write pool plus the
 /// `BEGIN IMMEDIATE` transaction below: Clear is a single `DELETE` on the
 /// same pool, so SQLite serializes the two statements atomically.
@@ -96,6 +95,15 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
     // copies than the max stored batch holds) skip the INSERT entirely —
     // their occurrences exist, and the shifted entry_index would otherwise
     // re-add them as new rows under OR IGNORE.
+    // Muted-line carry: per-occurrence `ignored` flags of rows the witness
+    // DELETE removes, keyed by line. Applied to the replacements after the
+    // insert loop so a muted event never leaks back into Sales / Revenue /
+    // Inventory. Per-occurrence (oldest-first by id), never MAX over the
+    // line: identical lines can be distinct events with different mutes.
+    // Deleted-row count for the net-new return below.
+    let mut mute_carry: std::collections::BTreeMap<(String, String), Vec<bool>> =
+        std::collections::BTreeMap::new();
+    let mut deleted_total = 0usize;
     let witnessed: std::collections::BTreeSet<(String, String)> = {
         use std::collections::BTreeMap;
         let mut incoming_count: BTreeMap<(String, String), usize> = BTreeMap::new();
@@ -112,6 +120,14 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
                  ORDER BY COUNT(*) DESC LIMIT 1",
             )
             .map_err(|e| format!("Failed to prepare witness query: {e}"))?;
+        let mut doomed_mutes = tx
+            .prepare(
+                "SELECT ignored FROM stall_events
+                 WHERE event_timestamp = ?1 AND raw_message = ?2
+                   AND NOT (log_title = ?3 AND log_timestamp = ?4)
+                 ORDER BY id ASC",
+            )
+            .map_err(|e| format!("Failed to prepare mute snapshot: {e}"))?;
         let mut del = tx
             .prepare(
                 "DELETE FROM stall_events
@@ -121,10 +137,14 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
             .map_err(|e| format!("Failed to prepare re-ingest delete: {e}"))?;
         let mut witnessed = std::collections::BTreeSet::new();
         for ((ts, msg), n_in) in &incoming_count {
-            let n_max: usize = max_stored
+            let n_max: usize = match max_stored
                 .query_row(rusqlite::params![ts, msg], |r| r.get::<_, i64>(0))
-                .map(|n| n as usize)
-                .unwrap_or(0);
+            {
+                Ok(n) => n as usize,
+                // No stored batch: first sighting, witness below.
+                Err(rusqlite::Error::QueryReturnedNoRows) => 0,
+                Err(e) => return Err(format!("Witness query failed: {e}")),
+            };
             if *n_in >= n_max {
                 // Witness (or first sighting): clear other batches. The
                 // incoming batch's own (title, timestamp) identifies it; a
@@ -135,7 +155,20 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
                     .find(|e| &e.event_timestamp == ts && &e.raw_message == msg)
                     .map(|e| (e.log_title.clone(), e.log_timestamp.clone()))
                     .unwrap_or_default();
-                del.execute(rusqlite::params![ts, msg, title, stamp])
+                // Snapshot BEFORE the delete: per-occurrence mute flags of
+                // the rows about to go, oldest-first.
+                let was_muted: Vec<bool> = doomed_mutes
+                    .query_map(rusqlite::params![ts, msg, title, stamp], |r| {
+                        r.get::<_, i64>(0).map(|v| v != 0)
+                    })
+                    .map_err(|e| format!("Mute snapshot failed: {e}"))?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| format!("Mute snapshot failed: {e}"))?;
+                if was_muted.iter().any(|m| *m) {
+                    mute_carry.insert((ts.clone(), msg.clone()), was_muted);
+                }
+                deleted_total += del
+                    .execute(rusqlite::params![ts, msg, title, stamp])
                     .map_err(|e| format!("Failed to delete re-ingested stall event: {e}"))?;
             } else {
                 witnessed.insert((ts.clone(), msg.clone()));
@@ -181,10 +214,43 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
         }
     }
 
+    // Carry mutes onto the replacements, oldest replacement first: a muted
+    // occurrence i mutes replacement i (when both sides hold several rows
+    // the counts agree — witness means n_in >= n_max — so index mapping is
+    // exact; a longer incoming batch leaves its extra tail unmuted).
+    if !mute_carry.is_empty() {
+        let mut flag = tx
+            .prepare(
+                "UPDATE stall_events SET ignored = 1 WHERE id = ?1",
+            )
+            .map_err(|e| format!("Failed to prepare mute carry: {e}"))?;
+        for ((ts, msg), mutes) in &mute_carry {
+            let mut ids = tx
+                .prepare(
+                    "SELECT id FROM stall_events
+                     WHERE event_timestamp = ?1 AND raw_message = ?2
+                     ORDER BY id ASC",
+                )
+                .map_err(|e| format!("Failed to prepare mute carry lookup: {e}"))?
+                .query_map(rusqlite::params![ts, msg], |r| r.get::<_, i64>(0))
+                .map_err(|e| format!("Mute carry lookup failed: {e}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Mute carry lookup failed: {e}"))?;
+            for (id, muted) in ids.drain(..).zip(mutes.iter()) {
+                if *muted {
+                    flag.execute(rusqlite::params![id])
+                        .map_err(|e| format!("Mute carry failed: {e}"))?;
+                }
+            }
+        }
+    }
+
     tx.commit()
         .map_err(|e| format!("Failed to commit transaction: {e}"))?;
 
-    Ok(inserted)
+    // Net new: replacements are not new rows (DELETE + INSERT of the same
+    // occurrence), so the import/scan totals report growth only.
+    Ok(inserted.saturating_sub(deleted_total.min(inserted)))
 }
 
 // ============================================================
@@ -1180,6 +1246,35 @@ fn recount_counts(entries: &[crate::shop_log_parser::ShopLogEntry]) -> Vec<Recou
         .collect()
 }
 
+/// Owner resolution shared by `preview_stall_recount` (and through it
+/// `apply_stall_recount`): the book's advisory owner wins when present,
+/// else the active character is claimed. A book that names a DIFFERENT
+/// owner than the active character is rejected loudly — the Books dir holds
+/// every alt's logs, the confirm dialog names the active character, and
+/// applying against the alt would stamp zero baselines under the wrong
+/// owner (recoverable only via the alt's Undo, which also eats real counts).
+fn recount_owner(
+    shop_log: &ShopLog,
+    current_owner: &Option<String>,
+) -> Result<String, String> {
+    if let (Some(parsed), Some(requested)) = (
+        shop_log.owner.as_ref(),
+        opt_nonempty(current_owner).map(|s| s.to_string()),
+    ) && parsed != &requested
+    {
+        return Err(format!(
+            "This book belongs to {parsed}, not {requested}. Switch character or pick {requested}'s book."
+        ));
+    }
+    shop_log
+        .owner
+        .clone()
+        .or_else(|| opt_nonempty(current_owner).map(str::to_string))
+        .ok_or_else(|| {
+            "Cannot recount: file has no owner actions and no active character to claim it for".to_string()
+        })
+}
+
 /// Preview a one-click recount from a fresh in-game shop log book: parse the
 /// file, replay its lines into per-item counts, and diff against the current
 /// in-stock set. Pure read — writes nothing. The frontend shows the
@@ -1196,13 +1291,7 @@ pub fn preview_stall_recount(
         .map_err(|e| format!("Failed to read shop log file: {e}"))?;
     let base_year = year_from_filename(&path_buf);
     let shop_log: ShopLog = parse_shop_log("Imported", &content, "imported", base_year);
-    let owner = shop_log
-        .owner
-        .clone()
-        .or_else(|| opt_nonempty(&current_owner).map(str::to_string))
-        .ok_or_else(|| {
-            "Cannot recount: file has no owner actions and no active character to claim it for".to_string()
-        })?;
+    let owner = recount_owner(&shop_log, &current_owner)?;
     let counted = recount_counts(&shop_log.entries);
     let in_stock: std::collections::BTreeSet<String> = {
         let conn = db
@@ -2083,12 +2172,13 @@ mod tests {
         assert_eq!(insert_stall_events(&db, &first).expect("first ingest"), 1);
         // Overlapping second book holds the same line at index 12, plus one
         // genuinely new line. The re-ingested occurrence replaces its row
-        // (DELETE + INSERT counts as inserted); the new line inserts.
+        // (DELETE + INSERT) and returns net-new only: 1 for the genuinely
+        // new line, 0 for the replacement.
         let second = vec![
             input("Mon Apr 20 08:55", line, 12, "Imported", "imported"),
             input("Mon Apr 20 08:56", "Deradon added Kilderkin to shop", 13, "Imported", "imported"),
         ];
-        assert_eq!(insert_stall_events(&db, &second).expect("re-ingest"), 2);
+        assert_eq!(insert_stall_events(&db, &second).expect("re-ingest"), 1);
         let count: i64 = db
             .get()
             .expect("read conn")
@@ -2173,6 +2263,71 @@ mod tests {
     }
 
     #[test]
+    fn insert_witness_replace_preserves_mute_per_occurrence() {
+        // Mute carry: two occurrences of one line, first muted. A witness
+        // re-ingest replaces both rows — the mute must ride onto the
+        // replacement (oldest-first), never reset to 0, and the muted row
+        // must stay out of the inventory replay.
+        let db = baseline_pool();
+        fn input(idx: i64, title: &str, log_ts: &str) -> StallEventInput {
+            StallEventInput {
+                event_timestamp: "Mon Apr 20 08:55".to_string(),
+                event_at: Some("2026-04-20 08:55:00".to_string()),
+                log_timestamp: log_ts.to_string(),
+                log_title: title.to_string(),
+                action: "added".to_string(),
+                player: "Deradon".to_string(),
+                owner: Some("Deradon".to_string()),
+                item: Some("Kilderkin".to_string()),
+                quantity: 1,
+                price_unit: None,
+                price_total: None,
+                raw_message: "Deradon added Kilderkin to shop".to_string(),
+                entry_index: idx,
+            }
+        }
+        assert_eq!(
+            insert_stall_events(
+                &db,
+                &[input(14, "Today's Shop Logs", "23:22:02"), input(15, "Today's Shop Logs", "23:22:02")]
+            )
+            .expect("first ingest"),
+            2
+        );
+        db.get_write()
+            .expect("write conn")
+            .execute(
+                "UPDATE stall_events SET ignored = 1 WHERE entry_index = 14",
+                [],
+            )
+            .expect("mute one occurrence");
+        // rows, net-new 0, mute carried oldest-first.
+        assert_eq!(
+            insert_stall_events(
+                &db,
+                &[input(12, "Imported", "imported"), input(13, "Imported", "imported")]
+            )
+            .expect("re-ingest"),
+            0,
+            "witness replace is not new growth"
+        );
+        let mutes: Vec<(i64, i64)> = db
+            .get()
+            .expect("read conn")
+            .prepare(
+                "SELECT entry_index, ignored FROM stall_events
+                 WHERE raw_message = 'Deradon added Kilderkin to shop'
+                 ORDER BY entry_index",
+            )
+            .expect("prepare")
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(mutes, vec![(12, 1), (13, 0)], "mute rides oldest-first");
+    }
+
+    #[test]
     fn recount_counts_matches_fresh_book_shape() {
         // Fresh-book 2026-11-09 shape: priced-only `visible` lines whose
         // `added` rows scrolled out of the book must still count (one
@@ -2236,5 +2391,30 @@ mod tests {
         let saddle = find("Scrolled Saddle").expect("scrolled saddle counted");
         assert_eq!(saddle.quantity, 4);
         assert_eq!(saddle.price_unit, Some(4500.0));
+    }
+    #[test]
+    fn recount_owner_rejects_alt_book() {
+        // Owner safety: a book naming a different owner than the active
+        // character must reject, not diff/apply against the alt. Owner-less
+        // books still claim the active character; matching owners pass.
+        use crate::shop_log_parser::ShopLog;
+        fn log(owner: Option<&str>) -> ShopLog {
+            ShopLog {
+                log_timestamp: "imported".to_string(),
+                title: "Imported".to_string(),
+                entries: Vec::new(),
+                owner: owner.map(str::to_string),
+            }
+        }
+        assert!(recount_owner(&log(Some("Alt")), &Some("TwinkleofToes".into())).is_err());
+        assert_eq!(
+            recount_owner(&log(Some("TwinkleofToes")), &Some("TwinkleofToes".into())).unwrap(),
+            "TwinkleofToes"
+        );
+        assert_eq!(
+            recount_owner(&log(None), &Some("TwinkleofToes".into())).unwrap(),
+            "TwinkleofToes"
+        );
+        assert!(recount_owner(&log(None), &None).is_err());
     }
 }

@@ -537,12 +537,16 @@ async function recountFromBook() {
   // with the recount below (stockBusy invariant).
   if (stockBusy.value || store.currentOwner !== owner) return
   const path = selected as string
+  // Claim the busy flag for the whole preview→confirm→apply flow so a
+  // second stock write cannot interleave mid-recount (and the button reads
+  // "Recounting…"). The pre-apply check below exempts our own flag: it
+  // guards an *external* write that started while the confirms sat open.
+  recounting.value = true
   try {
     const preview = await invoke<RecountPreview>('preview_stall_recount', {
       path,
       currentOwner: owner,
     })
-    if (store.currentOwner !== owner) return
     if (preview.counted.length === 0 && preview.zeroed.length === 0) {
       error.value = 'Nothing to recount: the book lists nothing and no in-stock items are missing from it.'
       return
@@ -559,7 +563,9 @@ async function recountFromBook() {
         'Sales history is untouched.',
       { title: 'Recount from fresh log', kind: 'warning' },
     )
-    if (!ok || stockBusy.value || store.currentOwner !== owner) return
+    // `recounting` is ours (set above for the whole flow) — exempt it so the
+    // check only blocks an *external* stock write that started mid-flow.
+    if (!ok || zeroingItem.value != null || baselineSaving.value || store.currentOwner !== owner) return
     const written = await invoke<number>('apply_stall_recount', {
       path,
       currentOwner: owner,

@@ -1162,6 +1162,15 @@ fn migration_v89_collapse_stall_reingest_dupes(conn: &Connection) -> Result<()> 
     if !table_exists {
         return Ok(());
     }
+    // Legacy imports all stamped the same constant batch (`Imported` /
+    // `imported`), so two overlapping legacy files hold the same line as
+    // same-batch duplicates at different `entry_index` — the witness GROUP
+    // BY above keeps them as if genuine repeats. Collapse those first:
+    // same (timestamp, message) + same legacy batch + different index keeps
+    // exactly one row (newest id wins; mute OR-ed so a muted dupe never
+    // leaks back in). Genuine same-batch repeats are distinct lines
+    // (different timestamps/messages), so they survive: the collapse only
+    // fires when the same line holds different indexes.
     conn.execute_batch(
         "CREATE TEMPORARY TABLE stall_v89_witness AS
          SELECT event_timestamp, raw_message, log_title, log_timestamp FROM (
@@ -1177,7 +1186,23 @@ fn migration_v89_collapse_stall_reingest_dupes(conn: &Connection) -> Result<()> 
          WHERE (event_timestamp, raw_message, log_title, log_timestamp)
            NOT IN (SELECT event_timestamp, raw_message, log_title, log_timestamp
                    FROM stall_v89_witness);
-         DROP TABLE stall_v89_witness;",
+         DROP TABLE stall_v89_witness;
+         CREATE TEMPORARY TABLE stall_v89_legacy AS
+         SELECT event_timestamp, raw_message, MAX(id) AS keep_id,
+                MAX(ignored) AS keep_muted
+         FROM stall_events
+         WHERE log_title = 'Imported' AND log_timestamp = 'imported'
+         GROUP BY event_timestamp, raw_message
+         HAVING COUNT(*) > 1
+            AND COUNT(DISTINCT entry_index) > 1;
+         UPDATE stall_events SET ignored = 1 WHERE id IN (
+           SELECT keep_id FROM stall_v89_legacy WHERE keep_muted = 1);
+         DELETE FROM stall_events
+         WHERE log_title = 'Imported' AND log_timestamp = 'imported'
+           AND (event_timestamp, raw_message) IN (
+             SELECT event_timestamp, raw_message FROM stall_v89_legacy)
+           AND id NOT IN (SELECT keep_id FROM stall_v89_legacy);
+         DROP TABLE stall_v89_legacy;",
     )?;
     Ok(())
 }
@@ -4915,6 +4940,61 @@ mod tests {
     }
 
     #[test]
+    fn migration_v89_collapses_legacy_import_dupes() {
+        // Legacy imports share one batch key (`Imported`/`imported`): two
+        // overlapping legacy files hold the same line at different indexes,
+        // which the witness GROUP BY keeps as if genuine repeats. The legacy
+        // pass collapses those to one row (newest id, mute OR-ed) while
+        // genuine same-batch repeats — distinct lines (different timestamps
+        // / quantities, e.g. two bulk buys a minute apart) — survive.
+        let c = Connection::open_in_memory().unwrap();
+        run_migrations(&c, None).unwrap();
+        c.execute_batch(
+            "INSERT INTO stall_events
+                (event_timestamp, event_at, log_timestamp, log_title,
+                 action, player, owner, item, quantity,
+                 price_unit, price_total, raw_message, entry_index, ignored)
+             VALUES
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', 'imported', 'Imported',
+                 'added', 'Deradon', 'Deradon', 'Kilderkin', 1,
+                 NULL, NULL, 'Deradon added Kilderkin to shop', 5, 1),
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', 'imported', 'Imported',
+                 'added', 'Deradon', 'Deradon', 'Kilderkin', 1,
+                 NULL, NULL, 'Deradon added Kilderkin to shop', 7, 0),
+                ('Mon Apr 20 08:55', '2026-04-20 08:55:00', 'imported', 'Imported',
+                 'added', 'Deradon', 'Deradon', 'Bulk Twine', 5,
+                 NULL, NULL, 'Deradon added Bulk Twine x5 to shop', 9, 0),
+                ('Mon Apr 20 08:56', '2026-04-20 08:56:00', 'imported', 'Imported',
+                 'added', 'Deradon', 'Deradon', 'Bulk Twine', 3,
+                 NULL, NULL, 'Deradon added Bulk Twine x3 to shop', 10, 0);",
+        )
+        .unwrap();
+        // v89 already ran inside run_migrations above with no dupes present;
+        // invoke the function directly against the seeded dupes.
+        migration_v89_collapse_stall_reingest_dupes(&c).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 3, "legacy overlap collapses, distinct repeats stay");
+        let (idx, muted): (i64, i64) = c
+            .query_row(
+                "SELECT entry_index, ignored FROM stall_events
+                 WHERE raw_message = 'Deradon added Kilderkin to shop'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(idx, 7, "newest legacy dupe survives");
+        assert_eq!(muted, 1, "mute OR-ed onto the survivor");
+        // Re-run deletes nothing.
+        migration_v89_collapse_stall_reingest_dupes(&c).unwrap();
+        let n2: i64 = c
+            .query_row("SELECT COUNT(*) FROM stall_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n2, 3, "re-run must delete nothing");
+    }
+
+    #[test]
     fn migration_v84_creates_baseline_table() {
         // Shape: one row per (owner, item), upsert key + owner index.
         let c = Connection::open_in_memory().unwrap();
@@ -4987,3 +5067,4 @@ mod tests {
         assert_eq!(kept, "Kept", "surviving child belongs to the Real parent");
     }
 }
+
