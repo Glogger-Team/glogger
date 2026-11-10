@@ -393,7 +393,7 @@ Stall Tracker follows the app-wide time standards defined in
 
 Reconstruction is only as accurate as the shop log history. The primary fix
 is the recount above (remove-all + re-add forces the whole stall into one
-fresh book; baselines suppress everything older). Four older mechanisms
+fresh book; baselines suppress everything older). Older mechanisms that
 narrow the gap without a live `LocalPlayer:` feed:
 
 - **Fallback pricing** — stock added but never made visible/configured (or
