@@ -525,10 +525,12 @@ async function recountFromBook() {
   )
   if (!ready || stockBusy.value || store.currentOwner !== owner) return
   const { open } = await import('@tauri-apps/plugin-dialog')
+  const { join } = await import('@tauri-apps/api/path')
+  const base = settingsStore.settings.gameDataPath
   const selected = await open({
     multiple: false,
     directory: false,
-    defaultPath: settingsStore.settings.gameDataPath || undefined,
+    defaultPath: base ? await join(base, 'Books') : undefined,
     filters: [{ name: 'Shop log book', extensions: ['txt'] }],
   })
   if (!selected || Array.isArray(selected)) return
