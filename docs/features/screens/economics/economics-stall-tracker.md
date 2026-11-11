@@ -258,7 +258,7 @@ partial re-ingest inserts/deletes nothing, and another owner's rows never match.
 | `apply_stall_recount(path, current_owner, expected_hash, confirmed_counted, confirmed_zeroed, window_days)` | Stamp the confirmed preview as baselines (counted qty + book price, zeroes for unlisted) in one transaction. Re-reads the book and aborts when the content hash or the recomputed counted/zeroed sets no longer match what was confirmed. `recorded_at` stamps `min(now, book_latest_at)` so post-book events stay in the replay. Events untouched. |
 | `clear_stall_events(owner)` | Delete every row for a specific character. Requires `owner`. Serialized with live ingest by the single-write pool + `BEGIN IMMEDIATE`. |
 | `import_shop_log_file(path, current_owner)` | Read a `.txt` file, parse, insert. Returns counts + effective owner + `owner_claimed` flag. |
-| `export_shop_log_files(directory, owner)` | Write one file per (owner, date) in exact book format for round-trip. Mute-lossy: the in-game format has no mute channel, so re-importing an export resurrects muted rows as live. Requires `owner`. |
+| `export_shop_log_files(directory, owner)` | Write one file per (owner, date) in exact book format for round-trip. Mute-lossy: the file carries no mute flag, so a fresh import (e.g. after Clear) starts live; re-ingest over existing rows preserves mutes via carry, otherwise no-ops per the witness rule. Requires `owner`. |
 | `seed_stall_events_dev(count, owner)` | Dev-only bulk insert for benchmarking at 10k/100k scale. |
 
 ### Filter shape
