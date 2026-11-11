@@ -164,9 +164,10 @@ revenue pivot grouping, and for the export round-trip. Resolution strategy:
 - **Live tailing** — `base_year_for_live()` starts from `now.year()` and walks
   back one year if the oldest entry's `(month, day)` is in the future relative
   to now, meaning the book contains entries from the previous calendar year.
-- **Import** — `year_from_filename()` extracts a 4-digit year between 2000 and
-  2099 from the filename (e.g., `Deradon-shop-log-2026-04-13.txt`), falling
-  back to `Local::now().year()` if no match.
+- **Import** — the book's own oldest entry drives `base_year_for_live()`
+  (same as live tailing); only a book with no parseable entries falls back
+  to `year_from_filename()` (4-digit 2000–2099 in the name, else current
+  year). Recount preview resolves the same way.
 - **Backfill** — infers year from `created_at`. Events can never be in the
   future at insert time, so if the parsed `(month, day)` is later than
   `created_at`'s month/day, the event is from the previous year. Used when a
@@ -290,10 +291,12 @@ The one-click reset for drifted counts. The book is a sliding window, so a
 plain save only covers recent lines — the in-game prerequisite is empty the
 stall, add everything back, save the book, and the how-to dialog states
 exactly that before the file picker opens. Preview replays the fresh book
-and the confirm shows the set/zero split with names. Apply stamps one
-baseline per line in a single transaction without touching event rows, so
-Revenue / Trends / Sales never move. Advanced (collapsed) holds the undo
-plus Manual stock entry for hand counts.
+and the confirm shows the set/zero split with names. A book with no stock
+signal (no `added`/`visible`/`configured` lines — empty or bought-only)
+aborts in preview instead of offering Set 0 / Zero N against the whole
+in-stock set. Apply stamps one baseline per line in a single transaction
+without touching event rows, so Revenue / Trends / Sales never move.
+Advanced (collapsed) holds the undo plus Manual stock entry for hand counts.
 
 ### Import
 

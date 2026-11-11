@@ -701,16 +701,17 @@ async function saveBaseline() {
 }
 
 async function removeBaseline(b: StallBaseline) {
-  if (stockBusy.value) return
+  const owner = store.currentOwner
+  if (!owner || stockBusy.value) return
   const confirmed = await confirm(
     `Remove the manual count for ${b.item}? The quantity will go back to the log estimate (which may be a guess again).`,
     { title: 'Manual stock entry', kind: 'warning' },
   )
-  if (!confirmed || stockBusy.value) return
+  if (!confirmed || stockBusy.value || store.currentOwner !== owner) return
   baselineSaving.value = true
   baselineError.value = null
   try {
-    await invoke('delete_stall_baseline', { id: b.id, owner: store.currentOwner })
+    await invoke('delete_stall_baseline', { id: b.id, owner })
     await Promise.all([reload(), loadBaselines()])
     await store.refresh()
   } catch (e) {

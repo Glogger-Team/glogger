@@ -1153,6 +1153,24 @@ pub(crate) fn year_from_filename(path: &Path) -> i32 {
     Local::now().year()
 }
 
+/// Base year for a whole-file parse (import + recount preview): probe-parse
+/// the book and use the live resolver — wrap to the previous year when the
+/// oldest entry is in the future (December book first opened in January).
+/// Same parity as the Books watcher (`ingest_shop_log_file`) and the live
+/// coordinator path; a filename-only year would stamp `book_latest_at` a
+/// year in the future and collapse the recount's
+/// `min(now, book_latest_at)` snapshot guard to now. Falls back to the
+/// filename year only when the book has no parseable entries.
+fn book_base_year(path_buf: &std::path::Path, content: &str) -> i32 {
+    use crate::shop_log_parser::parse_shop_log;
+    use crate::stall_year_resolver::base_year_for_live;
+    let probe = parse_shop_log("Imported", content, "imported", 1970);
+    match probe.entries.first() {
+        Some(e) => base_year_for_live(e.timestamp.as_str()),
+        None => year_from_filename(path_buf),
+    }
+}
+
 /// Replace filename-hostile characters with `_` so user-controlled owner
 /// names can't break out of the export directory.
 fn sanitize_owner(owner: &str) -> String {
@@ -1168,8 +1186,10 @@ fn sanitize_owner(owner: &str) -> String {
 /// Read a `.txt` shop log file, parse it, and persist its entries.
 ///
 /// Owner resolution rules (plan §10.1 / §12.1):
-/// 1. Year comes from the filename if it contains a 4-digit year between
-///    2000 and 2099, else `Local::now().year()`.
+/// 1. Year comes from the live resolver over the book's own oldest entry
+///    (wrap to previous year when it is in the future — December book first
+///    opened in January); only a book with no parseable entries falls back
+///    to the filename year.
 /// 2. `effective_owner = parser_hint.or(current_owner)`. Three cases:
 ///    - parser hint matches active character → normal import
 ///    - parser hint is a different character → stamps with the parsed owner;
@@ -1186,7 +1206,7 @@ pub fn import_shop_log_file(
     let content = std::fs::read_to_string(&path_buf)
         .map_err(|e| format!("Failed to read shop log file: {e}"))?;
 
-    let base_year = year_from_filename(&path_buf);
+    let base_year = book_base_year(&path_buf, &content);
     // Distinct batch per file: the witness rule keys batches on
     // (log_title, log_timestamp), and every import used to stamp the same
     // constant pair — so a second file's overlap deleted nothing and
@@ -1439,8 +1459,20 @@ fn preview_from_content(
     content: &str,
     current_owner: &Option<String>,
 ) -> Result<RecountPreview, String> {
-    let base_year = year_from_filename(path_buf);
+    let base_year = book_base_year(path_buf, content);
     let shop_log: ShopLog = parse_shop_log("Imported", content, "imported", base_year);
+    // Empty / stock-signal-free books must abort here, not at the UI: with
+    // `counted == []` the caller would zero the entire in-stock set (every
+    // item reads as "not listed"). A bought-only file replays to zero
+    // quantities (clamped), same wipe. The user skipped the remove-all +
+    // re-add; say so instead of offering Set 0 / Zero N.
+    if !shop_log
+        .entries
+        .iter()
+        .any(|e| matches!(e.action.as_str(), "added" | "visible" | "configured"))
+    {
+        return Err("This book has no stock signal (no `added`/`visible`/`configured` lines) — did you skip the remove-all + re-add in-game? Pick the fresh book.".to_string());
+    }
     let owner = recount_owner(&shop_log, current_owner)?;
     let counted = recount_counts(&shop_log.entries);
     let in_stock: std::collections::BTreeSet<String> = {
@@ -1645,7 +1677,8 @@ pub fn apply_stall_recount(
 /// Write one file per `(owner, year, month, day)` group, sorted newest-first
 /// to match the in-game book format. Round-trip contract: any file produced
 /// by Export must be re-importable by Import, landing identical rows
-/// (same UNIQUE key → INSERT OR IGNORE skips them all).
+/// (same batch key + same indexes → the fullest-witness rule ties newest
+/// and the row count never grows).
 #[tauri::command]
 pub fn export_shop_log_files(
     db: State<'_, DbPool>,
@@ -1854,8 +1887,8 @@ pub fn seed_stall_events_dev(
             price_unit,
             price_total,
             raw_message: raw,
-            // Use `i` as the entry_index so dedup rejects re-seeding without
-            // a clear in between.
+            // Use `i` as the entry_index so the witness rule ties newest on
+            // re-seeding (same batch, same count) without a clear in between.
             entry_index: i as i64,
         });
     }
@@ -1866,8 +1899,9 @@ pub fn seed_stall_events_dev(
 /// Manual "Check for new logs" command: one stateless sweep over
 /// `Books/PlayerShopLog_*.txt` for the active character. The Books watcher
 /// owns its mtime map on its thread and offers no shared handle, so this
-/// command re-runs the same `process_book_file` ingest statelessly — `INSERT
-/// OR IGNORE` dedup makes reprocessing already-seen files a no-op.
+/// command re-runs the same `process_book_file` ingest statelessly — the
+/// fullest-witness rule ties newest on already-seen files, so reprocessing
+/// them is a row-count no-op.
 ///
 /// `async` + `spawn_blocking`: the sweep stats + reads every book file, which
 /// can stall the main thread on a cold disk (statehelm `backfill_statehelm_gifts`
@@ -2972,5 +3006,30 @@ mod tests {
             "TwinkleofToes"
         );
         assert!(recount_owner(&log(None), &None).is_err());
+    }
+
+    #[test]
+    fn preview_rejects_book_without_stock_signal() {
+        // H2: an empty or bought-only book must abort in preview, not offer
+        // Set 0 / Zero N against the whole in-stock set.
+        let db = baseline_pool();
+        let owner = Some("Deradon".to_string());
+        let err = preview_from_content(
+            &db,
+            std::path::Path::new("PlayerShopLog_260420_085500.txt"),
+            "Day Mon Apr 20 08:55 - Deradon opened shop\n",
+            &owner,
+        )
+        .unwrap_err();
+        assert!(err.contains("no stock signal"), "unexpected: {err}");
+        let bought_only = "Day Mon Apr 20 08:55 - MrBonq bought Quality Reins at a cost of 4500 per 1 = 4500\n";
+        let err2 = preview_from_content(
+            &db,
+            std::path::Path::new("PlayerShopLog_260420_085500.txt"),
+            bought_only,
+            &owner,
+        )
+        .unwrap_err();
+        assert!(err2.contains("no stock signal"), "unexpected: {err2}");
     }
 }
