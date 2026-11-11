@@ -164,10 +164,12 @@ revenue pivot grouping, and for the export round-trip. Resolution strategy:
 - **Live tailing** — `base_year_for_live()` starts from `now.year()` and walks
   back one year if the oldest entry's `(month, day)` is in the future relative
   to now, meaning the book contains entries from the previous calendar year.
-- **Import** — the book's own oldest entry drives `base_year_for_live()`
-  (same as live tailing); only a book with no parseable entries falls back
-  to `year_from_filename()` (4-digit 2000–2099 in the name, else current
-  year). Recount preview resolves the same way.
+- **Import** — an explicit filename year wins (export files are named
+  `{owner}-shop-log-YYYY-MM-DD.txt`, so re-importing an old export keeps its
+  dates); game books carry no year and fall back to `base_year_for_live()`
+  over the book's own oldest entry. **Recount preview** always resolves via
+  `base_year_for_live()` — it only ever reads game books, which never carry
+  a 4-digit year.
 - **Backfill** — infers year from `created_at`. Events can never be in the
   future at insert time, so if the parsed `(month, day)` is later than
   `created_at`'s month/day, the event is from the previous year. Used when a

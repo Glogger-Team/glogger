@@ -1119,9 +1119,10 @@ pub struct ExportResult {
 }
 
 /// Scan a filename for a 4-digit year between 2000 and 2099. Falls back to
-/// the current local year if no match. Used by Import and the Books-directory
-/// watcher to seed the year resolver when the book content itself doesn't
-/// carry an explicit year.
+/// the current local year if no match. Consulted by Import (explicit export
+/// dates win) and as the last-resort fallback when a book has no parseable
+/// entries; live paths (watcher, coordinator, rescan, recount preview) use
+/// the entry-driven `base_year_for_live` instead.
 pub(crate) fn year_from_filename(path: &Path) -> i32 {
     let name = path
         .file_name()
@@ -1153,14 +1154,16 @@ pub(crate) fn year_from_filename(path: &Path) -> i32 {
     Local::now().year()
 }
 
-/// Base year for a whole-file parse (import + recount preview): probe-parse
-/// the book and use the live resolver — wrap to the previous year when the
-/// oldest entry is in the future (December book first opened in January).
-/// Same parity as the Books watcher (`ingest_shop_log_file`) and the live
-/// coordinator path; a filename-only year would stamp `book_latest_at` a
-/// year in the future and collapse the recount's
-/// `min(now, book_latest_at)` snapshot guard to now. Falls back to the
-/// filename year only when the book has no parseable entries.
+/// Base year for the recount preview: probe-parse the book and use the live
+/// resolver — wrap to the previous year when the oldest entry is in the
+/// future (December book first opened in January). Same parity as the Books
+/// watcher (`ingest_shop_log_file`) and the live coordinator path; a
+/// filename-only year would stamp `book_latest_at` a year in the future and
+/// collapse the recount's `min(now, book_latest_at)` snapshot guard to now.
+/// Game books (`PlayerShopLog_YYMMDD_HHMMSS.txt`) carry no 4-digit year, so
+/// the filename is never consulted here. Falls back to the filename year
+/// only when the book has no parseable entries (unreachable: the stock-signal
+/// guard aborts first, but the signature stays total).
 fn book_base_year(path_buf: &std::path::Path, content: &str) -> i32 {
     use crate::shop_log_parser::parse_shop_log;
     use crate::stall_year_resolver::base_year_for_live;
@@ -1168,6 +1171,40 @@ fn book_base_year(path_buf: &std::path::Path, content: &str) -> i32 {
     match probe.entries.first() {
         Some(e) => base_year_for_live(e.timestamp.as_str()),
         None => year_from_filename(path_buf),
+    }
+}
+
+/// Base year for Import: an explicit filename year wins (export files are
+/// named `{owner}-shop-log-YYYY-MM-DD.txt`, so re-importing an old export
+/// must keep its dates), with the live resolver as fallback for game books
+/// whose names carry no year. Distinct from the preview path on purpose:
+/// preview only ever reads game books, import must round-trip exports.
+fn import_base_year(path_buf: &std::path::Path, content: &str) -> i32 {
+    let name = path_buf
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    // Export suffix is `-YYYY-MM-DD` (see `export_shop_log_files`): prefer
+    // it over any other 4-digit run so a renamed export keeps its own date.
+    if let Some(stem) = name.strip_suffix(".txt") {
+        let b = stem.as_bytes();
+        if b.len() >= 10 {
+            let d = &b[b.len() - 10..];
+            if let Ok(year) = std::str::from_utf8(&d[..4]).unwrap_or("0").parse::<i32>()
+                && d[4] == b'-'
+                && d[7] == b'-'
+                && d[..4].iter().all(|c| c.is_ascii_digit())
+                && d[5..7].iter().all(|c| c.is_ascii_digit())
+                && d[8..].iter().all(|c| c.is_ascii_digit())
+                && (2000..=2099).contains(&year)
+            {
+                return year;
+            }
+        }
+    }
+    match year_from_filename(path_buf) {
+        y if y != Local::now().year() => y,
+        _ => book_base_year(path_buf, content),
     }
 }
 
@@ -1185,11 +1222,12 @@ fn sanitize_owner(owner: &str) -> String {
 
 /// Read a `.txt` shop log file, parse it, and persist its entries.
 ///
-/// Owner resolution rules (plan §10.1 / §12.1):
-/// 1. Year comes from the live resolver over the book's own oldest entry
-///    (wrap to previous year when it is in the future — December book first
-///    opened in January); only a book with no parseable entries falls back
-///    to the filename year.
+/// Year + owner resolution rules (plan §10.1 / §12.1):
+/// 1. Year: an explicit filename year wins (export files are named
+///    `{owner}-shop-log-YYYY-MM-DD.txt`, so re-importing an old export keeps
+///    its dates); game books carry no year and fall back to the live resolver
+///    over the book's own oldest entry (wrap to previous year when it is in
+///    the future — December book first opened in January).
 /// 2. `effective_owner = parser_hint.or(current_owner)`. Three cases:
 ///    - parser hint matches active character → normal import
 ///    - parser hint is a different character → stamps with the parsed owner;
@@ -1206,7 +1244,7 @@ pub fn import_shop_log_file(
     let content = std::fs::read_to_string(&path_buf)
         .map_err(|e| format!("Failed to read shop log file: {e}"))?;
 
-    let base_year = book_base_year(&path_buf, &content);
+    let base_year = import_base_year(&path_buf, &content);
     // Distinct batch per file: the witness rule keys batches on
     // (log_title, log_timestamp), and every import used to stamp the same
     // constant pair — so a second file's overlap deleted nothing and
@@ -2285,6 +2323,34 @@ mod tests {
             parsed.entries[2].event_at.as_deref(),
             Some("2026-04-15 11:45:00")
         );
+    }
+
+    #[test]
+    fn import_prefers_export_filename_year_over_resolver() {
+        // D Major: an old export (`{owner}-shop-log-YYYY-MM-DD.txt`)
+        // re-imported in a later year must keep its filename dates, not
+        // resolve to the live year. Game books (no 4-digit year) still use
+        // the live resolver via `book_base_year`.
+        use crate::shop_log_parser::parse_shop_log;
+        let body = "Mon Apr 13 09:00 - Deradon added Quality Reins to shop\n";
+        let export_path =
+            std::path::Path::new("Deradon-shop-log-2025-04-13.txt");
+        assert_eq!(import_base_year(export_path, body), 2025);
+        let parsed = parse_shop_log(
+            "Imported",
+            body,
+            "imported",
+            import_base_year(export_path, body),
+        );
+        assert_eq!(
+            parsed.entries[0].event_at.as_deref(),
+            Some("2025-04-13 09:00:00")
+        );
+        // Game book without a year: resolver decides, never the filename.
+        let game_path = std::path::Path::new("PlayerShopLog_260413_090000.txt");
+        let now_year = Local::now().year();
+        let resolved = book_base_year(game_path, body);
+        assert!(resolved == now_year || resolved == now_year - 1);
     }
 
     fn baseline_pool() -> crate::db::DbPool {
