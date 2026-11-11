@@ -60,8 +60,8 @@ jobs:
       actions: ${{ steps.filter.outputs.actions }}
       markdown: ${{ steps.filter.outputs.markdown }}
       frontend: ${{ steps.filter.outputs.frontend }}
-      grids: ${{ steps.filter.outputs.grids }}
       review: ${{ steps.filter.outputs.review }}
+      parity_ipc: ${{ steps.filter.outputs.parity_ipc }}
       rust: ${{ steps.filter.outputs.rust }}
       audit: ${{ steps.filter.outputs.audit }}
       runall: ${{ steps.filter.outputs.runall }}
@@ -97,6 +97,9 @@ jobs:
               - 'src/**/*.vue'
             review:
               - 'src-tauri/src/db/migrations.rs'
+            parity_ipc:
+              - 'src-tauri/src/**/*.rs'
+              - 'scripts/check-tauri-ipc-parity.py'
             rust:
               - 'src-tauri/**'
               - 'src-tauri/Cargo.toml'
@@ -117,9 +120,9 @@ jobs:
           FILTER_FRONTEND: ${{ steps.filter.outputs.frontend }}
           FILTER_GRIDS: ${{ steps.filter.outputs.grids }}
           FILTER_REVIEW: ${{ steps.filter.outputs.review }}
+          FILTER_PARITY_IPC: ${{ steps.filter.outputs.parity_ipc }}
           FILTER_RUST: ${{ steps.filter.outputs.rust }}
           FILTER_AUDIT: ${{ steps.filter.outputs.audit }}
-          FILTER_RUN_ALL: ${{ steps.filter.outputs.runall }}
         run: |
           echo "ruff=$FILTER_RUFF"
           echo "yamllint=$FILTER_YAMLLINT"
@@ -128,6 +131,7 @@ jobs:
           echo "frontend=$FILTER_FRONTEND"
           echo "grids=$FILTER_GRIDS"
           echo "review=$FILTER_REVIEW"
+          echo "parity_ipc=$FILTER_PARITY_IPC"
           echo "rust=$FILTER_RUST"
           echo "audit=$FILTER_AUDIT"
           echo "runall=$FILTER_RUN_ALL"
@@ -427,10 +431,12 @@ jobs:
           GATE_FRONTEND: ${{ needs.changes.outputs.frontend }}
           GATE_GRIDS: ${{ needs.changes.outputs.grids }}
           GATE_REVIEW: ${{ needs.changes.outputs.review }}
+          GATE_PARITY_IPC: ${{ needs.changes.outputs.parity_ipc }}
         run: |
           echo "frontend=$GATE_FRONTEND"
           echo "grids=$GATE_GRIDS"
           echo "review=$GATE_REVIEW"
+          echo "parity_ipc=$GATE_PARITY_IPC"
 
       - name: Setup Node
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -520,6 +526,26 @@ jobs:
             echo "review scope: ran"
           else
             echo "review scope: skipped (no migrations.rs changed)"
+          fi
+
+      - name: Tauri IPC parity (window-shaped stock replays)
+        # Same `mise run lint:parity-ipc` slice (`lint:fast` commit set,
+        # also in push `lint`).
+        if: needs.changes.outputs.parity_ipc == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
+        shell: bash
+        run: mise run lint:parity-ipc
+
+      - name: IPC parity scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
+        if: always()
+        env:
+          PARITY_IPC_SCOPE: ${{ needs.changes.outputs.parity_ipc }}
+        run: |
+          if [ "$PARITY_IPC_SCOPE" = "true" ]; then
+            echo "parity_ipc scope: ran"
+          else
+            echo "parity_ipc scope: skipped (no src-tauri/src/**.rs changed)"
           fi
 
   rust-tests:
