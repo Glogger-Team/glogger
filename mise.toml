@@ -57,10 +57,12 @@ run = ["python scripts/lint-markdown-changed.py --push"]
 description = "Grid standards census (commit-fast slice; python stdlib only, no install needed)"
 run = ["npm run check:grids"]
 
+[tasks."lint:parity-ipc"]
+description = "Tauri IPC parity: window-shaped stock replays over stall_events (commit-fast slice)"
+run = ["python scripts/check-tauri-ipc-parity.py"]
 [tasks."lint:review"]
 description = "Review-patterns gate: decided defect shapes (commit-fast slice)"
 run = ["python scripts/check-review-patterns.py"]
-
 [tasks."lint:parity"]
 description = "Lint-parity drift guard: hook/docs refs resolve, TODO location contract, fast-set weight (commit-fast slice)"
 # Fails closed on drift between mise.toml (single source of truth),
@@ -104,7 +106,7 @@ run = ["python scripts/check-glogger-constraints.py"]
 
 [tasks."lint:fast"]
 description = "Commit stage: seconds-scale checks, no build/test/network"
-depends = ["lint:ruff", "lint:commit", "lint:yaml", "lint:workflow", "lint:markdown", "lint:grids", "lint:review", "lint:parity"]
+depends = ["lint:ruff", "lint:commit", "lint:yaml", "lint:workflow", "lint:markdown", "lint:grids", "lint:review", "lint:parity", "lint:parity-ipc"]
 
 [tasks.lint]
 description = "Push-weight gates (pre-push hook entrypoint; manual stage A runs lint:full, CI adds lint:build)"
