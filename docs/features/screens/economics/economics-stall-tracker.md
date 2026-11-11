@@ -254,11 +254,11 @@ partial re-ingest inserts/deletes nothing, and another owner's rows never match.
 | `delete_all_stall_baselines(owner)` | Delete every manual count for a character without touching shop-log events. Inventory reverts to pure log estimates. |
 | `get_stall_filter_options(owner)` | Distinct buyers, players, items, dates, actions for filter dropdowns. |
 | `toggle_stall_event_ignored(id, ignored, owner)` | Mute/unmute one event row from aggregations (owner-scoped). |
-| `preview_stall_recount(path, current_owner)` | Pure-read recount preview: replay a fresh book into per-item counts, diff against in-stock. Returns a `contentHash` of the exact book bytes plus `bookLatestAt` (newest entry time). |
-| `apply_stall_recount(path, current_owner, expected_hash, confirmed_counted, confirmed_zeroed)` | Stamp the confirmed preview as baselines (counted qty + book price, zeroes for unlisted) in one transaction. Re-reads the book and aborts when the content hash or the recomputed counted/zeroed sets no longer match what was confirmed. `recorded_at` stamps `min(now, book_latest_at)` so post-book events stay in the replay. Events untouched. |
+| `preview_stall_recount(path, current_owner, window_days)` | Pure-read recount preview: replay a fresh book into per-item counts, diff against the in-stock set bounded by the same History window the Inventory view shows (stamped baselines still supersede full history). Returns a `contentHash` of the exact book bytes plus `bookLatestAt` (newest entry time). |
+| `apply_stall_recount(path, current_owner, expected_hash, confirmed_counted, confirmed_zeroed, window_days)` | Stamp the confirmed preview as baselines (counted qty + book price, zeroes for unlisted) in one transaction. Re-reads the book and aborts when the content hash or the recomputed counted/zeroed sets no longer match what was confirmed. `recorded_at` stamps `min(now, book_latest_at)` so post-book events stay in the replay. Events untouched. |
 | `clear_stall_events(owner)` | Delete every row for a specific character. Requires `owner`. Serialized with live ingest by the single-write pool + `BEGIN IMMEDIATE`. |
 | `import_shop_log_file(path, current_owner)` | Read a `.txt` file, parse, insert. Returns counts + effective owner + `owner_claimed` flag. |
-| `export_shop_log_files(directory, owner)` | Write one file per (owner, date) in exact book format for round-trip. Requires `owner`. |
+| `export_shop_log_files(directory, owner)` | Write one file per (owner, date) in exact book format for round-trip. Mute-lossy: the in-game format has no mute channel, so re-importing an export resurrects muted rows as live. Requires `owner`. |
 | `seed_stall_events_dev(count, owner)` | Dev-only bulk insert for benchmarking at 10k/100k scale. |
 
 ### Filter shape

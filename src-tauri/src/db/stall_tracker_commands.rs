@@ -1455,11 +1455,12 @@ pub fn preview_stall_recount(
     db: State<'_, DbPool>,
     path: String,
     current_owner: Option<String>,
+    window_days: Option<i64>,
 ) -> Result<RecountPreview, String> {
     let path_buf = std::path::PathBuf::from(&path);
     let content = std::fs::read_to_string(&path_buf)
         .map_err(|e| format!("Failed to read shop log file: {e}"))?;
-    preview_from_content(&db, &path_buf, &content, &current_owner)
+    preview_from_content(&db, &path_buf, &content, &current_owner, window_days)
 }
 
 /// File fingerprint for the preview→apply TOCTOU guard: (mtime nanos, bytes).
@@ -1490,12 +1491,17 @@ fn book_content_hash(content: &str) -> String {
 }
 
 /// Content-based recount preview shared by `preview_stall_recount` (file
-/// read) and `apply_stall_recount` (read + fingerprint guard).
+/// read) and `apply_stall_recount` (read + fingerprint guard). `window_days`
+/// bounds the in-stock set to the same History window the Inventory view
+/// shows (ledger actions only, `bought` always rides along) so the confirm
+/// lists items the user actually sees — the stamped baselines still
+/// supersede full history, so the recount stays whole-stall.
 fn preview_from_content(
     db: &DbPool,
     path_buf: &std::path::Path,
     content: &str,
     current_owner: &Option<String>,
+    window_days: Option<i64>,
 ) -> Result<RecountPreview, String> {
     let base_year = book_base_year(path_buf, content);
     let shop_log: ShopLog = parse_shop_log("Imported", content, "imported", base_year);
@@ -1517,29 +1523,60 @@ fn preview_from_content(
         let conn = db
             .get()
             .map_err(|e| format!("Database connection error: {e}"))?;
-        let mut stmt = conn
-            .prepare(
+        let (sql, win): (String, Option<i64>) = match window_days {
+            Some(n) if n > 0 => (
                 "SELECT item, event_at, action, quantity, price_unit, price_total
                  FROM stall_events
                  WHERE owner = ?1 AND ignored = 0 AND item IS NOT NULL AND event_at IS NOT NULL
                    AND action != 'unknown' AND action != 'collected'
-                 ORDER BY event_at ASC, id ASC",
-            )
+                   AND (action = 'bought' OR event_at >= date('now', 'localtime', '-' || ?2 || ' days'))
+                 ORDER BY event_at ASC, id ASC"
+                    .to_string(),
+                Some(n),
+            ),
+            _ => (
+                "SELECT item, event_at, action, quantity, price_unit, price_total
+                 FROM stall_events
+                 WHERE owner = ?1 AND ignored = 0 AND item IS NOT NULL AND event_at IS NOT NULL
+                   AND action != 'unknown' AND action != 'collected'
+                 ORDER BY event_at ASC, id ASC"
+                    .to_string(),
+                None,
+            ),
+        };
+        let mut stmt = conn
+            .prepare(&sql)
             .map_err(|e| format!("Failed to prepare inventory query: {e}"))?;
-        let events = stmt
-            .query_map(rusqlite::params![owner], |row| {
-                Ok(InventoryEvent {
-                    item: row.get::<_, String>(0)?,
-                    event_at: row.get::<_, String>(1)?,
-                    action: row.get::<_, String>(2)?,
-                    quantity: row.get::<_, i64>(3)?,
-                    price_unit: row.get::<_, Option<f64>>(4)?,
-                    price_total: row.get::<_, Option<i64>>(5)?,
+        let events = match win {
+            Some(n) => stmt
+                .query_map(rusqlite::params![owner, n], |row| {
+                    Ok(InventoryEvent {
+                        item: row.get::<_, String>(0)?,
+                        event_at: row.get::<_, String>(1)?,
+                        action: row.get::<_, String>(2)?,
+                        quantity: row.get::<_, i64>(3)?,
+                        price_unit: row.get::<_, Option<f64>>(4)?,
+                        price_total: row.get::<_, Option<i64>>(5)?,
+                    })
                 })
-            })
-            .map_err(|e| format!("Inventory query failed: {e}"))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("Failed to read inventory results: {e}"))?;
+                .map_err(|e| format!("Inventory query failed: {e}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to read inventory results: {e}"))?,
+            None => stmt
+                .query_map(rusqlite::params![owner], |row| {
+                    Ok(InventoryEvent {
+                        item: row.get::<_, String>(0)?,
+                        event_at: row.get::<_, String>(1)?,
+                        action: row.get::<_, String>(2)?,
+                        quantity: row.get::<_, i64>(3)?,
+                        price_unit: row.get::<_, Option<f64>>(4)?,
+                        price_total: row.get::<_, Option<i64>>(5)?,
+                    })
+                })
+                .map_err(|e| format!("Inventory query failed: {e}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Failed to read inventory results: {e}"))?,
+        };
         let mut bstmt = conn
             .prepare(
                 "SELECT item, quantity, price_unit, recorded_at FROM stall_inventory_baseline \
@@ -1609,6 +1646,7 @@ pub fn apply_stall_recount(
     expected_hash: String,
     confirmed_counted: Vec<RecountLine>,
     confirmed_zeroed: Vec<String>,
+    window_days: Option<i64>,
 ) -> Result<usize, String> {
     // TOCTOU guard: the preview's confirm dialog lists exact names, so the
     // file it was built from must be byte-identical at apply time. The game
@@ -1635,7 +1673,7 @@ pub fn apply_stall_recount(
                 .to_string(),
         );
     }
-    let preview = preview_from_content(&db, &path_buf, &content, &current_owner)?;
+    let preview = preview_from_content(&db, &path_buf, &content, &current_owner, window_days)?;
     // Confirm-set guard: a Books-watcher ingest (or a baseline write) that
     // landed while the confirm sat open shifts the in-stock set, so the
     // recomputed `zeroed`/`counted` can differ from what the user saw.
@@ -3085,6 +3123,7 @@ mod tests {
             std::path::Path::new("PlayerShopLog_260420_085500.txt"),
             "Day Mon Apr 20 08:55 - Deradon opened shop\n",
             &owner,
+            None,
         )
         .unwrap_err();
         assert!(err.contains("no stock signal"), "unexpected: {err}");
@@ -3094,6 +3133,7 @@ mod tests {
             std::path::Path::new("PlayerShopLog_260420_085500.txt"),
             bought_only,
             &owner,
+            None,
         )
         .unwrap_err();
         assert!(err2.contains("no stock signal"), "unexpected: {err2}");

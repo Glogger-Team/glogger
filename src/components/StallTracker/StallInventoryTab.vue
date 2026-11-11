@@ -548,6 +548,7 @@ async function recountFromBook() {
     const preview = await invoke<RecountPreview>('preview_stall_recount', {
       path,
       currentOwner: owner,
+      windowDays: windowDays.value > 0 ? windowDays.value : null,
     })
     if (preview.counted.length === 0 && preview.zeroed.length === 0) {
       error.value = 'Nothing to recount: the book lists nothing and no in-stock items are missing from it.'
@@ -574,6 +575,7 @@ async function recountFromBook() {
       expectedHash: preview.contentHash,
       confirmedCounted: preview.counted,
       confirmedZeroed: preview.zeroed,
+      windowDays: windowDays.value > 0 ? windowDays.value : null,
     })
     await Promise.all([reload(), loadBaselines()])
     await store.refresh()
