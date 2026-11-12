@@ -40,7 +40,7 @@
     "vuedraggable": "^4.1.0"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.2.1",
+    "@tailwindcss/vite": "^4.3.4",
     "@tauri-apps/cli": "^2",
     "@vitejs/plugin-vue": "^6.0.10",
     "tailwindcss": "^4.2.1",
