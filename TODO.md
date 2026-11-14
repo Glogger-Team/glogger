@@ -34,6 +34,8 @@ WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history.
 - [ ] Vendor purchase receipts — see Analytical features below. The ledger path is dead with the log; the replacement is an export purchase log, not a parser. Tracked as an analytical feature, not here.
 - [ ] Nightmare cave challenge door tracker — **report-gated.** The `ProcessAddEffects`/`ProcessRemoveEffects`/`ProcessUpdateEffectName` log path is dead, but the replacement is a static identifier, not a stream: a challenge-door ID in fixtures, CDN, or a report. Effect/CDN fixture research stays actionable (`effect_12602-12608` Spawn-Premonition family, `effects.json`); Letters of Authority via inventory reports.
   - **Unblocks when:** a challenge-door identifier appears in fixtures, CDN, or a report. **Effort: Large (research + implementation) | Impact: Medium (niche but useful)**
+- [ ] Statehelm favor planner — **report-gated.** Design at `docs/plans/statehelm-favor-planner.md`. Gift prefs (CDN `npc_favor_by_item_name`/`_keyword`, `get_npcs_wanting_item`) + routing (`trip_router::plan_trip`) survive; gift counts degrade to manual entry (`add_manual_gift`/`remove_last_gift` — `FavorChanged` + `GiftCountObserved` log lines dead). The blocking input is vault contents: `game_state_storage` is fed by live log lines (storage-context `ProcessAddItem`/`ProcessRemoveLoot`, `StorageWithdrawal`) and no export carries vault contents, so the planner has nothing to match once the log goes dark.
+  - **Unblocks when:** a report (Character export or another game-written report) gains storage-vault contents (vault key, item identity, quantity per vault). **Effort: Large | Impact: High (cross-system planning)**
 
 ## Dropped with the log (no report path — dead unless the game re-emits)
 
@@ -86,11 +88,7 @@ WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history.
   - **Suspects:** `docs/plans/interactive-maps.md` (spec; no code exists yet).
   - **Effort: Large (mostly frontend) | Impact: High**
 
-- [ ] Statehelm favor planner
-  - Looks at storage vaults, finds appropriate gifts for Statehelm NPCs, creates a route to pick everything up before delivering. Respects remaining gift count needed per NPC that week. Combines storage data + gift preferences + route planner.
-  - **Audit: verified open — and a full design already exists at `docs/plans/statehelm-favor-planner.md`.** All three inputs are built: vault occupancy (`gameStateStore.ts:481-511`), gift preferences (`npc_favor_by_item_name`/`_keyword`, `game_data/mod.rs:1069-1090`; `get_npcs_wanting_item`, `lib.rs:118`), routing (`trip_router::plan_trip`). Nothing implements the planner itself (0 hits for `plan_statehelm_gifts`, `useStatehelmPlanner`, `GiftPlanner`).
-  - **Effort: Large | Impact: High (cross-system planning)**
-  - **Suspects:** `src/components/Character/StatehelmView.vue`, `src/stores/gameStateStore.ts` (vault occupancy), `src-tauri/src/game_data/mod.rs` (`npc_favor_by_item_name`), `src-tauri/src/trip_router.rs`, `docs/plans/statehelm-favor-planner.md`.
+> See "Blocked on VIP export fields": Statehelm favor planner is report-gated on storage-vault contents (no export carries them; `game_state_storage` freezes when the log goes dark).
 
 - [ ] Work order route/crafting planner
   - Looks at all available work orders, shows where to go/craft/turn-in in optimal order using route planner. Depends on quest tracking system for work order state.
