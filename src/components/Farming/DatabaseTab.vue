@@ -84,22 +84,12 @@
     <p v-if="importMessage" class="text-xs text-value-positive">{{ importMessage }}</p>
     <p v-if="errorMessage" class="text-xs text-value-negative">{{ errorMessage }}</p>
 
-    <!-- Historical log backfill -->
-    <div class="bg-surface-dark border border-border-default rounded-lg p-3 flex items-center justify-between gap-3 flex-wrap">
-      <div class="flex flex-col gap-0.5 min-w-0">
-        <span class="text-xs text-text-secondary font-medium">Backfill from a Player.log</span>
-        <span class="text-[0.65rem] text-text-dim">
-          Scan a kept Player.log to add its kills/loot. Player-prev.log is backed up automatically on game restart.
-        </span>
-        <span v-if="scanMessage" class="text-[0.65rem] text-value-positive mt-0.5">{{ scanMessage }}</span>
-      </div>
-      <button
-        @click="doScan"
-        :disabled="scanning"
-        class="px-3 py-1.5 text-xs bg-[#2a3a3a]! border border-[#4a5a5a]! rounded text-[#7ea4c8]! cursor-pointer transition-all font-medium hover:bg-[#3a4a4a] disabled:opacity-50 disabled:cursor-not-allowed shrink-0">
-        {{ scanning ? "Scanning…" : "Scan a log file…" }}
-      </button>
+    <!-- New kill/loot tracking stopped with the 10/21 game client -->
+    <div class="text-[11px] text-text-dim italic"
+      title="The current game client no longer writes the loot lines glogger used for new kills and drops. Scanning an old log still finds its own historical content, and imported databases still merge.">
+      New kills and loot stopped with the 10/21 game client — historic and imported data below. Loot drops are no longer tracked.
     </div>
+
 
     <!-- Search / filter -->
     <div class="flex items-center gap-3">
@@ -267,7 +257,6 @@ import type {
   HarvestSearchResult,
   ImportSummary,
   ImportedSource,
-  IngestResult,
 } from "../../types/farming";
 import EmptyState from "../Shared/EmptyState.vue";
 import ItemInline from "../Shared/Item/ItemInline.vue";
@@ -355,7 +344,7 @@ const emptyPrimary = computed(() =>
 const emptySecondary = computed(() =>
   searchTarget.value === "harvested"
     ? "Skin or butcher corpses while a Player.log is being read to fill this list."
-    : "Kill and loot enemies, scan a Player.log, or import a database to fill this list.",
+    : "Kill and loot enemies or import a database to fill this list.",
 );
 
 const expandedEnemies = ref<Set<string>>(new Set());
@@ -579,35 +568,6 @@ async function doImport() {
     errorMessage.value = `Import failed: ${e}`;
   } finally {
     importing.value = false;
-  }
-}
-
-const scanning = ref(false);
-const scanMessage = ref("");
-
-async function doScan() {
-  errorMessage.value = "";
-  scanMessage.value = "";
-  scanning.value = true;
-  try {
-    const filePath = await open({
-      filters: [{ name: "Log", extensions: ["log"] }],
-      multiple: false,
-    });
-    if (!filePath) return;
-    const r = await invoke<IngestResult>("ingest_player_log", {
-      playerLogPath: filePath as string,
-    });
-    if (r.already_ingested) {
-      scanMessage.value = "Already scanned — no new data added.";
-    } else {
-      scanMessage.value = `Added ${r.kills_added} lootable kills and ${r.loot_added} loot entries.`;
-    }
-    await loadDatabase();
-  } catch (e) {
-    errorMessage.value = `Scan failed: ${e}`;
-  } finally {
-    scanning.value = false;
   }
 }
 

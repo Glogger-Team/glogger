@@ -1,8 +1,8 @@
-# Economics — Farming Sessions
+# Economics — Farming Sessions (frozen, historic-only)
 
 ## Overview
 
-A general-purpose session tracker that lets users manually start/stop "farming sessions" to measure efficiency of any in-game activity. Tracks XP gains, item changes, NPC favor, vendor gold, and **enemy kills** during a session, with live rate-per-hour metrics.
+Frozen since the 10/21 game client: the client stopped writing the verbose `LocalPlayer:` Player.log lines, so loot drops, extracts, item deltas, vendor gold, favor, skill XP, and log backfill accrue no new data. The Farming tab is now a historic-only reader (Session History, Database, Sources). New kills, deaths, XP, and Combat Wisdom from Chat.log live in the Combat view.
 
 ## Architecture
 
@@ -20,11 +20,11 @@ A general-purpose session tracker that lets users manually start/stop "farming s
 - `src/components/Farming/FarmingLog.vue` — chronological activity feed
 - `src/components/Farming/HistoricalTab.vue` — past sessions from DB
 
-## How It Works
+## How It Worked (pre-10/21 ingestion, now frozen)
 
-### Event Pipeline
+### Event Pipeline (no longer produces new data)
 
-The farming calculator subscribes to multiple event channels:
+The farming calculator used to subscribe to multiple event channels:
 
 ```
 Player.log → PlayerEventParser → player-events-batch channel ─┐
@@ -38,7 +38,9 @@ Chat.log  → ChatCombatParser  → enemy-killed channel ───────�
                                                     on endSession() → invoke("save_farming_session")
 ```
 
-### What Gets Tracked
+New rows stopped with the 10/21 client (verbose `LocalPlayer:` lines gone). Chat-log kills/deaths/XP/wisdom still flow — see the Combat view.
+
+### What Used To Be Tracked
 
 | Category | Source Event | Details |
 |----------|-------------|---------|
@@ -48,31 +50,28 @@ Chat.log  → ChatCombatParser  → enemy-killed channel ───────�
 | NPC Favor | `FavorChanged` | Accumulated per NPC |
 | Vendor Gold | `VendorSold` | Total gold from vendor sales |
 | Enemy Kills | `enemy-killed` (chat combat) | Kill count per enemy type, kills/hr, loot attributed via CorpseSearch provenance |
+### Item Tracking Design (historic rows only)
 
-### Item Tracking Design
 
 - `ItemStackChanged.delta` is the primary quantity source (every inventory change manifests as a stack change)
 - `ItemDeleted` with `StorageTransfer` or `VendorSale` context is **excluded** from net loss — those are intentional player actions
 - `ItemDeleted` with `Consumed` or `Unknown` context counts as a farming loss
 
-### Active Session
+### Active Session (removed — Combat view covers live kills/XP)
 
-- **Start/Pause/Resume/End** controls with editable session name and notes
-- **Elapsed timer** with pause accounting (paused time excluded from per-hour rates)
-- **Three-column live display:**
-  - **Skills panel** — XP progress bars per skill, level-ups, XP/hour rates; favor changes; kill summary with per-creature loot attribution
-  - **Items grid** — net item quantities with per-hour rates; ability to ignore specific items from tracking
-  - **Activity log** — chronological event feed (item changes, XP gains, favor changes, vendor sales, kills)
+Historic sessions stay readable under Farming → Session History. Live combat (kills, deaths, XP, Combat Wisdom, event log, rates, Reset) lives in the Combat view.
 
-### Session Lifecycle
+### Session Lifecycle (no longer runs)
 
-1. User clicks **Start Session** (optionally names it)
-2. Store begins intercepting `player-event` and `skill-update` events
-3. Live metrics update as events arrive (XP/hr, items/hr, etc.)
-4. User can **Pause/Resume** — paused time excluded from rate calculations
-5. User can edit session **name** and **notes** inline
-6. User clicks **End Session** — summary saved to SQLite
+1. User used to click **Start Session** (optionally naming it)
+2. Store intercepted `player-event` and `skill-update` events
+3. Live metrics updated as events arrived (XP/hr, items/hr, etc.)
+4. User could **Pause/Resume** — paused time excluded from rate calculations
+5. User could edit session **name** and **notes** inline
+6. User clicked **End Session** — summary saved to SQLite
 7. Session appears in **History** tab with expandable detail view
+
+The Active Session tab, its store arms, and the live-session components are deleted; the readers (History/Database/Sources) remain.
 
 ### Historical Sessions
 
@@ -80,23 +79,19 @@ Chat.log  → ChatCombatParser  → enemy-killed channel ───────�
 - Edit session name and notes after the fact
 - Delete sessions
 
-## Kill Tracking
+## Kill Tracking (historic + imported only)
 
-Kill tracking operates at two levels:
+Kill tracking operates at two levels, both frozen for new data except chat kills in the Combat view:
 
-### Standalone Kill Database
+### Standalone Kill Database (historic + imported only)
 
-Every enemy kill is persisted to the `enemy_kills` table regardless of whether a farming session is active. When the player loots a corpse, items with `CorpseSearch` provenance are linked to the kill via entity_id matching and stored in `enemy_kill_loot`. This builds a drop-rate database over time.
+Each searched lootable corpse used to persist to the `enemy_kills` table. When the player looted a corpse, items with `CorpseSearch` provenance were linked to the kill via entity_id matching and stored in `enemy_kill_loot`. No new rows accrue (client writes no loot lines); historic + imported rows remain queryable.
 
-The kill-to-loot link uses a short-lived in-memory map (`recent_kills`) that maps `enemy_entity_id -> kill_row_id`. When items arrive with `CorpseSearch { entity_id }` provenance, the coordinator looks up the matching kill and inserts into `enemy_kill_loot`. Entries expire after 120 seconds.
+The kill-to-loot link used a short-lived in-memory map (`recent_kills`) mapping `enemy_entity_id -> kill_row_id`. When items arrived with `CorpseSearch { entity_id }` provenance, the coordinator looked up the matching kill and inserted into `enemy_kill_loot`. Entries expired after 120 seconds.
 
-### Farming Session Integration
+### Farming Session Integration (removed)
 
-During an active farming session, the farming store:
-1. Listens for `enemy-killed` events and increments per-enemy-type kill counts
-2. Uses `CorpseSearch` provenance on `ItemStackChanged` events to attribute loot to specific enemy types
-3. Displays kills/hr and per-creature loot breakdown in the session card
-4. Persists aggregated kill counts to `farming_session_kills` when the session ends
+Live session kill attribution is deleted (Combat view covers live kills; the Active Session tab is gone). Persisted `farming_session_kills` rows remain readable and feed the Combat view's lifetime baselines.
 
 ## Database Tables
 

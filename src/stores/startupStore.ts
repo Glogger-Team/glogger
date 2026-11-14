@@ -10,11 +10,10 @@ import { useCoordinatorStore } from "./coordinatorStore";
 import { useMarketStore } from "./marketStore";
 import { useStallTrackerStore } from "./stallTrackerStore";
 import { useSurveyTrackerStore } from "./surveyTrackerStore";
-import { useFarmingStore } from "./farmingStore";
 import { useDeathStore } from "./deathStore";
+import { useCombatStore } from "./combatStore";
 import { useResuscitateStore } from "./resuscitateStore";
 import { useWatchwordAlertStore } from "./watchwordAlertStore";
-import type { PlayerEvent } from "../types/playerEvents";
 import type { WatchRuleTriggered } from "../types/database";
 
 export type StartupPhase =
@@ -222,7 +221,6 @@ export const useStartupStore = defineStore("startup", () => {
       { label: "Loading character data", status: "pending" },
       { label: "Preparing game state", status: "pending" },
     ];
-
     const settingsStore = useSettingsStore();
     const gameData = useGameDataStore();
     const gameState = useGameStateStore();
@@ -231,8 +229,8 @@ export const useStartupStore = defineStore("startup", () => {
     const marketStore = useMarketStore();
     const stallTrackerStore = useStallTrackerStore();
     const surveyTrackerStore = useSurveyTrackerStore();
-    const farmingStore = useFarmingStore();
     const deathStore = useDeathStore();
+    const combatStore = useCombatStore();
     const resuscitateStore = useResuscitateStore();
     const watchwordAlertStore = useWatchwordAlertStore();
 
@@ -273,7 +271,6 @@ export const useStartupStore = defineStore("startup", () => {
       // Register event listeners BEFORE starting watchers so no events are missed
       await listen("skill-update", (event: any) => {
         gameState.handleSkillUpdate(event.payload);
-        farmingStore.handleSkillUpdate(event.payload);
       });
 
       // Phase 5 survey tracker. Each handler refreshes only what could have
@@ -296,16 +293,24 @@ export const useStartupStore = defineStore("startup", () => {
       await listen("survey-tracker-multihit-closed", (event: any) => {
         surveyTrackerStore.handleMultihitClosed(event.payload);
       });
-      await listen<PlayerEvent[]>("player-events-batch", (event) => {
-        for (const pe of event.payload) {
-          farmingStore.handlePlayerEvent(pe);
+      await listen("character-death", (event) => {
+        const payload = event.payload as { timestamp: string; killer_name: string; killing_ability: string };
+        deathStore.handleDeathEvent(event.payload as never);
+        combatStore.handleDeathEvent(payload);
+      });
+      await listen("enemy-killed", (event) => {
+        combatStore.handleEnemyKilled(event.payload as never);
+      });
+      await listen("chat-status-event", (event) => {
+        const payload = event.payload as { kind: string };
+        if (
+          payload.kind === "XpGained" ||
+          payload.kind === "ProdigyXpGained" ||
+          payload.kind === "LevelUp" ||
+          payload.kind === "CombatWisdomEarned"
+        ) {
+          combatStore.handleChatStatus(payload as never);
         }
-      });
-      await listen("character-death", (event: any) => {
-        deathStore.handleDeathEvent(event.payload);
-      });
-      await listen("enemy-killed", (event: any) => {
-        farmingStore.handleEnemyKilled(event.payload);
       });
       await listen("character-resuscitated", (event: any) => {
         resuscitateStore.handleResuscitateEvent(event.payload);
@@ -400,13 +405,6 @@ export const useStartupStore = defineStore("startup", () => {
     // Enable live character-login handling now that startup is finished.
     gameState.startupComplete = true;
 
-    // If persistent farming logging is enabled, start a session now. We wait until after the
-    // historical catch-up poll has drained so only live events are attributed to the session
-    // (auto-starting earlier would fold the entire log history into it).
-    if (settingsStore.settings.autoStartFarmingSessions && !farmingStore.sessionActive) {
-      farmingStore.startSession("Auto Farming Session");
-      log("Auto-started farming session (logging enabled)");
-    }
 
     log("App is interactive");
     phase.value = "ready";

@@ -581,6 +581,7 @@ pub async fn replay_dual_logs(
 // ============================================================
 
 /// Result of a historical ingest of a Player.log file.
+#[allow(dead_code)]
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct IngestResult {
     /// Lootable searched corpses recorded as kills (the drop-rate denominator).
@@ -787,6 +788,7 @@ fn prune_player_log_archive(dir: &Path, limits: ArchiveLimits) {
 /// entity_id. Loot dedup is by the item's `instance_id` so two separate
 /// single-stacks of the same item off one corpse stay as two rows. Player.log is
 /// self-sufficient (character + UTC date from the login line) — no Chat.log.
+#[allow(dead_code)]
 pub fn ingest_kill_loot_from_logs(
     player_log_path: PathBuf,
     db: &DbPool,
@@ -1021,14 +1023,13 @@ pub fn ingest_kill_loot_from_logs(
     Ok(result)
 }
 
-/// Spawn a background thread that backs up Player-prev.log into the lifetime
-/// kill/loot database whenever the game rotates it (mtime change). Ingestion is
-/// idempotent (content-hash guarded) and deduped against live data, so this is
-/// safe to run alongside live tailing. Honors the `auto_ingest_player_prev`
-/// setting, re-checked each tick so toggling it takes effect without a restart.
+/// Spawn a background thread that archives Player-prev.log copies whenever the
+/// game rotates it (mtime change) and prunes per the archive limits. Loot
+/// ingestion is removed (current client writes no loot lines); the watcher now
+/// only keeps the archive that poems backfill + Statehelm gifts still read.
 pub fn spawn_player_prev_watcher(
     settings: std::sync::Arc<crate::settings::SettingsManager>,
-    db: DbPool,
+    _db: DbPool,
 ) {
     std::thread::spawn(move || {
         // Let startup settle before the first scan.
@@ -1046,21 +1047,14 @@ pub fn spawn_player_prev_watcher(
                 prune_player_log_archive(&dir, archive_limits(&settings));
             }
 
-            if settings.get_auto_ingest_player_prev()
-                && let Some(prev_path) = settings.get_player_prev_log_path()
-                    && let Ok(mtime) = std::fs::metadata(&prev_path).and_then(|m| m.modified())
-                        && last_mtime != Some(mtime) {
+            // Player-prev auto-ingest removed: the current client writes no
+            // loot lines, so there is nothing new to ingest. The watcher keeps
+            // the archive copies (poems backfill + Statehelm gifts still read
+            // them) and prunes per the limits above.
+            if let Some(prev_path) = settings.get_player_prev_log_path()
+                && let Ok(mtime) = std::fs::metadata(&prev_path).and_then(|m| m.modified())
+                && last_mtime != Some(mtime) {
                             last_mtime = Some(mtime);
-                            match ingest_kill_loot_from_logs(prev_path.clone(), &db) {
-                                Ok(r) if !r.already_ingested => {
-                                    eprintln!(
-                                        "[ingest] Player-prev backfill: +{} kills, +{} loot",
-                                        r.kills_added, r.loot_added
-                                    );
-                                }
-                                Ok(_) => {}
-                                Err(e) => eprintln!("[ingest] Player-prev backfill failed: {e}"),
-                            }
                             // Archive the rotated session (content-hashed, so
                             // re-scans/repeated startups never duplicate it).
                             // Errors are non-fatal — never abort the loop.
@@ -1076,27 +1070,10 @@ pub fn spawn_player_prev_watcher(
     });
 }
 
-/// Tauri command: ingest a single Player.log into the lifetime kill/loot
-/// database. Used for manual backfill of kept backups and by the automatic
-/// Player-prev.log rotation watcher. Player.log is self-sufficient — no Chat.log
-/// is needed.
-#[tauri::command]
-pub async fn ingest_player_log(
-    player_log_path: String,
-    app: AppHandle,
-) -> Result<IngestResult, String> {
-    let player_path = PathBuf::from(&player_log_path);
-    if !player_path.exists() {
-        return Err(format!("Player.log not found: {player_log_path}"));
-    }
-
-    let db = app.state::<DbPool>().inner().clone();
-    let result = tokio::task::spawn_blocking(move || ingest_kill_loot_from_logs(player_path, &db))
-        .await
-        .map_err(|e| format!("Ingest task failed: {e}"))??;
-
-    Ok(result)
-}
+/// Manual single-log ingest is removed: the 10/21 game client stopped writing
+/// loot lines, so no new Player.log carries loot data. Historic rows and the
+/// shared `ingest_kill_loot_from_logs` implementation stay for old-log replays
+/// and tests.
 
 #[cfg(test)]
 mod ingest_tests {

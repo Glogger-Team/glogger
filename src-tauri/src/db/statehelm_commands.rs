@@ -370,7 +370,7 @@ pub fn backfill_from_player_logs(
 /// `async` + `spawn_blocking`: the scan reads both live logs *and* the whole
 /// rotated archive — up to `player_log_archive_max_mb` (512 MiB by default) —
 /// and a non-async Tauri command would do that on the main thread, freezing the
-/// window for the duration. Mirrors `replay::ingest_player_log`.
+/// window for the duration.
 #[tauri::command]
 pub async fn backfill_statehelm_gifts(app: AppHandle) -> Result<usize, String> {
     let settings = app.state::<Arc<SettingsManager>>().inner().clone();

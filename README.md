@@ -77,8 +77,8 @@ Customizable widget grid with drag-to-reorder. Widgets include live skill tracki
 ### Economics
 
 - **Market Prices** — Player-maintained price database
-- **Farming** — Session-based profitability tracking, with a per-item drop-rate hover (active session and history) and skinning/butchering harvest detail (skill level, equipment bonus, anatomy level at the time of harvest)
-- **Drop-Rate Database** — Community-sharable kill/loot dataset under the Farming tab. Tracks every lootable corpse search (not just chat kill messages), is zone-aware (the same monster drops differently in different areas) and combat-loadout-aware (drop tables filtered by your equipped combat-skill pair, with an "unattributed" baseline for legacy/imported data). CSV import/export (auto-detects aggregated or raw per-kill event sheets), permanent merged imports, and a searchable Monsters/Items/Harvested browser
+- **Farming** — Frozen historic reader (10/21 client stopped loot/XP tracking): Session History, drop-rate Database, and Sources remain; live kills/deaths/XP live in the Combat view
+- **Drop-Rate Database** — Community-sharable historic kill/loot dataset under the Farming tab (historic + imported only — no new rows on the current client). Zone-aware and combat-loadout-aware, CSV import/export, permanent merged imports, searchable Monsters/Items/Harvested browser
 - **Surveying** — Full survey session tracker with analytics, session history, and loot attribution (chat-log-authoritative, so it works even when verbose Player.log item logging doesn't reach you)
 - **Stall Tracker** — Shop log parsing with sales, revenue, and inventory analytics, plus a **Trends** tab charting sales over time
 

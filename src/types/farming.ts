@@ -1,6 +1,10 @@
 // TypeScript types for the Farming Calculator feature
 
 // === Active Session State ===
+// Frozen: the 10/21 game client stopped loot/XP tracking, so no new live
+// sessions accumulate. The Combat view covers live kills/deaths/XP. These
+// aliases stay so historic readers keep compiling; the wide session shape is
+// intentionally not rebuilt.
 
 export interface FarmingSkillEntry {
   baseline: number
@@ -91,6 +95,12 @@ export interface HarvestSearchResult {
   total_extracts: number
 }
 
+export interface IngestResult {
+  kills_added: number
+  loot_added: number
+  already_ingested: boolean
+}
+
 export interface ItemDropSource {
   enemy_name: string
   zone: string | null   // internal area key (null = unknown zone)
@@ -113,12 +123,6 @@ export interface ImportedSource {
   enemy_count: number
 }
 
-export interface IngestResult {
-  kills_added: number
-  loot_added: number
-  already_ingested: boolean
-}
-
 // One row of the per-item drop breakdown shown in the hover popover.
 export interface ItemDropBreakdownRow {
   enemyName: string
@@ -138,43 +142,12 @@ export interface ItemDropBreakdownRow {
   anatomyLevel?: number
 }
 
-export interface FarmingSession {
-  name: string
-  notes: string
-  startTime: string          // "HH:MM:SS"
-  endTime: string | null
-  isPaused: boolean
-  pauseStartTime: string | null
-  totalPausedSeconds: number
-
-  // XP tracking keyed by skill name
-  skillXp: Record<string, FarmingSkillEntry>
-
-  // Item tracking — net quantity change keyed by item_name
-  itemDeltas: Record<string, number>
-
-  // Items the user wants to hide from the display
-  ignoredItems: Set<string>
-
-  // Favor tracking keyed by npc_name
-  favorDeltas: Record<string, FarmingFavorEntry>
-
-  // Kill tracking keyed by enemy_name
-  kills: Record<string, FarmingKillEntry>
-
-  // Skinning/butchering extracts (not loot-table drops), keyed by enemy_name
-  // (corpse), then item_name. Separate category from corpse loot.
-  extracts: Record<string, Record<string, FarmingExtractLoot>>
-
-  // Mining/survey gathered yields, keyed by source (node name or survey map),
-  // then item_name. Separate category from both corpse loot and extracts.
-  gathered: Record<string, Record<string, FarmingExtractLoot>>
-
-  // Gold earned from vendor sales
-  vendorGold: number
-}
+// Frozen alias: the wide live-session object is gone (see note at top), but
+// historic code paths still name it. Kept minimal on purpose.
+export type FarmingSession = Record<string, unknown>;
 
 // === Activity Log ===
+// Frozen: the live session log is gone; Combat view keeps its own log type.
 
 export type FarmingLogKind =
   | 'session-start'
@@ -195,6 +168,8 @@ export interface FarmingLogEntry {
 }
 
 // === Persistence (save to DB) ===
+// Frozen: no new rows are written (Combat view is read-only over old rows),
+// but the invoke payloads in DatabaseTab/import paths still name the shape.
 
 export interface SaveFarmingSessionInput {
   /** When set, update this existing session row instead of inserting a new one
