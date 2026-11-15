@@ -35,8 +35,8 @@
     "@tauri-apps/plugin-window-state": "^2.5.0",
     "@vue/devtools-api": "^8.2.1",
     "pinia": "^4.1.0",
-    "vue": "^3.5.13",
-    "vue-data-ui": "^3.28.7",
+    "vue": "^3.5.45",
+    "vue-data-ui": "^3.28.9",
     "vuedraggable": "^4.1.0"
   },
   "devDependencies": {
