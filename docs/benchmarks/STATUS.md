@@ -17,13 +17,18 @@ handoff. Read `RESULTS.md` and `HARNESS.md` in this directory first.
   `round-1b-friend-presence-antigaming-prompt.md`): spark/beam/longcat real
   diffs (49/50/49 pass, clippy clean, independently re-run); iceman clean
   tree under a success transcript (phantom-diff fail). Recorded in `RESULTS.md`.
+- Harness speedups applied (`HARNESS.md` + skill synced): upfront
+  `cargo fetch`, keep `target-bench/` warm across rounds, `cargo clean -p
+  glogger` proof instead of `rm -rf`, agents run `test` only with clippy
+  harness-side. sccache measured and REJECTED for the harness (0% Rust hits
+  across worktrees — absolute target paths in every rustc invocation — plus
+  a wrapper crash); kept in `mise.toml` for single-checkout dev only.
 
 ## Open
 
-- `bench-*` worktrees hold Round 2b state (detached, at `10daccf`):
-  spark/beam/longcat modified `chat_status_parser.rs` (+ `target-bench/`
-  scratch in all four); reset (`git checkout -- <file>` + remove
-  `target-bench/`) before the next round. Remove worktrees with
+- `bench-*` worktrees at clean base (detached, at `10daccf`), `target-bench/`
+  warm in all four (45-pass verified 2026-11-15) — keep warm, reset with
+  `git checkout -- <file>` only before the next round. Remove worktrees with
   `git worktree remove --force <path>` when done with them.
 - Headless `-p` runs expose no token/cost; record manually next round.
 - Push hook `lint push set` fails on this content; `--no-verify` was used
