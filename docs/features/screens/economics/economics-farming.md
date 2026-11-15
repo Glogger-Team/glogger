@@ -9,10 +9,12 @@ Frozen since the 10/21 game client: the client stopped writing the verbose `Loca
 ### Files (surviving surface — live-session files deleted)
 
 **Backend (Rust):**
+
 - `src-tauri/src/db/migrations.rs` — migration_v5_farming (4 tables)
 - `src-tauri/src/db/farming_commands.rs` — save/get/update/delete commands (no new sessions; edits/deletes of historic rows still work)
 
 **Frontend (Vue/TS):**
+
 - `src/types/farming.ts` — frozen aliases kept so historic readers compile; live-session shape intentionally not rebuilt
 - `src/stores/farmingStore.ts` — trimmed to `fetchEnemyStats` + cache (currently unreferenced; readers invoke `get_enemy_kill_stats` directly)
 - `src/components/Economics/EconomicsFarmingView.vue` — 3-tab shell (Session History / Database / Sources)
@@ -22,6 +24,7 @@ Frozen since the 10/21 game client: the client stopped writing the verbose `Loca
 - `src/components/Farming/ItemDropBreakdownTable.vue`, `EnemyDropTable.vue`, `ExtractDetailTable.vue` — table variants reading backend commands directly
 
 Deleted with the freeze: `FarmingView.vue` (legacy wrapper), `FarmingSessionCard.vue` (live session display), `FarmingLog.vue` (live activity feed), `ItemDropBreakdown.vue` (session-hover popover). The Combat view (`src/components/Combat/CombatView.vue` + `src/stores/combatStore.ts`) covers live kills/deaths/XP/Wisdom.
+
 ## How It Worked (pre-10/21 ingestion, now frozen)
 
 > Everything in this section is historical: the deleted live-session
@@ -34,7 +37,7 @@ Deleted with the freeze: `FarmingView.vue` (legacy wrapper), `FarmingSessionCard
 
 The farming calculator used to subscribe to multiple event channels:
 
-```
+```text
 Player.log → PlayerEventParser → player-events-batch channel ─┐
                                 skill-update channel ─────────┤
 Chat.log  → ChatCombatParser  → enemy-killed channel ─────────┤
@@ -60,7 +63,6 @@ New rows stopped with the 10/21 client (verbose `LocalPlayer:` lines gone). Chat
 | Enemy Kills | `enemy-killed` (chat combat) | Kill count per enemy type, kills/hr, loot attributed via CorpseSearch provenance |
 
 ### Item Tracking Design (historic rows only)
-
 
 - `ItemStackChanged.delta` is the primary quantity source (every inventory change manifests as a stack change)
 - `ItemDeleted` with `StorageTransfer` or `VendorSale` context is **excluded** from net loss — those are intentional player actions

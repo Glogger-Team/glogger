@@ -1075,7 +1075,6 @@ pub fn spawn_player_prev_watcher(
 /// loot lines, so no new Player.log carries loot data. Historic rows and the
 /// shared `ingest_kill_loot_from_logs` implementation stay for old-log replays
 /// and tests.
-
 #[cfg(test)]
 mod ingest_tests {
     use super::*;
