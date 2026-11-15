@@ -22,9 +22,11 @@ Prior work happened in another session; this file is the handoff. Read
   a model-fail). Discriminator was 3c. Recorded in `RESULTS.md` with prompt
   SHAs.
 - Round 4 (high thinking, 2 planted-bug debugging tasks, longcat tabled):
-  6/6 pass — single-operator plants did not discriminate; harder battery
-  needs multi-step faults with green existing tests. Prompts + plants +
-  tally in `RESULTS.md`.
+  6/6 pass — single-operator plants did not discriminate.
+- Round 5 (high thinking, 2 pin-the-fault tasks, green suite with fault):
+  6/6 pass. Format worked (agents wrote the failing test) but single-expression
+  faults did not discriminate; next step up is cross-file/state-machine faults.
+  Prompts + plants + tally in `RESULTS.md`.
 - Harness protocol synced (`HARNESS.md` + skill): max 2 concurrent launches,
   keep `target-bench/` warm with `clean -p` proof, tests in-turn + clippy
   harness-side, score-disk-never-transcript. Cost per run recoverable via
@@ -34,8 +36,8 @@ Prior work happened in another session; this file is the handoff. Read
 
 ## Open
 
-- `bench-*` worktrees reset to clean base after Round 4 (fixes restore HEAD;
-  beam's CRLF artifact normalized; `target-bench/` warm scratch remains).
+- `bench-*` worktrees reset to clean base after Round 5 (faults reverted;
+  `target-bench/` warm scratch remains).
   Remove worktrees with `git worktree remove --force <path>` when done.
 - Push-hook failure resolved 2026-11-15: the pre-push `lint` set failed only
   because this checkout lacked `node_modules` (`mise exec -- npm install`
@@ -48,6 +50,6 @@ Prior work happened in another session; this file is the handoff. Read
 
 ## Next (pick one)
 
-1. Round 5: multi-step faults with green existing tests, or longcat rerun
+1. Round 6: cross-file/state-machine faults, or longcat rerun
    (quota-dependent).
 2. Cleanup only: drop the `bench-*` worktrees and close out.

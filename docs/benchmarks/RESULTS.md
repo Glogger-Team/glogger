@@ -169,3 +169,39 @@ Round 4 tally: 6/6 pass. Debugging did not discriminate — both plants were
 single-operator inversions caught by the first test run. A harder battery
 would need multi-step faults (wrong behavior with green existing tests,
 requiring a new test to pin it).
+
+## Round 5 — pin-the-fault debugging, high thinking (2026-11-15)
+
+Two multi-step faults (longcat tabled — still 429). The harness plants the
+fault in each worktree before launch; the existing suite stays GREEN with
+the fault in place, so the agent must write its own pinning test (shown
+failing pre-fix, passing post-fix), then apply the minimal fix. Fresh-compile
+proof (`cargo clean -p glogger`, warm `target-bench/`) in-turn; clippy
+harness-side.
+
+Prompt SHAs: 5a arena-remit `816c7882…`, 5b cursor-regress `8ce6421b…`.
+Plants (verified pre-freeze: suite green with fault; sketch pinning test
+fails on fault, passes on fix): 5a delete `pending_a/b = None` on resolve
+(`arena_parser.rs:165-166`); 5b `MAX(last_position, ?3)` → `?3`
+(`queries.rs:156`).
+
+### 5a — arena fight recorded twice (24 tests post-fix)
+
+| Model | Pinning test (fail→pass shown) | Verified gates | Notes |
+|---|---|---|---|
+| muse-spark-1.3 | `repeated_result_line_does_not_resolve_twice` | 24/24 + clippy 0 | PASS. Transcript wrapper claimed "already done" but the disk holds a real fix + test — scored by disk + gates |
+| beam-free | `repeated_result_line_does_not_reemit` | 24/24 + clippy 0 | PASS. Test-only diff (fix restores HEAD) |
+| iceman | `repeated_result_does_not_reemit_match` | 24/24 + clippy 0 | PASS. Full fail→pass pair recorded |
+
+### 5b — log reader replays processed lines (2 tests post-fix)
+
+| Model | Pinning test (fail→pass shown) | Verified gates | Notes |
+|---|---|---|---|
+| muse-spark-1.3 | `update_position_never_moves_cursor_backward` (+ `force_position_still_resets_downward`) | 2/2 + clippy 0 | PASS. Recorded green-but-empty baseline, fail-before output, fix, post-fix green. Strongest 5b transcript |
+| beam-free | `update_position_never_moves_backward` (+ `force_position_can_move_downward`), tests nested in `log_positions::tests` | 2/2 + clippy 0 | PASS with two notes: transcript shows no explicit pre-fix failure output (the property matches the verified sketch, but the fail→pass pair is not evidenced); its editor wrote CRLF into the LF file again (status `M`, empty diff — hygiene nit) |
+| iceman | same pair, top-level `tests` module | 2/2 + clippy 0 | PASS. Exemplary: baseline, deliberate fail capture, clean-p proof, minimal diff with the guard line visible |
+
+Round 5 tally: 6/6 pass. The pin-the-fault format worked as a battery
+(agents had to write the failing test, not just flip an operator), but all
+three models cleared it — the faults were still single-expression. Next
+step up: faults requiring cross-file reasoning or state-machine redesign.
