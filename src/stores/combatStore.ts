@@ -114,6 +114,9 @@ export const useCombatStore = defineStore("combat", () => {
       case "LevelUp": {
         ensureStarted(payload.timestamp);
         const entry = xp.value[payload.skill] ?? { gained: 0, prodigy: 0, levels: 0, lastLevel: null };
+        // Level-up lines carry the tick's XP ("earned N XP and reached level L");
+        // the parser emits no separate XpGained for them, so count it here.
+        entry.gained += payload.xp;
         entry.levels += 1;
         entry.lastLevel = payload.level;
         xp.value[payload.skill] = entry;

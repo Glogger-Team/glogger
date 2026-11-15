@@ -344,7 +344,7 @@ const emptyPrimary = computed(() =>
 const emptySecondary = computed(() =>
   searchTarget.value === "harvested"
     ? "Harvest records are historic only — the 10/21 client stopped the lines that filled this list. Import a database to add more."
-    : "Kill and loot enemies or import a database to fill this list.",
+    : "Drop records are historic only — the 10/21 client stopped new kills and loot. Import a database to add more.",
 );
 
 const expandedEnemies = ref<Set<string>>(new Set());
