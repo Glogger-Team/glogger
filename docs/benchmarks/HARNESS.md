@@ -41,6 +41,8 @@ where paths are stable; opt in there with `RUSTC_WRAPPER=sccache`.)
 
 - One supervised background service per model (visible in `proc://`,
   live output via `read proc://<name>/streams`).
+- Launch at most TWO models concurrently — four-at-once trips per-model 429
+  rate limits; queue the rest and start each as one exits.
 - Per-worktree `CARGO_TARGET_DIR=<wt>/src-tauri/target-bench` isolates
   builds; `target-bench/` is untracked harness scratch, never scored.
 - Same frozen prompt file for every run; record its sha256 per round.
@@ -51,8 +53,8 @@ where paths are stable; opt in there with `RUSTC_WRAPPER=sccache`.)
 Per worktree: `git status --porcelain` (exactly one modified file),
 `git diff --stat`. Agents run `cargo test --lib <module>` in-turn (proof of
 execution); the harness runs `cargo clippy --all-targets -- -D warnings`
-at score time from `src-tauri/` with the worktree's `CARGO_TARGET_DIR` +
-`RUSTC_WRAPPER` (no need to spend agent wall time on the second world-build).
+at score time from `src-tauri/` with the worktree's `CARGO_TARGET_DIR`
+(no need to spend agent wall time on the second world-build).
 Rank: gates-pass first, then fewest review findings
 (correct arm placement, channel gate, near-miss rejections, no out-of-scope
 edits), then lower wall time. Cost/token spend is not exposed by headless

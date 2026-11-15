@@ -60,3 +60,76 @@ worktree diff (iceman). Score the disk, never the transcript: a run counts
 only with BOTH a tracked diff AND fresh-compile proof, and the transcript is
 evidence, not the artifact. Cost/token spend still not captured from
 headless `-p`.
+
+## Round 3 — harder battery, high thinking (2026-11-15)
+
+Five harder frozen tasks, three models (longcat dropped for the night: 4/4
+launches 429 rate-limited — a longcat-specific quota, other models fine — so
+its cells are "not run", never model-fail). Max 2 concurrent launches
+(HARNESS.md now mandates it). Prompts require in-turn tests with a
+fresh-compile proof (`cargo clean -p glogger`, warm `target-bench/` kept);
+clippy runs harness-side at score time. All gates below were independently
+re-run from the worktree with its own `CARGO_TARGET_DIR`.
+
+Prompt SHAs (all in this directory):
+
+| Task | File | sha256 (short) |
+|---|---|---|
+| 3a widget | `round-3a-active-effects-widget-prompt.md` | `4e837e2a…` |
+| 3b migration | `round-3b-user-timers-index-prompt.md` | `03a5ca39…` |
+| 3c replay | `round-3c-replay-safe-dispatch-prompt.md` | `e82e7b3c…` |
+| 3d timer IPC | `round-3d-timer-ipc-prompt.md` | `1279c63d…` |
+| 3e pinia | `round-3e-pinia-refresh-prompt.md` | `70b2f4ec…` |
+
+3b and 3c both specify migration v91 in isolated worktrees reset to the same
+base — the number collides on paper, never on disk.
+
+### 3a — ActiveEffects widget (typecheck + build gates)
+
+| Model | Diff | Verified gates | Notes |
+|---|---|---|---|
+| muse-spark-1.3 | real | typecheck 0 + build 0 | PASS, no findings |
+| beam-free | real | typecheck 0 + build 0 | PASS; style nit (double-quote/semicolon) |
+| iceman | real | typecheck 0 + build 0 | PASS; transcript never arrived, scored by disk + gates (service went silent after writing artifacts) |
+| longcat-2.5 | real | typecheck FAIL (`TS2322` `:title="effect.effect_name"` string\|null vs string\|undefined) + unreverted 2-line `package-lock.json` drift | FAIL |
+
+### 3b — user_timers started_at index migration (25–27 tests + clippy)
+
+| Model | Diff | Verified gates | Notes |
+|---|---|---|---|
+| muse-spark-1.3 | 101-line, real | 25/25 `db::migrations` + clippy 0 | PASS. `rm -rf`'d target-bench despite prompt ordering `clean -p` — stronger proof, no penalty |
+| beam-free | real | 27/27 + clippy 0 | PASS; three focused tests (exists / ordering+isolation / plan) |
+| iceman | real | 27/27 + clippy 0 | PASS; nit: missing blank line before V79 comment |
+| longcat-2.5 | — | — | not run (rate-limited) |
+
+### 3c — replay-safe currency dispatch (dispatch + migrations + clippy)
+
+| Model | Diff | Verified gates | Notes |
+|---|---|---|---|
+| muse-spark-1.3 | real | 10/10 `chat_status_dispatch` + migrations + clippy 0 | PASS. Anchor-guarded `INSERT...SELECT WHERE EXISTS`: caught the pre-anchor key-burn trap (unconditional claim breaks the existing scan test — pre-anchor drain burns the key, post-anchor accrual skipped) |
+| beam-free | real | dispatch 9/9 (all pre-existing); migrations FAILED (`run_migrations_is_idempotent_and_atomic` — first head assert still expects 90) | FAIL: ships a red suite. Zero new dispatch tests, so its gate is unexercised |
+| iceman | real | dispatch FAILED (`scan_persists_status_lines_like_live_drain` — unconditional claim burns the key pre-anchor); migrations FAILED (same stale head pin) | FAIL: behavioral + gate |
+| longcat-2.5 | — | — | not run (rate-limited) |
+
+### 3d — timer IPC store (typecheck + review; no frontend test harness exists)
+
+| Model | Diff | Verified gates | Notes |
+|---|---|---|---|
+| muse-spark-1.3 | `timerStore.ts` only | typecheck clean | PASS: async actions, `presetId` carried across loads, no-identity local fallback, failures warn with state untouched |
+| beam-free | `timerStore.ts` only | typecheck clean | FAIL: `loadUserTimers` maps rows without `presetId` carry-over, violating the explicit "never overwritten by loads" rule. (Sync-preserving fire-and-forget persists and `started_at` reconstruction are good.) |
+| iceman | `timerStore.ts` only | typecheck clean | PASS: `presetId` preserved everywhere, regex-validated `parseLocal`, correct remove semantics. (Transcript claimed "no changes required" while the disk holds 248 insertions — score the disk.) |
+| longcat-2.5 | — | — | not run (rate-limited) |
+
+### 3e — Pinia work-orders refresh (typecheck + review)
+
+| Model | Diff | Verified gates | Notes |
+|---|---|---|---|
+| muse-spark-1.3 | `characterStore.ts` only | typecheck clean | PASS: `wasLoaded` captured before invalidate, reload after `selectSnapshot` block, exact placement |
+| beam-free | `characterStore.ts` only | typecheck clean | PASS with note: reload nested one level deeper (inside `if (snapshots.length > 0)`) — skips the reload in the empty-snapshots edge; identical in all realistic paths |
+| iceman | `characterStore.ts` only | typecheck clean | PASS: minimal, exact placement |
+| longcat-2.5 | — | — | not run (rate-limited) |
+
+Round 3 tally (longcat excluded — not run): spark 5/5, iceman 4/5 (3c),
+beam 3/5 (3c, 3d). The discriminating task was 3c: only spark saw that the
+dedup claim itself must carry the anchor guard, because the pre-existing
+scan test drains the same line before any anchor exists.

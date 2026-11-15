@@ -1,8 +1,8 @@
 # Benchmark status — resume here
 
-Date: 2026-11-15. Branch: `feature/model-benchmark-2` (commit `b98e74a`
-plus this file). Prior work happened in another session; this file is the
-handoff. Read `RESULTS.md` and `HARNESS.md` in this directory first.
+Date: 2026-11-15 (Round 3 complete). Branch: `feature/model-benchmark-2`.
+Prior work happened in another session; this file is the handoff. Read
+`RESULTS.md` and `HARNESS.md` in this directory first.
 
 ## Done
 
@@ -17,25 +17,27 @@ handoff. Read `RESULTS.md` and `HARNESS.md` in this directory first.
   `round-1b-friend-presence-antigaming-prompt.md`): spark/beam/longcat real
   diffs (49/50/49 pass, clippy clean, independently re-run); iceman clean
   tree under a success transcript (phantom-diff fail). Recorded in `RESULTS.md`.
-- Harness speedups applied (`HARNESS.md` + skill synced): upfront
-  `cargo fetch`, keep `target-bench/` warm across rounds, `cargo clean -p
-  glogger` proof instead of `rm -rf`, agents run `test` only with clippy
-  harness-side. sccache measured and REJECTED for the harness (0% Rust hits
-  across worktrees — absolute target paths in every rustc invocation — plus
-  a wrapper crash); kept in `mise.toml` for single-checkout dev only.
+- Round 3 (high thinking, 5 harder tasks: widget, migration v91, replay-safe
+  dispatch, timer IPC, pinia refresh): spark 5/5, iceman 4/5 (3c),
+  beam 3/5 (3c, 3d); longcat not run (429 rate-limited all night — quota
+  issue, never a model-fail). Discriminator was 3c: only spark anchor-guarded
+  the dedup claim. Recorded in `RESULTS.md` with prompt SHAs.
+- Harness protocol synced (`HARNESS.md` + skill): max 2 concurrent launches,
+  keep `target-bench/` warm with `clean -p` proof, tests in-turn + clippy
+  harness-side, score-disk-never-transcript. sccache REJECTED for the harness
+  (0% Rust hits across worktrees + a wrapper crash); kept in `mise.toml` for
+  single-checkout dev only.
 
 ## Open
 
-- `bench-*` worktrees at clean base (detached, at `10daccf`), `target-bench/`
-  warm in all four (45-pass verified 2026-11-15) — keep warm, reset with
-  `git checkout -- <file>` only before the next round. Remove worktrees with
-  `git worktree remove --force <path>` when done with them.
+- `bench-*` worktrees reset to clean base after Round 3 (tracked files
+  reverted; `target-bench/` warm scratch remains in some). Remove worktrees
+  with `git worktree remove --force <path>` when done with them.
 - Headless `-p` runs expose no token/cost; record manually next round.
 - Push hook `lint push set` fails on this content; `--no-verify` was used
   once. Investigate before the next push.
 
 ## Next (pick one)
 
-1. Round 3: harder battery (timer IPC wire, Pinia refresh, widget,
-   migration v91, replay-safe dispatch) per the scout task list.
+1. Round 4: new battery, or longcat rerun of Round 3 (quota-dependent).
 2. Cleanup only: drop the `bench-*` worktrees and close out.
