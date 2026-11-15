@@ -1047,11 +1047,12 @@ pub fn spawn_player_prev_watcher(
                 prune_player_log_archive(&dir, archive_limits(&settings));
             }
 
-            // Player-prev auto-ingest removed: the current client writes no
-            // loot lines, so there is nothing new to ingest. The watcher keeps
-            // the archive copies (poems backfill + Statehelm gifts still read
-            // them) and prunes per the limits above.
-            if let Some(prev_path) = settings.get_player_prev_log_path()
+            // Loot auto-ingest removed (current client writes no loot lines).
+            // When the archive toggle is on, keep the rotated copy for poems
+            // backfill + Statehelm gifts; pruning above always runs so lowered
+            // limits take effect without waiting for a rotation.
+            if settings.get_auto_ingest_player_prev()
+                && let Some(prev_path) = settings.get_player_prev_log_path()
                 && let Ok(mtime) = std::fs::metadata(&prev_path).and_then(|m| m.modified())
                 && last_mtime != Some(mtime) {
                             last_mtime = Some(mtime);

@@ -135,6 +135,7 @@ import CharacterView from "./components/Character/CharacterView.vue";
 import InventoryWrapper from "./components/Inventory/InventoryWrapper.vue";
 import CraftingView from "./components/Crafting/CraftingView.vue";
 import EconomicsView from "./components/Economics/EconomicsView.vue";
+import ChatView from "./components/Chat/ChatView.vue";
 import CombatView from "./components/Combat/CombatView.vue";
 import DataBrowserOverlay from "./components/DataBrowser/DataBrowserOverlay.vue";
 import SearchView from "./components/Search/SearchView.vue";

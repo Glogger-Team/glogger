@@ -168,7 +168,9 @@ export const useCombatStore = defineStore("combat", () => {
 
   function elapsedHours(): number {
     if (!startedAt.value) return 0;
-    const ms = Date.now() - Date.parse(startedAt.value);
+    // Backend chat stamps are UTC "YYYY-MM-DD HH:MM:SS" (no zone suffix);
+    // bare Date.parse would read them as local time and shift start by the TZ offset.
+    const ms = Date.now() - Date.parse(startedAt.value.replace(' ', 'T') + 'Z');
     if (!Number.isFinite(ms) || ms <= 0) return 0;
     return ms / 3_600_000;
   }

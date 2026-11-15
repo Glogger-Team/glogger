@@ -86,7 +86,7 @@
 
     <!-- New kill/loot tracking stopped with the 10/21 game client -->
     <div class="text-[11px] text-text-dim italic"
-      title="The current game client no longer writes the loot lines glogger used for new kills and drops. Scanning an old log still finds its own historical content, and imported databases still merge.">
+      title="The current game client no longer writes the loot lines glogger used for new kills and drops. Imported databases still merge.">
       New kills and loot stopped with the 10/21 game client — historic and imported data below. Loot drops are no longer tracked.
     </div>
 
@@ -343,7 +343,7 @@ const emptyPrimary = computed(() =>
 );
 const emptySecondary = computed(() =>
   searchTarget.value === "harvested"
-    ? "Skin or butcher corpses while a Player.log is being read to fill this list."
+    ? "Harvest records are historic only — the 10/21 client stopped the lines that filled this list. Import a database to add more."
     : "Kill and loot enemies or import a database to fill this list.",
 );
 

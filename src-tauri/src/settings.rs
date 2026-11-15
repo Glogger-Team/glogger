@@ -175,10 +175,10 @@ pub struct AppSettings {
     #[serde(default)]
     pub auto_detect_paths_on_startup: bool,
 
-    /// When true (default), automatically back up Player-prev.log into the
-    /// lifetime kill/loot database whenever the game rotates it (so sessions
-    /// played without glogger running are still captured). Deduped against
-    /// live data, so no double-counting.
+    /// When true (default), archive the rotated Player-prev.log copy under
+    /// `<app data>/player-logs` whenever the game rotates it (poems backfill
+    /// and the Statehelm gift tracker read that archive). Loot ingestion is
+    /// frozen — the 10/21 game client stopped writing loot lines.
     #[serde(default = "default_true")]
     pub auto_ingest_player_prev: bool,
 

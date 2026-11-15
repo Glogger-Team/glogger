@@ -293,15 +293,20 @@ export const useStartupStore = defineStore("startup", () => {
       await listen("survey-tracker-multihit-closed", (event: any) => {
         surveyTrackerStore.handleMultihitClosed(event.payload);
       });
+      // Combat accumulates live-only: skip startup catch-up replay, which may
+      // include other characters' history (gameState handlers use the same guard).
       await listen("character-death", (event) => {
+        if (!gameState.startupComplete) return;
         const payload = event.payload as { timestamp: string; killer_name: string; killing_ability: string };
         deathStore.handleDeathEvent(event.payload as never);
         combatStore.handleDeathEvent(payload);
       });
       await listen("enemy-killed", (event) => {
+        if (!gameState.startupComplete) return;
         combatStore.handleEnemyKilled(event.payload as never);
       });
       await listen("chat-status-event", (event) => {
+        if (!gameState.startupComplete) return;
         const payload = event.payload as { kind: string };
         if (
           payload.kind === "XpGained" ||

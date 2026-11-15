@@ -49,26 +49,22 @@
       <div v-if="combat.killRows.length > 0" class="flex flex-col gap-1">
         <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider">Kills by enemy</h3>
         <div class="overflow-auto max-h-64">
-          <table class="w-full text-sm border-collapse">
-            <thead class="sticky top-0 bg-surface-base">
-              <tr class="text-left text-text-secondary border-b border-border-default">
-                <th class="py-1.5 px-2">Enemy</th>
-                <th class="py-1.5 px-2 text-right">Live</th>
-                <th class="py-1.5 px-2 text-right">Lifetime</th>
-                <th class="py-1.5 px-2">Top ability</th>
-                <th class="py-1.5 px-2">Last seen</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in combat.killRows" :key="row.name" class="border-b border-border-default/50">
-                <td class="py-1 px-2"><EnemyInline :reference="row.name" /></td>
-                <td class="py-1 px-2 text-right">{{ row.live }}</td>
-                <td class="py-1 px-2 text-right text-text-muted">{{ row.lifetime }}</td>
-                <td class="py-1 px-2"><AbilityInline v-if="row.topAbility" :reference="row.topAbility" :show-icon="false" /><span v-else class="text-text-dim">--</span></td>
-                <td class="py-1 px-2 text-text-muted text-xs whitespace-nowrap">{{ formatTs(row.lastSeen) }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <DataTable
+            :columns="killColumns"
+            :rows="(combat.killRows as unknown as Record<string, unknown>[])"
+            :row-key="(row) => String(row.name)"
+            compact
+            size="sm">
+            <template #cell-name="{ row }">
+              <EnemyInline :reference="String(row.name)" />
+            </template>
+            <template #cell-topAbility="{ row }">
+              <AbilityInline v-if="row.topAbility" :reference="String(row.topAbility)" :show-icon="false" /><span v-else class="text-text-dim">--</span>
+            </template>
+            <template #cell-lastSeen="{ row }">
+              <span class="text-text-muted text-xs whitespace-nowrap">{{ formatTs(String(row.lastSeen)) }}</span>
+            </template>
+          </DataTable>
         </div>
       </div>
 
@@ -76,24 +72,25 @@
       <div v-if="combat.xpRows.length > 0" class="flex flex-col gap-1">
         <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider">XP by skill</h3>
         <div class="overflow-auto max-h-64">
-          <table class="w-full text-sm border-collapse">
-            <thead class="sticky top-0 bg-surface-base">
-              <tr class="text-left text-text-secondary border-b border-border-default">
-                <th class="py-1.5 px-2">Skill</th>
-                <th class="py-1.5 px-2 text-right">Gained</th>
-                <th class="py-1.5 px-2 text-right">Prodigy</th>
-                <th class="py-1.5 px-2 text-right">Levels</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in combat.xpRows" :key="row.skill" class="border-b border-border-default/50">
-                <td class="py-1 px-2"><SkillInline :reference="row.skill" /></td>
-                <td class="py-1 px-2 text-right text-[#7ec87e]">{{ row.gained.toLocaleString() }}</td>
-                <td class="py-1 px-2 text-right text-text-muted">{{ row.prodigy.toLocaleString() }}</td>
-                <td class="py-1 px-2 text-right text-text-muted">{{ row.levels }}{{ row.lastLevel != null ? ` (→ ${row.lastLevel})` : '' }}</td>
-              </tr>
-            </tbody>
-          </table>
+          <DataTable
+            :columns="xpColumns"
+            :rows="(combat.xpRows as unknown as Record<string, unknown>[])"
+            :row-key="(row) => String(row.skill)"
+            compact
+            size="sm">
+            <template #cell-skill="{ row }">
+              <SkillInline :reference="String(row.skill)" />
+            </template>
+            <template #cell-gained="{ row }">
+              <span class="text-[#7ec87e]">{{ (row.gained as number).toLocaleString() }}</span>
+            </template>
+            <template #cell-prodigy="{ row }">
+              <span class="text-text-muted">{{ (row.prodigy as number).toLocaleString() }}</span>
+            </template>
+            <template #cell-levels="{ row }">
+              <span class="text-text-muted">{{ row.levels }}{{ row.lastLevel != null ? ` (→ ${row.lastLevel})` : '' }}</span>
+            </template>
+          </DataTable>
         </div>
       </div>
 
@@ -101,22 +98,22 @@
       <div v-if="deathStore.deaths.length > 0" class="flex flex-col gap-1">
         <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider">Recent deaths</h3>
         <div class="overflow-auto max-h-64">
-          <table class="w-full text-sm border-collapse">
-            <thead class="sticky top-0 bg-surface-base">
-              <tr class="text-left text-text-secondary border-b border-border-default">
-                <th class="py-1.5 px-2">Time</th>
-                <th class="py-1.5 px-2">Killed by</th>
-                <th class="py-1.5 px-2">Ability</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="death in deathStore.deaths.slice(0, 20)" :key="death.id" class="border-b border-border-default/50">
-                <td class="py-1 px-2 text-text-muted text-xs whitespace-nowrap">{{ formatTs(death.died_at) }}</td>
-                <td class="py-1 px-2"><EnemyInline :reference="death.killer_name" /></td>
-                <td class="py-1 px-2"><AbilityInline :reference="death.killing_ability" :show-icon="false" /></td>
-              </tr>
-            </tbody>
-          </table>
+          <DataTable
+            :columns="deathColumns"
+            :rows="(deathRows as unknown as Record<string, unknown>[])"
+            :row-key="(row) => String(row.id)"
+            compact
+            size="sm">
+            <template #cell-died_at="{ row }">
+              <span class="text-text-muted text-xs whitespace-nowrap">{{ formatTs(String(row.died_at)) }}</span>
+            </template>
+            <template #cell-killer_name="{ row }">
+              <EnemyInline :reference="String(row.killer_name)" />
+            </template>
+            <template #cell-killing_ability="{ row }">
+              <AbilityInline :reference="String(row.killing_ability)" :show-icon="false" />
+            </template>
+          </DataTable>
         </div>
       </div>
 
@@ -165,10 +162,32 @@ import { useDeathStore } from '../../stores/deathStore'
 import { useGameStateStore } from '../../stores/gameStateStore'
 import { formatAnyTimestamp as formatTs } from '../../composables/useTimestamp'
 import type { CombatLogKind } from '../../types/combat'
+import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 import EmptyState from '../Shared/EmptyState.vue'
 import EnemyInline from '../Shared/Enemy/EnemyInline.vue'
 import AbilityInline from '../Shared/Ability/AbilityInline.vue'
 import SkillInline from '../Shared/Skill/SkillInline.vue'
+
+const killColumns: ColumnDef[] = [
+  { key: 'name', label: 'Enemy' },
+  { key: 'live', label: 'Live', align: 'right' },
+  { key: 'lifetime', label: 'Lifetime', align: 'right' },
+  { key: 'topAbility', label: 'Top ability' },
+  { key: 'lastSeen', label: 'Last seen' },
+]
+
+const xpColumns: ColumnDef[] = [
+  { key: 'skill', label: 'Skill' },
+  { key: 'gained', label: 'Gained', align: 'right' },
+  { key: 'prodigy', label: 'Prodigy', align: 'right' },
+  { key: 'levels', label: 'Levels', align: 'right' },
+]
+
+const deathColumns: ColumnDef[] = [
+  { key: 'died_at', label: 'Time' },
+  { key: 'killer_name', label: 'Killed by' },
+  { key: 'killing_ability', label: 'Ability' },
+]
 
 const combat = useCombatStore()
 const deathStore = useDeathStore()
@@ -185,7 +204,7 @@ const filterOptions: Array<{ value: LogFilter; label: string }> = [
 ]
 
 const hasCombat = computed(() =>
-  combat.liveKills > 0 ||
+  combat.lifetimeKills > 0 ||
   combat.liveXp > 0 ||
   combat.log.length > 0 ||
   deathStore.totalDeaths > 0 ||
@@ -195,6 +214,8 @@ const hasCombat = computed(() =>
 const filteredLog = computed(() =>
   logFilter.value === 'all' ? combat.log : combat.log.filter((e) => e.kind === logFilter.value),
 )
+
+const deathRows = computed(() => deathStore.deaths.slice(0, 20))
 
 function kindClass(kind: CombatLogKind): string {
   switch (kind) {
@@ -210,7 +231,8 @@ const now = ref(Date.now())
 let timer: ReturnType<typeof setInterval> | undefined
 const elapsed = computed(() => {
   if (!combat.startedAt) return '—'
-  const secs = Math.max(0, Math.floor((now.value - Date.parse(combat.startedAt)) / 1000))
+  // Backend chat stamps are UTC "YYYY-MM-DD HH:MM:SS" — see combatStore.elapsedHours.
+  const secs = Math.max(0, Math.floor((now.value - Date.parse(combat.startedAt.replace(' ', 'T') + 'Z')) / 1000))
   const h = Math.floor(secs / 3600)
   const m = Math.floor((secs % 3600) / 60)
   const s = secs % 60
