@@ -17,22 +17,26 @@ Prior work happened in another session; this file is the handoff. Read
   `round-1b-friend-presence-antigaming-prompt.md`): spark/beam/longcat real
   diffs (49/50/49 pass, clippy clean, independently re-run); iceman clean
   tree under a success transcript (phantom-diff fail). Recorded in `RESULTS.md`.
-- Round 3 (high thinking, 5 harder tasks: widget, migration v91, replay-safe
-  dispatch, timer IPC, pinia refresh): spark 5/5, iceman 4/5 (3c),
-  beam 3/5 (3c, 3d); longcat not run (429 rate-limited all night — quota
-  issue, never a model-fail). Discriminator was 3c: only spark anchor-guarded
-  the dedup claim. Recorded in `RESULTS.md` with prompt SHAs.
+- Round 3 (high thinking, 5 harder tasks): spark 5/5, iceman 4/5 (3c),
+  beam 3/5 (3c, 3d); longcat not run (429 rate-limited — quota issue, never
+  a model-fail). Discriminator was 3c. Recorded in `RESULTS.md` with prompt
+  SHAs.
+- Round 4 (high thinking, 2 planted-bug debugging tasks, longcat tabled):
+  6/6 pass — single-operator plants did not discriminate; harder battery
+  needs multi-step faults with green existing tests. Prompts + plants +
+  tally in `RESULTS.md`.
 - Harness protocol synced (`HARNESS.md` + skill): max 2 concurrent launches,
   keep `target-bench/` warm with `clean -p` proof, tests in-turn + clippy
-  harness-side, score-disk-never-transcript. sccache REJECTED for the harness
+  harness-side, score-disk-never-transcript. Cost per run recoverable via
+  session-jsonl usage snapshot-delta. sccache REJECTED for the harness
   (0% Rust hits across worktrees + a wrapper crash); kept in `mise.toml` for
   single-checkout dev only.
 
 ## Open
 
-- `bench-*` worktrees reset to clean base after Round 3 (tracked files
-  reverted; `target-bench/` warm scratch remains in some). Remove worktrees
-  with `git worktree remove --force <path>` when done with them.
+- `bench-*` worktrees reset to clean base after Round 4 (fixes restore HEAD;
+  beam's CRLF artifact normalized; `target-bench/` warm scratch remains).
+  Remove worktrees with `git worktree remove --force <path>` when done.
 - Push-hook failure resolved 2026-11-15: the pre-push `lint` set failed only
   because this checkout lacked `node_modules` (`mise exec -- npm install`
   fixed it; full `mise run lint` green). Environmental, not content.
@@ -44,5 +48,6 @@ Prior work happened in another session; this file is the handoff. Read
 
 ## Next (pick one)
 
-1. Round 4: new battery, or longcat rerun of Round 3 (quota-dependent).
+1. Round 5: multi-step faults with green existing tests, or longcat rerun
+   (quota-dependent).
 2. Cleanup only: drop the `bench-*` worktrees and close out.

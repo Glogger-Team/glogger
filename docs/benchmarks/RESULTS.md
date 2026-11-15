@@ -133,3 +133,39 @@ Round 3 tally (longcat excluded — not run): spark 5/5, iceman 4/5 (3c),
 beam 3/5 (3c, 3d). The discriminating task was 3c: only spark saw that the
 dedup claim itself must carry the anchor guard, because the pre-existing
 scan test drains the same line before any anchor exists.
+
+## Round 4 — debugging, high thinking (2026-11-15)
+
+Two planted-bug tasks (longcat tabled — still 429). The harness plants the
+identical 1-line mutation in each worktree before launch (frozen by
+construction); agents must record the pre-fix failure, apply the minimal
+fix, and show green module tests with fresh-compile proof (`cargo clean -p
+glogger`, warm `target-bench/`); clippy harness-side. Correct fix restores
+HEAD content, so a clean tree here is proof of fix — distinguished from
+vacuous-clean by the pre-fix failure evidence plus independent gate re-runs.
+
+Prompt SHAs: 4a stall-year `bedf522d…`, 4b wallet-accrual `2daf7055…`.
+Plants (verified pre-freeze — each breaks exactly its target test):
+4a `<` → `<=` in the rollover guard (`stall_year_resolver.rs:76`);
+4b `?4 > anchor_at` → `?4 < anchor_at` (`chat_status_dispatch.rs:546`).
+
+### 4a — stall sale credited to the wrong year (7 tests)
+
+| Model | Pre-fix failure recorded | Verified gates | Notes |
+|---|---|---|---|
+| muse-spark-1.3 | `same_day_out_of_order_does_not_bump` (left `2027-04-13`, right `2026-04-13`) | 7/7 + clippy 0 | PASS. One-line fix + clarifying comment; cited the module docs. First launch attempt died at service boot with no transcript — clean retry succeeded |
+| beam-free | same test | 7/7 + clippy 0 | PASS. Minimal revert, no comment |
+| iceman | (transcript never arrived) | 7/7 + clippy 0 | PASS by disk + gates (plant gone, green suite). Residual uncertainty: no transcript, so the diagnosis path is unverified — same pattern as its 3a/3b silences |
+
+### 4b — wallet payouts never accrue (9 tests)
+
+| Model | Pre-fix failure recorded | Verified gates | Notes |
+|---|---|---|---|
+| muse-spark-1.3 | `scan_persists_status_lines_like_live_drain` (left 0, right 10) | 9/9 + clippy 0 | PASS. Honest clean-tree report (fix restores HEAD; refused to pad the diff). Strongest transcript of the round |
+| beam-free | same test | 9/9 + clippy 0 | PASS. Fix byte-identical to HEAD modulo CRLF — its editor wrote CRLF into an LF file (status `M` with empty diff); hygiene nit, not scored |
+| iceman | same test, captured by deliberate revert (`<` in, fail, `>` back, pass) | 9/9 + clippy 0 | PASS. Exemplary transcript: pre/post failure-pass pair, clean-p proof, minimal diff |
+
+Round 4 tally: 6/6 pass. Debugging did not discriminate — both plants were
+single-operator inversions caught by the first test run. A harder battery
+would need multi-step faults (wrong behavior with green existing tests,
+requiring a new test to pin it).
