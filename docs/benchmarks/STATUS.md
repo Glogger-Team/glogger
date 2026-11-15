@@ -33,9 +33,14 @@ Prior work happened in another session; this file is the handoff. Read
 - `bench-*` worktrees reset to clean base after Round 3 (tracked files
   reverted; `target-bench/` warm scratch remains in some). Remove worktrees
   with `git worktree remove --force <path>` when done with them.
-- Headless `-p` runs expose no token/cost; record manually next round.
-- Push hook `lint push set` fails on this content; `--no-verify` was used
-  once. Investigate before the next push.
+- Push-hook failure resolved 2026-11-15: the pre-push `lint` set failed only
+  because this checkout lacked `node_modules` (`mise exec -- npm install`
+  fixed it; full `mise run lint` green). Environmental, not content.
+- Headless cost tracking solved: per-message `usage` + `cost.total` in the
+  session `.jsonl`; snapshot-before/subtract-after per run (recipe in
+  HARNESS.md). Free-tier providers report $0 — use tokens as proxy.
+- Longcat still 429 on 2026-11-15 morning (2 probes ~1min apart, same ~33s
+  rolling retry-after that never clears). Round 3 longcat cells stay not-run.
 
 ## Next (pick one)
 

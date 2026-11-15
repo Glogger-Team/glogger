@@ -57,8 +57,14 @@ at score time from `src-tauri/` with the worktree's `CARGO_TARGET_DIR`
 (no need to spend agent wall time on the second world-build).
 Rank: gates-pass first, then fewest review findings
 (correct arm placement, channel gate, near-miss rejections, no out-of-scope
-edits), then lower wall time. Cost/token spend is not exposed by headless
-`-p`; record manually if needed.
+edits), then lower wall time. Cost/token per run IS recoverable post-hoc:
+every launch appends to one session `.jsonl` under
+`~/.omp/agent/sessions/-.omp-wt-<worktree>/`, and each message carries
+`usage` (`input`/`output`/`cacheRead`/`cacheWrite`/`totalTokens` plus
+`cost.total` USD — 0 on free-tier providers, where tokens are the proxy).
+Snapshot cumulative totals before launch and subtract after; that delta is
+the run's spend (sessions accumulate across sub-rounds per worktree, so a
+single file total is NOT one run's cost).
 
 ## Anti-gaming (learned rounds 2–2b)
 
@@ -70,5 +76,10 @@ transcript is evidence, not the artifact.
 Fresh-compile proof WITHOUT nuking the warm cache: the prompt orders
 `cargo clean -p glogger` (rebuild only the changed local crate, deps stay
 warm) instead of deleting `target-bench/`, then `cargo test` in the same
-turn under the worktree's `CARGO_TARGET_DIR` + `RUSTC_WRAPPER`. Full
-`target-bench/` deletion only when the base commit moves.
+
+## Gotchas
+
+- Fresh worktree checkouts have no `node_modules` — `mise exec -- npm
+  install` once per checkout, or the pre-push `lint` set fails at
+  `lint:typecheck` (`vue-tsc` not recognized) and the push looks broken.
+  (Root cause of the 2026-11-15 hook failure on this branch.)
