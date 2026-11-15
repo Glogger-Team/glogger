@@ -115,6 +115,13 @@ const knownIssues: KnownIssue[] = [
       "Personal bets were read from Player.log talk screens, which the current game client no longer writes. Match results still track via chat narration, and historic bets remain visible in the Dashboard Arena widget.",
   },
   {
+    id: "farming-dark",
+    severity: "bug",
+    title: "Farming sessions frozen (10/21 client)",
+    description:
+      "Loot drops, extracts, item deltas, vendor gold, favor, skill XP, and log backfill were read from Player.log lines the current game client no longer writes, so no new farming data accumulates. Kills, deaths, XP, and Combat Wisdom still flow from Chat.log into the Combat view. Farming → Session History, Database, and Sources remain as historic readers.",
+  },
+  {
     id: "poems-dark",
     severity: "bug",
     title: "New poem recitals are no longer recorded",

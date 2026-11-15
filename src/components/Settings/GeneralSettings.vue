@@ -69,13 +69,13 @@
             v-model="autoIngestPlayerPrev"
             @change="handleAutoIngestToggle"
             class="size-5 cursor-pointer" />
-          <span>Back up Player-prev.log to the drop-rate database</span>
+          <span>Keep rotated Player.log copies for poems and Statehelm gifts</span>
         </label>
         <p class="mt-2 text-text-muted text-xs leading-relaxed">
           When the game restarts it rotates your last session into Player-prev.log. With this on,
-          glogger ingests it into the lifetime kill/loot database — so sessions played without
-          glogger running still count toward drop rates. Deduplicated against live data, so nothing
-          is double-counted.
+          glogger archives a copy under &lt;app data&gt;/player-logs — poems backfill and the
+          Statehelm gift tracker still read that archive. Loot ingestion is frozen (the 10/21
+          game client stopped writing loot lines), so nothing new accrues to drop rates.
         </p>
 
         <div v-if="autoIngestPlayerPrev" class="mt-4 p-4 bg-surface-dark border border-border-default rounded">

@@ -1,5 +1,6 @@
 <template>
   <div class="flex flex-col gap-4 h-full overflow-y-auto">
+    <div class="text-[11px] text-text-dim italic">Farming sessions are frozen — the 10/21 game client stopped loot/XP tracking. New kills, deaths, and XP appear in the Combat view.</div>
     <div v-if="loading" class="space-y-3">
       <div class="flex gap-6">
         <SkeletonLoader v-for="i in 4" :key="i" variant="rect" width="w-20" height="h-12" />
@@ -7,7 +8,7 @@
       <SkeletonLoader variant="text" :lines="4" />
     </div>
     <div v-else-if="error" class="text-[#c87e7e] text-sm">{{ error }}</div>
-    <EmptyState v-else-if="sessions.length === 0" variant="panel" primary="No saved farming sessions" secondary="Complete a farming session to see history here." />
+    <EmptyState v-else-if="sessions.length === 0" variant="panel" primary="No saved farming sessions" secondary="Farming sessions ended with the 10/21 game client. Combat activity now lives in the Combat view." />
 
     <template v-else>
       <!-- Aggregate stats -->
