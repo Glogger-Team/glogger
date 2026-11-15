@@ -34,11 +34,8 @@ Prior work happened in another session; this file is the handoff. Read
   (0% Rust hits across worktrees + a wrapper crash); kept in `mise.toml` for
   single-checkout dev only.
 
-## Open
-
-- `bench-*` worktrees reset to clean base after Round 5 (faults reverted;
-  `target-bench/` warm scratch remains).
-  Remove worktrees with `git worktree remove --force <path>` when done.
+- `bench-*` worktrees REMOVED 2026-11-15 (benchmark closed; see Conclusion
+  in RESULTS.md). No bench checkouts remain.
 - Push-hook failure resolved 2026-11-15: the pre-push `lint` set failed only
   because this checkout lacked `node_modules` (`mise exec -- npm install`
   fixed it; full `mise run lint` green). Environmental, not content.
@@ -48,8 +45,7 @@ Prior work happened in another session; this file is the handoff. Read
 - Longcat still 429 on 2026-11-15 morning (2 probes ~1min apart, same ~33s
   rolling retry-after that never clears). Round 3 longcat cells stay not-run.
 
-## Next (pick one)
+## Next
 
-1. Round 6: cross-file/state-machine faults, or longcat rerun
-   (quota-dependent).
-2. Cleanup only: drop the `bench-*` worktrees and close out.
+Only if quota recovers: longcat Round 3 rerun. Else nothing — the matrix
+is final, nothing pending.
