@@ -13,7 +13,8 @@
 # on .github/**; markdown on **/*.md (changed-files script); frontend build
 # on src/** + manifests; grids on src/**/*.vue; review-patterns on
 # src-tauri/src/db/migrations.rs; tests+clippy on src-tauri/** + Cargo
-# manifests; audit on Cargo manifests + scripts/cargo-audit-gate.py.
+# manifests; audit on Cargo manifests + scripts/cargo-audit-gate.py;
+# version-sync on manifests + sync script + release workflow.
 # Local hooks (pre-commit lint:fast, pre-push lint) are untouched.
 # PR gates on PRs and main pushes: frontend type-check/build, Rust tests
 # (plus clippy `-D warnings` on all targets), plus fast local-feedback
@@ -62,6 +63,7 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
       review: ${{ steps.filter.outputs.review }}
       parity_ipc: ${{ steps.filter.outputs.parity_ipc }}
+      version_sync: ${{ steps.filter.outputs.version_sync }}
       rust: ${{ steps.filter.outputs.rust }}
       audit: ${{ steps.filter.outputs.audit }}
       runall: ${{ steps.filter.outputs.runall }}
@@ -100,6 +102,17 @@ jobs:
             parity_ipc:
               - 'src-tauri/src/**/*.rs'
               - 'scripts/check-tauri-ipc-parity.py'
+            version_sync:
+              - 'scripts/bump-version.py'
+              - 'scripts/check-version-sync.py'
+              - '.github/workflows/release.yml'
+              - 'package.json'
+              - 'package-lock.json'
+              - 'src-tauri/tauri.conf.json'
+              - 'src-tauri/tauri.release.conf.json'
+              - 'src-tauri/tauri.experimental.conf.json'
+              - 'src-tauri/Cargo.toml'
+              - 'src-tauri/Cargo.lock'
             rust:
               - 'src-tauri/**'
               - 'src-tauri/Cargo.toml'
@@ -121,6 +134,7 @@ jobs:
           FILTER_GRIDS: ${{ steps.filter.outputs.grids }}
           FILTER_REVIEW: ${{ steps.filter.outputs.review }}
           FILTER_PARITY_IPC: ${{ steps.filter.outputs.parity_ipc }}
+          FILTER_VERSION_SYNC: ${{ steps.filter.outputs.version_sync }}
           FILTER_RUST: ${{ steps.filter.outputs.rust }}
           FILTER_AUDIT: ${{ steps.filter.outputs.audit }}
         run: |
@@ -132,6 +146,7 @@ jobs:
           echo "grids=$FILTER_GRIDS"
           echo "review=$FILTER_REVIEW"
           echo "parity_ipc=$FILTER_PARITY_IPC"
+          echo "version_sync=$FILTER_VERSION_SYNC"
           echo "rust=$FILTER_RUST"
           echo "audit=$FILTER_AUDIT"
           echo "runall=$FILTER_RUN_ALL"
@@ -210,6 +225,58 @@ jobs:
         # Same `mise run lint:commit` slice the pre-commit hook runs.
         # The hook is scripts/check-commit-msg.py (warning-only).
         run: mise run lint:commit
+
+  version-sync:
+    name: Version sync guard
+    needs: [changes]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check version-sync scope (#193)
+        # Reads the `version_sync` filter output; the step below no-ops
+        # unless version files, the sync script, or the release workflow
+        # changed.
+        env:
+          VERSION_SYNC_SCOPE: ${{ needs.changes.outputs.version_sync }}
+        run: echo "version_sync=$VERSION_SYNC_SCOPE"
+
+      - name: Install mise and tools
+        if: needs.changes.outputs.version_sync == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
+        # No third-party action (org allowlist): official installer script.
+        # `mise install` / `mise run` trust the active config automatically.
+        run: |
+          set -euo pipefail
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          mise install
+
+      - name: Version-sync guard + self-test
+        if: needs.changes.outputs.version_sync == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
+        # Same `mise run lint:version-sync` slice the pre-commit hook runs
+        # (via `mise run lint:fast`): staged-set coverage + stamp
+        # consistency + synthetic red/green self-test.
+        run: mise run lint:version-sync
+
+      - name: Version-sync scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
+        if: always()
+        env:
+          VERSION_SYNC_SCOPE: ${{ needs.changes.outputs.version_sync }}
+        run: |
+          if [ "$VERSION_SYNC_SCOPE" = "true" ]; then
+            echo "version_sync scope: ran"
+          else
+            echo "version_sync scope: skipped (no version files, sync script, or release workflow changed)"
+          fi
 
   cargo-audit:
     name: Cargo audit (RustSec)
