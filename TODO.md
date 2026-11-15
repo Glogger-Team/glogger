@@ -9,7 +9,20 @@ Completed slices (fanout 2026-11-09 — PRs #166/#167/#168/#169, all MERGED to m
 
 > **Signal contract (2026-11-03):** the 10/21 client removed verbose `LocalPlayer:` events from Player.log — that stream is dark and not coming back. Replacements for the dark stream arrive via richer character-report exports (Chat.log and game-written `Books/` files, e.g. `Books/PlayerShopLog_*.txt`, remain supported sources — the `hired` action below arrives that way). Entries below say *report-only* where they wait on a new report field, and *dropped* where the only source was the log. The 10/21-10/28 triage history (`Player.log game-event outage triage`, per-tracker casualty verdicts) is in git history, not repeated here.
 
-## Deferred tuning (needs real-world data)
+## Combat-conversion backlog (PR #191 follow-ups, ordinary work — no review round needed)
+
+Small, user-action-triggered or cosmetic items found by the full-PR adversarial pass (4/4 ship, 0 fix-now). None blocks anything; each is an isolated slice when wanted.
+
+- [ ] Character-switch staleness (P2): `CharacterPicker.switchTo/addCharacter` reload game/character state but never touch death/combat stores; an already-visited CombatView keeps the old character's deaths and keeps accumulating live kills/XP/log across characters. Fix: reset live accumulators + reload deaths on character switch.
+  - **Suspects:** `CharacterPicker.vue`, `src/stores/combatStore.ts` (`reset`), `src/stores/deathStore.ts` (`loaded`/`loadDeaths`).
+- [ ] Manual re-scan duplication (P2): scan paths (`chat_commands.rs run_scan_dispatch`) emit `character-death`/`enemy-killed`/`chat-status-event` unconditionally even when `persist_death_event` dedup skips the DB write; the frontend unshifts/accumulates without dedup → phantom death / double-counted kill-XP on re-import. Fix: frontend dedup or skip scan-originated emits for accumulating stores.
+  - **Suspects:** `src-tauri/src/chat_commands.rs` (`run_scan_dispatch`), `src/stores/combatStore.ts`, `src/stores/deathStore.ts`.
+- [ ] `loadDeaths` mount race (P2): overwrites `deaths.value` on resolve, so a live death arriving between mount-fetch start and resolve (temp unshift) can be clobbered until next reload. Narrow window. Fix: merge instead of overwrite.
+  - **Suspects:** `src/stores/deathStore.ts` (`loadDeaths`).
+- [ ] Orphaned `fetchEnemyStats`/`historicXp` (P3): `farmingStore.fetchEnemyStats` + cache has zero callers (surviving tabs invoke the backend directly); `combatStore.historicXp` is populated but no view reads it (XP card is live-only by design). Fix: remove or wire up.
+  - **Suspects:** `src/stores/farmingStore.ts`, `src/stores/combatStore.ts`.
+- [ ] Stale farming-archive comments (P3): `src-tauri/src/lib.rs:533-535` call-site comment still describes the watcher as ingesting into the kill/loot DB (now archive-only); `docs/features/statehelm-gift-backfill.md:22-23` parenthetical names deleted `replay::ingest_player_log`; `src/types/farming.ts` keeps dead live-session aliases (`FarmingSession`, `SaveFarmingSessionInput`, `FarmingSkillEntry/FavorEntry/KillEntry/KillLoot/ExtractLoot/ItemDropBreakdownRow`, `FarmingLogKind/Entry`) + stale header/type comments claiming historic readers need them (zero consumers — `HistoricalTab`/`combatStore` use `HistoricalFarmingSession`). Redundant `#[allow(dead_code)]` on still-live `get_auto_ingest_player_prev` (`settings.rs`). Fix: reword/delete.
+  - **Suspects:** `src-tauri/src/lib.rs:533-535`, `docs/features/statehelm-gift-backfill.md:22-23`, `src/types/farming.ts:146-172`, `src-tauri/src/settings.rs:519-521`.
 
 - [ ] rez-dedup 30s window calibration — see `docs/plans/deferred-tuning.md` (bidirectional `abs()<=30s` window shipped in `rez_within_dedup_window`; still needs a captured rez pair to calibrate 30s vs 60s; no fixture contains either phrasing; watch for duplicate `character_resuscitations` rows, cosmetic only). **Suspects:** `src-tauri/src/chat_status_dispatch.rs` (`rez_within_dedup_window`), `src-tauri/src/chat_resuscitate_parser.rs`.
 
