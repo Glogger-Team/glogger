@@ -41,7 +41,7 @@ description: Fan out N small disjoint TODO slices, one branch + git worktree + w
 
 ## 3. Brief shape (paste verbatim slots)
 
-Each brief MUST contain: existing checkout path + branch (Do NOT create another worktree) · task + TODO origin · scope file list (touch ONLY these) · explicit non-goals (sibling slices' files) · gates (`vue-tsc` / markdownlint / `cargo check` as applicable) · commit prefix (`impv:`/`fix:`/`docs:`, one small commit) · report contract (files changed, gate output, commit hash). On the `hc` path, end the brief with: `Report back with hc send $HC_TERMINAL_ID <result or blocker> when done or stuck.` (Workers are children of the parent terminal — the core records the parent automatically and routes the note.)
+Each brief MUST contain: existing checkout path + branch (Do NOT create another worktree) · task + TODO origin · scope file list (touch ONLY these) · explicit non-goals (sibling slices' files) · gates (`vue-tsc` / markdownlint / `cargo check` as applicable) · commit prefix (`impv:`/`fix:`/`docs:`, one small commit) · report contract (files changed, gate output, commit hash). On the `hc` path, end the brief with: `Report back with hc send <parent-terminal-address> <result or blocker> when done or stuck.` (the brief carries the parent's address explicitly — `$HC_TERMINAL_ID` inside a worker names the worker itself and self-injects, observed 2026-11-15 — never use it for the report; send explicitly to the parent address).
 
 ## 4. Traps (learned 2026-11-08/09, fanout runs)
 
