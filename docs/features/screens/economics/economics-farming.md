@@ -10,7 +10,7 @@ Frozen since the 10/21 game client: the client stopped writing the verbose `Loca
 
 **Backend (Rust):**
 - `src-tauri/src/db/migrations.rs` — migration_v5_farming (4 tables)
-- `src-tauri/src/db/farming_commands.rs` — save/get/update/delete commands (read-only in practice; no new rows)
+- `src-tauri/src/db/farming_commands.rs` — save/get/update/delete commands (no new sessions; edits/deletes of historic rows still work)
 
 **Frontend (Vue/TS):**
 - `src/types/farming.ts` — frozen aliases kept so historic readers compile; live-session shape intentionally not rebuilt
@@ -21,7 +21,7 @@ Frozen since the 10/21 game client: the client stopped writing the verbose `Loca
 - `src/components/Farming/UnknownSourceTab.vue` — unattributed-gain reader
 - `src/components/Farming/ItemDropBreakdownTable.vue`, `EnemyDropTable.vue`, `ExtractDetailTable.vue` — table variants reading backend commands directly
 
-Deleted with the freeze: `FarmingView.vue` (legacy wrapper), `FarmingSessionCard.vue` (live session display), `FarmingLog.vue` (live activity feed), `ItemDropBreakdown.vue` (session-hover popover). The Combat view (`src/components/Combat/CombatView.vue` + `src/stores/combatStore.ts`) covers live kills/deaths/XP.
+Deleted with the freeze: `FarmingView.vue` (legacy wrapper), `FarmingSessionCard.vue` (live session display), `FarmingLog.vue` (live activity feed), `ItemDropBreakdown.vue` (session-hover popover). The Combat view (`src/components/Combat/CombatView.vue` + `src/stores/combatStore.ts`) covers live kills/deaths/XP/Wisdom.
 ## How It Worked (pre-10/21 ingestion, now frozen)
 
 > Everything in this section is historical: the deleted live-session
@@ -90,7 +90,7 @@ The Active Session tab, its store arms, and the live-session components are dele
 
 ## Kill Tracking (historic + imported only)
 
-Kill tracking operates at two levels, both frozen for new data except chat kills in the Combat view:
+Kill tracking operates at two levels, both frozen for new data. Chat kills/deaths/XP/Wisdom flow only into the Combat view's live accumulators, never into farming tables:
 
 ### Standalone Kill Database (historic + imported only)
 

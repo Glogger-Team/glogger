@@ -17,6 +17,7 @@ Browse enemies/monsters from the game. The primary data source is the translatio
 - Area link (clickable `AreaInline` if area-specific)
 - **Comment** (if AI data available)
 - **Properties** (if AI data available) — strategy (Melee/Ranged), mobility type, swimming, uncontrolled pet
+- **Abilities** (if AI data available) — list of ability internal names as badges
 - **Kill Stats** — total kills, loot table with drop rates (from player kill tracking — historical + imported only, no new loot rows on the current client)
 - **Raw JSON** (opt-in via settings)
 
