@@ -205,3 +205,27 @@ Round 5 tally: 6/6 pass. The pin-the-fault format worked as a battery
 (agents had to write the failing test, not just flip an operator), but all
 three models cleared it — the faults were still single-expression. Next
 step up: faults requiring cross-file reasoning or state-machine redesign.
+
+## Conclusion (2026-11-15)
+
+Final matrix (longcat excluded — 429 rate-limited throughout, all cells
+not-run): spark 9/9, iceman 8/9 (3c), beam 7/9 (3c, 3d). Only Round 3
+discriminated; Rounds 4–5 swept 6/6.
+
+- spark: the implementation pick. Caught the 3c anchor-guard trap no one
+  else saw, carried `presetId` correctly in 3d, wrote the strongest 5b
+  transcript. No failures anywhere.
+- iceman: the verification-shaped pick. Clean on implementation, exemplary
+  transcripts when they arrive (4b, 5b) — but three turns produced no usable
+  transcript at all (3a, 3b-exit-silence, 5a-summary), so score it by disk
+  and expect to re-derive its gates yourself.
+- beam: needs explicit acceptance criteria. Drops unstated requirements
+  (`presetId` on loads in 3d, the second dispatch test in 3c) and its
+  transcripts sometimes omit the fail-before evidence — but its fixes are
+  consistently minimal and correct when the spec pins the behavior.
+  Watch its editor hygiene (CRLF writes into LF files, twice).
+
+Recommended roles: spark for build/fix work, iceman for review-shaped
+verification (disk-scored), beam for tightly-specified tasks. Revisit only
+if longcat quota recovers (matrix hole) or a genuinely new failure mode is
+needed — further rounds in these shapes have no expected signal.
