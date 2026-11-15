@@ -15,6 +15,7 @@ jactionlint = "latest"
 node = "lts"
 # Runtime for scripts/cargo-audit-gate.py (CI uses runner python3).
 python = "latest"
+sccache = "latest"
 
 [tasks."lint:ruff"]
 description = "Ruff check + format on scripts/ (commit-fast slice)"
