@@ -133,29 +133,27 @@ def check_staged(root: Path) -> int:
     return fail
 
 
+def first(pattern: re.Pattern[str], text: str | None) -> str | None:
+    """First capture group, or None when the file is missing or stamp-less."""
+    m = pattern.search(text) if text else None
+    return m.group(1) if m else None
+
+
 def stamp_versions(root: Path) -> dict[str, str | None]:
     """Read every committed version stamp; None where unreadable."""
-    out: dict[str, str | None] = {}
     package = read(root, "package.json")
-    out["package.json"] = VERSION_RE.search(package).group(1) if package else None
     lock = read(root, "package-lock.json")
-    top = LOCK_TOP_RE.search(lock) if lock else None
-    pkg = LOCK_PKG_RE.search(lock) if lock else None
-    out["package-lock.json(top)"] = top.group(1) if top else None
-    out['package-lock.json(packages[""])'] = pkg.group(1) if pkg else None
     tauri = read(root, "src-tauri/tauri.conf.json")
-    out["src-tauri/tauri.conf.json"] = (
-        VERSION_RE.search(tauri).group(1) if tauri else None
-    )
     cargo_toml = read(root, "src-tauri/Cargo.toml")
-    out["src-tauri/Cargo.toml"] = (
-        CARGO_TOML_RE.search(cargo_toml).group(1) if cargo_toml else None
-    )
     cargo_lock = read(root, "src-tauri/Cargo.lock")
-    out["src-tauri/Cargo.lock"] = (
-        CARGO_LOCK_RE.search(cargo_lock).group(1) if cargo_lock else None
-    )
-    return out
+    return {
+        "package.json": first(VERSION_RE, package),
+        "package-lock.json(top)": first(LOCK_TOP_RE, lock),
+        'package-lock.json(packages[""])': first(LOCK_PKG_RE, lock),
+        "src-tauri/tauri.conf.json": first(VERSION_RE, tauri),
+        "src-tauri/Cargo.toml": first(CARGO_TOML_RE, cargo_toml),
+        "src-tauri/Cargo.lock": first(CARGO_LOCK_RE, cargo_lock),
+    }
 
 
 def read(root: Path, rel: str) -> str | None:
@@ -188,7 +186,7 @@ def live_gate(root: Path) -> int:
     stamp_rc = check_stamps(root)
     if stamp_rc == 2:
         return 2
-    return fail | stamp_rc
+    return max(fail, stamp_rc)
 
 
 GOOD_BUMP = """\
@@ -218,6 +216,8 @@ def fixture_tree(
     stage_lock: bool = True,
     bump_text: str | None = None,
     drop: str | None = None,
+    package_text: str | None = None,
+    double_add: bool = False,
 ) -> None:
     """Write a minimal synthetic repo exercising the real parsers."""
     (tmp / "scripts").mkdir(parents=True, exist_ok=True)
@@ -230,13 +230,17 @@ def fixture_tree(
     add_line = GOOD_ADD
     if not stage_lock:
         add_line = GOOD_ADD.replace(" package-lock.json", "")
+    if double_add:
+        add_line = add_line + "          " + GOOD_ADD
     (tmp / ".github" / "workflows" / "release.yml").write_text(
         "jobs:\n  sync-dev-version:\n    steps:\n      - run: |\n          " + add_line,
         encoding="utf-8",
     )
     pkg_version = lock_pkg_version if lock_pkg_version is not None else version
     files = {
-        "package.json": '{\n  "version": "' + version + '"\n}\n',
+        "package.json": package_text
+        if package_text is not None
+        else '{\n  "version": "' + version + '"\n}\n',
         "package-lock.json": (
             '{\n  "name": "glogger",\n  "version": "'
             + version
@@ -267,6 +271,16 @@ def self_test() -> int:
             2,
         ),
         ("missing file fails closed", {"drop": "package.json"}, 2),
+        (
+            "readable stamp-less file fails closed",
+            {"package_text": '{"name": "glogger"}\n'},
+            2,
+        ),
+        (
+            "tool error dominates drift",
+            {"lock_pkg_version": "9.9.9", "double_add": True},
+            2,
+        ),
     ]
     passed = 0
     for name, kwargs, expect in cases:
