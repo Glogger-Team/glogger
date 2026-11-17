@@ -84,17 +84,6 @@ pub fn get_session<C: DbRead + ?Sized>(conn: &C, session_id: i64) -> Result<Opti
     .optional()
 }
 
-/// Atomically increment `crafted_count` for a session. Used when the
-/// crafting-triggered session sees a new survey-map crafted.
-pub fn increment_crafted_count(conn: &Connection, session_id: i64) -> Result<()> {
-    conn.execute(
-        "UPDATE survey_sessions SET crafted_count = COALESCE(crafted_count, 0) + 1
-         WHERE id = ?1",
-        params![session_id],
-    )?;
-    Ok(())
-}
-
 /// Atomically increment `consumed_count` for a session. Called by the
 /// aggregator when a survey map use is recorded.
 pub fn increment_consumed_count(conn: &Connection, session_id: i64) -> Result<()> {
@@ -102,28 +91,6 @@ pub fn increment_consumed_count(conn: &Connection, session_id: i64) -> Result<()
         "UPDATE survey_sessions SET consumed_count = consumed_count + 1
          WHERE id = ?1",
         params![session_id],
-    )?;
-    Ok(())
-}
-
-// ── Session timestamp helpers ──────────────────────────────────────────
-// These use conditional UPDATEs so callers can fire them on every event
-// without worrying about overwriting earlier values. `first_*_at` only
-// writes if currently NULL; `last_*_at` overwrites unconditionally.
-
-pub fn update_first_craft_at(conn: &Connection, session_id: i64, ts: &str) -> Result<()> {
-    conn.execute(
-        "UPDATE survey_sessions SET first_craft_at = ?2
-         WHERE id = ?1 AND first_craft_at IS NULL",
-        params![session_id, ts],
-    )?;
-    Ok(())
-}
-
-pub fn update_last_craft_at(conn: &Connection, session_id: i64, ts: &str) -> Result<()> {
-    conn.execute(
-        "UPDATE survey_sessions SET last_craft_at = ?2 WHERE id = ?1",
-        params![session_id, ts],
     )?;
     Ok(())
 }
@@ -250,31 +217,6 @@ pub fn add_loot_qty(conn: &Connection, use_id: i64, delta: u32) -> Result<()> {
     Ok(())
 }
 
-/// Mark `item_transactions` rows for a given survey use + item name as
-/// speed-bonus drops. Patches `source_details` JSON with
-/// `is_speed_bonus: true`. Returns the number of rows updated.
-///
-/// Called when a `ProcessScreenText` "(speed bonus!)" marker arrives
-/// immediately after the gain transactions have been written; we identify
-/// the rows by the `survey_use_id` (already stitched in via provenance) and
-/// the display name of the bonus item parsed from the ScreenText.
-pub fn mark_transactions_as_speed_bonus(
-    conn: &Connection,
-    survey_use_id: i64,
-    item_name: &str,
-) -> Result<usize> {
-    let updated = conn.execute(
-        "UPDATE item_transactions
-            SET source_details = json_set(
-                COALESCE(source_details, '{}'),
-                '$.is_speed_bonus', json('true'))
-          WHERE item_name = ?2
-            AND survey_use_id = ?1",
-        params![survey_use_id, item_name],
-    )?;
-    Ok(updated)
-}
-
 /// Fetch a use by ID.
 pub fn get_use(conn: &Connection, use_id: i64) -> Result<Option<SurveyUse>> {
     conn.query_row(
@@ -304,49 +246,15 @@ pub fn latest_use_id_for_session(conn: &Connection, session_id: i64) -> Result<O
     .optional()
 }
 
-/// The most recent Motherlode/Multihit use for a character, no older than
-/// `max_age_secs` before `now_iso`.
-///
-/// Fallback binding for the chat-loot path: when a mining loop starts on a
-/// node whose StartInteraction name marks it as survey-spawned (contains
-/// "FromSurvey") but the originating use's 60s pending window has already
-/// expired (long walk to the node), this recovers the use to attribute to.
-pub fn latest_recent_nonbasic_use(
-    conn: &Connection,
-    character: &str,
-    server: &str,
-    now_iso: &str,
-    max_age_secs: u32,
-) -> Result<Option<(i64, SurveyUseKind)>> {
-    conn.query_row(
-        "SELECT id, kind FROM survey_uses
-         WHERE character_name = ?1 AND server_name = ?2
-           AND kind != 'basic'
-           AND used_at >= datetime(?3, '-' || ?4 || ' seconds')
-           AND used_at <= ?3
-         ORDER BY used_at DESC, id DESC LIMIT 1",
-        params![character, server, now_iso, max_age_secs],
-        |row| {
-            let id: i64 = row.get(0)?;
-            let kind: String = row.get(1)?;
-            Ok((
-                id,
-                SurveyUseKind::from_str(&kind).unwrap_or(SurveyUseKind::Multihit),
-            ))
-        },
-    )
-    .optional()
-}
-
 /// Claim untagged chat-status loot rows near a Basic survey use's `used_at`
 /// and link them to the use. Returns the total quantity claimed.
 ///
-/// Basic-survey loot lands in the same game tick as the map's DeleteItem,
-/// but the chat and player logs are tailed independently — the chat rows may
-/// already be in `item_transactions` (untagged) by the time the DeleteItem
-/// is processed. This retroactively tags those rows as `survey_chat` so the
-/// loot summary counts them, mirroring what the live gate in
-/// `attribute_chat_gain` does when the ordering goes the other way.
+/// Basic-survey loot lands in the same game tick as the map's consumption,
+/// and the chat rows may already be in `item_transactions` (untagged) by
+/// the time the manual use is recorded. This retroactively tags those rows
+/// as `survey_chat` so the loot summary counts them, mirroring what the
+/// live gate in `attribute_chat_gain` does when the ordering goes the
+/// other way.
 ///
 /// Survey maps themselves are excluded by internal-name prefix — crafting a
 /// map emits the same "added to inventory" chat line as loot, and players
@@ -425,13 +333,11 @@ pub fn player_gain_already_counted(
     .unwrap_or(false)
 }
 
-/// True when an untagged Player.log loot row that looks like this gain's
-/// twin already exists. Deferred Basic gains are written to the ledger at
-/// flush time *without* a `survey_use_id` (their provenance never carried
-/// one), so the tagged check above misses them. Matching them here lets the
-/// chat pipeline skip its bump for a gain the deferred drain already counted
-/// (or is about to count — the drain skips gains with an unclaimed chat
-/// twin, and the claim below counts them instead).
+/// True when an untagged legacy Player.log loot row that looks like this
+/// gain's twin already exists. Pre-cutoff gains were written to the ledger
+/// *without* a `survey_use_id` (their provenance never carried one), so the
+/// tagged check above misses them. Matching them here lets a rescan skip its
+/// bump for a gain the retired pipeline already counted.
 pub fn untagged_player_gain_exists(
     conn: &Connection,
     character: &str,
@@ -453,85 +359,6 @@ pub fn untagged_player_gain_exists(
                             AND datetime(?4, '+' || ?5 || ' seconds')
             AND (?6 IS NULL OR internal_name = ?6 OR item_name = ?6))",
         params![character, server, qty, timestamp_iso, window_secs, item_name],
-        |r| r.get(0),
-    )
-    .unwrap_or(false)
-}
-
-/// True when the chat pipeline already counted this exact gain against
-/// `use_id` — i.e. a tagged `survey_chat` row with the same use, quantity,
-/// item and a timestamp within `window_secs` exists. The Player.log pipeline
-/// calls this before bumping `loot_qty` so a gain seen by both logs bumps
-/// once. Only tagged rows count: untagged chat rows were never attributed
-/// and never bumped (the Basic-use claim path bumps exactly the rows it
-/// tags, in the same step).
-pub fn chat_gain_already_counted(
-    conn: &Connection,
-    use_id: i64,
-    qty: u32,
-    timestamp_iso: Option<&str>,
-    item_name: Option<&str>,
-    window_secs: u32,
-) -> bool {
-    let Some(ts) = timestamp_iso else {
-        return false;
-    };
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM item_transactions
-          WHERE survey_use_id = ?1
-            AND source = 'chat_status'
-            AND source_kind = 'survey_chat'
-            AND quantity = ?2
-            AND timestamp BETWEEN datetime(?3, '-' || ?4 || ' seconds')
-                            AND datetime(?3, '+' || ?4 || ' seconds')
-            AND (?5 IS NULL OR internal_name = ?5 OR item_name = ?5))",
-        params![use_id, qty, ts, window_secs, item_name],
-        |r| r.get(0),
-    )
-    .unwrap_or(false)
-}
-
-/// True when an unclaimed chat-status loot row that looks like this
-/// deferred gain's twin already exists. The deferred Basic drain calls this
-/// per gain: when the chat side already saw the gain, the drain skips its
-/// bump and the `claim_unlinked_chat_loot_near` step below counts it
-/// instead — one bump total. Mirrors the claim predicate (loot context,
-/// survey-map crafts excluded) so every row this matches is one the claim
-/// will actually pick up.
-///
-/// Item matching is deliberately loose (`internal_name` OR `item_name`):
-/// the two pipelines spell names differently (log-internal vs chat-display)
-/// and either column may be NULL when CDN resolution failed. Quantity +
-/// same-second timestamp already narrows to one game gain; the name check
-/// only breaks ties between different items sharing a tick (multi-item
-/// Motherlode loot, primary + same-qty bonus). Pass `item_name = None` to
-/// match on quantity/time alone.
-pub fn unclaimed_chat_gain_exists(
-    conn: &Connection,
-    character: &str,
-    server: &str,
-    qty: u32,
-    timestamp_iso: &str,
-    item_name: Option<&str>,
-    window_secs: u32,
-) -> bool {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM item_transactions
-          WHERE character_name = ?1
-           AND server_name = ?2
-           AND source = 'chat_status'
-           AND context = 'loot'
-           AND source_kind IS NULL
-           AND quantity = ?3
-           AND (internal_name IS NULL
-                OR (internal_name NOT LIKE 'GeologySurvey%'
-                    AND internal_name NOT LIKE 'MiningSurvey%'))
-           AND (?6 IS NULL OR internal_name = ?6 OR item_name = ?6)
-           AND timestamp BETWEEN datetime(?4, '-' || ?5 || ' seconds')
-                             AND datetime(?4, '+' || ?5 || ' seconds'))",
-        params![
-            character, server, qty, timestamp_iso, window_secs, item_name
-        ],
         |r| r.get(0),
     )
     .unwrap_or(false)
@@ -636,18 +463,6 @@ pub fn recompute_session_bounds_and_end(
         )?;
     }
     Ok(())
-}
-
-/// True if any use in the session is still `pending_loot`. Used by the
-/// auto-end check for crafting-triggered sessions.
-pub fn session_has_pending_uses(conn: &Connection, session_id: i64) -> Result<bool> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM survey_uses
-         WHERE session_id = ?1 AND status = 'pending_loot'",
-        params![session_id],
-        |row| row.get(0),
-    )?;
-    Ok(count > 0)
 }
 
 // ============================================================
@@ -816,28 +631,6 @@ mod tests {
     }
 
     #[test]
-    fn test_increment_counts() {
-        let conn = fresh_db();
-        let id = insert_session(
-            &conn,
-            "Zenith",
-            "Dreva",
-            "2026-04-15 12:00:00",
-            SessionStartTrigger::Crafting,
-            Some(0),
-        )
-        .unwrap();
-
-        increment_crafted_count(&conn, id).unwrap();
-        increment_crafted_count(&conn, id).unwrap();
-        increment_consumed_count(&conn, id).unwrap();
-
-        let s = get_session(&conn, id).unwrap().unwrap();
-        assert_eq!(s.crafted_count, Some(2));
-        assert_eq!(s.consumed_count, 1);
-    }
-
-    #[test]
     fn test_insert_use_and_loot_accumulation() {
         let conn = fresh_db();
         let session = insert_session(
@@ -876,70 +669,6 @@ mod tests {
         let u = get_use(&conn, use_id).unwrap().unwrap();
         assert_eq!(u.loot_qty, 8);
         assert_eq!(u.status, SurveyUseStatus::Completed);
-    }
-
-    #[test]
-    fn test_session_has_pending_uses() {
-        let conn = fresh_db();
-        let session = insert_session(
-            &conn,
-            "Zenith",
-            "Dreva",
-            "2026-04-15 12:00:00",
-            SessionStartTrigger::Crafting,
-            Some(2),
-        )
-        .unwrap();
-
-        // No uses yet → no pending
-        assert!(!session_has_pending_uses(&conn, session).unwrap());
-
-        // Add one use, default pending
-        let u1 = insert_use(
-            &conn,
-            Some(session),
-            "Zenith",
-            "Dreva",
-            "2026-04-15 12:05:00",
-            "GeologySurveySerbule1",
-            "Serbule Blue Mineral Survey",
-            SurveyUseKind::Basic,
-            None,
-        )
-        .unwrap();
-        assert!(session_has_pending_uses(&conn, session).unwrap());
-
-        // Complete it → no pending
-        set_use_status(&conn, u1, SurveyUseStatus::Completed).unwrap();
-        assert!(!session_has_pending_uses(&conn, session).unwrap());
-
-        // Two more uses, one completed, one still pending → still pending
-        let _u2 = insert_use(
-            &conn,
-            Some(session),
-            "Zenith",
-            "Dreva",
-            "2026-04-15 12:10:00",
-            "MiningSurveyPovus7Y",
-            "Povus Astounding Mining Survey",
-            SurveyUseKind::Multihit,
-            None,
-        )
-        .unwrap();
-        let u3 = insert_use(
-            &conn,
-            Some(session),
-            "Zenith",
-            "Dreva",
-            "2026-04-15 12:15:00",
-            "MiningSurveyKurMountains1X",
-            "Kur Mountains Simple Metal Motherlode Map",
-            SurveyUseKind::Motherlode,
-            None,
-        )
-        .unwrap();
-        set_use_status(&conn, u3, SurveyUseStatus::Completed).unwrap();
-        assert!(session_has_pending_uses(&conn, session).unwrap());
     }
 
     #[test]
@@ -985,68 +714,5 @@ mod tests {
         assert_eq!(uses.len(), 2);
         assert_eq!(uses[0].id, u_early);
         assert_eq!(uses[1].id, u_late);
-    }
-
-    #[test]
-    fn test_mark_transactions_as_speed_bonus() {
-        let conn = fresh_db();
-        let session = insert_session(
-            &conn,
-            "Zenith",
-            "Dreva",
-            "2026-04-15 12:00:00",
-            SessionStartTrigger::Manual,
-            None,
-        )
-        .unwrap();
-        let use_id = insert_use(
-            &conn,
-            Some(session),
-            "Zenith",
-            "Dreva",
-            "2026-04-15 12:05:00",
-            "GeologySurveySerbule1",
-            "Serbule Blue Mineral Survey",
-            SurveyUseKind::Basic,
-            Some("Serbule"),
-        )
-        .unwrap();
-
-        // Three transactions: primary + one bonus + one unrelated (different use_id).
-        let details = format!(r#"{{"survey_use_id":{}}}"#, use_id);
-        let other_details = r#"{"survey_use_id":999}"#;
-        conn.execute(
-            "INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, quantity, context, source, source_kind, source_details)
-             VALUES (?1,'Zenith','Dreva','Blue Spinel',1,'loot','player_log','survey_map_use',?2),
-                    (?1,'Zenith','Dreva','Rubywall Crystal',2,'loot','player_log','survey_map_use',?2),
-                    (?1,'Zenith','Dreva','Rubywall Crystal',1,'loot','player_log','survey_map_use',?3)",
-            params!["2026-04-15 12:05:00", details, other_details],
-        ).unwrap();
-
-        let n = mark_transactions_as_speed_bonus(&conn, use_id, "Rubywall Crystal").unwrap();
-        assert_eq!(
-            n, 1,
-            "only the matching (use_id, item_name) row should update"
-        );
-
-        // The matching Rubywall row has the flag; the Blue Spinel row and the
-        // other-use Rubywall row do not.
-        let flags: Vec<(String, Option<i64>)> = conn
-            .prepare("SELECT item_name, json_extract(source_details, '$.is_speed_bonus') FROM item_transactions ORDER BY id")
-            .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .unwrap()
-            .collect::<Result<_>>()
-            .unwrap();
-        assert_eq!(flags[0].0, "Blue Spinel");
-        assert_eq!(flags[0].1, None, "primary untouched");
-        assert_eq!(flags[1].0, "Rubywall Crystal");
-        assert_eq!(
-            flags[1].1,
-            Some(1),
-            "matching bonus flagged true (JSON true -> 1)"
-        );
-        assert_eq!(flags[2].0, "Rubywall Crystal");
-        assert_eq!(flags[2].1, None, "different use_id not touched");
     }
 }

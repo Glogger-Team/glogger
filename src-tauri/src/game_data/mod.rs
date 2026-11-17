@@ -72,16 +72,15 @@ pub use items::{parse as parse_items_json, ItemInfo, SurveyKind};
 pub use lorebooks::LorebookCategoryInfo;
 pub use lorebooks::LorebookEntry;
 pub use npcs::NpcInfo;
-// Re-exported so the gift-cap rule (`game_state.rs`'s `FavorChanged` and
-// cap-note arms), the backfill's stored-entry check
-// (`db::statehelm_commands.rs`), and test harnesses that seed `npcs` can reach
-// them without making the whole module public — same shape as
-// `parse_items_json` above. `GIFT_CAPPED_AREAS` is deliberately not
-// re-exported: callers use `is_gift_capped_area`, never the list itself.
+// Re-exported so the gift-cap rule (`game_state.rs`'s favor arms) and test
+// harnesses that seed `npcs` can reach them without making the whole module
+// public — same shape as `parse_items_json` above. `GIFT_CAPPED_AREAS` is
+// deliberately not re-exported: callers use `is_gift_capped_area`, never the
+// list itself.
 pub use ai::AiSummary;
 pub use brewing::{BrewingIngredient, BrewingRecipe};
 pub use mushroom_farming::MushroomFarmingInfo;
-pub use npcs::{has_gift_tastes, is_gift_capped_area, parse as parse_npcs_json};
+pub use npcs::{has_gift_tastes, is_gift_capped_area};
 pub use player_titles::PlayerTitleInfo;
 pub use quests::QuestInfo;
 pub use recipes::RecipeInfo;
@@ -959,10 +958,8 @@ fn build_ability_name_index(
 ///
 /// `npcs` is a `HashMap`, so a plain `.collect()` picks whichever duplicate the
 /// hash order happened to visit last — arbitrary per run. Keep the lowest key,
-/// which is also what the DB-backed resolver does
-/// (`SELECT key FROM npcs WHERE name = ?1 ORDER BY key LIMIT 1` in
-/// `db::statehelm_commands`). Those two resolve names for the *same* line (the
-/// live `GiftCountObserved` arm and the log backfill), and the gift tracker
+/// which is also what the CDN-backed resolver does
+/// (`GameData::resolve_npc` reads this same index). The live gift tracker
 /// keys rows by NPC key, so a disagreement would split one NPC's weekly count
 /// across two rows.
 pub(crate) fn build_npc_name_index<'a, I>(npcs: I) -> HashMap<String, String>

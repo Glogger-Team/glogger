@@ -56,7 +56,7 @@ WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history.
 - Angling Perfect Catches (decided above — no signal ever captured).
 - Log-based quest parsing, log-based completion signals, live door-identifier capture (folded into the report-only entries above).
 - Session mining-yield stats (needs `ProcessStartInteraction` + `ProcessDoDelayLoop` mining labels + `ProcessAddItem`, all `LocalPlayer:`; node identity is positional, no export field could carry it). Session survey yield survives via chat-backed attribution (`survey_chat` rows from Status `ItemGained` lines).
-- Kill-loot denominators for new kills (corpse-search rows are `LocalPlayer: ProcessTalkScreen` lines). Existing rows stand; chat `EnemyKilled` keeps only the live session UI.
+- Kill-loot denominators for new kills: corpse-search rows are dead, but Combat FATALITY lines (your fatal blows) carry the entity ID and receipt `FromEntityId` matches it exactly (Olugax 257400, 2026-11-17). Missing: a FATALITY→`enemy_kills` recorder + entity join. Group kills emit no FATALITY for us; player-death veto available (`character_deaths` live). Existing rows stand.
 - Inventory miscount causes (1)–(3) (chat-correlation ±2s window, `pending_deletes` reorder, catch-up stack-correction ordering) and gamestate login-batch residual (inventory dump flag): fixture-replay-only value, no live effect. Cause (4) already fixed (live tailing clears the inventory family on login, `game_state.rs:176-201`). Keep the Critical Resources warning text as-is.
 
 ## Cross-cutting

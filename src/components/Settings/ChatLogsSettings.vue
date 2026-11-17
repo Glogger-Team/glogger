@@ -6,16 +6,16 @@
       <div class="mb-4">
         <button
           @click="selectAndParseFile"
-          :disabled="props.parsing || importingFile || importingFolder"
+          :disabled="importingFile || importingFolder"
           class="btn btn-secondary">
-          {{ importingFile ? "Importing…" : props.parsing ? "Parsing..." : "Parse a Chat Log File" }}
+          {{ importingFile ? "Importing…" : "Parse a Chat Log File" }}
         </button>
 
         <button
           @click="parseFolder"
-          :disabled="props.parsing || importingFile || importingFolder"
+          :disabled="importingFile || importingFolder"
           class="btn btn-secondary ml-2">
-          {{ importingFolder ? "Importing…" : props.parsing ? "Parsing..." : "Parse Entire Folder" }}
+          {{ importingFolder ? "Importing…" : "Parse Entire Folder" }}
         </button>
 
         <p class="mt-2 text-text-muted text-xs leading-relaxed">
@@ -33,7 +33,6 @@
         </div>
         <div v-if="parseResult" class="success-box">{{ parseResult }}</div>
         <div v-if="parseError" class="error-box">{{ parseError }}</div>
-        <div v-if="props.error" class="error-box">Player.log error: {{ props.error }}</div>
       </div>
     </div>
 
@@ -134,11 +133,6 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../../stores/settingsStore";
-
-const props = defineProps<{
-  parsing: boolean;
-  error: string;
-}>();
 
 const settingsStore = useSettingsStore();
 

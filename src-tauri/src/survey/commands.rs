@@ -1570,6 +1570,21 @@ mod tests {
     use crate::survey::types::{SessionStartTrigger, SurveyUseKind, SurveyUseStatus};
     use rusqlite::Connection;
 
+    /// Flag a transaction row as a speed bonus (replaces the deleted
+    /// log-path marker for test setups that assert the bonus split).
+    fn mark_speed_bonus(conn: &Connection, use_id: i64, item_name: &str) {
+        conn.execute(
+            "UPDATE item_transactions
+                SET source_details = json_set(
+                    COALESCE(source_details, '{}'),
+                    '$.is_speed_bonus', json('true'))
+              WHERE item_name = ?2
+                AND survey_use_id = ?1",
+            rusqlite::params![use_id, item_name],
+        )
+        .unwrap();
+    }
+
     fn fresh_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn, None).unwrap();
@@ -1814,7 +1829,7 @@ mod tests {
             params![details],
         )
         .unwrap();
-        persistence::mark_transactions_as_speed_bonus(&conn, use_id, "Rubywall Crystal").unwrap();
+        mark_speed_bonus(&conn, use_id, "Rubywall Crystal");
 
         // Rubywall priced at 50 each; Blue Spinel unpriced.
         conn.execute(
@@ -2012,7 +2027,7 @@ mod tests {
             params![details],
         ).unwrap();
         // Flag the bonus row.
-        persistence::mark_transactions_as_speed_bonus(&conn, use_id, "Rubywall Crystal").unwrap();
+        mark_speed_bonus(&conn, use_id, "Rubywall Crystal");
 
         // Zone rollup
         let zones = zone_summaries(&conn, "Zenith", "Dreva").unwrap();
@@ -2173,7 +2188,7 @@ mod tests {
             params![details_u1, details_u2],
         )
         .unwrap();
-        persistence::mark_transactions_as_speed_bonus(&conn, u2, "Rubywall Crystal").unwrap();
+        mark_speed_bonus(&conn, u2, "Rubywall Crystal");
 
         let rows = item_cost_analysis_rows(&conn, "Zenith", "Dreva").unwrap();
         assert_eq!(rows.len(), 2, "one row per (item, map) pair");

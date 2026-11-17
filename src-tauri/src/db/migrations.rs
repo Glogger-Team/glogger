@@ -486,6 +486,16 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         migration_v90_collapse_stall_same_batch_dupes(conn)?;
         super::record_migration(conn, 90)?;
     }
+
+    if current_version < 91 {
+        migration_v91_item_transaction_entity(conn)?;
+        super::record_migration(conn, 91)?;
+    }
+
+    if current_version < 92 {
+        migration_v92_json_favor_processed(conn)?;
+        super::record_migration(conn, 92)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1316,6 +1326,52 @@ fn migration_v90_collapse_stall_same_batch_dupes(conn: &Connection) -> Result<()
                       AND k.id >= stall_events.id) > g.keep_n);
          DROP TABLE stall_v90_samebatch;
          DROP TABLE stall_v90_calls;",
+    )?;
+    Ok(())
+}
+
+/// Migration V91: looted-from entity on chat loot rows.
+///
+/// VIP JSON `AddItem` lines carry `FromName`/`FromEntityId` (the corpse or
+/// entity looted); the English `[Status]` twin has no such data. Both orders
+/// converge on one row (see `insert_json_receipt_guarded`), stamped here.
+/// Nullable — pre-patch rows and non-loot gains stay NULL. Survey columns
+/// (`source_kind`/`source_details`) are untouched: entity is identity-adjacent
+/// enrichment, not attribution, so live survey tagging and the scan
+/// retro-claim keep working on the same row.
+fn migration_v91_item_transaction_entity(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "ALTER TABLE item_transactions ADD COLUMN from_name TEXT",
+        [],
+    )?;
+    conn.execute(
+        "ALTER TABLE item_transactions ADD COLUMN from_entity_id INTEGER",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Migration V92: processed-marker for VIP JSON `DeltaFavor` lines.
+///
+/// Favor accrual is additive (`cumulative_delta + delta`) and gift rows are
+/// plain inserts — neither is naturally idempotent, unlike the ledger and
+/// skill upserts. `Player.log` deltas never needed a guard (no rescan path
+/// existed), but JSON lines flow through `run_scan_dispatch`, so a re-scan
+/// would double-count. One exact row per processed line; `INSERT OR IGNORE`
+/// makes the second application a no-op. Same-second distinct deltas stay
+/// distinct (delta is in the key); byte-identical same-second rescan lines
+/// collapse, which is the point.
+fn migration_v92_json_favor_processed(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS json_favor_processed (
+            character_name TEXT NOT NULL,
+            server_name TEXT NOT NULL,
+            npc_key TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            delta REAL NOT NULL,
+            PRIMARY KEY (character_name, server_name, npc_key, timestamp, delta)
+        )",
+        [],
     )?;
     Ok(())
 }
@@ -4574,13 +4630,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            90,
+            92,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 90);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 92);
     }
 
     #[test]
@@ -4703,13 +4759,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 90) plus the purge itself on the three aggregate source tables.
+        // 92) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 90, "migration chain head");
+        assert_eq!(head, 92, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -4755,8 +4811,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 90 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse). Repair: a
+        // Chain wiring: full run_migrations head must be 92 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 item-transaction entity + v92 JSON favor marker). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -4764,7 +4820,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 90, "migration chain head");
+        assert_eq!(head, 92, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[

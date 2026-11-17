@@ -3,17 +3,13 @@ use crate::chat_status_dispatch::{self, DispatchIdentity, DispatchState};
 use crate::chat_status_parser::ChatStatusEvent;
 use crate::db::chat_commands::insert_chat_messages;
 use crate::db::queries::log_positions;
-use crate::db::stall_tracker_commands::{insert_stall_events, StallEventInput};
 use crate::db::DbPool;
 use crate::debug_capture::{self, DebugCaptureResult, DebugCaptureState, DebugCaptureStatus};
 use crate::game_state::GameStateManager;
 use crate::log_watchers::{ChatLogWatcher, LogEvent, LogFileWatcher, PlayerLogWatcher};
 use crate::parsers::chat_local_to_utc;
-use crate::player_event_parser::PlayerEvent;
 use crate::settings::SettingsManager;
-use crate::shop_log_parser::parse_shop_log;
-use crate::stall_year_resolver::base_year_for_live;
-use crate::survey::aggregator::{SurveyAggregatorEvent, SurveySessionAggregator};
+use crate::survey::aggregator::SurveySessionAggregator;
 use chrono::{Datelike, Local};
 use serde::Serialize;
 /// DataIngestCoordinator - Central coordinator for all file watching and database operations
@@ -27,7 +23,7 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 /// Timestamped log line for startup diagnostics.
@@ -123,8 +119,8 @@ pub struct DataIngestCoordinator {
     settings: Arc<SettingsManager>,
     app_handle: AppHandle,
     /// Phase 5 survey tracker. Owned by the coordinator so its state survives
-    /// screen navigation per the backend-owned-state rule. Subscribes to
-    /// PlayerEvents in the live event loop, persists per-use rows to
+    /// screen navigation per the backend-owned-state rule. Fed by chat-gain
+    /// attribution on the live event loop, persists per-use rows to
     /// `survey_uses`, and stitches the survey_use_id link into provenance for
     /// downstream item_transactions writes.
     survey_aggregator: SurveySessionAggregator,
@@ -133,23 +129,11 @@ pub struct DataIngestCoordinator {
     /// Current area name, updated from AreaTransition events.
     /// Used to attach area context to combat death records.
     current_area: Option<String>,
-    /// Current equipped combat-skill loadout (normalized `skillA+skillB`, sorted),
-    /// updated from ProcessSetActiveSkills / ProcessLoadAbilities. Attached to each
-    /// kill so drop rates can be segmented by loadout. None = unknown.
-    current_combat_skills: Option<String>,
     /// Rolling buffer of recent damage-on-player events (max 10).
     /// Snapshotted into DB when a death occurs for "what killed me" context.
     recent_damage: Vec<crate::chat_combat_parser::ChatCombatEvent>,
     /// Debug capture state — buffers raw log lines when a capture is active.
     debug_capture: DebugCaptureState,
-    /// Internal name of the cow currently being interacted with (e.g. "Cow_Homer").
-    /// Set on ProcessStartInteraction with a Cow_ NPC, cleared on InteractionEnded.
-    /// Used to attribute "Bottle of Milk" chat gains to a specific cow.
-    pending_cow_interaction: Option<String>,
-    /// Maps corpse entity_id → (kill_row_id, timestamp) for attributing corpse
-    /// loot to a specific searched corpse. Populated when a `Search Corpse of X`
-    /// loot window opens. Entries expire after 120 seconds.
-    recent_kills: std::collections::HashMap<u32, (i64, std::time::Instant)>,
     /// Casino arena narration tracker — resolves Kuzavek's `[NPC Chatter]`
     /// intro/result lines into completed matches for the Arena widget.
     arena_tracker: crate::arena_parser::ArenaTracker,
@@ -182,6 +166,10 @@ pub struct DataIngestCoordinator {
     /// process; logged with each skip so a growing total signals staleness.
     /// The row is deliberately not written (skill_id 0 would collide PKs).
     skipped_unknown_skills: u64,
+    /// `[JSON:Type]` lines whose body failed to parse. Monotonic within the
+    /// process; the raw chat row is still stored, so this only signals format
+    /// drift in the game's JSON output.
+    skipped_json_malformed: u64,
 }
 
 impl DataIngestCoordinator {
@@ -218,17 +206,15 @@ impl DataIngestCoordinator {
             game_state,
             game_data: game_data_clone,
             current_area: None,
-            current_combat_skills: None,
             recent_damage: Vec::new(),
             debug_capture: DebugCaptureState::new(),
-            pending_cow_interaction: None,
-            recent_kills: std::collections::HashMap::new(),
             arena_tracker: crate::arena_parser::ArenaTracker::new(),
             last_rez_dedup: std::collections::HashMap::new(),
             catch_up_chat_servers: std::collections::HashMap::new(),
             catch_up_servers_scanned: false,
             staged_chat_gains: Vec::new(),
             skipped_unknown_skills: 0,
+            skipped_json_malformed: 0,
         })
     }
 
@@ -678,24 +664,6 @@ impl DataIngestCoordinator {
         // Poll player log watcher
         if let Some(watcher) = &mut self.player_watcher {
             let events = watcher.poll()?;
-            // Parser one-shot: the drained lines contained a login-batch
-            // full-state dump (≥20 consecutive `is_new=false` AddItems).
-            // Clear the slice BEFORE the batch persists, mirroring the
-            // effects `is_login_batch` DELETE — but ONLY when this poll
-            // carries no identity change. A `CharacterLogin` in the same
-            // batch means the dump belongs to the incoming character while
-            // the active identity still names the old one; clearing now
-            // would wipe the old slice and pollute it with the new dump.
-            // The adopt path (`adopt_player_log_session(clear_inventory)`)
-            // already clears the right slice in that case.
-            if watcher.take_inventory_login_batch() {
-                let identity_change = events
-                    .iter()
-                    .any(|e| matches!(e, LogEvent::CharacterLogin { .. }));
-                if !identity_change {
-                    self.game_state.clear_inventory_slice(&self.db_pool);
-                }
-            }
             self.process_player_events(events)?;
         }
 
@@ -705,8 +673,8 @@ impl DataIngestCoordinator {
         if !self.game_state.is_live() {
             // No login line was seen at all (the log was resumed mid-session
             // from a saved position): the watcher's restored character is then
-            // the only identity source. Without this, `process_events_batch`
-            // drops every live event until the chat marker fires.
+            // the only identity source. Without this, the chat drain drops
+            // every live event until the chat marker fires.
             if self.game_state.get_active_character().is_none()
                 && let Some(name) = self
                     .player_watcher
@@ -859,53 +827,17 @@ impl DataIngestCoordinator {
         }
     }
 
-    /// Process events from player log.
-    ///
-    /// High-volume event types (PlayerEventParsed, game-state-updated) are
-    /// batched to reduce the number of Windows PostMessage calls through the
-    /// webview IPC layer.  Batches flush when they reach `BATCH_MAX_SIZE`
-    /// events **or** when `BATCH_MAX_AGE` elapses — whichever comes first.
-    /// Low-volume events (character-login, area-transition, skill-update,
-    /// survey-*) are emitted immediately.
+    /// Process session signals from Player.log (login lines, chat-path
+    /// announcements, area loads). The `LocalPlayer: Process*` verbose lines
+    /// are gone, so this drain carries identity and area only — no game data.
+    /// Domains touched here (`area`) batch into one `game-state-updated`
+    /// emit; identity changes stay the chat login marker's job.
     fn process_player_events(&mut self, events: Vec<LogEvent>) -> Result<(), String> {
-        const BATCH_MAX_SIZE: usize = 50;
-        const BATCH_MAX_AGE: Duration = Duration::from_millis(20);
-
-        let mut player_event_batch: Vec<PlayerEvent> = Vec::new();
         let mut domains_batch: Vec<&'static str> = Vec::new();
-        let mut batch_start = Instant::now();
-
-        /// Flush helper — persists accumulated events in a single DB transaction,
-        /// then emits batches to the frontend. Resets state after flush.
-        macro_rules! flush_batches {
-            ($self:expr_2021, $pe:expr_2021, $dom:expr_2021, $start:expr_2021) => {
-                if !$pe.is_empty() {
-                    // Persist all accumulated events in a single SQLite transaction
-                    let result = $self.game_state.process_events_batch(&$pe, &$self.db_pool);
-                    $dom.extend(result.domains_updated);
-
-                    // Link corpse loot items to recent kills
-                    $self.attribute_loot_to_kills(&$pe);
-
-                    $self.app_handle.emit("player-events-batch", &$pe).ok();
-                    $pe.clear();
-                }
-                if !$dom.is_empty() {
-                    // Deduplicate domains across the batch
-                    $dom.sort_unstable();
-                    $dom.dedup();
-                    $self.app_handle.emit("game-state-updated", &$dom).ok();
-                    $dom.clear();
-                }
-                $start = Instant::now();
-            };
-        }
 
         for event in events {
             match event {
                 LogEvent::CharacterLogin { character_name, .. } => {
-                    // Flush pending batches before identity change
-                    flush_batches!(self, player_event_batch, domains_batch, batch_start);
 
                     startup_log!("Character detected from Player.log: {}", character_name);
 
@@ -922,8 +854,8 @@ impl DataIngestCoordinator {
                     if self.game_state.is_live() {
                         // A live login line re-arms an identity that was never
                         // established (fresh settings, no Player.log login line,
-                        // no chat marker): `active_character = None` makes
-                        // `process_events_batch` drop *every* event, and the chat
+                        // no chat marker): `active_character = None` makes the
+                        // chat drain drop *every* event, and the chat
                         // log's marker is the only other re-arm — it can be
                         // missed (the chat watcher tails from a saved position)
                         // or never start. Nothing clears the identity after
@@ -948,10 +880,9 @@ impl DataIngestCoordinator {
 
                     // Catch-up: the Player.log is a sequence of per-character
                     // sessions and every login line starts one. Adopt that
-                    // session's own character so its full-state dumps
-                    // (SkillsLoaded, recipes, equipment) and its deltas are
-                    // written under the character that produced them instead of
-                    // being dropped. Dropping was only needed while the ingest
+                    // session's own character so subsequent lines attribute
+                    // to the character that produced them instead of being
+                    // dropped. Dropping was only needed while the ingest
                     // identity had two owners: a switch that moved the game
                     // state but not `settings` split-brained the DB. The
                     // identity now has one owner (`GameStateManager`), and the
@@ -989,292 +920,17 @@ impl DataIngestCoordinator {
                         }
                     self.app_handle.emit("area-transition", &area).ok();
                 }
-                LogEvent::SkillUpdated(update) => {
-                    // Persist skill level/xp changes to game state DB so the
-                    // persistent view stays current between ProcessLoadSkills dumps.
-                    if let (Some(character), Some(server)) = (
-                        self.game_state.get_active_character(),
-                        self.game_state.get_active_server(),
-                    ) {
-                        // Resolve before taking the write connection: never
-                        // insert skill_id = 0 rows (the PK is
-                        // (character, server, skill_id), so distinct unknown
-                        // skills would overwrite each other).
-                        let resolved = self
-                            .game_data
-                            .blocking_read()
-                            .resolve_skill(&update.skill_type)
-                            .map(|info| (info.id as i64, info.name.clone()));
-                        match resolved {
-                            Some((skill_id, display_name)) => {
-                                if let Ok(conn) = self.db_pool.get_write() {
-                                    let base_level = update.level as i32 - update.bonus as i32;
-                                    conn.execute(
-                                        "INSERT INTO game_state_skills (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
-                                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, datetime('now'), 'log')
-                                         ON CONFLICT(character_name, server_name, skill_id) DO UPDATE SET
-                                            level = excluded.level,
-                                            base_level = excluded.base_level,
-                                            bonus_levels = excluded.bonus_levels,
-                                            xp = excluded.xp,
-                                            tnl = excluded.tnl,
-                                            last_confirmed_at = excluded.last_confirmed_at",
-                                        rusqlite::params![
-                                            character,
-                                            server,
-                                            skill_id,
-                                            display_name,
-                                            update.level as i32,  // total = raw + bonus
-                                            base_level,
-                                            update.bonus as i32,
-                                            update.xp,
-                                            update.tnl,
-                                        ],
-                                    ).ok();
-                                    domains_batch.push("skills");
-                                }
-                            }
-                            None => {
-                                // Unknown to current game data (new game skill or
-                                // stale CDN): counted, not silently dropped. The
-                                // row is skipped to protect the skill_id PK, but
-                                // the count surfaces in logs so a persistently
-                                // growing number signals CDN staleness.
-                                self.skipped_unknown_skills += 1;
-                                eprintln!(
-                                    "[coordinator] Skipping skill update for unresolvable skill: {} (total skipped: {})",
-                                    update.skill_type, self.skipped_unknown_skills
-                                );
-                            }
-                        }
-                    }
-                    self.app_handle.emit("skill-update", &update).ok();
-                }
-                LogEvent::PlayerEventParsed(mut player_event) => {
-                    // Side-channel: intercept PlayerShopLog books for Stall Tracker
-                    // ingestion before the event gets batched. The live path stamps
-                    // the active character as owner unconditionally — the game only
-                    // lets a player open their own shop log, so active == owner by
-                    // construction. The parser's advisory owner hint is ignored here.
-                    if let PlayerEvent::BookOpened {
-                        ref timestamp,
-                        ref title,
-                        ref content,
-                        ref book_type,
-                    } = player_event
-                    {
-                        if book_type == "PlayerShopLog" {
-                            self.ingest_shop_log(timestamp, title, content);
-                        } else if matches!(
-                            book_type.as_str(),
-                            "HelpScreen"
-                                | "PlayerAge"
-                                | "ServerStatus"
-                                | "SkillReport"
-                                | "GardeningAlmanac"
-                        ) {
-                            self.persist_book_report(timestamp, title, content, book_type);
-
-                            // Auto-import gourmand report when the Foods Consumed
-                            // skill report is opened. Content is normalized first:
-                            // live ProcessBook content carries escaped newlines but
-                            // the gourmand parser is line-based (historically the
-                            // live path parsed 0 entries and no-op'd).
-                            if book_type == "SkillReport"
-                                && content.trim_start().starts_with("Foods Consumed:")
-                            {
-                                let content = normalize_book_content(content);
-                                if let Ok(conn) = self.db_pool.get_write() {
-                                    match crate::db::gourmand_commands::import_gourmand_from_content(
-                                        &conn, &content,
-                                    ) {
-                                        Ok(n) if n > 0 => {
-                                            startup_log!(
-                                                "[coordinator] Auto-imported gourmand report: {} foods",
-                                                n
-                                            );
-                                            self.app_handle.emit("gourmand-updated", n).ok();
-                                        }
-                                        Ok(_) => {}
-                                        Err(e) => {
-                                            eprintln!(
-                                                "[coordinator] Failed to auto-import gourmand report: {e}"
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Auto-import hoplology study report when opened.
-                            if book_type == "SkillReport"
-                                && content.trim_start().starts_with("Equipment Studied:")
-                            {
-                                self.ingest_hoplology_report(timestamp, content);
-                            }
-
-                            // Auto-import teleportation bind locations.
-                            if book_type == "SkillReport"
-                                && content.contains("Primary Bind Location:")
-                            {
-                                self.ingest_teleportation_binds(content);
-                            }
-
-                            // Parse structured stats from PlayerAge and Behavior Report
-                            if book_type == "PlayerAge" || book_type == "HelpScreen" {
-                                self.ingest_report_stats(book_type, content);
-                            }
-
-                            // Parse almanac events. The Emotion-Harvesting Almanac
-                            // (Statehelm's AlmanacPriestHarvesting) ships under the
-                            // same "GardeningAlmanac" book type as the crop one, so
-                            // the content — not the type — picks the parser.
-                            if book_type == "GardeningAlmanac" {
-                                if content.contains("Harvesting Focuses") {
-                                    self.ingest_harvest_almanac(timestamp, content);
-                                } else {
-                                    self.ingest_garden_almanac(timestamp, content);
-                                }
-                            }
-                        }
-
-                        // Detect word of power discovery books
-                        if title == "You discovered a word of power!" {
-                            self.ingest_word_of_power(timestamp, content);
-                        }
-                    }
-
-                    // Track cow interactions for milking timer feature
-                    match &player_event {
-                        PlayerEvent::InteractionStarted { npc_name, .. }
-                            if npc_name.starts_with("Cow_") =>
-                        {
-                            self.pending_cow_interaction = Some(npc_name.clone());
-                        }
-                        PlayerEvent::InteractionEnded { .. } => {
-                            self.pending_cow_interaction = None;
-                        }
-                        PlayerEvent::ScreenText {
-                            category,
-                            message,
-                            timestamp,
-                            ..
-                        } if category == "ErrorMessage" => {
-                            // "You've already milked Homer in the past hour." — bounds
-                            // the milk to (timestamp - 1h, timestamp]; it does not say
-                            // when it happened (see `record_cow_milk_backfill`).
-                            if let Some(cow_name) = message
-                                .strip_prefix("You've already milked ")
-                                .and_then(|s| s.strip_suffix(" in the past hour."))
-                            {
-                                // `peek_utc`, not `to_utc`: this side channel runs
-                                // before the event's batch is replayed, and a
-                                // resolve here would advance the session date
-                                // baseline out of order (see `peek_utc`).
-                                let ts = self.game_state.peek_utc(timestamp);
-                                self.record_cow_milk_backfill(cow_name, &ts);
-                            }
-                        }
-                        PlayerEvent::ScreenText {
-                            category,
-                            message,
-                            timestamp,
-                            ..
-                        } if category == "GeneralInfo" => {
-                            // "You obtain fresh milk from PlayerName."
-                            if let Some(player_name) = message
-                                .strip_prefix("You obtain fresh milk from ")
-                                .and_then(|s| s.strip_suffix('.'))
-                            {
-                                // `timestamp` is a bare "HH:MM:SS" UTC clock time;
-                                // add the date (respecting any replay override),
-                                // without advancing the batch's rollover baseline.
-                                let ts = self.game_state.peek_utc(timestamp);
-                                self.record_player_milk(player_name, "milked", &ts);
-                            }
-                        }
-                        PlayerEvent::ScreenText {
-                            category,
-                            message,
-                            timestamp,
-                            ..
-                        } if category == "ImportantInfo" => {
-                            // "PlayerName has milked you." — same normalizer as the
-                            // Chat `[Status]` path (fail-closed on empty/dotted names).
-                            if let Some(player_name) =
-                                crate::chat_status_parser::strip_milked_by_suffix(message)
-                            {
-                                let ts = self.game_state.peek_utc(timestamp);
-                                self.record_player_milk(&player_name, "milked_by", &ts);
-                            }
-                        }
-                        // "ProcessDoDelayLoop(1.5, Eat, "Using <Food Name>", ...)" fires
-                        // exactly once per food eaten, with the food name in plain text —
-                        // no instance-ID/effect-ID resolution needed.
-                        PlayerEvent::DelayLoopStarted {
-                            action_type, label, ..
-                        } if action_type == "Eat" => {
-                            if let Some(food_name) = label.strip_prefix("Using ")
-                                && let Ok(conn) = self.db_pool.get_write() {
-                                    match crate::db::gourmand_commands::record_food_eaten(
-                                        &conn, food_name,
-                                    ) {
-                                        Ok(()) => {
-                                            self.app_handle.emit("gourmand-updated", 1).ok();
-                                        }
-                                        Err(e) => {
-                                            eprintln!(
-                                                "[coordinator] Failed to record eaten food: {e}"
-                                            );
-                                        }
-                                    }
-                                }
-                        }
-                        _ => {}
-                    }
-
-                    // Phase 5 survey aggregator. Runs *before* game_state
-                    // persists the event so any survey_use_id it injects into
-                    // provenance reaches item_transactions.source_details.
-                    // Failure to acquire a DB connection is non-fatal — the
-                    // aggregator's writes are deferrable, and skipping a tick
-                    // is better than dropping the event entirely.
-                    let active_char = self.game_state.get_active_character().map(String::from);
-                    let active_server = self.game_state.get_active_server().map(String::from);
-                    if let (Some(character), Some(server), Ok(conn)) =
-                        (active_char, active_server, self.db_pool.get_write())
-                    {
-                        let agg_events = self.survey_aggregator.process_event(
-                            &mut player_event,
-                            &conn,
-                            &character,
-                            &server,
-                            self.current_area.as_deref(),
-                        );
-                        for ev in agg_events {
-                            self.emit_survey_aggregator_event(&ev);
-                        }
-                    }
-
-                    // Accumulate player events — DB persistence happens on flush
-                    // in a single transaction for better performance during rapid events
-                    player_event_batch.push(player_event);
-
-                    // Flush if batch is full or old enough
-                    if player_event_batch.len() >= BATCH_MAX_SIZE
-                        || batch_start.elapsed() >= BATCH_MAX_AGE
-                    {
-                        flush_batches!(self, player_event_batch, domains_batch, batch_start);
-                    }
-                }
                 _ => {
                     // Other events not yet implemented
                 }
             }
         }
 
-        // Flush any remaining events
-        flush_batches!(self, player_event_batch, domains_batch, batch_start);
-        let _ = batch_start; // suppress "value assigned but never read" on final flush
+        if !domains_batch.is_empty() {
+            domains_batch.sort_unstable();
+            domains_batch.dedup();
+            self.app_handle.emit("game-state-updated", &domains_batch).ok();
+        }
 
         Ok(())
     }
@@ -1352,19 +1008,17 @@ impl DataIngestCoordinator {
                             })
                     };
 
-                    // The shared dispatch owns every idempotent DB arm. Three
+                    // The shared dispatch owns every idempotent DB arm. Two
                     // live-only follow-ups stay here because they need
                     // `&mut self` borrows the dispatch does not take:
-                    // (1) the player-watcher's `feed_chat_gain` correlation
-                    // buffer, (2) stack correction inline (live) vs
-                    // session-keyed (catch-up), (3) survey attribution
-                    // through the live aggregator's gating state.
+                    // (1) stack correction inline (live) vs session-keyed
+                    // (catch-up), (2) survey attribution through the live
+                    // aggregator's gating state.
                     let mut outcome = {
                         let mut dstate = DispatchState {
                             arena_tracker: &mut self.arena_tracker,
                             last_rez_dedup: &mut self.last_rez_dedup,
                             recent_damage: &mut self.recent_damage,
-                            pending_cow_interaction: &mut self.pending_cow_interaction,
                             current_area: self.current_area.clone(),
                             // Live drain owns the accumulator: each line is
                             // seen once here, so accrual is exactly-once.
@@ -1406,16 +1060,6 @@ impl DataIngestCoordinator {
                                 .unwrap_or((None, None));
                         let ts_utc = msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
                         if is_live {
-                            if let (Some(internal), Some(watcher)) =
-                                (internal_name.clone(), self.player_watcher.as_mut())
-                            {
-                                // Timestamp is UTC — extract the time portion.
-                                let hms = ts_utc
-                                    .split_whitespace()
-                                    .nth(1)
-                                    .unwrap_or(&ts_utc);
-                                watcher.feed_chat_gain(internal, quantity, hms);
-                            }
                             // Correct inventory/storage stack sizes.
                             let corrected = self.game_state.correct_stack_from_chat(
                                 &item_name,
@@ -1443,7 +1087,7 @@ impl DataIngestCoordinator {
                             let is_loot = matches!(
                                 crate::chat_status_parser::parse_status_message(&msg),
                                 Some(ChatStatusEvent::ItemGained { .. })
-                            );
+                            ) || msg.json_type.as_deref() == Some("AddItem");
                             if is_loot
                                 && let (Some(id), Ok(conn)) =
                                     (identity.as_ref(), self.db_pool.get_write())
@@ -1489,25 +1133,6 @@ impl DataIngestCoordinator {
                         let _ = item_type_id;
                     }
 
-                    // Arena bet rescan on a fresh resolution.
-                    if outcome.arena_resolved {
-                        let mut changed = true;
-                        match crate::db::arena_commands::backfill_bets_from_player_logs(
-                            &self.settings,
-                            &self.db_pool,
-                        ) {
-                            Ok(n) if n > 0 => {}
-                            Ok(_) => changed = outcome.domains.iter().any(|d| d == "arena"),
-                            Err(e) => {
-                                eprintln!("[coordinator] Arena bet rescan failed: {e}");
-                                changed = outcome.domains.iter().any(|d| d == "arena");
-                            }
-                        }
-                        if !changed {
-                            outcome.domains.retain(|d| d != "arena");
-                        }
-                    }
-
                     // Forward structured emits + touched domains.
                     if let Some(ev) = outcome.chat_status_event.take() {
                         self.app_handle.emit("chat-status-event", &ev).ok();
@@ -1535,6 +1160,59 @@ impl DataIngestCoordinator {
                             eprintln!(
                                 "[coordinator] Skipping chat level-up for unresolvable skill: {skill}"
                             );
+                        }
+                    }
+
+                    if !outcome.malformed_json.is_empty() {
+                        self.skipped_json_malformed += outcome.malformed_json.len() as u64;
+                        for t in &outcome.malformed_json {
+                            eprintln!(
+                                "[coordinator] Skipping malformed JSON chat line of type: {t}"
+                            );
+                        }
+                    }
+
+                    for t in std::mem::take(&mut outcome.unknown_json) {
+                        eprintln!("[coordinator] Unobserved JSON chat line of type: {t} (raw row kept)");
+                    }
+
+                    // VIP JSON books: the upsert already ran in shared dispatch
+                    // (live + scan + replay); the content triggers below mirror
+                    // the live `BookOpened` arm verbatim and stay live-only —
+                    // the old arm had no scan equivalent either. JSON bodies
+                    // are serde_json-decoded, so newlines are already real and
+                    // the `normalize_book_content` step is skipped.
+                    if let Some((book_type, _title, body, at)) = outcome.json_book.take() {
+                        if book_type == "SkillReport"
+                            && body.trim_start().starts_with("Foods Consumed:")
+                            && let Ok(conn) = self.db_pool.get_write()
+                        {
+                            match crate::db::gourmand_commands::import_gourmand_from_content(
+                                &conn, &body,
+                            ) {
+                                Ok(n) if n > 0 => {
+                                    self.app_handle.emit("gourmand-updated", n).ok();
+                                }
+                                Ok(_) => {}
+                                Err(e) => {
+                                    eprintln!(
+                                        "[coordinator] Failed to auto-import gourmand report from JSON book: {e}"
+                                    );
+                                }
+                            }
+                        }
+                        if book_type == "SkillReport"
+                            && body.trim_start().starts_with("Equipment Studied:")
+                        {
+                            self.ingest_hoplology_report(&at, &body);
+                        }
+                        if book_type == "SkillReport"
+                            && body.contains("Primary Bind Location:")
+                        {
+                            self.ingest_teleportation_binds(&body);
+                        }
+                        if book_type == "PlayerAge" || book_type == "HelpScreen" {
+                            self.ingest_report_stats(&book_type, &body);
                         }
                     }
                     if !outcome.domains.is_empty() {
@@ -1576,7 +1254,7 @@ impl DataIngestCoordinator {
                     settings.active_server_name = Some(server_name.clone());
                     self.settings.update(settings).ok();
 
-                    // Update game state so process_events_batch doesn't early-return
+                    // Update game state so the chat drain attributes to this server
                     self.game_state.set_active_server_name(&server_name);
 
                     // Emit to frontend
@@ -1710,502 +1388,6 @@ impl DataIngestCoordinator {
         }
     }
 
-    /// Persist an enemy kill to the database and cache the entity_id→kill_id mapping
-    /// for later loot attribution.
-    ///
-    /// Record a lootable searched corpse as a kill row (the drop-rate
-    /// denominator) and cache its entity_id → kill_id for loot attribution.
-    ///
-    /// Fired from `PlayerEvent::CorpseSearched`. A corpse is searched by many
-    /// `Search Corpse of X` lines (one per looted item); the unique index on
-    /// `(character, server, entity_id, killed_at)` plus the cache collapse those
-    /// to ONE kill row per corpse, keyed to the FIRST search's timestamp.
-    /// No-permission corpses (`has_permission = false`) aren't the player's kill,
-    /// so they're skipped (excluded from the denominator).
-    fn process_corpse_search(
-        &mut self,
-        corpse_entity_id: u32,
-        corpse_name: &str,
-        timestamp: &str,
-        has_permission: bool,
-    ) {
-        if !has_permission {
-            return;
-        }
-        // Already recorded this corpse (a later Search Corpse line) — keep the
-        // first-search row and its cached kill_id.
-        if self.recent_kills.contains_key(&corpse_entity_id) {
-            return;
-        }
-
-        let character_name = self
-            .game_state
-            .get_active_character()
-            .unwrap_or("Unknown")
-            .to_string();
-        let server_name = self
-            .game_state
-            .get_active_server()
-            .unwrap_or("Unknown")
-            .to_string();
-        let entity_id_str = corpse_entity_id.to_string();
-
-        let conn = match self.db_pool.get_write() {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("Failed to get DB connection for corpse search: {e}");
-                return;
-            }
-        };
-
-        // Zone (internal area key) the corpse was searched in — drop rates vary
-        // by zone for the same monster name, so it's recorded per kill.
-        let zone = self.current_area.as_deref();
-        // Equipped combat-skill loadout at the time — drop rates also vary by it.
-        let combat_skills = self.current_combat_skills.as_deref();
-
-        // INSERT OR IGNORE against the dedup unique index
-        // (character, server, entity_id, killed_at) so a corpse already captured
-        // by a Player-prev backfill (same entity_id + first-search timestamp) is
-        // written at most once. killing_ability/damage are unknown from a corpse
-        // search, so they're left empty/zero.
-        match conn.execute(
-            "INSERT OR IGNORE INTO enemy_kills
-                (enemy_name, enemy_entity_id, killing_ability,
-                 health_damage, armor_damage, killed_at, character_name, server_name, zone, combat_skills)
-             VALUES (?1, ?2, '', 0, 0, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                corpse_name,
-                entity_id_str,
-                timestamp,
-                character_name,
-                server_name,
-                zone,
-                combat_skills,
-            ],
-        ) {
-            Ok(inserted) => {
-                let kill_id = if inserted > 0 {
-                    conn.last_insert_rowid()
-                } else {
-                    conn.query_row(
-                        "SELECT id FROM enemy_kills
-                         WHERE character_name IS ?1 AND server_name IS ?2
-                           AND enemy_entity_id = ?3 AND killed_at = ?4",
-                        rusqlite::params![character_name, server_name, entity_id_str, timestamp],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .unwrap_or(-1)
-                };
-                if kill_id >= 0 {
-                    self.recent_kills
-                        .insert(corpse_entity_id, (kill_id, std::time::Instant::now()));
-                }
-                // Prune old entries (> 120s) to prevent unbounded growth
-                self.recent_kills.retain(|_, (_, t)| t.elapsed().as_secs() < 120);
-            }
-            Err(e) => {
-                eprintln!("Failed to insert corpse-search kill: {e}");
-            }
-        }
-    }
-
-    /// Process a batch of player events: record searched corpses, then attribute
-    /// loot to them. Events arrive in log order, so a corpse's `CorpseSearched`
-    /// precedes its `LootPickedUp` items within the batch.
-    ///
-    /// Loot dedup is by the item's `instance_id` (`INSERT OR IGNORE` on the
-    /// `(kill_id, instance_id)` unique index): two separate single-stacks of the
-    /// same item off one corpse have distinct instance ids, so they stay as two
-    /// rows; only a genuine re-read of the same instance is collapsed.
-    fn attribute_loot_to_kills(&mut self, events: &[PlayerEvent]) {
-        for event in events {
-            match event {
-                // Track the equipped combat-skill loadout as it changes so the
-                // next searched corpse is tagged with it. Both events carry the
-                // two active skills; they fire on login/zone-in and on skill swap.
-                PlayerEvent::ActiveSkillsChanged { skill1, skill2, .. }
-                | PlayerEvent::AbilitiesLoaded { skill1, skill2, .. } => {
-                    self.current_combat_skills = normalize_combat_loadout(skill1, skill2);
-                }
-                PlayerEvent::CorpseSearched {
-                    timestamp,
-                    corpse_entity_id,
-                    corpse_name,
-                    has_permission,
-                } => {
-                    self.process_corpse_search(
-                        *corpse_entity_id,
-                        corpse_name,
-                        timestamp,
-                        *has_permission,
-                    );
-                }
-                PlayerEvent::LootPickedUp {
-                    corpse_entity_id: Some(corpse_entity_id),
-                    item_name: Some(item_name),
-                    instance_id,
-                    quantity,
-                    ..
-                } => {
-                    if item_name.is_empty() {
-                        continue;
-                    }
-                    let kill_id = match self.recent_kills.get(corpse_entity_id) {
-                        Some((id, _)) => *id,
-                        None => continue,
-                    };
-                    // Store instance_id bit-preserved as a signed i64 so the same
-                    // string maps to the same dedup key as the backfill path.
-                    let instance_id_signed = *instance_id as i64;
-                    if let Ok(conn) = self.db_pool.get_write() {
-                        conn.execute(
-                            "INSERT OR IGNORE INTO enemy_kill_loot
-                                (kill_id, item_name, quantity, instance_id)
-                             VALUES (?1, ?2, ?3, ?4)",
-                            rusqlite::params![kill_id, item_name, *quantity, instance_id_signed],
-                        )
-                        .ok();
-                    }
-                }
-                PlayerEvent::CorpseExtract {
-                    timestamp,
-                    item_name,
-                    quantity,
-                    skill,
-                    corpse_name,
-                    skill_level,
-                    equipment_bonus,
-                    anatomy_family,
-                    anatomy_level,
-                    ..
-                } => {
-                    if item_name.is_empty() {
-                        continue;
-                    }
-                    let character = self.game_state.get_active_character().map(String::from);
-                    let server = self.game_state.get_active_server().map(String::from);
-                    if let Ok(conn) = self.db_pool.get_write() {
-                        conn.execute(
-                            "INSERT INTO corpse_extracts
-                                (character_name, server_name, corpse_name, item_name,
-                                 quantity, skill, skill_level, equipment_bonus,
-                                 anatomy_family, anatomy_level, extracted_at)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                            rusqlite::params![
-                                character,
-                                server,
-                                corpse_name,
-                                item_name,
-                                *quantity,
-                                skill,
-                                skill_level,
-                                equipment_bonus,
-                                anatomy_family,
-                                anatomy_level,
-                                timestamp,
-                            ],
-                        )
-                        .ok();
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// Translate a [`SurveyAggregatorEvent`] into a Tauri event emit. Each
-    /// variant maps to a frontend-visible event name; payloads are serialized
-    /// to JSON via serde so the frontend can destructure with a matching type.
-    fn emit_survey_aggregator_event(&self, event: &SurveyAggregatorEvent) {
-        match event {
-            SurveyAggregatorEvent::SessionStarted {
-                session_id,
-                trigger,
-            } => {
-                let payload = serde_json::json!({
-                    "session_id": session_id,
-                    "trigger": trigger.as_str(),
-                });
-                self.app_handle
-                    .emit("survey-tracker-session-started", &payload)
-                    .ok();
-            }
-            SurveyAggregatorEvent::SessionEnded { session_id, reason } => {
-                let payload = serde_json::json!({
-                    "session_id": session_id,
-                    "reason": reason,
-                });
-                self.app_handle
-                    .emit("survey-tracker-session-ended", &payload)
-                    .ok();
-            }
-            SurveyAggregatorEvent::UseRecorded {
-                use_id,
-                session_id,
-                map_internal_name,
-                kind,
-            } => {
-                let payload = serde_json::json!({
-                    "use_id": use_id,
-                    "session_id": session_id,
-                    "map_internal_name": map_internal_name,
-                    "kind": kind.as_str(),
-                });
-                self.app_handle
-                    .emit("survey-tracker-use-recorded", &payload)
-                    .ok();
-            }
-            SurveyAggregatorEvent::UseCompleted { use_id } => {
-                self.app_handle
-                    .emit("survey-tracker-use-completed", use_id)
-                    .ok();
-            }
-            SurveyAggregatorEvent::MultihitNodeOpened {
-                use_id,
-                node_entity_id,
-            } => {
-                let payload = serde_json::json!({
-                    "use_id": use_id,
-                    "node_entity_id": node_entity_id,
-                });
-                self.app_handle
-                    .emit("survey-tracker-multihit-opened", &payload)
-                    .ok();
-            }
-            SurveyAggregatorEvent::MultihitNodeClosed {
-                use_id,
-                node_entity_id,
-            } => {
-                let payload = serde_json::json!({
-                    "use_id": use_id,
-                    "node_entity_id": node_entity_id,
-                });
-                self.app_handle
-                    .emit("survey-tracker-multihit-closed", &payload)
-                    .ok();
-            }
-        }
-    }
-
-    /// Persist a non-shop book report (behavior report, age, server status,
-    /// skill reports, gardening almanac) to `game_state_books`. Upserts by
-    /// (character, server, book_type, title) so re-running a report overwrites.
-    fn persist_book_report(&self, _timestamp: &str, title: &str, content: &str, book_type: &str) {
-        let Some((character, server)) = self.active_character_server() else {
-            return;
-        };
-        if let Err(e) = persist_book_content(
-            &self.db_pool,
-            &self.app_handle,
-            &character,
-            &server,
-            book_type,
-            title,
-            content,
-        ) {
-            eprintln!("[coordinator] Failed to persist book: {e}");
-        }
-    }
-
-    /// Parse the Gardening Almanac HTML content and persist structured events
-    /// to the `garden_almanac` table. Replaces all previous entries for this
-    /// character+server on each read so the table always reflects the latest
-    /// almanac snapshot.
-    fn ingest_garden_almanac(&self, timestamp: &str, content: &str) {
-        let (character, server) = match self.active_character_server() {
-            Some(cs) => cs,
-            None => return,
-        };
-
-        let mut conn = match self.db_pool.get_write() {
-            Ok(c) => c,
-            Err(e) => {
-                startup_log!("[coordinator] garden almanac write connection failed: {e}");
-                return;
-            }
-        };
-
-        let _ = timestamp; // timestamp not needed; we use wall-clock time
-        let captured_at = chrono::Utc::now().to_rfc3339();
-
-        // Parse the almanac HTML content into events.
-        // Format: <h2>CropName Season in ZoneName</h2> ... <i>Ends/Starts in ...</i>
-        let events = parse_almanac_content(content, &captured_at);
-        if events.is_empty() {
-            return;
-        }
-
-        let tx = match conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
-            Ok(t) => t,
-            Err(e) => {
-                startup_log!("[coordinator] garden almanac transaction failed: {e}");
-                return;
-            }
-        };
-
-        let result = (|| -> rusqlite::Result<()> {
-            // Replace all previous entries for this character+server
-            tx.execute(
-                "DELETE FROM garden_almanac WHERE character_name = ?1 AND server_name = ?2",
-                rusqlite::params![character, server],
-            )?;
-
-            for event in &events {
-                tx.execute(
-                    "INSERT INTO garden_almanac (character_name, server_name, crop_name, zone_name, event_start, event_end, is_current, captured_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    rusqlite::params![
-                        character,
-                        server,
-                        event.crop_name,
-                        event.zone_name,
-                        event.event_start,
-                        event.event_end,
-                        event.is_current as i32,
-                        event.captured_at,
-                    ],
-                )?;
-
-                // Save to history (deduplicate by crop+zone+event timing)
-                let event_key_start = event.event_start.as_deref().unwrap_or("");
-                let event_key_end = event.event_end.as_deref().unwrap_or("");
-                let exists: bool = tx
-                    .query_row(
-                        "SELECT COUNT(*) > 0 FROM garden_almanac_history
-                         WHERE character_name = ?1 AND server_name = ?2
-                           AND crop_name = ?3 AND zone_name = ?4
-                           AND COALESCE(event_start, '') = ?5
-                           AND COALESCE(event_end, '') = ?6",
-                        rusqlite::params![
-                            character,
-                            server,
-                            event.crop_name,
-                            event.zone_name,
-                            event_key_start,
-                            event_key_end,
-                        ],
-                        |row| row.get(0),
-                    )
-                    .unwrap_or(false);
-
-                if !exists {
-                    tx.execute(
-                        "INSERT INTO garden_almanac_history (character_name, server_name, crop_name, zone_name, event_start, event_end, captured_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                        rusqlite::params![
-                            character,
-                            server,
-                            event.crop_name,
-                            event.zone_name,
-                            event.event_start,
-                            event.event_end,
-                            event.captured_at,
-                        ],
-                    )?;
-                }
-            }
-            Ok(())
-        })();
-
-        if let Err(e) = result {
-            startup_log!("[coordinator] garden almanac transaction failed: {e}");
-            // tx dropped here → rollback
-            return;
-        }
-
-        if let Err(e) = tx.commit() {
-            startup_log!("[coordinator] garden almanac transaction failed: {e}");
-            return;
-        }
-
-        startup_log!(
-            "[coordinator] Ingested {} garden almanac events",
-            events.len()
-        );
-        self.app_handle
-            .emit("game-state-updated", vec!["garden_almanac"])
-            .ok();
-    }
-
-    /// Parse the Emotion-Harvesting Almanac and persist the day's harvesting
-    /// foci to `harvest_almanac`. Like the garden almanac, the whole snapshot is
-    /// replaced on each read so the table always reflects the latest reading.
-    fn ingest_harvest_almanac(&self, timestamp: &str, content: &str) {
-        let (character, server) = match self.active_character_server() {
-            Some(cs) => cs,
-            None => return,
-        };
-
-        let mut conn = match self.db_pool.get_write() {
-            Ok(c) => c,
-            Err(e) => {
-                startup_log!("[coordinator] harvest almanac write connection failed: {e}");
-                return;
-            }
-        };
-
-        let _ = timestamp; // timestamp not needed; we use wall-clock time
-        let captured_at = chrono::Utc::now().to_rfc3339();
-
-        let events = parse_harvest_almanac_content(content, &captured_at);
-        if events.is_empty() {
-            return;
-        }
-
-        let tx = match conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {
-            Ok(t) => t,
-            Err(e) => {
-                startup_log!("[coordinator] harvest almanac transaction failed: {e}");
-                return;
-            }
-        };
-
-        let result = (|| -> rusqlite::Result<()> {
-            tx.execute(
-                "DELETE FROM harvest_almanac WHERE character_name = ?1 AND server_name = ?2",
-                rusqlite::params![character, server],
-            )?;
-
-            for event in &events {
-                tx.execute(
-                    "INSERT INTO harvest_almanac (character_name, server_name, monster_name, description, event_start, event_end, is_current, captured_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    rusqlite::params![
-                        character,
-                        server,
-                        event.monster_name,
-                        event.description,
-                        event.event_start,
-                        event.event_end,
-                        event.is_current as i32,
-                        event.captured_at,
-                    ],
-                )?;
-            }
-            Ok(())
-        })();
-
-        if let Err(e) = result {
-            startup_log!("[coordinator] harvest almanac transaction failed: {e}");
-            // tx dropped here → rollback
-            return;
-        }
-
-        if let Err(e) = tx.commit() {
-            startup_log!("[coordinator] harvest almanac transaction failed: {e}");
-            return;
-        }
-
-        startup_log!(
-            "[coordinator] Ingested {} harvest almanac foci",
-            events.len()
-        );
-        self.app_handle
-            .emit("game-state-updated", vec!["harvest_almanac"])
-            .ok();
-    }
-
     /// Parse structured stats from PlayerAge or Behavior Report books and
     /// persist them to the `character_stats` table as key-value pairs.
     fn ingest_report_stats(&self, book_type: &str, content: &str) {
@@ -2223,84 +1405,6 @@ impl DataIngestCoordinator {
         .map_err(|e| eprintln!("[coordinator] {e}"))
         .ok();
     }
-
-    // ── Milking timers ────────────────────────────────────────────
-
-
-
-    /// The game refused the milk with "You've already milked X in the past hour.",
-    /// which bounds the real milk to `(attempt - 1h, attempt]` — it does not say
-    /// when it happened. Record that bound (`record_cow_cooldown_bound`) instead of
-    /// fabricating a stamp: the widget shows "≤ Xm" from it and a known milk time,
-    /// once one arrives, clears the flag. `timestamp` is the error line's own UTC
-    /// time, so a replayed log yields the same bound.
-    fn record_cow_milk_backfill(&self, cow_name: &str, timestamp: &str) {
-        let (character, server) = match self.active_character_server() {
-            Some(cs) => cs,
-            None => return,
-        };
-        let zone = self.current_area.clone().unwrap_or_default();
-        let attempt_at = milking_event_timestamp(timestamp);
-        let conn = match self.db_pool.get_write() {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        if let Err(e) = crate::db::game_state_commands::record_cow_cooldown_bound(
-            &conn,
-            &character,
-            &server,
-            cow_name,
-            &zone,
-            &attempt_at,
-        ) {
-            eprintln!("[coordinator] {e}");
-            return;
-        }
-        self.app_handle
-            .emit("game-state-updated", vec!["milking"])
-            .ok();
-    }
-
-    /// Record a player-to-player milking event.
-    /// direction is "milked" (I milked them) or "milked_by" (they milked me).
-    ///
-    /// `timestamp` is the event's own UTC time (`"YYYY-MM-DD HH:MM:SS"` for
-    /// Player.log lines, already UTC-converted for chat lines). It is stored as
-    /// `milked_at`: the row must say when the milking happened, not when Glogger
-    /// got around to ingesting it (which could be hours later on catch-up).
-    fn record_player_milk(&self, other_player: &str, direction: &str, timestamp: &str) {
-        let (character, server) = match self.active_character_server() {
-            Some(cs) => cs,
-            None => return,
-        };
-        let milked_at = milking_event_timestamp(timestamp);
-        let conn = match self.db_pool.get_write() {
-            Ok(c) => c,
-            Err(_) => return,
-        };
-        match crate::db::game_state_commands::record_milking_event(
-            &conn,
-            &character,
-            &server,
-            other_player,
-            direction,
-            &milked_at,
-        ) {
-            // Already recorded (the Chat.log backfill got there first, or this
-            // line was replayed) — the counter must not move.
-            Ok(false) => return,
-            Ok(true) => {}
-            Err(e) => {
-                eprintln!("[coordinator] Failed to record milking event: {e}");
-                return;
-            }
-        }
-        self.app_handle
-            .emit("game-state-updated", vec!["milking"])
-            .ok();
-    }
-
-
 
     /// Parse teleportation bind locations from a "Skill Info" SkillReport book
     /// and persist them to `game_state_teleportation`.
@@ -2357,152 +1461,6 @@ impl DataIngestCoordinator {
             Ok(0) => startup_log!("[coordinator] Hoplology report: no new items"),
             Ok(_) => {} // logged inside
             Err(e) => eprintln!("[coordinator] Hoplology report failed: {e}"),
-        }
-    }
-
-    /// Extract and persist a word of power from a "You discovered a word of power!" book.
-    ///
-    /// The word is wrapped in `<sel>WORD</sel>` and the power name follows
-    /// `<size=125%>Word of Power: NAME</size>` in the book content. The full
-    /// description text (between the power name and the disclaimer) is saved too.
-    fn ingest_word_of_power(&self, _timestamp: &str, content: &str) {
-        // Extract word from <sel>WORD</sel>
-        let word = match content.find("<sel>") {
-            Some(start) => {
-                let after = &content[start + 5..];
-                match after.find("</sel>") {
-                    Some(end) => after[..end].to_string(),
-                    None => return,
-                }
-            }
-            None => return,
-        };
-
-        // Extract power name from <size=125%>Word of Power: NAME</size>
-        let power_name = match content.find("<size=125%>") {
-            Some(start) => {
-                let after = &content[start + 11..];
-                match after.find("</size>") {
-                    Some(end) => {
-                        let raw = &after[..end];
-                        // Strip "Word of Power: " prefix if present
-                        raw.strip_prefix("Word of Power: ")
-                            .unwrap_or(raw)
-                            .to_string()
-                    }
-                    None => return,
-                }
-            }
-            None => return,
-        };
-
-        // Extract description: everything between the closing </size> of the name
-        // and the disclaimer italic block
-        let description = content.find("</size></b>").and_then(|pos| {
-            let after = content[pos + 11..].trim_start_matches("\\n").trim();
-            // Stop before the disclaimer block
-            let end = after.find("<i><size=75%>").unwrap_or(after.len());
-            let desc = after[..end]
-                .trim()
-                .trim_matches('\\')
-                .trim_matches('n')
-                .trim();
-            if desc.is_empty() {
-                None
-            } else {
-                // Clean up escaped newlines
-                Some(desc.replace("\\n", "\n").trim().to_string())
-            }
-        });
-
-        let Some((char_name, server_name)) = self.active_character_server() else {
-            return;
-        };
-
-        let dt = chrono::Utc::now().to_rfc3339();
-
-        if let Ok(conn) = self.db_pool.get_write() {
-            match crate::db::words_of_power_commands::insert_word_of_power(
-                &conn,
-                &char_name,
-                &server_name,
-                &word,
-                &power_name,
-                description.as_deref(),
-                &dt,
-            ) {
-                Ok(_id) => {
-                    startup_log!(
-                        "[coordinator] Word of power recorded: {} ({})",
-                        power_name,
-                        word
-                    );
-                    self.app_handle
-                        .emit("game-state-updated", vec!["words_of_power"])
-                        .ok();
-                }
-                Err(e) => {
-                    eprintln!("[coordinator] Failed to save word of power: {e}");
-                }
-            }
-        }
-    }
-
-    /// Parse a PlayerShopLog book body and persist its entries to the
-    /// `stall_events` table, stamped with the active character as owner.
-    ///
-    /// Called from the `PlayerEventParsed` arm when a `BookOpened` event
-    /// with `book_type == "PlayerShopLog"` arrives. During initial catch-up
-    /// replay we still want to ingest, so this reads the ingest identity
-    /// directly rather than gating on `game_state.is_live()`.
-    fn ingest_shop_log(&self, log_timestamp: &str, title: &str, content: &str) {
-        // Keyed by the ingest identity (the session being replayed), not the
-        // durable selection: during catch-up the selection deliberately trails
-        // the replay, and these rows come from the log's own book.
-        let Some(active_character) = self.game_state.get_active_character().map(str::to_string)
-        else {
-            return;
-        };
-
-        // Double-parse: the resolver needs the oldest entry's raw timestamp
-        // before we know the base year. The first parse is a probe (only its
-        // `entries.first().timestamp` is read) and the second is authoritative.
-        // Regex parsing is bounded by book size and dominated by the DB write
-        // that follows, so the redundant resolver pass is a non-issue in
-        // practice — revisit if profiling ever says otherwise.
-        let probe = parse_shop_log(title, content, log_timestamp, 1970);
-        let Some(first) = probe.entries.first() else {
-            return;
-        };
-        let base_year = base_year_for_live(&first.timestamp);
-        let shop_log = parse_shop_log(title, content, log_timestamp, base_year);
-
-        let inputs: Vec<StallEventInput> = shop_log
-            .entries
-            .iter()
-            .map(|e| StallEventInput {
-                event_timestamp: e.timestamp.clone(),
-                event_at: e.event_at.clone(),
-                log_timestamp: shop_log.log_timestamp.clone(),
-                log_title: shop_log.title.clone(),
-                action: e.action.clone(),
-                player: e.player.clone(),
-                owner: Some(active_character.clone()),
-                item: e.item.clone(),
-                quantity: e.quantity,
-                price_unit: e.price_unit,
-                price_total: e.price_total,
-                raw_message: e.raw_message.clone(),
-                entry_index: e.entry_index,
-            })
-            .collect();
-
-        match insert_stall_events(&self.db_pool, &inputs) {
-            Ok(0) => {}
-            Ok(n) => {
-                self.app_handle.emit("stall-events-updated", n).ok();
-            }
-            Err(e) => eprintln!("[coordinator] Failed to persist stall events: {e}"),
         }
     }
 
@@ -2899,280 +1857,18 @@ pub fn debug_capture_status(
 }
 
 // ============================================================
-// Helpers
-// ============================================================
-
-/// A parsed almanac event (current or upcoming gardening bonus).
-struct AlmanacEvent {
-    crop_name: String,
-    zone_name: String,
-    event_start: Option<String>,
-    event_end: Option<String>,
-    is_current: bool,
-    captured_at: String,
-}
-
-/// Parse gardening almanac HTML content into structured events.
-///
-/// The almanac content has this structure:
-/// ```text
-/// <h1>Current Gardening Events:</h1>
-/// <indent=20><h2>CropName Season in ZoneName</h2></indent>
-/// <indent=20>Description...</indent>
-/// <indent=20><i>Ends in X hours Y minutes</i></indent>
-///
-/// <h1>Upcoming Gardening Events:</h1>
-/// <indent=20><h2>CropName Season in ZoneName</h2></indent>
-/// <indent=20>Description...</indent>
-/// <indent=20><i>Starts in X hours Y minutes</i></indent>
-/// ```
-fn parse_almanac_content(content: &str, captured_at: &str) -> Vec<AlmanacEvent> {
-    let mut events = Vec::new();
-    let mut in_current_section = false;
-
-    // Track the last parsed crop+zone so we can attach timing info
-    let mut pending_crop: Option<String> = None;
-    let mut pending_zone: Option<String> = None;
-
-    let captured_dt = chrono::DateTime::parse_from_rfc3339(captured_at)
-        .map(|d| d.with_timezone(&chrono::Utc))
-        .unwrap_or_else(|_| chrono::Utc::now());
-
-    for line in content.split("\\n").chain(content.split('\n')) {
-        let line = line.trim();
-
-        if line.contains("Current Gardening Events") {
-            in_current_section = true;
-            continue;
-        }
-        if line.contains("Upcoming Gardening Events") {
-            in_current_section = false;
-            continue;
-        }
-
-        // Parse <h2>CropName Season in ZoneName</h2>
-        if let Some(h2_content) = extract_tag_content(line, "h2") {
-            if let Some((crop, zone)) = parse_season_heading(&h2_content) {
-                pending_crop = Some(crop);
-                pending_zone = Some(zone);
-            }
-            continue;
-        }
-
-        // Parse <i>Ends in X hours Y minutes</i> or <i>Starts in X hours Y minutes</i>
-        if let Some(i_content) = extract_tag_content(line, "i")
-            && let (Some(crop), Some(zone)) = (pending_crop.take(), pending_zone.take()) {
-                let duration = parse_duration_text(&i_content);
-                let is_current = in_current_section;
-
-                let (event_start, event_end) = if i_content.starts_with("Ends in") {
-                    // Current event: started before now, ends in `duration`
-                    let end = duration.map(|d| (captured_dt + d).to_rfc3339());
-                    (None, end)
-                } else if i_content.starts_with("Starts in") {
-                    // Upcoming event: starts in `duration`
-                    let start = duration.map(|d| (captured_dt + d).to_rfc3339());
-                    (start, None)
-                } else {
-                    (None, None)
-                };
-
-                events.push(AlmanacEvent {
-                    crop_name: crop,
-                    zone_name: zone,
-                    event_start,
-                    event_end,
-                    is_current,
-                    captured_at: captured_at.to_string(),
-                });
-            }
-    }
-
-    events
-}
-
-/// A parsed harvesting focus — a monster the almanac marks as today's target.
-struct HarvestFocus {
-    monster_name: String,
-    description: Option<String>,
-    event_start: Option<String>,
-    event_end: Option<String>,
-    is_current: bool,
-    captured_at: String,
-}
-
-/// Parse Emotion-Harvesting Almanac content into structured foci.
-///
-/// ```text
-/// <h1>Current Harvesting Focuses:</h1>
-/// <indent=20><h2>Skeleton Swordsmen</h2></indent><indent=20>Seek out skeletal swordsmen...</indent>
-/// <indent=20><i>Ends in 22 hours 2 minutes</i></indent>
-///
-/// <h1>Upcoming Harvesting Focuses:</h1><i>No harvesting foci are happening in the immediate future.</i>
-/// ```
-///
-/// Two shape differences from the gardening almanac: the heading is a bare
-/// monster name with no zone, and the flavor text shares the heading's line.
-fn parse_harvest_almanac_content(content: &str, captured_at: &str) -> Vec<HarvestFocus> {
-    // Both almanacs arrive as book type "GardeningAlmanac"; refuse crop content
-    // outright so a heading like "Corn Season in Serbule" can't land here as a
-    // monster name.
-    if !content.contains("Harvesting Focuses") {
-        return Vec::new();
-    }
-
-    let mut foci = Vec::new();
-    let mut in_current_section = false;
-
-    let mut pending_monster: Option<String> = None;
-    let mut pending_desc: Option<String> = None;
-
-    let captured_dt = chrono::DateTime::parse_from_rfc3339(captured_at)
-        .map(|d| d.with_timezone(&chrono::Utc))
-        .unwrap_or_else(|_| chrono::Utc::now());
-
-    // Log content escapes its newlines; normalize so a single pass covers both.
-    let normalized = content.replace("\\n", "\n");
-
-    for line in normalized.lines() {
-        let line = line.trim();
-
-        if line.contains("Current Harvesting Focuses") {
-            in_current_section = true;
-            continue;
-        }
-        if line.contains("Upcoming Harvesting Focuses") {
-            in_current_section = false;
-            continue;
-        }
-
-        // <indent=20><h2>Monster</h2></indent><indent=20>flavor text</indent>
-        if let Some(monster) = extract_tag_content(line, "h2") {
-            let monster = monster.trim().to_string();
-            if monster.is_empty() {
-                continue;
-            }
-            pending_desc = line
-                .find("</h2>")
-                .map(|i| strip_markup(&line[i + "</h2>".len()..]))
-                .filter(|d| !d.is_empty());
-            pending_monster = Some(monster);
-            continue;
-        }
-
-        // <i>Ends in X hours Y minutes</i> / <i>Starts in ...</i>. Only consumed
-        // when a monster is pending — an empty section's "no foci" notice is an
-        // <i> too, and must not be mistaken for a timer.
-        if let Some(i_content) = extract_tag_content(line, "i") {
-            let monster = match pending_monster.take() {
-                Some(m) => m,
-                None => continue,
-            };
-            let description = pending_desc.take();
-            let duration = parse_duration_text(&i_content);
-
-            let (event_start, event_end) = if i_content.starts_with("Ends in") {
-                (None, duration.map(|d| (captured_dt + d).to_rfc3339()))
-            } else if i_content.starts_with("Starts in") {
-                (duration.map(|d| (captured_dt + d).to_rfc3339()), None)
-            } else {
-                (None, None)
-            };
-
-            foci.push(HarvestFocus {
-                monster_name: monster,
-                description,
-                event_start,
-                event_end,
-                is_current: in_current_section,
-                captured_at: captured_at.to_string(),
-            });
-        }
-    }
-
-    foci
-}
-
-/// Strip `<...>` markup, returning the trimmed plain text between the tags.
-fn strip_markup(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut depth = 0usize;
-    for c in s.chars() {
-        match c {
-            '<' => depth += 1,
-            '>' => depth = depth.saturating_sub(1),
-            _ if depth == 0 => out.push(c),
-            _ => {}
-        }
-    }
-    out.trim().to_string()
-}
-
-/// Extract text content from a simple HTML tag like `<h2>text</h2>`.
-/// Also handles tags embedded in `<indent=N>` wrappers.
-fn extract_tag_content(line: &str, tag: &str) -> Option<String> {
-    let open = format!("<{}>", tag);
-    let close = format!("</{}>", tag);
-    let start = line.find(&open)? + open.len();
-    let end = line[start..].find(&close)?;
-    Some(line[start..start + end].to_string())
-}
-
-/// Parse "CropName Season in ZoneName" into (crop_name, zone_name).
-fn parse_season_heading(heading: &str) -> Option<(String, String)> {
-    let idx = heading.find(" Season in ")?;
-    let crop = heading[..idx].trim().to_string();
-    let zone = heading[idx + " Season in ".len()..].trim().to_string();
-    if crop.is_empty() || zone.is_empty() {
-        return None;
-    }
-    Some((crop, zone))
-}
-
-/// Parse duration text like "12 hours 43 minutes", "1 day 12 hours",
-/// "5 hours", "30 minutes" into a chrono::Duration.
-fn parse_duration_text(text: &str) -> Option<chrono::Duration> {
-    let mut total_seconds: i64 = 0;
-    let words: Vec<&str> = text.split_whitespace().collect();
-    let mut i = 0;
-    // Skip leading "Ends in" or "Starts in"
-    if words.len() >= 2 && (words[0] == "Ends" || words[0] == "Starts") && words[1] == "in" {
-        i = 2;
-    }
-    while i + 1 < words.len() {
-        if let Ok(num) = words[i].parse::<i64>() {
-            let unit = words[i + 1].to_lowercase();
-            if unit.starts_with("day") {
-                total_seconds += num * 86400;
-            } else if unit.starts_with("hour") {
-                total_seconds += num * 3600;
-            } else if unit.starts_with("minute") {
-                total_seconds += num * 60;
-            }
-            i += 2;
-        } else {
-            i += 1;
-        }
-    }
-    if total_seconds > 0 {
-        Some(chrono::Duration::seconds(total_seconds))
-    } else {
-        None
-    }
-}
-
-// ============================================================
 // Book-content ingestion (shared by live ProcessBook dispatch and
 // the Books-directory backfill watcher)
 // ============================================================
 
-/// Normalize ProcessBook's escaped-newline content into real newlines.
+/// Normalize escaped-newline book content into real newlines.
 ///
-/// Live `ProcessBook` content carries literal `\n` (and `\t`) escape
-/// sequences; files in `<game_data>/Books/` carry real newlines. Feeding
-/// both through this no-op-on-real-newlines replace makes every downstream
-/// line splitter behave identically on either shape. (Extracted per-shape
-/// helpers historically normalized inconsistently — `parse_shop_log` and
+/// Book bodies arrive in two shapes: literal `\n` (and `\t`) escape
+/// sequences from JSON chat lines and older report formats, and real
+/// newlines in files under `<game_data>/Books/`. Feeding both through this
+/// no-op-on-real-newlines replace makes every downstream line splitter
+/// behave identically on either shape. (Extracted per-shape helpers
+/// historically normalized inconsistently — `parse_shop_log` and
 /// `parse_player_age` did, the teleport-bind / hoplology / gourmand
 /// splitters did not — so live-path bind parsing silently matched nothing.)
 pub(crate) fn normalize_book_content(content: &str) -> String {
@@ -3183,9 +1879,8 @@ pub(crate) fn normalize_book_content(content: &str) -> String {
 /// (character, server, book_type, title) so re-running a report overwrites.
 /// Shared by the live coordinator and the Books-directory watcher.
 ///
-/// Mirrors the live `persist_book_report` behavior exactly (swallows SQL
-/// errors to keep ingest flowing) but returns `Err` on pool acquisition
-/// failure so callers can log it.
+/// Swallows SQL errors to keep ingest flowing, but returns `Err` on pool
+/// acquisition failure so callers can log it.
 pub fn persist_book_content(
     db: &DbPool,
     app_handle: &AppHandle,
@@ -3399,27 +2094,6 @@ pub fn ingest_hoplology_content(
     Ok(inserted)
 }
 
-/// Normalize an equipped combat-skill pair into a stable, order-independent key
-/// (e.g. `Hammer`/`FireMagic` and `FireMagic`/`Hammer` both → `"FireMagic+Hammer"`).
-/// Empty/placeholder slots are dropped; returns None when nothing meaningful is set.
-/// Shared by the live coordinator and the Player.log backfill so both produce
-/// identical loadout keys.
-pub(crate) fn normalize_combat_loadout(skill1: &str, skill2: &str) -> Option<String> {
-    let mut parts: Vec<String> = [skill1, skill2]
-        .iter()
-        .map(|s| s.trim())
-        .filter(|s| {
-            !s.is_empty() && !s.eq_ignore_ascii_case("none") && !s.eq_ignore_ascii_case("unknown")
-        })
-        .map(|s| s.to_string())
-        .collect();
-    if parts.is_empty() {
-        return None;
-    }
-    parts.sort();
-    Some(parts.join("+"))
-}
-
 /// Where a catch-up session's server came from (startup log line + tests).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionServerSource {
@@ -3500,12 +2174,11 @@ fn apply_catch_up_login(
     };
     if let Some(server) = server {
         game_state.set_active_server_name(&server);
-        // The adopted session replays its own full-state inventory burst
-        // (`is_new=false` upserts + `ProcessUpdateItemCode` baselines), so
-        // start it from an empty slice — otherwise rows from an earlier
-        // replayed session pollute this one. Equipment/combat/mount/favor are
+        // The adopted session rebuilds its own inventory (report imports),
+        // so start it from an empty slice — otherwise rows from an earlier
+        // session pollute this one. Equipment/combat/mount/favor are
         // deliberately untouched: equipment self-heals via its full-dump
-        // reinsert, and the rest have no repopulating dump event.
+        // reinsert, and the rest have no repopulating source.
         if clear_inventory
             && let (Some(character), Ok(conn)) = (
                 game_state.get_active_character().map(str::to_string),
@@ -3623,85 +2296,6 @@ fn chat_session_servers(dir: &std::path::Path) -> std::collections::HashMap<Stri
     servers
 }
 
-#[cfg(test)]
-mod harvest_almanac_tests {
-    use super::parse_harvest_almanac_content;
-
-    /// Verbatim book content from a real Player.log capture (2026-07-28).
-    const REAL_CAPTURE: &str = "<h1>Current Harvesting Focuses:</h1>\\n<indent=20><h2>Skeleton Swordsmen</h2></indent><indent=20>Seek out skeletal swordsmen. Beneath their parries and their feints, their malice beats pure today.</indent>\\n<indent=20><i>Ends in 22 hours 2 minutes</i></indent>\\n\\n\\n<h1>Upcoming Harvesting Focuses:</h1><i>No harvesting foci are happening in the immediate future.</i>";
-
-    #[test]
-    fn parses_current_focus_from_real_capture() {
-        let foci = parse_harvest_almanac_content(REAL_CAPTURE, "2026-07-28T05:57:26+00:00");
-
-        // The "no foci are happening" notice is an <i> too — it must not become
-        // a second, timerless entry.
-        assert_eq!(foci.len(), 1);
-        let f = &foci[0];
-        assert_eq!(f.monster_name, "Skeleton Swordsmen");
-        assert!(f.is_current);
-        assert!(f
-            .description
-            .as_deref()
-            .unwrap()
-            .starts_with("Seek out skeletal swordsmen."));
-        assert_eq!(f.event_start, None);
-        // 22h2m past the capture time.
-        assert_eq!(f.event_end.as_deref(), Some("2026-07-29T03:59:26+00:00"));
-    }
-
-    #[test]
-    fn parses_upcoming_focus_as_not_current() {
-        let content = "<h1>Current Harvesting Focuses:</h1><i>No harvesting foci are happening in the immediate future.</i>\\n<h1>Upcoming Harvesting Focuses:</h1>\\n<indent=20><h2>Rock Elementals</h2></indent><indent=20>Stone hearts crack tomorrow.</indent>\\n<indent=20><i>Starts in 1 day 3 hours</i></indent>";
-        let foci = parse_harvest_almanac_content(content, "2026-07-28T00:00:00+00:00");
-
-        assert_eq!(foci.len(), 1);
-        assert_eq!(foci[0].monster_name, "Rock Elementals");
-        assert!(!foci[0].is_current);
-        assert_eq!(
-            foci[0].event_start.as_deref(),
-            Some("2026-07-29T03:00:00+00:00")
-        );
-        assert_eq!(foci[0].event_end, None);
-    }
-
-    #[test]
-    fn ignores_gardening_almanac_content() {
-        let garden = "<h1>Current Gardening Events:</h1>\\n<indent=20><h2>Corn Season in Serbule</h2></indent>\\n<indent=20><i>Ends in 5 hours</i></indent>";
-        assert!(parse_harvest_almanac_content(garden, "2026-07-28T00:00:00+00:00").is_empty());
-    }
-}
-
-#[cfg(test)]
-mod loadout_tests {
-    use super::normalize_combat_loadout;
-
-    #[test]
-    fn order_independent_and_sorted() {
-        assert_eq!(
-            normalize_combat_loadout("Hammer", "FireMagic"),
-            normalize_combat_loadout("FireMagic", "Hammer")
-        );
-        assert_eq!(
-            normalize_combat_loadout("Sword", "Shield").as_deref(),
-            Some("Shield+Sword")
-        );
-    }
-
-    #[test]
-    fn drops_empty_and_placeholder_slots() {
-        assert_eq!(
-            normalize_combat_loadout("Sword", "").as_deref(),
-            Some("Sword")
-        );
-        assert_eq!(
-            normalize_combat_loadout("None", "Mentalism").as_deref(),
-            Some("Mentalism")
-        );
-        assert_eq!(normalize_combat_loadout("", ""), None);
-        assert_eq!(normalize_combat_loadout("none", "unknown"), None);
-    }
-}
 #[cfg(test)]
 mod report_kind_tests {
     use super::{report_kind_for_path, ReportKind};
@@ -3843,57 +2437,6 @@ mod rez_dedup_tests {
     }
 }
 
-/// RFC3339 (UTC) `milked_at` for a milking event, derived from the event's own
-/// UTC time (`"YYYY-MM-DD HH:MM:SS"` — what `GameStateManager::utc_for_log_line` returns
-/// for Player.log lines, and what a UTC-converted chat line already is).
-///
-/// Falls back to `Utc::now()` when the event time is missing or unparseable (a
-/// milking is never dropped over a bad timestamp), mirroring
-/// `parsers::to_utc_datetime_with_base`.
-fn milking_event_timestamp(event_ts: &str) -> String {
-    match chrono::NaiveDateTime::parse_from_str(event_ts.trim(), "%Y-%m-%d %H:%M:%S") {
-        Ok(dt) => {
-            chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc).to_rfc3339()
-        }
-        Err(_) => chrono::Utc::now().to_rfc3339(),
-    }
-}
-
-#[cfg(test)]
-mod milking_timestamp_tests {
-    use super::milking_event_timestamp;
-
-    #[test]
-    fn uses_the_event_time_not_the_ingest_time() {
-        // The self-milk in Chat-26-10-12.log: 20:14:16 local (-05:00), already
-        // converted to UTC by the coordinator before it reaches us.
-        assert_eq!(
-            milking_event_timestamp("2026-10-13 01:14:16"),
-            "2026-10-13T01:14:16+00:00"
-        );
-        // Player.log path: shape returned by `GameStateManager::utc_for_log_line`.
-        assert_eq!(
-            milking_event_timestamp("2026-06-26 01:29:44"),
-            "2026-06-26T01:29:44+00:00"
-        );
-    }
-
-    #[test]
-    fn malformed_event_time_falls_back_to_now() {
-        let before = chrono::Utc::now();
-        for bad in ["", "   ", "HH:MM:SS", "2026-10-13", "2026-10-13T01:14:16Z"] {
-            let stamped = milking_event_timestamp(bad);
-            let parsed = chrono::DateTime::parse_from_rfc3339(&stamped)
-                .unwrap_or_else(|e| panic!("{bad:?} produced {stamped}: {e}"));
-            let drift = parsed.with_timezone(&chrono::Utc) - before;
-            assert!(
-                drift.num_seconds().abs() < 60,
-                "{bad:?} produced {stamped}, which is not ~now"
-            );
-        }
-    }
-}
-
 /// Server resolution for a Player.log session: the `user_characters` row when the
 /// character has one, else its own chat login line (see `apply_catch_up_login`).
 #[cfg(test)]
@@ -3904,7 +2447,6 @@ mod session_identity_tests {
     };
     use crate::db::DbPool;
     use crate::game_state::GameStateManager;
-    use crate::player_event_parser::PlayerEvent;
 
     /// Unique temp path per call: `SystemTime` nanos repeat when parallel tests
     /// start in the same tick, so a shared `glogger_catch_up_login_test_*`
@@ -3930,22 +2472,6 @@ mod session_identity_tests {
             std::fs::write(dir.join(name), format!("{}\n", lines.join("\n"))).unwrap();
         }
         dir
-    }
-
-    /// One `SkillsLoaded` dump for `raw` levels of Combat — same shape as
-    /// `game_state::tests::identity_switch_keeps_each_sessions_skills`.
-    fn skills_loaded(raw: u32) -> Vec<PlayerEvent> {
-        vec![PlayerEvent::SkillsLoaded {
-            timestamp: "12:00:00".to_string(),
-            skills: vec![crate::player_event_parser::SkillSnapshot {
-                skill_type: "Combat".to_string(),
-                raw,
-                bonus: 0,
-                xp: 0,
-                tnl: 0,
-                max: 100,
-            }],
-        }]
     }
 
     /// A pool holding only the picker's row for `TestPlayer / Dreva` (what a user
@@ -4111,7 +2637,12 @@ mod session_identity_tests {
             apply_catch_up_login(&mut gs, &pool, &map, "TestPlayer", true),
             SessionServerSource::InUse
         );
-        gs.process_events_batch(&skills_loaded(7), &pool);
+        pool.get_write().unwrap().execute(
+            "INSERT INTO game_state_skills
+             (character_name, server_name, skill_id, skill_name, level, last_confirmed_at)
+             VALUES ('TestPlayer', 'Dreva', 1001, 'Combat', 7, '2026-10-15 07:00:01')",
+            [],
+        ).unwrap();
 
         // The alt has no `user_characters` row: without the chat tier it borrows
         // the selected character's server (`Dreva`) and replaces its rows.
@@ -4119,7 +2650,12 @@ mod session_identity_tests {
             apply_catch_up_login(&mut gs, &pool, &map, "OtherAlt", true),
             SessionServerSource::ChatLog
         );
-        gs.process_events_batch(&skills_loaded(99), &pool);
+        pool.get_write().unwrap().execute(
+            "INSERT INTO game_state_skills
+             (character_name, server_name, skill_id, skill_name, level, last_confirmed_at)
+             VALUES ('OtherAlt', 'OtherAltServer', 1001, 'Combat', 99, '2026-10-15 07:05:01')",
+            [],
+        ).unwrap();
 
         let level = |character: &str, server: &str| -> Option<i64> {
             pool.get()

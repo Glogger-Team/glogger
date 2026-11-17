@@ -181,21 +181,6 @@ pub fn import_gourmand_report(
     })
 }
 
-/// Record a single food-eaten event detected live from the log
-/// (`ProcessDoDelayLoop(1.5, Eat, "Using <Food Name>", ...)`). Increments the
-/// existing count if present, otherwise inserts a new non-manual entry.
-/// Does not touch `manually_marked` so a manual flag survives a live update.
-pub fn record_food_eaten(conn: &rusqlite::Connection, food_name: &str) -> Result<(), String> {
-    conn.execute(
-        "INSERT INTO gourmand_eaten_foods (food_name, times_eaten, manually_marked)
-         VALUES (?1, 1, 0)
-         ON CONFLICT(food_name) DO UPDATE SET times_eaten = times_eaten + 1",
-        params![food_name],
-    )
-    .map(|_| ())
-    .map_err(|e| format!("Failed to record eaten food: {e}"))
-}
-
 /// Get the last-imported eaten foods from the database
 #[tauri::command]
 pub fn get_gourmand_eaten_foods(db: State<'_, DbPool>) -> Result<Vec<GourmandFoodEntry>, String> {

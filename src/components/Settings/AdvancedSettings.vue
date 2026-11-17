@@ -104,33 +104,11 @@
 
     <template v-if="devMode">
     <div class="settings-section">
-      <h3>Player.log Upload</h3>
-
-      <div class="mb-4">
-        <button
-          @click="browseAndParsePlayerLog"
-          :disabled="props.parsing"
-          class="btn btn-secondary">
-          {{ props.parsing ? "Parsing..." : "Upload Player.log File" }}
-        </button>
-
-        <p class="mt-2 text-text-muted text-xs leading-relaxed">
-          Upload a Player.log file for manual parsing. Use this if you have test data or
-          historical log files you want to process (e.g., from another machine or a backup).
-        </p>
-
-        <div v-if="parseResult" class="success-box">{{ parseResult }}</div>
-        <div v-if="parseError" class="error-box">{{ parseError }}</div>
-      </div>
-    </div>
-
-    <div class="settings-section">
       <h3>Dual-Log Replay</h3>
 
       <p class="mb-3 text-text-muted text-xs leading-relaxed">
-        Replay a Player.log and Chat.log together, interleaved by timestamp. This simulates
-        live tailing with full cross-referencing — survey loot quantities get corrected from
-        Chat.log Status messages, game state is persisted to the DB, etc.
+        Replay a Chat.log through the live dispatch pipeline for backfills and
+        debugging. Progress and parsed status events stream back while it runs.
       </p>
 
       <div class="flex gap-2 mb-3">
@@ -189,12 +167,6 @@ import { useSettingsStore } from "../../stores/settingsStore";
 import { useCharacterStore } from "../../stores/characterStore";
 import { useDataBrowserStore } from "../../stores/dataBrowserStore";
 
-const props = defineProps<{
-  parsing: boolean;
-  error: string;
-  onParseLog: () => void;
-}>();
-
 const settingsStore = useSettingsStore();
 const characterStore = useCharacterStore();
 const dataBrowserStore = useDataBrowserStore();
@@ -245,31 +217,6 @@ function saveReportWatchSettings() {
   characterStore.stopReportWatching();
   if (autoWatchReports.value) {
     characterStore.startReportWatching();
-  }
-}
-
-// Player.log upload
-const parseResult = ref<string | null>(null);
-const parseError = ref<string | null>(null);
-
-async function browseAndParsePlayerLog() {
-  const selected = await open({
-    multiple: false,
-    defaultPath: settingsStore.settings.logFilePath || settingsStore.settings.gameDataPath || undefined,
-    filters: [{ name: "Log Files", extensions: ["log", "txt"] }],
-  });
-  if (selected) {
-    parseResult.value = null;
-    parseError.value = null;
-
-    // Update the log file path and trigger parsing
-    settingsStore.updateLogFilePath(selected);
-    try {
-      props.onParseLog();
-      parseResult.value = `Parsing Player.log: ${selected}`;
-    } catch (e: any) {
-      parseError.value = e.toString();
-    }
   }
 }
 

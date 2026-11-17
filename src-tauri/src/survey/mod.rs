@@ -17,6 +17,12 @@
 //!   mining-context attribution, drives session lifecycle and writes to
 //!   the persistence layer.
 //! - [`commands`] — Tauri commands the frontend calls.
+//! - [`aggregator`] — Chat-authoritative survey-use ↔ mining-context
+//!   attribution, drives session lifecycle and writes to the persistence
+//!   layer.
+#[allow(unused_imports)] // re-exports surface the public types for callers
+pub use types::{SessionStartTrigger, SurveySession, SurveyUse, SurveyUseKind, SurveyUseStatus};
+
 
 pub mod aggregator;
 pub mod commands;

@@ -1,37 +1,5 @@
 // Pure parsing logic — no Tauri dependencies here
 
-#[derive(Debug, serde::Serialize, Clone)]
-pub struct SkillUpdate {
-    pub skill_type: String,
-    pub level: u32,
-    pub bonus: u32,
-    pub xp: u32,
-    pub tnl: u32,
-    pub timestamp: String, // e.g. "00:08:37"
-}
-
-pub fn parse_skill_update(line: &str) -> Option<SkillUpdate> {
-    if !line.contains("ProcessUpdateSkill") {
-        return None;
-    }
-
-    let timestamp = parse_timestamp(line)?;
-    let skill_type = extract_field(line, "type=")?;
-    let raw: u32 = extract_field(line, "raw=")?.parse().ok()?;
-    let bonus: u32 = extract_field(line, "bonus=")?.parse().ok()?;
-    let xp: u32 = extract_field(line, "xp=")?.parse().ok()?;
-    let tnl: u32 = extract_field(line, "tnl=")?.parse().ok()?;
-
-    Some(SkillUpdate {
-        skill_type,
-        level: raw + bonus,
-        bonus,
-        xp,
-        tnl,
-        timestamp,
-    })
-}
-
 // Parses "[HH:MM:SS] " from the start of a line, returns "HH:MM:SS"
 pub fn parse_timestamp(line: &str) -> Option<String> {
     let line = line.trim_start();
@@ -89,119 +57,15 @@ pub(crate) fn to_utc_datetime_at(
         .to_string()
 }
 
-/// Where the date for a Player.log `HH:MM:SS` line comes from, in precedence
-/// order:
-///
-/// 1. an explicit override (`set_base_date` — replay / old-log reparse, whose
-///    file-derived date is authoritative), else
-/// 2. the session date declared by the log's own login line (`anchor_session`),
-///    rolled forward whenever the time of day goes backwards (the log crossed
-///    UTC midnight) — correct however far the read lags the log, and
-/// 3. the clock, rolled back a day when the line's time of day is still ahead of
-///    it (see [`to_utc_datetime_with_base`]) — the fallback when no login line
-///    was read (e.g. tailing a file from mid-session).
-///
-/// Shared by the game-state manager and the survey aggregator, the two places
-/// that stamp Player.log times.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct LogDateResolver {
-    base_date: Option<chrono::NaiveDate>,
-    /// Session date + the time of day of the last line resolved.
-    session: Option<(chrono::NaiveDate, Option<chrono::NaiveTime>)>,
-}
-
-impl LogDateResolver {
-    /// Fix the date outright (replay / old-log reparse); wins over the anchor.
-    pub fn set_base_date(&mut self, date: chrono::NaiveDate) {
-        self.base_date = Some(date);
-    }
-
-    /// Anchor from a Player.log login line's own `Time UTC=` instant
-    /// (`PlayerEvent::LogSessionAnchored`).
-    pub fn anchor_session(&mut self, utc: chrono::NaiveDateTime) {
-        self.session = Some((utc.date(), Some(utc.time())));
-    }
-
-    /// Resolve one `HH:MM:SS` line to a full UTC datetime string.
-    pub fn resolve(&mut self, ts: &str) -> String {
-        self.resolve_at(ts, chrono::Utc::now())
-    }
-
-    /// [`Self::resolve`] against a fixed clock (test seam).
-    pub(crate) fn resolve_at(&mut self, ts: &str, now: chrono::DateTime<chrono::Utc>) -> String {
-        if let Some(date) = self.base_date {
-            // `to_utc_datetime_at`, not `to_utc_datetime_with_base`: the latter
-            // reads the real clock on unparsable input, which would break this
-            // seam's fixed-clock contract (see `peek_at`, which already threads
-            // `now` here).
-            return to_utc_datetime_at(ts, Some(date), now);
-        }
-
-        let Some((date, last_time)) = self.session.as_mut() else {
-            return to_utc_datetime_at(ts, None, now);
-        };
-        let Ok(time_of_day) = chrono::NaiveTime::parse_from_str(ts, "%H:%M:%S") else {
-            return to_utc_datetime_at(ts, None, now);
-        };
-
-        if last_time.is_some_and(|previous| time_of_day < previous)
-            && let Some(next) = date.succ_opt() {
-                *date = next;
-            }
-        *last_time = Some(time_of_day);
-
-        to_utc_datetime_with_base(ts, Some(*date))
-    }
-
-    /// Like [`Self::resolve`], but **non-advancing**: returns the date the line
-    /// would get if it were resolved next in order, leaving the rollover
-    /// baseline untouched.
-    ///
-    /// Side channels that read a subset of the stream out of order must use
-    /// this. [`Self::resolve`] rolls the session date whenever the time of day
-    /// goes backwards, so resolving a *later* line first makes the in-order
-    /// replay of an *earlier* one look like a UTC-midnight crossing and dates
-    /// every following row a day into the future.
-    pub fn peek(&self, ts: &str) -> String {
-        self.peek_at(ts, chrono::Utc::now())
-    }
-
-    /// [`Self::peek`] against a fixed clock (test seam).
-    pub(crate) fn peek_at(&self, ts: &str, now: chrono::DateTime<chrono::Utc>) -> String {
-        if let Some(date) = self.base_date {
-            return to_utc_datetime_at(ts, Some(date), now);
-        }
-        let Some((date, last_time)) = self.session else {
-            return to_utc_datetime_at(ts, None, now);
-        };
-        let Ok(time_of_day) = chrono::NaiveTime::parse_from_str(ts, "%H:%M:%S") else {
-            return to_utc_datetime_at(ts, None, now);
-        };
-
-        // Apply the hypothetical rollover `resolve_at` would have committed, so
-        // a line that really did cross UTC midnight still lands on its own day.
-        let date = match last_time {
-            Some(previous) if time_of_day < previous => date.succ_opt().unwrap_or(date),
-            _ => date,
-        };
-
-        date.and_time(time_of_day)
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string()
-    }
-}
-
 /// Parse a `Player.log` login line, returning `(character_name, utc_instant)`.
 ///
 /// Format: `[HH:MM:SS] Logged in as character <Name>. Time UTC=MM/DD/YYYY HH:MM:SS. Timezone Offset ±HH:MM:SS`
 ///
 /// The bracket time equals the `Time UTC=` time (both UTC), so this one line
 /// names the character *and* declares the session's UTC instant — the
-/// authoritative date anchor for every `HH:MM:SS` line after it. The kill/loot
-/// ingest and the Statehelm gift backfill derive a session's base date from it,
-/// and the live parser forwards it as `PlayerEvent::LogSessionAnchored` so a
-/// catch-up that lags the log by more than a day still dates lines by the
-/// session they came from.
+/// authoritative date anchor for the session that follows it. The coordinator
+/// adopts the session's character on catch-up and re-arms a missing live
+/// identity from it.
 pub fn parse_player_log_login_line(line: &str) -> Option<(String, chrono::NaiveDateTime)> {
     let marker = "Logged in as character ";
     let start = line.find(marker)? + marker.len();
@@ -234,105 +98,6 @@ pub fn chat_local_to_utc(
 ) -> chrono::NaiveDateTime {
     use chrono::Duration;
     local_dt - Duration::seconds(tz_offset_seconds as i64)
-}
-
-// Extracts the value after `key` up to the next comma or `}`
-pub fn extract_field(line: &str, key: &str) -> Option<String> {
-    let start = line.find(key)? + key.len();
-    let rest = &line[start..];
-    let end = rest.find([',', '}']).unwrap_or(rest.len());
-    Some(rest[..end].to_string())
-}
-
-// ============================================================
-// Loot Text Parsing (reusable across features)
-// ============================================================
-//
-// Used by the survey aggregator to extract speed-bonus item markers from
-// ProcessScreenText lines like:
-//   "Blue Spinel collected! Also found Rubywall Crystal x2 (speed bonus!)"
-
-/// Individual loot item parsed from screen text
-#[derive(Debug, serde::Serialize, Clone)]
-pub struct LootItem {
-    pub item_name: String,
-    pub quantity: u32,
-    pub is_speed_bonus: bool,
-    pub is_primary: bool,
-}
-
-/// Parse loot text into individual items.
-/// Example: "Tsavorite collected! Also found Moss Agate x2, Onyx (speed bonus!)"
-/// Returns (Vec<LootItem>, speed_bonus_earned)
-pub fn parse_loot_items(loot_text: &str) -> (Vec<LootItem>, bool) {
-    let mut items = Vec::new();
-    let speed_bonus_earned = loot_text.contains("(speed bonus!)");
-
-    // Primary item: everything before " collected!"
-    // May include quantity for ring bonus, e.g. "Lapis Lazuli x2 collected!"
-    if let Some(collected_idx) = loot_text.find(" collected!") {
-        let primary_text = loot_text[..collected_idx].trim();
-        if let Some((name, qty)) = parse_item_with_quantity(primary_text) {
-            items.push(LootItem {
-                item_name: name,
-                quantity: qty,
-                is_speed_bonus: false,
-                is_primary: true,
-            });
-        }
-    }
-
-    // Secondary items: after "Also found "
-    if let Some(also_idx) = loot_text.find("Also found ") {
-        // Strip trailing "(speed bonus!)" or similar parentheticals
-        let mut secondary = &loot_text[also_idx + "Also found ".len()..];
-
-        // Check if these are speed bonus items
-        let is_bonus = if let Some(bonus_idx) = secondary.find(" (speed bonus!)") {
-            secondary = &secondary[..bonus_idx];
-            true
-        } else {
-            // Remove any other parentheticals
-            if let Some(paren_idx) = secondary.find(" (") {
-                secondary = &secondary[..paren_idx];
-            }
-            false
-        };
-
-        // Split on commas and parse each item
-        for part in secondary.split(',') {
-            let piece = part.trim();
-            if piece.is_empty() {
-                continue;
-            }
-
-            // Match "Item Name x3" or just "Item Name"
-            if let Some((name, qty)) = parse_item_with_quantity(piece) {
-                items.push(LootItem {
-                    item_name: name,
-                    quantity: qty,
-                    is_speed_bonus: is_bonus,
-                    is_primary: false,
-                });
-            }
-        }
-    }
-
-    (items, speed_bonus_earned)
-}
-
-/// Parse "Item Name x3" or "Item Name" into (name, quantity)
-pub fn parse_item_with_quantity(text: &str) -> Option<(String, u32)> {
-    // Match "Item Name x3"
-    if let Some(x_pos) = text.rfind(" x") {
-        let name = text[..x_pos].trim();
-        let qty_str = &text[x_pos + 2..];
-        if let Ok(qty) = qty_str.parse::<u32>() {
-            return Some((name.to_string(), qty));
-        }
-    }
-    // Just "Item Name"
-    Some((text.to_string(), 1))
 }
 
 #[cfg(test)]
@@ -420,90 +185,8 @@ mod tests {
         );
     }
 
-    /// `resolve_at`'s fixed-clock seam must hold on the base-date path too: it
-    /// called the real clock on unparsable input (via
-    /// `to_utc_datetime_with_base`), so this path could not be tested with a
-    /// fixed clock and disagreed with `peek_at`, which already threads `now`.
-    #[test]
-    fn base_date_path_honours_the_clock_seam() {
-        let now = fixed_now("2026-10-15T01:27:00Z");
-        let mut dates = LogDateResolver::default();
-        dates.set_base_date(chrono::NaiveDate::from_ymd_opt(2026, 10, 12).unwrap());
-
-        assert_eq!(dates.resolve_at("23:31:26", now), "2026-10-12 23:31:26");
-        assert_eq!(
-            dates.resolve_at("not a time", now),
-            "2026-10-15 01:27:00",
-            "unparsable input falls back to the injected clock, not the real one"
-        );
-    }
-
     fn naive(s: &str) -> chrono::NaiveDateTime {
         chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap()
-    }
-
-    fn fixed_now(instant: &str) -> chrono::DateTime<chrono::Utc> {
-        chrono::DateTime::parse_from_rfc3339(instant)
-            .unwrap()
-            .with_timezone(&chrono::Utc)
-    }
-
-    /// The login line's own UTC instant anchors the date, whatever the clock
-    /// says — this is the multi-day-lag case (catch-up reading a log days old).
-    #[test]
-    fn resolver_anchors_on_the_login_line_not_the_clock() {
-        let mut dates = LogDateResolver::default();
-        dates.anchor_session(naive("2026-10-14 22:43:41"));
-        let now = fixed_now("2026-10-20T05:00:00Z");
-
-        assert_eq!(dates.resolve_at("22:43:41", now), "2026-10-14 22:43:41");
-        assert_eq!(dates.resolve_at("23:31:15", now), "2026-10-14 23:31:15");
-        // The log crosses UTC midnight: the session date rolls forward once.
-        assert_eq!(dates.resolve_at("00:10:00", now), "2026-10-15 00:10:00");
-        assert_eq!(dates.resolve_at("00:22:51", now), "2026-10-15 00:22:51");
-        // ...and keeps rolling for a later session's login line.
-        dates.anchor_session(naive("2026-10-15 21:05:00"));
-        assert_eq!(dates.resolve_at("21:06:00", now), "2026-10-15 21:06:00");
-    }
-
-    /// A side channel (the coordinator's milking resolve) reads a *later* line
-    /// before the batch replay reaches the earlier ones: `peek_at` must report
-    /// that line without moving the baseline the in-order scan relies on.
-    #[test]
-    fn peek_reports_a_later_line_without_rolling_the_in_order_scan() {
-        let now = fixed_now("2026-10-15T05:00:00Z");
-        let mut dates = LogDateResolver::default();
-        dates.anchor_session(naive("2026-10-14 22:43:41"));
-
-        assert_eq!(dates.resolve_at("22:43:41", now), "2026-10-14 22:43:41");
-
-        // Peeked later than the last resolved line, and across UTC midnight.
-        assert_eq!(dates.peek_at("23:31:26", now), "2026-10-14 23:31:26");
-        assert_eq!(dates.peek_at("00:06:05", now), "2026-10-15 00:06:05");
-
-        // The in-order scan that follows still dates from the session: the
-        // peeked lines must not have rolled the day for the batch's earlier
-        // events (before the seam this came out one day ahead).
-        assert_eq!(dates.resolve_at("22:44:00", now), "2026-10-14 22:44:00");
-        assert_eq!(dates.resolve_at("00:06:05", now), "2026-10-15 00:06:05");
-        assert_eq!(dates.resolve_at("00:06:40", now), "2026-10-15 00:06:40");
-    }
-
-    /// Precedence: explicit base date (replay) > login anchor > clock.
-    #[test]
-    fn resolver_precedence_is_base_date_then_anchor_then_clock() {
-        let now = fixed_now("2026-10-15T01:27:00Z");
-
-        // No anchor, no override → clock, with the one-day rollback.
-        let mut dates = LogDateResolver::default();
-        assert_eq!(dates.resolve_at("23:31:26", now), "2026-10-14 23:31:26");
-        assert_eq!(dates.resolve_at("00:10:00", now), "2026-10-15 00:10:00");
-
-        // An explicit base date wins even with an anchor present.
-        let mut dates = LogDateResolver::default();
-        dates.set_base_date(chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap());
-        dates.anchor_session(naive("2026-10-14 22:43:41"));
-        assert_eq!(dates.resolve_at("23:31:26", now), "2026-10-01 23:31:26");
     }
 
     /// The real login line, including the one that crosses UTC midnight.
@@ -532,55 +215,5 @@ mod tests {
             parse_player_log_login_line("Logged in as character TwinkleofToes. Time UTC="),
             None
         );
-    }
-
-    #[test]
-    fn test_parse_loot_simple() {
-        let (items, bonus) = parse_loot_items("Fluorite collected!");
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].item_name, "Fluorite");
-        assert_eq!(items[0].quantity, 1);
-        assert!(items[0].is_primary);
-        assert!(!bonus);
-    }
-
-    #[test]
-    fn test_parse_loot_with_speed_bonus() {
-        let (items, bonus) = parse_loot_items(
-            "Blue Spinel collected! Also found Rubywall Crystal x2 (speed bonus!)",
-        );
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].item_name, "Blue Spinel");
-        assert_eq!(items[0].quantity, 1);
-        assert!(items[0].is_primary);
-        assert_eq!(items[1].item_name, "Rubywall Crystal");
-        assert_eq!(items[1].quantity, 2);
-        assert!(items[1].is_speed_bonus);
-        assert!(bonus);
-    }
-
-    #[test]
-    fn test_parse_loot_primary_with_quantity() {
-        // Ring bonus can grant extra primary items: "Lapis Lazuli x2 collected!"
-        let (items, bonus) =
-            parse_loot_items("Lapis Lazuli x2 collected! Also found Azurite (speed bonus!)");
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].item_name, "Lapis Lazuli");
-        assert_eq!(items[0].quantity, 2);
-        assert!(items[0].is_primary);
-        assert_eq!(items[1].item_name, "Azurite");
-        assert_eq!(items[1].quantity, 1);
-        assert!(items[1].is_speed_bonus);
-        assert!(bonus);
-    }
-
-    #[test]
-    fn test_parse_loot_primary_quantity_no_bonus() {
-        let (items, bonus) = parse_loot_items("Obsidian x2 collected!");
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].item_name, "Obsidian");
-        assert_eq!(items[0].quantity, 2);
-        assert!(items[0].is_primary);
-        assert!(!bonus);
     }
 }

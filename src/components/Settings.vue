@@ -23,9 +23,7 @@
           v-else-if="activeTab === 'app'" />
 
         <ChatLogsSettings
-          v-else-if="activeTab === 'chat-logs'"
-          :parsing="props.parsing"
-          :error="props.error" />
+          v-else-if="activeTab === 'chat-logs'" />
 
         <NotificationsSettings
           v-else-if="activeTab === 'notifications'" />
@@ -37,11 +35,7 @@
           v-else-if="activeTab === 'game-data'" />
 
         <AdvancedSettings
-          v-else-if="activeTab === 'advanced'"
-          :parsing="props.parsing"
-          :error="props.error"
-          :onParseLog="props.onParseLog" />
-
+          v-else-if="activeTab === 'advanced'" />
         <GameStateDebug
           v-else-if="activeTab === 'game-state'" />
       </div>
@@ -68,12 +62,6 @@ import AdvancedSettings from "./Settings/AdvancedSettings.vue";
 import GameStateDebug from "./Settings/GameStateDebug.vue";
 
 const settingsStore = useSettingsStore();
-
-const props = defineProps<{
-  parsing: boolean;
-  error: string;
-  onParseLog: () => void;
-}>();
 
 type TabId = 'general' | 'app' | 'chat-logs' | 'notifications' | 'user-data' | 'game-data' | 'advanced' | 'game-state';
 

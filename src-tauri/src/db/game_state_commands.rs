@@ -672,72 +672,6 @@ pub fn set_tracked_skills(
     Ok(())
 }
 
-// ── Gift Log ────────────────────────────────────────────────────────────────
-
-/// Reconcile the `week_start`-onward gift-log rows for one NPC to `target`
-/// (the game's authoritative weekly count). Adds rows stamped `at` (favor 0)
-/// when short, trims the newest extras when long. Returns true when the row
-/// count changed. Same semantics as the live `GiftCountObserved` arm.
-/// Inputs for [`reconcile_gift_count`]; groups the args so the fn stays
-/// under the arity lint.
-pub(crate) struct GiftReconcile<'a> {
-    pub conn: &'a rusqlite::Connection,
-    pub character: &'a str,
-    pub server: &'a str,
-    pub npc_key: &'a str,
-    pub npc_name: &'a str,
-    pub at: &'a str,
-    pub target: u32,
-    pub week_start: &'a str,
-}
-
-pub(crate) fn reconcile_gift_count(g: &GiftReconcile<'_>) -> Result<bool, rusqlite::Error> {
-    let GiftReconcile {
-        conn,
-        character,
-        server,
-        npc_key,
-        npc_name,
-        at,
-        target,
-        week_start,
-    } = *g;
-    let target = target as i64;
-    // `replace(gifted_at, 'T', ' ')`: rows written by the manual `+` button (and
-    // older builds) carry ISO `YYYY-MM-DDTHH:MM:SSZ` stamps, and 'T' sorts after
-    // ' ', so an untrimmed comparison counts an early-Monday gift into the new
-    // week. The live/backfill rows are already in this format.
-    let existing: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM game_state_gift_log
-         WHERE character_name = ?1 AND server_name = ?2 AND npc_key = ?3
-           AND replace(gifted_at, 'T', ' ') >= ?4",
-        rusqlite::params![character, server, npc_key, week_start],
-        |row| row.get(0),
-    )?;
-
-    if target > existing {
-        for _ in 0..(target - existing) {
-            conn.execute(
-                "INSERT INTO game_state_gift_log (character_name, server_name, npc_key, npc_name, gifted_at, favor_delta)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
-                rusqlite::params![character, server, npc_key, npc_name, at],
-            )?;
-        }
-    } else if target < existing {
-        // Trim the newest extras (e.g. a manual over-count) down to the game's value.
-        conn.execute(
-            "DELETE FROM game_state_gift_log WHERE id IN (
-                SELECT id FROM game_state_gift_log
-                WHERE character_name = ?1 AND server_name = ?2 AND npc_key = ?3
-                  AND replace(gifted_at, 'T', ' ') >= ?4
-                ORDER BY replace(gifted_at, 'T', ' ') DESC, id DESC LIMIT ?5)",
-            rusqlite::params![character, server, npc_key, week_start, existing - target],
-        )?;
-    }
-
-    Ok(target != existing)
-}
-
 // ── Chat Level-Ups ────────────────────────────────────────────────────────────
 
 /// Upsert one skill row from a chat `[Status]` level-up line
@@ -1054,7 +988,7 @@ pub struct MilkingTimer {
     pub zone: String,
     /// For a known milk: when it happened. For `cooldown_unknown` rows: the
     /// **earliest observed failed attempt**, which is what bounds the cooldown
-    /// (`expiry ≤ last_milked_at + 1h`) — see `record_cow_cooldown_bound`.
+    /// (`expiry ≤ last_milked_at + 1h`).
     pub last_milked_at: String,
     /// The game only said "milked within the past hour", so this cow's exact
     /// milk time is unknown: the widget must render an upper bound, not a countdown.
@@ -1099,73 +1033,6 @@ pub fn get_milking_timers_for<C: crate::db::DbRead + ?Sized>(
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Row error: {e}"))
-}
-
-/// Record a **known** cow milk: the cooldown starts at `milked_at` (the milk
-/// event's own UTC time) and the "unknown" flag is cleared, because this is the
-/// truth the bound was only approximating.
-///
-/// The stamp only ever moves forward (`MAX`), so replaying an old chat log can't
-/// hand out a fresh hour; the zone merge still learns a previously-unknown area.
-/// Lives here rather than inline in the coordinator so the statement is testable.
-pub fn record_cow_milk(
-    conn: &rusqlite::Connection,
-    character: &str,
-    server: &str,
-    cow_name: &str,
-    zone: &str,
-    milked_at: &str,
-) -> Result<(), String> {
-    conn.execute(
-        "INSERT INTO milking_timers
-             (character_name, server_name, cow_name, zone, last_milked_at, cooldown_unknown)
-         VALUES (?1, ?2, ?3, ?4, ?5, 0)
-         ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
-            last_milked_at = MAX(excluded.last_milked_at, milking_timers.last_milked_at),
-            cooldown_unknown = 0,
-            zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END",
-        rusqlite::params![character, server, cow_name, zone, milked_at],
-    )
-    .map_err(|e| format!("Failed to record cow milk: {e}"))?;
-    Ok(())
-}
-
-/// Record that a cow was milked *somewhere within the hour before `attempt_at`
-/// (the game's "You've already milked X in the past hour." error).
-///
-/// The exact milk time is unknowable, so the row keeps a **bound** instead of a
-/// fabricated stamp: `last_milked_at` = the *earliest* observed failed attempt
-/// (each accepted attempt can only tighten it, hence `MIN`), which makes the
-/// cooldown expiry `≤ last_milked_at + 1h` — an upper bound the widget renders as
-/// "≤ Xm" and which becomes a certain "Ready!" at zero.
-///
-/// A row that already holds a *known* milk time is never degraded by this: its
-/// stamp and flag are left alone (a real time is strictly better information),
-/// only the zone merge still applies.
-pub fn record_cow_cooldown_bound(
-    conn: &rusqlite::Connection,
-    character: &str,
-    server: &str,
-    cow_name: &str,
-    zone: &str,
-    attempt_at: &str,
-) -> Result<(), String> {
-    conn.execute(
-        "INSERT INTO milking_timers
-             (character_name, server_name, cow_name, zone, last_milked_at, cooldown_unknown)
-         VALUES (?1, ?2, ?3, ?4, ?5, 1)
-         ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
-            last_milked_at = CASE
-                WHEN milking_timers.cooldown_unknown = 1
-                  THEN MIN(excluded.last_milked_at, milking_timers.last_milked_at)
-                ELSE milking_timers.last_milked_at
-            END,
-            cooldown_unknown = milking_timers.cooldown_unknown,
-            zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END",
-        rusqlite::params![character, server, cow_name, zone, attempt_at],
-    )
-    .map_err(|e| format!("Failed to record cow cooldown bound: {e}"))?;
-    Ok(())
 }
 
 // ── Character stats ─────────────────────────────────────────────
@@ -2081,101 +1948,6 @@ mod tests {
         let bare = get_pooping_stats_for(&conn, "Alt", "Dreva").unwrap();
         assert_eq!(bare.total_poops, 1);
         assert_eq!(bare.skill_level, None);
-    }
-
-    #[test]
-    fn cow_cooldown_bound_is_honest_and_real_milk_wins() {
-        let conn = setup();
-
-        // A failed attempt records a *bound*: the flag is set and the stamp is the
-        // attempt itself, so the widget can show "expiry ≤ attempt + 1h".
-        record_cow_cooldown_bound(
-            &conn,
-            "Zen",
-            "Dreva",
-            "Homer",
-            "Serbule",
-            "2026-10-13T01:00:00+00:00",
-        )
-        .unwrap();
-        let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
-        assert_eq!(timers.len(), 1);
-        assert!(timers[0].cooldown_unknown);
-        assert_eq!(timers[0].last_milked_at, "2026-10-13T01:00:00+00:00");
-        assert_eq!(timers[0].zone, "Serbule");
-
-        // Later attempts keep the flag and tighten the bound to the *earliest*
-        // attempt seen (a stricter statement about when the milk happened) — a
-        // chronological replay therefore converges instead of drifting.
-        record_cow_cooldown_bound(
-            &conn,
-            "Zen",
-            "Dreva",
-            "Homer",
-            "Serbule",
-            "2026-10-13T01:30:00+00:00",
-        )
-        .unwrap();
-        record_cow_cooldown_bound(
-            &conn,
-            "Zen",
-            "Dreva",
-            "Homer",
-            "",
-            "2026-10-13T00:50:00+00:00",
-        )
-        .unwrap();
-        let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
-        assert!(timers[0].cooldown_unknown);
-        assert_eq!(timers[0].last_milked_at, "2026-10-13T00:50:00+00:00");
-        assert_eq!(
-            timers[0].zone, "Serbule",
-            "blank zone must not clobber a known one"
-        );
-
-        // A real milk is strictly better information: it clears the flag and
-        // installs the true time.
-        record_cow_milk(
-            &conn,
-            "Zen",
-            "Dreva",
-            "Homer",
-            "Serbule",
-            "2026-10-13T02:05:00+00:00",
-        )
-        .unwrap();
-        let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
-        assert!(!timers[0].cooldown_unknown);
-        assert_eq!(timers[0].last_milked_at, "2026-10-13T02:05:00+00:00");
-
-        // …and no later bound may degrade it (only the zone merge still applies).
-        record_cow_cooldown_bound(
-            &conn,
-            "Zen",
-            "Dreva",
-            "Homer",
-            "Eltibule",
-            "2026-10-13T02:20:00+00:00",
-        )
-        .unwrap();
-        let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
-        assert!(!timers[0].cooldown_unknown);
-        assert_eq!(timers[0].last_milked_at, "2026-10-13T02:05:00+00:00");
-        assert_eq!(timers[0].zone, "Eltibule");
-
-        // Replaying an older successful milk can't move the stamp back either.
-        record_cow_milk(
-            &conn,
-            "Zen",
-            "Dreva",
-            "Homer",
-            "",
-            "2026-10-13T01:00:00+00:00",
-        )
-        .unwrap();
-        let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
-        assert_eq!(timers[0].last_milked_at, "2026-10-13T02:05:00+00:00");
-        assert!(!timers[0].cooldown_unknown);
     }
 
     #[test]

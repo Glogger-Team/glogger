@@ -1,6 +1,4 @@
 use crate::chat_parser::{parse_chat_lines_tagged, parse_chat_login_line, ChatMessage};
-use crate::parsers::{parse_skill_update, SkillUpdate};
-use crate::player_event_parser::{PlayerEvent, PlayerEventParser};
 use chrono::NaiveDateTime;
 /// Log file watching infrastructure
 ///
@@ -72,12 +70,6 @@ pub enum LogEvent {
         timestamp: NaiveDateTime,
     },
 
-    /// Skill update (ProcessUpdateSkill line)
-    SkillUpdated(SkillUpdate),
-
-    /// Player log event (items, skills, NPC interactions, vendor, storage, etc.)
-    PlayerEventParsed(PlayerEvent),
-
     /// Server detected from chat log login line
     ServerDetected {
         server_name: String,
@@ -130,7 +122,6 @@ pub struct PlayerLogWatcher {
     active_character: Option<String>,
     current_chat_log: Option<PathBuf>,
     pattern_matchers: Vec<PatternMatcher>,
-    player_event_parser: PlayerEventParser,
     /// When true, raw lines are buffered for debug capture.
     capture_raw_lines: bool,
     raw_lines_buffer: Vec<String>,
@@ -147,7 +138,6 @@ impl PlayerLogWatcher {
             active_character: None,
             current_chat_log: None,
             pattern_matchers: Vec::new(),
-            player_event_parser: PlayerEventParser::new(),
             capture_raw_lines: false,
             raw_lines_buffer: Vec::new(),
         };
@@ -166,7 +156,6 @@ impl PlayerLogWatcher {
             active_character: None,
             current_chat_log: None,
             pattern_matchers: Vec::new(),
-            player_event_parser: PlayerEventParser::new(),
             capture_raw_lines: false,
             raw_lines_buffer: Vec::new(),
         };
@@ -185,7 +174,6 @@ impl PlayerLogWatcher {
         self.register_pattern(match_character_login);
         self.register_pattern(match_chat_log_path);
         self.register_pattern(match_area_transition);
-        self.register_pattern(match_skill_update);
     }
 
     /// Get the currently active character name
@@ -203,32 +191,6 @@ impl PlayerLogWatcher {
     /// Get the current chat log path
     pub fn get_chat_log_path(&self) -> Option<&PathBuf> {
         self.current_chat_log.as_ref()
-    }
-
-    /// Feed a resolved chat `[Status] ItemGained` event into the player event
-    /// parser's correlation buffer. The coordinator calls this when it sees
-    /// a chat gain so upcoming `ProcessAddItem`s can seed their stack size
-    /// from the authoritative chat quantity.
-    ///
-    /// `item_internal_name` must already be resolved (chat's display name
-    /// mapped to the CDN internal name); the parser does the final match and
-    /// has no CDN access of its own. `timestamp_hms` should be UTC in
-    /// "HH:MM:SS" form to align with player.log timestamps.
-    pub fn feed_chat_gain(
-        &mut self,
-        item_internal_name: String,
-        quantity: u32,
-        timestamp_hms: &str,
-    ) {
-        self.player_event_parser
-            .feed_chat_gain(item_internal_name, quantity, timestamp_hms);
-    }
-    /// One-shot login-batch signal from the parser: the current
-    /// `is_new=false` AddItem burst crossed `LOGIN_BATCH_MIN_ITEMS`, so the
-    /// inventory slice needs one clear before the batch persists. Consumed
-    /// here; the coordinator calls `GameStateManager::clear_inventory_slice`.
-    pub fn take_inventory_login_batch(&mut self) -> bool {
-        self.player_event_parser.take_inventory_login_batch()
     }
 
     /// Enable or disable raw line capture for debug purposes.
@@ -327,11 +289,6 @@ fn match_area_transition(line: &str, _watcher: &mut PlayerLogWatcher) -> Option<
     None
 }
 
-/// Match skill update: "ProcessUpdateSkill" lines
-fn match_skill_update(line: &str, _watcher: &mut PlayerLogWatcher) -> Option<LogEvent> {
-    parse_skill_update(line).map(LogEvent::SkillUpdated)
-}
-
 impl LogFileWatcher for PlayerLogWatcher {
     fn start(&mut self) -> Result<(), String> {
         if !self.file_path.exists() {
@@ -369,7 +326,6 @@ impl LogFileWatcher for PlayerLogWatcher {
             );
             self.current_position = 0;
             self.position_reset = true;
-            self.player_event_parser = PlayerEventParser::new();
         }
 
         if self.current_position >= file_size {
@@ -406,26 +362,6 @@ impl LogFileWatcher for PlayerLogWatcher {
             if let Some(event) = self.parse_line(line_content) {
                 events.push(event);
             }
-
-            // Feed every line through the player event parser first
-            let player_events = self.player_event_parser.process_line(line_content);
-            for pe in player_events {
-                events.push(LogEvent::PlayerEventParsed(pe));
-            }
-        }
-
-        // Poll-boundary drain: emit only deletes that already outlived the
-        // 5 s / 5-line window. Young entries survive into the next poll so
-        // cross-poll Delete/confirmation pairs still resolve. (Rotation
-        // above rebuilds the parser — nothing survives that by design.
-        // Login-line ordering uses the explicit full flush in process_line;
-        // end-of-stream callers use flush_all_pending directly.)
-        let now_secs = self.player_event_parser.last_line_secs();
-        let mut drain_events = Vec::new();
-        self.player_event_parser
-            .flush_expired_deletes(now_secs, &mut drain_events);
-        for pe in drain_events {
-            events.push(LogEvent::PlayerEventParsed(pe));
         }
 
         Ok(events)
