@@ -254,6 +254,90 @@ fn combine_loot_rows(
         .collect()
 }
 
+/// Record a player-landed FATALITY as a kill row. Rescan-safe: the same
+/// (character, server, entity, killed_at) line replays to the existing row
+/// and returns its id. Returns the kill id on success.
+#[allow(clippy::too_many_arguments)]
+pub fn record_enemy_kill(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    enemy_name: &str,
+    enemy_entity_id: &str,
+    killing_ability: &str,
+    health_damage: i64,
+    armor_damage: i64,
+    killed_at: &str,
+) -> Result<i64, String> {
+    conn.execute(
+        "INSERT INTO enemy_kills
+            (enemy_name, enemy_entity_id, killing_ability, health_damage, armor_damage,
+             killed_at, character_name, server_name)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+         WHERE NOT EXISTS (
+            SELECT 1 FROM enemy_kills
+             WHERE character_name = ?7 AND server_name = ?8
+               AND enemy_entity_id = ?2 AND killed_at = ?6
+         )",
+        rusqlite::params![
+            enemy_name, enemy_entity_id, killing_ability, health_damage, armor_damage,
+            killed_at, character, server
+        ],
+    )
+    .map_err(|e| format!("Failed to record enemy kill: {e}"))?;
+    conn.query_row(
+        "SELECT id FROM enemy_kills
+          WHERE character_name = ?1 AND server_name = ?2
+            AND enemy_entity_id = ?3 AND killed_at = ?4",
+        rusqlite::params![character, server, enemy_entity_id, killed_at],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("Failed to read back kill id: {e}"))
+}
+
+/// Attach a loot receipt to its kill via the looted-from entity id. Finds the
+/// latest kill for (character, server, entity) at or before the receipt
+/// (30-minute window — corpse search/loot lag, never future kills) and links
+/// the item row, rescan-safe on (kill_id, item, quantity). Returns `false`
+/// when no kill matches (unlooted kill, or the kill line never reached us).
+pub fn link_kill_loot(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    enemy_entity_id: &str,
+    receipt_ts: &str,
+    item_name: &str,
+    quantity: i64,
+) -> Result<bool, String> {
+    let kill_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM enemy_kills
+              WHERE character_name = ?1 AND server_name = ?2
+                AND enemy_entity_id = ?3
+                AND killed_at <= ?4
+                AND killed_at >= datetime(?4, '-30 minutes')
+              ORDER BY killed_at DESC LIMIT 1",
+            rusqlite::params![character, server, enemy_entity_id, receipt_ts],
+            |row| row.get(0),
+        )
+        .ok();
+    let Some(kill_id) = kill_id else {
+        return Ok(false);
+    };
+    let rows = conn
+        .execute(
+            "INSERT INTO enemy_kill_loot (kill_id, item_name, quantity)
+             SELECT ?1, ?2, ?3
+             WHERE NOT EXISTS (
+                SELECT 1 FROM enemy_kill_loot
+                 WHERE kill_id = ?1 AND item_name = ?2 AND quantity = ?3
+             )",
+            rusqlite::params![kill_id, item_name, quantity],
+        )
+        .map_err(|e| format!("Failed to link kill loot: {e}"))?;
+    Ok(rows > 0)
+}
+
 /// All-time kill/loot stats for a monster. `zone` scopes the stats by area:
 /// absent/null = all zones combined, "" = the unknown-zone bucket (kills recorded
 /// before zone capture), otherwise a specific area key.

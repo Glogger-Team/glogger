@@ -47,6 +47,30 @@ pub enum ChatJsonEvent {
         recipe_id: u32,
         completions: u32,
     },
+    /// `Pigeon`: received pigeon mail (send direction emits no line).
+    PigeonReceived {
+        timestamp: String,
+        title: String,
+        body: String,
+    },
+    /// `ParagonXP`: per-kill prodigy flow, same shape as `EarnedXP` (not
+    /// cap-overflow). No DB home — the Status twin owns the live tally.
+    /// Fields are read by tests and future consumers; the live arm is a
+    /// deliberate no-op today (see dispatch).
+    #[allow(dead_code)]
+    ParagonXp {
+        timestamp: String,
+        skill: String,
+        xp: u32,
+        old_level: u32,
+        new_level: u32,
+    },
+    /// `EntityReport`: single entity message (one arena tip observed).
+    EntityReport {
+        timestamp: String,
+        title: String,
+        body: String,
+    },
     /// Any `Type` with no frozen schema yet — structured ingest skips it,
     /// the raw chat row stays searchable.
     Unknown { json_type: String },
@@ -157,6 +181,41 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
                 timestamp,
                 recipe_id: v.recipe_id,
                 completions: v.completions,
+            })
+        }
+        "Pigeon" => {
+            let v: BookJson = serde_json::from_str(body).ok()?;
+            if v.title.is_empty() {
+                return None;
+            }
+            Some(ChatJsonEvent::PigeonReceived {
+                timestamp,
+                title: v.title,
+                body: v.body,
+            })
+        }
+        "ParagonXP" => {
+            let v: EarnedXpJson = serde_json::from_str(body).ok()?;
+            if v.skill.is_empty() || v.xp == 0 {
+                return None;
+            }
+            Some(ChatJsonEvent::ParagonXp {
+                timestamp,
+                skill: v.skill,
+                xp: v.xp,
+                old_level: v.old_level,
+                new_level: v.new_level,
+            })
+        }
+        "EntityReport" => {
+            let v: BookJson = serde_json::from_str(body).ok()?;
+            if v.title.is_empty() {
+                return None;
+            }
+            Some(ChatJsonEvent::EntityReport {
+                timestamp,
+                title: v.title,
+                body: v.body,
             })
         }
         _ => Some(ChatJsonEvent::Unknown {
@@ -287,37 +346,53 @@ mod tests {
 
     #[test]
     fn unknown_type_yields_unknown() {
-        let msgs = parse_chat_lines("26-11-17 08:50:27\t[JSON:Pigeon] {\"From\":\"SomePlayer\"}\n");
+        let msgs = parse_chat_lines("26-11-17 08:50:27\t[JSON:Report] {\"Title\":\"Something\"}\n");
         assert_eq!(msgs.len(), 1);
         match parse_json_message(&msgs[0]) {
-            Some(ChatJsonEvent::Unknown { json_type, .. }) => assert_eq!(json_type, "Pigeon"),
+            Some(ChatJsonEvent::Unknown { json_type, .. }) => assert_eq!(json_type, "Report"),
             other => panic!("expected Unknown, got {other:?}"),
         }
     }
 
     #[test]
-    fn pigeon_fixture_parses_as_unknown() {
+    fn pigeon_fixture_parses_typed() {
         // Receive direction, with and without item (live 2026-11-17, friend
-        // renamed). Pins the real shape until a typed pigeon arm ships.
+        // renamed).
         let events = parse_all(include_str!("../../test_data/vip_json/chat-pigeon.log"));
         assert_eq!(events.len(), 3);
         for ev in &events {
             match ev {
-                ChatJsonEvent::Unknown { json_type, .. } => assert_eq!(json_type, "Pigeon"),
-                other => panic!("expected Unknown, got {other:?}"),
+                ChatJsonEvent::PigeonReceived { title, body, .. } => {
+                    assert!(title.starts_with("Pigeon From "));
+                    assert!(!body.is_empty());
+                }
+                other => panic!("expected PigeonReceived, got {other:?}"),
             }
+        }
+        match &events[1] {
+            ChatJsonEvent::PigeonReceived { body, .. } => {
+                assert!(body.contains("Mulberry Salad x10"))
+            }
+            other => panic!("expected PigeonReceived, got {other:?}"),
         }
     }
 
     #[test]
     fn kill_slice_yields_typed_json_events() {
-        // Solo City Slime kill (live 2026-11-17): ParagonXP twins are still
-        // Unknown, but the anatomy XP and the receipt are typed — and the
+        // Solo City Slime kill (live 2026-11-17): ParagonXP twins are typed
+        // (no DB home — the Status twin owns the live tally), and the
         // receipt carries the FATALITY entity ID.
         let events = parse_all(include_str!("../../test_data/vip_json/chat-kill-slice.log"));
         assert_eq!(events.len(), 4);
-        assert!(matches!(&events[0], ChatJsonEvent::Unknown { json_type, .. } if json_type == "ParagonXP"));
-        assert!(matches!(&events[1], ChatJsonEvent::Unknown { json_type, .. } if json_type == "ParagonXP"));
+        for ev in &events[0..2] {
+            match ev {
+                ChatJsonEvent::ParagonXp { skill, xp, .. } => {
+                    assert!(!skill.is_empty());
+                    assert!(*xp > 0);
+                }
+                other => panic!("expected ParagonXp, got {other:?}"),
+            }
+        }
         let ChatJsonEvent::Xp { skill, xp, .. } = &events[2] else {
             panic!("expected Xp, got {:?}", events[2]);
         };
@@ -327,5 +402,18 @@ mod tests {
             panic!("expected ItemReceipt, got {:?}", events[3]);
         };
         assert_eq!(*from_entity_id, Some(488966));
+    }
+
+    #[test]
+    fn entity_report_parses_typed() {
+        let msgs = parse_chat_lines("26-11-17 16:55:02\t[JSON:EntityReport] {\"Title\":\"Eveline Rastin\", \"Body\":\"tip\"}\n");
+        assert_eq!(msgs.len(), 1);
+        match parse_json_message(&msgs[0]) {
+            Some(ChatJsonEvent::EntityReport { title, body, .. }) => {
+                assert_eq!(title, "Eveline Rastin");
+                assert_eq!(body, "tip");
+            }
+            other => panic!("expected EntityReport, got {other:?}"),
+        }
     }
 }

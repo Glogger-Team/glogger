@@ -284,12 +284,34 @@ pub fn dispatch_chat_message(
                     out.character_death = Some(combat_event);
                     state.recent_damage.clear();
                 }
-                ChatCombatEvent::EnemyKilled { .. } => {
+                ChatCombatEvent::EnemyKilled {
+                    timestamp,
+                    enemy_name,
+                    enemy_entity_id,
+                    killing_ability,
+                    health_damage,
+                    armor_damage,
+                } => {
                     // FATALITY lines carry the entity ID, which matches receipt
-                    // `FromEntityId` (verified: Olugax 257400, 2026-11-17) —
-                    // the loot↔kill join key. No recorder writes `enemy_kills`
-                    // yet; see the kill-line wishlist entry. Group kills where
-                    // another lands the blow emit no FATALITY for us.
+                    // `FromEntityId` (paired live 2026-11-17: slimes #488966 /
+                    // #488976, shark #19868) — the loot↔kill join key. Group
+                    // kills where another lands the blow emit no FATALITY.
+                    if let Ok(conn) = ctx.db.get_write()
+                        && crate::db::kill_tracking_commands::record_enemy_kill(
+                            &conn,
+                            &id.character,
+                            &id.server,
+                            enemy_name,
+                            enemy_entity_id,
+                            killing_ability,
+                            *health_damage as i64,
+                            *armor_damage as i64,
+                            timestamp,
+                        )
+                        .is_ok()
+                    {
+                        out.domain("enemy_kills");
+                    }
                     out.enemy_killed = Some(combat_event);
                 }
                 ChatCombatEvent::DamageOnPlayer { .. } => {
@@ -589,28 +611,43 @@ fn insert_json_receipt_guarded(
             |r| r.get(0),
         )
         .unwrap_or(false);
-    if exists {
-        return false;
-    }
-    conn.execute(
-        "INSERT INTO item_transactions
-            (timestamp, character_name, server_name, item_name,
-             internal_name, item_type_id, quantity, context,
-             source, from_name, from_entity_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'loot', 'chat_status', ?8, ?9)",
-        rusqlite::params![
-            timestamp,
+    let wrote = if exists {
+        false
+    } else {
+        conn.execute(
+            "INSERT INTO item_transactions
+                (timestamp, character_name, server_name, item_name,
+                 internal_name, item_type_id, quantity, context,
+                 source, from_name, from_entity_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'loot', 'chat_status', ?8, ?9)",
+            rusqlite::params![
+                timestamp,
+                character,
+                server,
+                item_name,
+                internal_name,
+                item_type_id,
+                quantity as i32,
+                from_name,
+                from_entity_id,
+            ],
+        )
+        .is_ok()
+    };
+    // Both twin orders converge here, so this is also the loot↔kill join
+    // point: the receipt's entity links the item to its FATALITY row.
+    if let Some(entity_id) = from_entity_id {
+        let _ = crate::db::kill_tracking_commands::link_kill_loot(
+            &conn,
             character,
             server,
+            &entity_id.to_string(),
+            timestamp,
             item_name,
-            internal_name,
-            item_type_id,
-            quantity as i32,
-            from_name,
-            from_entity_id,
-        ],
-    )
-    .is_ok()
+            quantity as i64,
+        );
+    }
+    wrote
 }
 
 /// Chat XP without a level-up: same row shape and recency rule as the
@@ -891,6 +928,55 @@ fn dispatch_json_event(
                 }
             }
         }
+        E::PigeonReceived {
+            timestamp,
+            title,
+            body,
+        } => {
+            if let Some(id) = ctx.identity {
+                // Receive direction only — the game emits no line for sent
+                // pigeons (verified 2026-11-17), so `direction` is always in.
+                if let Some(sender) = parse_pigeon_sender(title) {
+                    let item = parse_pigeon_item(body);
+                    if record_player_message(
+                        ctx.db,
+                        &id.character,
+                        &id.server,
+                        timestamp,
+                        "pigeon",
+                        "in",
+                        &sender,
+                        body,
+                        item.as_deref(),
+                    ) {
+                        out.domain("player_messages");
+                    }
+                }
+            }
+        }
+        E::ParagonXp { .. } => {
+            // Deliberate no-op: per-kill prodigy flow has no DB home (the
+            // prodigy tally is in-memory from the English Status twin, which
+            // already covers live). Typed so the shape is pinned and
+            // `unknown_json` stays clean for genuinely unobserved Types.
+        }
+        E::EntityReport { timestamp, title, body } => {
+            if let Some(id) = ctx.identity
+                && record_player_message(
+                    ctx.db,
+                    &id.character,
+                    &id.server,
+                    timestamp,
+                    "entity_report",
+                    "in",
+                    title,
+                    body,
+                    None,
+                )
+            {
+                out.domain("player_messages");
+            }
+        }
         E::Unknown { json_type } => {
             out.unknown_json.push(json_type.clone());
         }
@@ -962,6 +1048,83 @@ fn record_poop(db: &DbPool, character: &str, server: &str, target: &str, local_t
             false
         }
     }
+}
+
+/// Persist a player/entity message (pigeon mail, entity reports) with a
+/// rescan guard (same character/server/timestamp/type/sender → skip).
+/// Returns `true` when a row was written (caller emits `player_messages`).
+#[allow(clippy::too_many_arguments)]
+fn record_player_message(
+    db: &DbPool,
+    character: &str,
+    server: &str,
+    timestamp: &str,
+    message_type: &str,
+    direction: &str,
+    other_player: &str,
+    body: &str,
+    item_name: Option<&str>,
+) -> bool {
+    let Ok(conn) = db.get_write() else {
+        return false;
+    };
+    match conn.execute(
+        "INSERT INTO player_messages
+            (character_name, server_name, timestamp, message_type, direction, other_player, body, item_name)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+         WHERE NOT EXISTS (
+            SELECT 1 FROM player_messages
+             WHERE character_name = ?1 AND server_name = ?2 AND timestamp = ?3
+               AND message_type = ?4 AND other_player = ?6
+         )",
+        rusqlite::params![
+            character, server, timestamp, message_type, direction, other_player, body, item_name
+        ],
+    ) {
+        Ok(rows) => rows > 0,
+        Err(e) => {
+            eprintln!("[chat_status_dispatch] Failed to record player message: {e}");
+            false
+        }
+    }
+}
+
+/// Friend name from a `"Pigeon From <name>"` title.
+fn parse_pigeon_sender(title: &str) -> Option<String> {
+    title
+        .strip_prefix("Pigeon From ")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Item name from a pigeon body (`<i>You received:\n<item> xN</i>`).
+fn parse_pigeon_item(body: &str) -> Option<String> {
+    let start = body.find("You received:")? + "You received:".len();
+    let rest = &body[start..];
+    // Strip `<...>` markup spans (keeps item-name letters intact), then the
+    // first text line is `<item> xN`.
+    let mut text = String::with_capacity(rest.len());
+    let mut in_tag = false;
+    for c in rest.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    // `Mulberry Salad x10` → item is everything before a trailing `xN`.
+    let mut parts: Vec<&str> = line.split_whitespace().collect();
+    if let Some(last) = parts.last()
+        && last.len() > 1
+        && last.starts_with('x')
+        && last[1..].chars().all(|c| c.is_ascii_digit())
+    {
+        parts.pop();
+    }
+    let item = parts.join(" ").trim().to_string();
+    (!item.is_empty()).then_some(item)
 }
 
 /// Persist a combat death with a replay guard (same killer/timestamp row
@@ -1853,14 +2016,212 @@ mod tests {
         let mut dmg = Vec::new();
         
         let ts = "26-11-17 08:50:27";
-        let unknown = json_msg("Pigeon", "{\"From\":\"SomePlayer\"}", ts);
+        let unknown = json_msg("Report", "{\"Title\":\"Something\"}", ts);
         let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &unknown, ts, &mut st);
-        assert_eq!(out.unknown_json, vec!["Pigeon".to_string()]);
+        assert_eq!(out.unknown_json, vec!["Report".to_string()]);
         assert!(out.domains.is_empty());
         let bad = json_msg("AddItem", "not-json", ts);
         let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &bad, ts, &mut st);
         assert_eq!(out.malformed_json, vec!["AddItem".to_string()]);
+    }
+
+    #[test]
+    fn json_pigeon_records_message_rescan_safe() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 16:55:59";
+        let body = "{\"Title\":\"Pigeon From TestFriend\", \"Body\":\"This one has food!\\n\\n<i>You received:\\nMulberry Salad x10</i>\"}";
+        let msg = json_msg("Pigeon", body, ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        assert!(out.domains.iter().any(|d| d == "player_messages"));
+        assert!(out.unknown_json.is_empty());
+        let count: i64 = pool
+            .get_write()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM player_messages WHERE message_type = 'pigeon' AND other_player = 'TestFriend'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        let item: Option<String> = pool
+            .get_write()
+            .unwrap()
+            .query_row(
+                "SELECT item_name FROM player_messages WHERE message_type = 'pigeon'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(item.as_deref(), Some("Mulberry Salad"));
+        // Rescan: same line replays to the existing row.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        let count: i64 = pool
+            .get_write()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM player_messages WHERE message_type = 'pigeon'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn json_entity_report_records_message() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 16:55:02";
+        let msg = json_msg("EntityReport", "{\"Title\":\"Eveline Rastin\", \"Body\":\"tip\"}", ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        assert!(out.domains.iter().any(|d| d == "player_messages"));
+        let row: (String, String) = pool
+            .get_write()
+            .unwrap()
+            .query_row(
+                "SELECT other_player, body FROM player_messages WHERE message_type = 'entity_report'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("Eveline Rastin".to_string(), "tip".to_string()));
+    }
+
+    #[test]
+    fn json_paragonxp_is_counted_not_stored() {
+        // No DB home: the English Status twin owns the live tally. Typed so
+        // the shape is pinned and `unknown_json` stays clean.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 17:04:42";
+        let msg = json_msg(
+            "ParagonXP",
+            "{\"Skill\":\"Werewolf\", \"XP\": 279200, \"OldLevel\": 6, \"NewLevel\": 6}",
+            ts,
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        assert!(out.unknown_json.is_empty());
+        assert!(out.domains.is_empty());
+    }
+
+    #[test]
+    fn combat_fatality_records_kill_rescan_safe() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 17:04:42";
+        let msg = combat_msg(
+            "Alice: Bruising Blow 8 on City Slime #488966! Dmg: 2943 health. (FATALITY!)",
+            ts,
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        assert!(out.enemy_killed.is_some());
+        let row: (String, String) = pool
+            .get_write()
+            .unwrap()
+            .query_row(
+                "SELECT enemy_name, enemy_entity_id FROM enemy_kills",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("City Slime".to_string(), "488966".to_string()));
+        // Rescan: same FATALITY replays to the existing row.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        let count: i64 = pool
+            .get_write()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM enemy_kills", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn json_receipt_links_loot_to_kill() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        // Kill first, receipt 5s later (live shape: FATALITY 17:04:42 →
+        // receipt 17:04:47).
+        let kill = combat_msg(
+            "Alice: Bruising Blow 8 on City Slime #488966! Dmg: 2943 health. (FATALITY!)",
+            "26-11-17 17:04:42",
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &kill, "26-11-17 17:04:42", &mut st);
+        let receipt = json_msg(
+            "AddItem",
+            "{\"Name\": \"Coin Sack\", \"TypeId\": 1325, \"Stack\": 1, \"Flags\": [], \"FromName\": \"City Slime\", \"FromEntityId\": 488966}",
+            "26-11-17 17:04:47",
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &receipt, "26-11-17 17:04:47", &mut st);
+        let loot: Vec<(String, i64)> = pool
+            .get_write()
+            .unwrap()
+            .prepare("SELECT item_name, quantity FROM enemy_kill_loot")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(loot, vec![("Coin Sack".to_string(), 1)]);
+        // Receipt rescan links nothing new.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &receipt, "26-11-17 17:04:47", &mut st);
+        let count: i64 = pool
+            .get_write()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM enemy_kill_loot", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn unlooted_kill_leaves_no_loot_rows() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        // FATALITY with no receipt (live #488964): kill recorded, no loot.
+        let kill = combat_msg(
+            "Alice: Claw 9 on City Slime #488964! Dmg: 1822 health. (FATALITY!)",
+            "26-11-17 17:05:16",
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &kill, "26-11-17 17:05:16", &mut st);
+        let kills: i64 = pool
+            .get_write()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM enemy_kills", [], |r| r.get(0))
+            .unwrap();
+        let loot: i64 = pool
+            .get_write()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM enemy_kill_loot", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!((kills, loot), (1, 0));
     }
 }
