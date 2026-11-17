@@ -40,3 +40,10 @@ No Type names or keys invented — code from fixtures only when they land.
 ## Prerequisites (game-side, not app settings)
 
 VIP + chat logs on + "non-combat logging" checked (default on). Combat logging unchanged — old `[Combat]` parsing stays.
+
+## Wanted signals
+
+Unobserved lines that would unlock features (kill recorder, pigeons, almanac
+auto-extraction, hangout persistence) are tracked in
+`docs/vip-json-signal-wishlist.md`, with in-game capture steps in
+`docs/vip-json-observation-checklist.md`. Remove entries as fixtures land.
