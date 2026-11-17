@@ -308,12 +308,18 @@ mod tests {
     #[test]
     fn delta_favor_lines_parse_exact() {
         let events = parse_all(include_str!("../../test_data/vip_json/chat-deltafavor.log"));
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 3);
         let ChatJsonEvent::FavorDelta { npc, delta, .. } = &events[0] else {
             panic!("expected FavorDelta, got {:?}", events[0]);
         };
         assert_eq!(npc, "NPC_Elune");
         assert!((delta - 18.06948).abs() < 1e-9);
+        // Tasteless gift (live 2026-11-17): negative delta accrues, no gift row.
+        let ChatJsonEvent::FavorDelta { npc, delta, .. } = &events[2] else {
+            panic!("expected FavorDelta, got {:?}", events[2]);
+        };
+        assert_eq!(npc, "NPC_MushroomJack");
+        assert!((delta + 52.65).abs() < 1e-9);
     }
 
     #[test]

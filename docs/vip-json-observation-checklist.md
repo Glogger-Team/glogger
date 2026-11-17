@@ -53,9 +53,13 @@ Game version/patch at time of run: _______________
   Confirms `DeltaFavor` keeps firing and the capped-exclusion logic (no gift row
   past cap).
   - VERDICT 2026-11-17: **UNTESTABLE — confirmed-absent shape.** The game
-    refuses gifts at cap, so no log line can exist. Capped/tasteless exclusion
-    stays code-covered only (existing dispatch tests).
-- [ ] **Give a tasteless gift** (hated item). Confirms tasteless-exclusion path.
+  refuses gifts at cap, so no log line can exist. Capped exclusion stays
+  code-covered only (existing dispatch test); tasteless observed live, next box.
+- [x] **Give a tasteless gift** (hated item). Confirms tasteless-exclusion path.
+  - VERDICT 2026-11-17: **OBSERVED** — `DeltaFavor {"Npc":"NPC_MushroomJack",
+    "Delta": -52.65}` at 17:26:34 with twin `lost 52.7 favor`. Negative delta
+    accrues (no `giftable` tastes → no gift row, per existing exclusion test).
+    Fixture: 3rd line of `chat-deltafavor.log`.
 - [x] **Place an arena bet start to finish** (confirm → success → payout or loss).
   Expectation: *no* `LocalPlayer:` lines at all — proves the bet pipeline is
   truly unrecoverable, not just quiet.
