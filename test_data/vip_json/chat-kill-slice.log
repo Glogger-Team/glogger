@@ -1,0 +1,10 @@
+26-11-17 17:04:42	[JSON:ParagonXP] {"Skill":"Werewolf", "XP": 279200, "OldLevel": 6, "NewLevel": 6}
+26-11-17 17:04:42	[Status] You earned 279200 Prodigy XP in Lycanthropy.
+26-11-17 17:04:42	[JSON:ParagonXP] {"Skill":"Unarmed", "XP": 279200, "OldLevel": 2, "NewLevel": 2}
+26-11-17 17:04:42	[Status] You earned 279200 Prodigy XP in Unarmed.
+26-11-17 17:04:42	[Combat] TestPlayer: Bruising Blow 8 on City Slime #488966! Dmg: 2943 health. (FATALITY!)
+26-11-17 17:04:47	[JSON:EarnedXP] {"Skill":"Anatomy_Fungoids", "XP": 105, "OldLevel": 49, "NewLevel": 49}
+26-11-17 17:04:47	[Status] You earned 105 XP in Fungoid Anatomy.
+26-11-17 17:04:47	[Status] You bury the corpse.
+26-11-17 17:04:47	[Status] Somewhat-Gigantic Coin Sack added to inventory.
+26-11-17 17:04:47	[JSON:AddItem] {"Name": "Somewhat-Gigantic Coin Sack", "TypeId": 1325, "Stack": 1, "Flags": [], "FromName": "City Slime", "FromEntityId": 488966}

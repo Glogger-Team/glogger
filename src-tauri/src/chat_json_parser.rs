@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn book_lines_parse() {
         let events = parse_all(include_str!("../../test_data/vip_json/chat-book.log"));
-        assert_eq!(events.len(), 3);
+        assert_eq!(events.len(), 4);
         let titles: Vec<&str> = events
             .iter()
             .map(|ev| match ev {
@@ -243,6 +243,7 @@ mod tests {
         assert!(titles.iter().any(|t| t.contains("Age")));
         assert!(titles.contains(&"Skill Info"));
         assert!(titles.iter().any(|t| t.contains("Behavior Report")));
+        assert!(titles.contains(&"Gardening Almanac"));
     }
 
     #[test]
@@ -292,5 +293,39 @@ mod tests {
             Some(ChatJsonEvent::Unknown { json_type, .. }) => assert_eq!(json_type, "Pigeon"),
             other => panic!("expected Unknown, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn pigeon_fixture_parses_as_unknown() {
+        // Receive direction, with and without item (live 2026-11-17, friend
+        // renamed). Pins the real shape until a typed pigeon arm ships.
+        let events = parse_all(include_str!("../../test_data/vip_json/chat-pigeon.log"));
+        assert_eq!(events.len(), 3);
+        for ev in &events {
+            match ev {
+                ChatJsonEvent::Unknown { json_type, .. } => assert_eq!(json_type, "Pigeon"),
+                other => panic!("expected Unknown, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn kill_slice_yields_typed_json_events() {
+        // Solo City Slime kill (live 2026-11-17): ParagonXP twins are still
+        // Unknown, but the anatomy XP and the receipt are typed — and the
+        // receipt carries the FATALITY entity ID.
+        let events = parse_all(include_str!("../../test_data/vip_json/chat-kill-slice.log"));
+        assert_eq!(events.len(), 4);
+        assert!(matches!(&events[0], ChatJsonEvent::Unknown { json_type, .. } if json_type == "ParagonXP"));
+        assert!(matches!(&events[1], ChatJsonEvent::Unknown { json_type, .. } if json_type == "ParagonXP"));
+        let ChatJsonEvent::Xp { skill, xp, .. } = &events[2] else {
+            panic!("expected Xp, got {:?}", events[2]);
+        };
+        assert_eq!(skill, "Anatomy_Fungoids");
+        assert_eq!(*xp, 105);
+        let ChatJsonEvent::ItemReceipt { from_entity_id, .. } = &events[3] else {
+            panic!("expected ItemReceipt, got {:?}", events[3]);
+        };
+        assert_eq!(*from_entity_id, Some(488966));
     }
 }
