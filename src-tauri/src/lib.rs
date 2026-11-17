@@ -224,7 +224,7 @@ use db::timer_commands::{delete_user_timer, get_user_timers, save_user_timer};
 use debug_capture::replay_capture_file;
 use external_fetch::{fetch_github_releases, fetch_pg_news};
 use gst_manager::{gst_check_status, gst_download, gst_launch};
-use replay::replay_dual_logs;
+use replay::replay_chat_log;
 use settings::{
     get_default_game_data_path_command, get_default_player_log_path_command, get_server_list,
     get_settings_file_path, load_settings, save_settings, SettingsManager,
@@ -690,7 +690,7 @@ pub fn run() {
             // Startup diagnostics
             log_startup,
             // Log replay (manual upload)
-            replay_dual_logs,
+            replay_chat_log,
             // Combat Wisdom tracking
             db::combat_wisdom_commands::get_combat_wisdom_monsters,
             db::combat_wisdom_commands::backfill_combat_wisdom_from_chat_logs,

@@ -19,11 +19,10 @@ use rusqlite::Connection;
 use std::collections::VecDeque;
 /// Chat-loot gate, Basic surveys: a `[Status]` gain counts as survey loot
 /// only within this many seconds of a Basic survey use's `used_at` (the loot
-/// lands in the same game tick as the map's DeleteItem; the slack covers
-/// second-truncation and cross-log write skew).
+/// lands in the same game tick as the map's consumption; the slack covers
+/// second-truncation).
 const CHAT_BASIC_WINDOW_SECS: i64 = 5;
-/// Cap for the small chat-side memory queues (recent basic uses, pending
-/// uses, deferred gains).
+/// Cap for the chat-side recent-basic-uses queue.
 const CHAT_STATE_CAP: usize = 16;
 
 /// What [`SurveySessionAggregator::record_manual_use`] needs beyond the
@@ -55,20 +54,6 @@ pub struct ChatAttribution<'a> {
     pub mark_completed: bool,
 }
 
-/// Chat-side record of the survey-spawned node currently being mined
-/// (Motherlode/Multihit). Opened when a `Mining...` delay loop is bound to a
-/// survey use; each swing refreshes the loot window. Chat `[Status]` gains
-/// attribute as survey loot only while inside the current swing's window —
-/// this is what keeps kill/forage/other loot out of the survey summary.
-#[derive(Debug, Clone)]
-struct ChatMiningState {
-    survey_use_id: i64,
-    /// UTC start of the current swing.
-    swing_start: chrono::NaiveDateTime,
-    /// Loot window length for the current swing: ceil(duration) + slack.
-    swing_window_secs: i64,
-}
-
 /// Per-character aggregator. The coordinator owns one instance; chat gains
 /// and manual survey commands feed it.
 pub struct SurveySessionAggregator {
@@ -80,19 +65,10 @@ pub struct SurveySessionAggregator {
     /// same game tick as the map's consumption). Bounded FIFO.
     recent_basic_uses: VecDeque<(i64, chrono::NaiveDateTime)>,
 
-    /// The survey node currently being mined, for chat-loot gating on
-    /// Motherlode/Multihit surveys. See [`ChatMiningState`].
-    chat_mining: Option<ChatMiningState>,
-
     /// Cached active session id (DB is the source of truth, but we cache to
     /// avoid a query per event). `None` means "unknown — go check the DB".
     /// Refreshed when a session is started/ended.
     cached_active_session_id: Option<Option<i64>>,
-
-    /// When false, the aggregator skips auto-creating sessions on crafting
-    /// or first-use detection. The user must manually start sessions.
-    /// Updated by the coordinator from `AppSettings.auto_start_survey_sessions`.
-    pub auto_start_enabled: bool,
 }
 
 impl SurveySessionAggregator {
@@ -100,9 +76,7 @@ impl SurveySessionAggregator {
         Self {
             game_data,
             recent_basic_uses: VecDeque::new(),
-            chat_mining: None,
             cached_active_session_id: None,
-            auto_start_enabled: true,
         }
     }
 
@@ -167,10 +141,10 @@ impl SurveySessionAggregator {
 
     /// Record a hand-framed survey-map use from the manual "Record use" UI.
     ///
-    /// Same tail as `handle_survey_consumed` but driven by an explicit user
-    /// action instead of a log line: `now_iso` is wall-clock time (not a log
-    /// timestamp), and a session is always created when none is active (an
-    /// explicit action ignores `auto_start_enabled`). Returns
+    /// Same tail the retired Player.log path used, but driven by an explicit
+    /// user action instead of a log line: `now_iso` is wall-clock time (not
+    /// a log timestamp), and a session is always created when none is
+    /// active. Returns
     /// `(use_id, session_id)`.
     pub fn record_manual_use(
         &mut self,
@@ -228,8 +202,8 @@ impl SurveySessionAggregator {
         // Transparent stale-session retry: the cached active-session id can
         // point at a session deleted out from under us (History UI deletes
         // directly on the DB), which trips the survey_uses → survey_sessions
-        // FK. Mirror the log path (`handle_survey_consumed`): drop the cache,
-        // re-resolve (auto-starting a fresh session), re-insert once.
+        // FK. Drop the cache, re-resolve (starting a fresh session),
+        // re-insert once.
         let mut session_id = session_id;
         let mut retried = false;
         let use_id = loop {
@@ -340,25 +314,23 @@ impl SurveySessionAggregator {
     /// survey use it was collected from, independent of the Player.log
     /// pipeline.
     ///
-    /// This is the **chat-authoritative** loot path. Project Gorgon always
-    /// writes survey loot to the Status chat channel, but only writes the
-    /// detailed `ProcessAddItem` lines to Player.log under certain logging
-    /// conditions — so the Player.log attribution in `process_event` can come
-    /// up empty even while surveying is clearly producing loot (this is what
-    /// Kaeus' GorgonSurveyTracker reads, and why its summary works where ours
-    /// did not).
+    /// This is the **chat-authoritative** loot path — the only loot path
+    /// since the Player.log pipeline was deleted. Project Gorgon always
+    /// writes survey loot to the Status chat channel, so chat gains drive
+    /// attribution directly (this is what Kaeus' GorgonSurveyTracker reads,
+    /// and why its summary works where the old log path did not).
     ///
     /// Chat lines carry no node/map identity, so the gain is gated two ways
     /// (see docs/architecture/survey-mechanics.md):
     ///
-    /// Per-kind **collection windows** (precise, attributes to the exact
-    /// use):
-    /// - **Basic**: loot lands in the same game tick as the map's
-    ///   consumption → attribute within [`CHAT_BASIC_WINDOW_SECS`] of a
-    ///   recently-consumed Basic use.
-    /// - **Motherlode/Multihit**: loot lands when a mining swing on the
-    ///   survey-spawned node completes → attribute inside the current
-    ///   swing's window of the adopted node (see [`ChatMiningState`]).
+    /// Attribution is two-tiered: a precise window for **Basic** uses
+    /// (loot lands in the same game tick as the map's consumption →
+    /// attribute within [`CHAT_BASIC_WINDOW_SECS`] of a recently-consumed
+    /// Basic use), then the **item-identity fallback** below for
+    /// everything else — including Motherlode/Multihit loot, which has no
+    /// chat-visible swing signal to gate on. The loot summary counts
+    /// pending-loot uses, so Motherlode/Multihit attribution needs no
+    /// completion story beyond the manual session end.
     ///
     /// **Item-identity fallback** (robust — needs no Player.log timing
     /// signals, which don't reach every user's log): items identifiable as
@@ -417,27 +389,6 @@ impl SurveySessionAggregator {
                     mark_completed: true,
                 },
             );
-        }
-
-        // Mining-swing window: loot from the adopted survey node lands at
-        // swing completion, inside [swing_start, swing_start + window].
-        if let Some(cm) = &self.chat_mining {
-            let dt = (chat_ts - cm.swing_start).num_seconds();
-            if (0..=cm.swing_window_secs).contains(&dt) {
-                let use_id = cm.survey_use_id;
-                return self.record_chat_attribution(
-                    conn,
-                    ChatAttribution {
-                        character,
-                        server,
-                        use_id,
-                        quantity,
-                        timestamp,
-                        item_name: internal_name,
-                        mark_completed: false,
-                    },
-                );
-            }
         }
 
         // Identity fallback: survey-yield items count while a session is

@@ -30,7 +30,6 @@ export interface AppSettings {
   timestampDisplayMode: 'local' | 'server' | 'utc';
   timezoneOffsetSeconds: number | null;
   manualTimezoneOverride: number | null;
-  autoStartSurveySessions: boolean;
   use24HourTime: boolean;
   uiFontFamily: string;
   uiFontSize: number;
@@ -75,7 +74,6 @@ interface BackendSettings {
   timestamp_display_mode: string;
   timezone_offset_seconds: number | null;
   manual_timezone_override: number | null;
-  auto_start_survey_sessions: boolean;
   use_24_hour_time: boolean;
   ui_font_family: string;
   ui_font_size: number;
@@ -121,7 +119,6 @@ function toBackendSettings(settings: AppSettings): BackendSettings {
     timestamp_display_mode: settings.timestampDisplayMode,
     timezone_offset_seconds: settings.timezoneOffsetSeconds,
     manual_timezone_override: settings.manualTimezoneOverride,
-    auto_start_survey_sessions: settings.autoStartSurveySessions,
     use_24_hour_time: settings.use24HourTime,
     ui_font_family: settings.uiFontFamily,
     ui_font_size: settings.uiFontSize,
@@ -238,7 +235,6 @@ function fromBackendSettings(settings: BackendSettings): AppSettings {
     timestampDisplayMode: (settings.timestamp_display_mode ?? 'local') as 'local' | 'server' | 'utc',
     timezoneOffsetSeconds: settings.timezone_offset_seconds ?? null,
     manualTimezoneOverride: settings.manual_timezone_override ?? null,
-    autoStartSurveySessions: settings.auto_start_survey_sessions ?? true,
     use24HourTime: settings.use_24_hour_time ?? true,
     uiFontFamily: settings.ui_font_family ?? DEFAULT_FONT_FAMILY,
     uiFontSize: settings.ui_font_size ?? DEFAULT_FONT_SIZE,
@@ -285,7 +281,6 @@ function getDefaultSettings(): AppSettings {
     timestampDisplayMode: 'local' as const,
     timezoneOffsetSeconds: null,
     manualTimezoneOverride: null,
-    autoStartSurveySessions: true,
     use24HourTime: true,
     uiFontFamily: DEFAULT_FONT_FAMILY,
     uiFontSize: DEFAULT_FONT_SIZE,

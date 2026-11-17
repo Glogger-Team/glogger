@@ -18,7 +18,6 @@ use crate::parsers::chat_local_to_utc;
 /// A timestamped chat event, ordered for replay.
 #[derive(Debug)]
 enum TimedEvent {
-    // (Player.log side removed)
     /// A chat message from Chat.log
     ChatMessage {
         /// UTC second (for ordering)
@@ -44,11 +43,11 @@ impl TimedEvent {
     }
 
     /// Sort key: (utc_second, source_order)
-    /// source_order: 0 = ChatLogin (timezone must come first), 1 = PlayerLine, 2 = ChatMessage
+    /// source_order: 0 = ChatLogin (timezone must come first), 1 = ChatMessage
     fn sort_key(&self) -> (i64, u8) {
         match self {
             TimedEvent::ChatLogin { utc_second, .. } => (*utc_second, 0),
-            TimedEvent::ChatMessage { utc_second, .. } => (*utc_second, 2),
+            TimedEvent::ChatMessage { utc_second, .. } => (*utc_second, 1),
         }
     }
 }
@@ -62,12 +61,10 @@ pub struct ReplayProgress {
     pub detail: String,
 }
 
-/// Replay result summary.
+/// Replay result summary (chat-only since the Player.log pipeline was deleted).
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ReplayResult {
-    pub player_lines_processed: usize,
     pub chat_messages_processed: usize,
-    pub player_events_emitted: usize,
     pub chat_status_events_emitted: usize,
 }
 
@@ -121,7 +118,6 @@ fn parse_chat_log_events(path: &PathBuf) -> Result<Vec<TimedEvent>, String> {
 
 /// Core replay logic — replays Chat.log events through the live dispatch pipeline.
 fn run_replay(
-    _player_log_path: PathBuf,
     chat_log_path: PathBuf,
     app: &AppHandle,
     _db: &DbPool,
@@ -211,9 +207,7 @@ fn run_replay(
     let mut game_state = GameStateManager::new(game_data.clone());
 
     let mut result = ReplayResult {
-        player_lines_processed: 0,
         chat_messages_processed: 0,
-        player_events_emitted: 0,
         chat_status_events_emitted: 0,
     };
 
@@ -286,20 +280,16 @@ fn run_replay(
 // Tauri Command
 // ============================================================
 
-/// Replay both a Player.log and Chat.log file through the full coordinator pipeline,
-/// interleaved by timestamp. This simulates live tailing with cross-referencing.
+/// Replay a Chat.log file through the full coordinator pipeline, in timestamp
+/// order. This simulates live tailing. (The old dual-log replay also fed a
+/// Player.log; that pipeline was deleted, so only the chat path is replayed.)
 #[tauri::command]
-pub async fn replay_dual_logs(
-    player_log_path: String,
+pub async fn replay_chat_log(
     chat_log_path: String,
     app: AppHandle,
 ) -> Result<ReplayResult, String> {
-    let player_path = PathBuf::from(&player_log_path);
     let chat_path = PathBuf::from(&chat_log_path);
 
-    if !player_path.exists() {
-        return Err(format!("Player.log not found: {}", player_log_path));
-    }
     if !chat_path.exists() {
         return Err(format!("Chat.log not found: {}", chat_log_path));
     }
@@ -309,7 +299,7 @@ pub async fn replay_dual_logs(
 
     // Run on a blocking thread since file I/O is synchronous
     let result = tokio::task::spawn_blocking(move || {
-        run_replay(player_path, chat_path, &app, &db, game_data)
+        run_replay(chat_path, &app, &db, game_data)
     })
     .await
     .map_err(|e| format!("Replay task failed: {}", e))??;

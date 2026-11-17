@@ -104,7 +104,7 @@
 
     <template v-if="devMode">
     <div class="settings-section">
-      <h3>Dual-Log Replay</h3>
+      <h3>Chat-Log Replay</h3>
 
       <p class="mb-3 text-text-muted text-xs leading-relaxed">
         Replay a Chat.log through the live dispatch pipeline for backfills and
@@ -112,15 +112,6 @@
       </p>
 
       <div class="flex gap-2 mb-3">
-        <div class="flex-1">
-          <label class="text-xs text-text-secondary mb-1 block">Player.log</label>
-          <button
-            @click="pickPlayerLogForReplay"
-            :disabled="replaying"
-            class="btn btn-secondary text-xs w-full truncate">
-            {{ replayPlayerPath ? replayPlayerPath.split(/[\\/]/).pop() : "Select Player.log..." }}
-          </button>
-        </div>
         <div class="flex-1">
           <label class="text-xs text-text-secondary mb-1 block">Chat.log</label>
           <button
@@ -134,9 +125,9 @@
 
       <button
         @click="startReplay"
-        :disabled="replaying || !replayPlayerPath || !replayChatPath"
+        :disabled="replaying || !replayChatPath"
         class="btn btn-primary mb-3">
-        {{ replaying ? "Replaying..." : "Start Dual Replay" }}
+        {{ replaying ? "Replaying..." : "Start Replay" }}
       </button>
 
       <div v-if="replayProgress" class="mb-2 text-xs text-text-secondary">
@@ -220,7 +211,7 @@ function saveReportWatchSettings() {
   }
 }
 
-// ── Dual-Log Replay ──────────────────────────────────────────────────────────
+// ── Chat-Log Replay ──────────────────────────────────────────────────────────
 
 interface ReplayProgressEvent {
   phase: string;
@@ -229,7 +220,6 @@ interface ReplayProgressEvent {
   detail: string;
 }
 
-const replayPlayerPath = ref<string | null>(null);
 const replayChatPath = ref<string | null>(null);
 const replaying = ref(false);
 const replayProgress = ref<ReplayProgressEvent | null>(null);
@@ -237,17 +227,6 @@ const replayResultText = ref<string | null>(null);
 const replayError = ref<string | null>(null);
 
 let unlistenProgress: UnlistenFn | null = null;
-
-async function pickPlayerLogForReplay() {
-  const selected = await open({
-    multiple: false,
-    defaultPath: settingsStore.settings.logFilePath || settingsStore.settings.gameDataPath || undefined,
-    filters: [{ name: "Log Files", extensions: ["log", "txt"] }],
-  });
-  if (selected) {
-    replayPlayerPath.value = selected;
-  }
-}
 
 async function pickChatLogForReplay() {
   const selected = await open({
@@ -261,7 +240,7 @@ async function pickChatLogForReplay() {
 }
 
 async function startReplay() {
-  if (!replayPlayerPath.value || !replayChatPath.value) return;
+  if (!replayChatPath.value) return;
 
   replaying.value = true;
   replayProgress.value = null;
@@ -275,23 +254,13 @@ async function startReplay() {
 
   try {
     const result = await invoke<{
-      player_lines_processed: number;
       chat_messages_processed: number;
-      player_events_emitted: number;
-      survey_events_emitted: number;
       chat_status_events_emitted: number;
-      loot_corrections_applied: number;
-    }>("replay_dual_logs", {
-      playerLogPath: replayPlayerPath.value,
+    }>("replay_chat_log", {
       chatLogPath: replayChatPath.value,
     });
 
-    replayResultText.value = [
-      `Player: ${result.player_events_emitted} events from ${result.player_lines_processed} lines`,
-      `Chat: ${result.chat_messages_processed} messages, ${result.chat_status_events_emitted} status events`,
-      `Survey: ${result.survey_events_emitted} events`,
-      `Loot corrections: ${result.loot_corrections_applied}`,
-    ].join(" · ");
+    replayResultText.value = `Chat: ${result.chat_messages_processed} messages, ${result.chat_status_events_emitted} status events`;
   } catch (e: any) {
     replayError.value = e.toString();
   } finally {

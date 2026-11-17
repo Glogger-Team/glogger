@@ -872,19 +872,22 @@ fn dispatch_json_event(
             if let Some(id) = ctx.identity {
                 // Same absolute-count upsert as the old `RecipeUpdated` arm.
                 if let Ok(conn) = ctx.db.get_write() {
-                    conn.execute(
+                    let rows = conn.execute(
                         "INSERT INTO game_state_recipes (character_name, server_name, recipe_id, completion_count, last_confirmed_at, source)
                          VALUES (?1, ?2, ?3, ?4, ?5, 'log')
                          ON CONFLICT(character_name, server_name, recipe_id) DO UPDATE SET
                             completion_count = excluded.completion_count,
                             last_confirmed_at = excluded.last_confirmed_at,
-                            source = excluded.source",
+                            source = excluded.source
+                         WHERE excluded.last_confirmed_at > game_state_recipes.last_confirmed_at",
                         rusqlite::params![
                             id.character, id.server, *recipe_id as i64, *completions as i64, timestamp
                         ],
                     )
-                    .ok();
-                    out.domain("recipes");
+                    .unwrap_or(0);
+                    if rows > 0 {
+                        out.domain("recipes");
+                    }
                 }
             }
         }

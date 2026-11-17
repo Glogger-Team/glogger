@@ -193,8 +193,7 @@ impl DataIngestCoordinator {
             game_state.set_active_server_name(server_name);
         }
 
-        let mut survey_aggregator = SurveySessionAggregator::new(game_data_clone.clone());
-        survey_aggregator.auto_start_enabled = settings.get().auto_start_survey_sessions;
+        let survey_aggregator = SurveySessionAggregator::new(game_data_clone.clone());
 
         Ok(Self {
             player_watcher: None,

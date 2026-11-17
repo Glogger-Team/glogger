@@ -136,11 +136,6 @@ pub struct AppSettings {
     #[serde(default)]
     pub manual_timezone_override: Option<i32>,
 
-    /// When true (default), survey sessions auto-start on crafting or
-    /// first-use detection. When false, sessions only start manually.
-    #[serde(default = "default_true")]
-    pub auto_start_survey_sessions: bool,
-
     /// When true (default), display times in 24-hour format (e.g. "14:30").
     /// When false, use 12-hour format with AM/PM (e.g. "2:30 PM").
     #[serde(default = "default_true")]
@@ -386,7 +381,6 @@ impl Default for AppSettings {
             timestamp_display_mode: default_timestamp_display_mode(),
             timezone_offset_seconds: None,
             manual_timezone_override: None,
-            auto_start_survey_sessions: true,
             use_24_hour_time: true,
             ui_font_family: default_ui_font_family(),
             ui_font_size: default_ui_font_size(),

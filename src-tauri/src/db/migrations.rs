@@ -496,6 +496,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         migration_v92_json_favor_processed(conn)?;
         super::record_migration(conn, 92)?;
     }
+
+    if current_version < 93 {
+        migration_v93_npc_gifts_this_week(conn)?;
+        super::record_migration(conn, 93)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1340,6 +1345,18 @@ fn migration_v90_collapse_stall_same_batch_dupes(conn: &Connection) -> Result<()
 /// enrichment, not attribution, so live survey tagging and the scan
 /// retro-claim keep working on the same row.
 fn migration_v91_item_transaction_entity(conn: &Connection) -> Result<()> {
+    // Minimal test fixtures build only the tables they need — skip when
+    // the loot ledger is absent (same shape as V79's milking-log guard).
+    let has_table: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'item_transactions')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_table {
+        return Ok(());
+    }
     conn.execute(
         "ALTER TABLE item_transactions ADD COLUMN from_name TEXT",
         [],
@@ -1371,6 +1388,30 @@ fn migration_v92_json_favor_processed(conn: &Connection) -> Result<()> {
             delta REAL NOT NULL,
             PRIMARY KEY (character_name, server_name, npc_key, timestamp, delta)
         )",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Migration V93: weekly-gift counter on report NPC favor snapshots.
+///
+/// VIP character-report exports carry `GiftsThisWeek` per NPC (observed:
+/// `NPC_Elune → 1`, `NPC_Sulafa → 5`); older exports omit it, so the serde
+/// field defaults and the column stays NULL. Skipped when the favor table
+/// is absent (minimal test fixtures — same shape as V79/V91 guards).
+fn migration_v93_npc_gifts_this_week(conn: &Connection) -> Result<()> {
+    let has_table: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'character_npc_favor')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_table {
+        return Ok(());
+    }
+    conn.execute(
+        "ALTER TABLE character_npc_favor ADD COLUMN gifts_this_week INTEGER",
         [],
     )?;
     Ok(())
@@ -4630,13 +4671,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            92,
+            93,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 92);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 93);
     }
 
     #[test]
@@ -4759,13 +4800,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 92) plus the purge itself on the three aggregate source tables.
+        // 93) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 92, "migration chain head");
+        assert_eq!(head, 93, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -4811,8 +4852,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 92 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 item-transaction entity + v92 JSON favor marker). Repair: a
+        // Chain wiring: full run_migrations head must be 93 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 item-transaction entity + v92 JSON favor marker + v93 NPC gifts-this-week). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -4820,7 +4861,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 92, "migration chain head");
+        assert_eq!(head, 93, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[

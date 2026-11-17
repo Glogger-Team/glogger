@@ -6,11 +6,3 @@
 26-11-17 08:50:27	[JSON:AddItem] {"Name": "Tsavorite", "TypeId": 18040, "Stack": 3, "Flags": [], "FromName": "Olugax The Ever-Pudding", "FromEntityId": 257400}
 26-11-17 08:50:27	[JSON:AddItem] {"Name": "Orcish Gladiator Gloves of Toxic Scratches", "TypeId": 43035, "Stack": 1, "Flags": [], "FromName": "Olugax The Ever-Pudding", "FromEntityId": 257400}
 26-11-17 08:50:27	[JSON:AddItem] {"Name": "Stafflord's Ring of Bruises", "TypeId": 49036, "Stack": 1, "Flags": [], "FromName": "Olugax The Ever-Pudding", "FromEntityId": 257400}
-26-11-17 08:32:32	[JSON:AddItem] {"Name": "Infuriating Ring of Unwavering Support", "TypeId": 49229, "Stack": 1, "Flags": []}
-26-11-17 08:33:29	[JSON:AddItem] {"Name": "Amazing Phlogiston", "TypeId": 28108, "Stack": 59, "Flags": []}
-26-11-17 08:50:27	[JSON:AddItem] {"Name": "Toxic Sludge", "TypeId": 1137, "Stack": 1, "Flags": [], "FromName": "Olugax The Ever-Pudding", "FromEntityId": 257400}
-26-11-17 08:50:27	[JSON:AddItem] {"Name": "Serpentine", "TypeId": 18042, "Stack": 3, "Flags": [], "FromName": "Olugax The Ever-Pudding", "FromEntityId": 257400}
-26-11-17 08:50:27	[JSON:AddItem] {"Name": "Peridot", "TypeId": 18022, "Stack": 3, "Flags": [], "FromName": "Olugax The Ever-Pudding", "FromEntityId": 257400}
-26-11-17 08:50:27	[JSON:AddItem] {"Name": "Tsavorite", "TypeId": 18040, "Stack": 3, "Flags": [], "FromName": "Olugax The Ever-Pudding", "FromEntityId": 257400}
-26-11-17 08:50:27	[JSON:AddItem] {"Name": "Orcish Gladiator Gloves of Toxic Scratches", "TypeId": 43035, "Stack": 1, "Flags": [], "FromName": "Olugax The Ever-Pudding", "FromEntityId": 257400}
-26-11-17 08:50:27	[JSON:AddItem] {"Name": "Stafflord's Ring of Bruises", "TypeId": 49036, "Stack": 1, "Flags": [], "FromName": "Olugax The Ever-Pudding", "FromEntityId": 257400}

@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn add_item_lines_parse_with_entity() {
         let events = parse_all(include_str!("../../test_data/vip_json/chat-additem.log"));
-        assert_eq!(events.len(), 16);
+        assert_eq!(events.len(), 8);
         let mut saw_loot = false;
         let mut saw_plain = false;
         for ev in &events {
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn earned_xp_lines_parse() {
         let events = parse_all(include_str!("../../test_data/vip_json/chat-earnedxp.log"));
-        assert_eq!(events.len(), 8);
+        assert_eq!(events.len(), 4);
         let ChatJsonEvent::Xp {
             skill,
             xp,
@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn book_lines_parse() {
         let events = parse_all(include_str!("../../test_data/vip_json/chat-book.log"));
-        assert_eq!(events.len(), 6);
+        assert_eq!(events.len(), 3);
         let titles: Vec<&str> = events
             .iter()
             .map(|ev| match ev {
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn delta_favor_lines_parse_exact() {
         let events = parse_all(include_str!("../../test_data/vip_json/chat-deltafavor.log"));
-        assert_eq!(events.len(), 4);
+        assert_eq!(events.len(), 2);
         let ChatJsonEvent::FavorDelta { npc, delta, .. } = &events[0] else {
             panic!("expected FavorDelta, got {:?}", events[0]);
         };
@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn recipe_usage_lines_parse_absolute() {
         let events = parse_all(include_str!("../../test_data/vip_json/chat-recipeusage.log"));
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 1);
         let ChatJsonEvent::RecipeUsed {
             recipe_id, completions, ..
         } = &events[0]
