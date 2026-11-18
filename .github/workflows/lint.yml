@@ -64,6 +64,7 @@ jobs:
       review: ${{ steps.filter.outputs.review }}
       parity_ipc: ${{ steps.filter.outputs.parity_ipc }}
       migration_chain: ${{ steps.filter.outputs.migration_chain }}
+      version_sync: ${{ steps.filter.outputs.version_sync }}
       rust: ${{ steps.filter.outputs.rust }}
       audit: ${{ steps.filter.outputs.audit }}
       runall: ${{ steps.filter.outputs.runall }}
@@ -664,6 +665,9 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    # #134: test + clippy share one scope (src-tauri + Cargo manifests);
+    # checkout/cache/apt/mise setup stay unconditional, heavy steps gate.
+    needs: [changes]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

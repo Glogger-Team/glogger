@@ -678,8 +678,10 @@ fn insert_json_receipt_guarded(
 /// `xp` here is an AWARDED INCREMENT, not a total (proven by the live
 /// fixture: Riding 250 → 350 → 300 across three lines — totals cannot fall).
 /// Identical resends (same timestamp) are no-ops; newer lines accumulate.
-/// A second award in the same second is dropped — second-granularity logs
-/// give no key that separates it from its own replay.
+/// A second award in the same second is dropped, as is an older award
+/// arriving after a newer one — second-granularity logs give no key that
+/// separates either from its own replay. (Per-award reconciliation against
+/// snapshot anchors would need a per-award ledger; see TODO.)
 #[allow(clippy::too_many_arguments)]
 fn upsert_chat_xp(
     conn: &rusqlite::Connection,

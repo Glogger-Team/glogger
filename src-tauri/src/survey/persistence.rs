@@ -229,18 +229,25 @@ pub fn get_use(conn: &Connection, use_id: i64) -> Result<Option<SurveyUse>> {
     .optional()
 }
 
-/// The most-recently-used survey use belonging to a session, if any.
+/// The most-recently-used survey use belonging to a session, at or before a
+/// gain timestamp, if any.
 ///
-/// Used by the chat-loot identity path: a gained item that is identifiable
-/// as survey yield (Ore/MetalSlab keywords, …) attributes to whichever
-/// survey map the player most recently consumed in the active session.
-/// Ordered by `used_at` then `id` so the latest map wins even when two uses
-/// share a second-resolution timestamp.
-pub fn latest_use_id_for_session(conn: &Connection, session_id: i64) -> Result<Option<i64>> {
+/// Used by the chat-loot identity fallback: a gain identifiable as survey
+/// yield (Ore/MetalSlab keywords, …) attributes to the most recent survey
+/// map consumed in the active session. The `used_at <= gain` bound matters:
+/// without it a delayed (older-stamped) gain arriving after a newer use
+/// would attribute to that newer use. Ordered by `used_at` then `id` so
+/// the latest map at-or-before the gain wins even when two uses share a
+/// second-resolution timestamp.
+pub fn latest_use_id_for_session(
+    conn: &Connection,
+    session_id: i64,
+    gain_timestamp_iso: &str,
+) -> Result<Option<i64>> {
     conn.query_row(
-        "SELECT id FROM survey_uses WHERE session_id = ?1
+        "SELECT id FROM survey_uses WHERE session_id = ?1 AND used_at <= ?2
          ORDER BY used_at DESC, id DESC LIMIT 1",
-        params![session_id],
+        params![session_id, gain_timestamp_iso],
         |row| row.get(0),
     )
     .optional()
@@ -714,5 +721,50 @@ mod tests {
         assert_eq!(uses.len(), 2);
         assert_eq!(uses[0].id, u_early);
         assert_eq!(uses[1].id, u_late);
+    }
+
+    #[test]
+    fn test_latest_use_prefers_nearest_use_at_or_before_gain() {
+        let conn = fresh_db();
+        let session = insert_session(
+            &conn,
+            "Zenith",
+            "Dreva",
+            "2026-04-15 12:00:00",
+            SessionStartTrigger::Manual,
+            None,
+        )
+        .unwrap();
+        let mk_use = |used_at: &str| {
+            insert_use(
+                &conn,
+                Some(session),
+                "Zenith",
+                "Dreva",
+                used_at,
+                "MiningSurveySerbule1",
+                "Serbule Copper Survey",
+                SurveyUseKind::Basic,
+                None,
+            )
+            .unwrap()
+        };
+        let u1 = mk_use("2026-04-15 12:03:00");
+        let u2 = mk_use("2026-04-15 12:05:00");
+        // Delayed gain stamped before U2 resolves to U1, not the latest use.
+        assert_eq!(
+            latest_use_id_for_session(&conn, session, "2026-04-15 12:04:00").unwrap(),
+            Some(u1)
+        );
+        // Gain after both resolves to the newest.
+        assert_eq!(
+            latest_use_id_for_session(&conn, session, "2026-04-15 12:06:00").unwrap(),
+            Some(u2)
+        );
+        // Gain older than every use matches nothing.
+        assert_eq!(
+            latest_use_id_for_session(&conn, session, "2026-04-15 12:02:00").unwrap(),
+            None
+        );
     }
 }

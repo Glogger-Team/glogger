@@ -138,9 +138,13 @@ impl SurveySessionAggregator {
             return Ok(None);
         };
         persistence::end_session(conn, s.id, now_iso).map_err(|e| e.to_string())?;
+        // The session is closed in the DB at this point, so the cache must
+        // already say "no active" even if the bounds recompute below fails —
+        // otherwise a stale id would keep routing new uses into the closed
+        // session until the next invalidation.
+        self.cached_active_session = Some((character.to_string(), server.to_string(), None));
         persistence::recompute_session_bounds_and_end(conn, s.id, now_iso)
             .map_err(|e| e.to_string())?;
-        self.cached_active_session = Some((character.to_string(), server.to_string(), None));
         Ok(Some(s.id))
     }
 
@@ -420,10 +424,11 @@ impl SurveySessionAggregator {
         }
 
         // Identity fallback: survey-yield items count while a session is
-        // active, attributed to its most recent use.
+        // active, attributed to the most recent use at-or-before the gain
+        // (a delayed older-stamped gain must not land on a newer use).
         if internal_name.is_some_and(|internal| self.is_survey_loot_item(internal))
             && let Some(session_id) = self.fetch_active_session(conn, character, server)
-                && let Ok(Some(use_id)) = persistence::latest_use_id_for_session(conn, session_id) {
+                && let Ok(Some(use_id)) = persistence::latest_use_id_for_session(conn, session_id, timestamp) {
                     return self.record_chat_attribution(
                         conn,
                         ChatAttribution {

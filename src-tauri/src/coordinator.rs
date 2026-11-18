@@ -1082,6 +1082,14 @@ impl DataIngestCoordinator {
                         // (3) Survey, live loot gains only: attribute the
                         // just-written ledger row, then tag it — mirrors the
                         // old inline arm. Summoned gains never attribute.
+                        // One write transaction for the qty bump + row tag: if
+                        // the tag fails, the bump rolls back with it, leaving
+                        // the row untagged with no qty behind it (a later
+                        // rescan or retro-claim heals cleanly) instead of a
+                        // bumped qty on an untagged row that a later claim
+                        // would double-count. Same unchecked-transaction shape
+                        // as the dispatch arms: fresh pool checkout, no outer
+                        // transaction open here.
                         if is_live {
                             let is_loot = matches!(
                                 crate::chat_status_parser::parse_status_message(&msg),
@@ -1090,44 +1098,65 @@ impl DataIngestCoordinator {
                             if is_loot
                                 && let (Some(id), Ok(conn)) =
                                     (identity.as_ref(), self.db_pool.get_write())
-                                    && let Some(use_id) =
-                                        self.survey_aggregator.attribute_chat_gain(
-                                            &conn,
-                                            &id.character,
-                                            &id.server,
-                                            internal_name.as_deref(),
-                                            quantity,
-                                            &ts_utc,
-                                        )
-                                    {
-                                        let source_details =
-                                            format!("{{\"survey_use_id\":{use_id}}}");
-                                        conn.execute(
-                                            "UPDATE item_transactions
-                                                SET source_kind = 'survey_chat',
-                                                    source_details = ?1
-                                              WHERE rowid = (
-                                                SELECT rowid FROM item_transactions
-                                                 WHERE timestamp = ?2
-                                                   AND character_name = ?3
-                                                   AND server_name = ?4
-                                                   AND source = 'chat_status'
-                                                   AND source_kind IS NULL
-                                                   AND item_name = ?5
-                                                   AND quantity = ?6
-                                                 ORDER BY rowid DESC LIMIT 1
-                                              )",
-                                            rusqlite::params![
-                                                source_details,
-                                                ts_utc,
-                                                id.character,
-                                                id.server,
-                                                item_name,
-                                                quantity as i64,
-                                            ],
-                                        )
-                                        .ok();
+                            {
+                                let tx = match rusqlite::Transaction::new_unchecked(
+                                    &conn,
+                                    rusqlite::TransactionBehavior::Immediate,
+                                ) {
+                                    Ok(tx) => tx,
+                                    Err(e) => {
+                                        eprintln!("[coordinator] survey attr txn begin failed: {e}");
+                                        continue;
                                     }
+                                };
+                                let use_id = match self.survey_aggregator.attribute_chat_gain(
+                                    &tx,
+                                    &id.character,
+                                    &id.server,
+                                    internal_name.as_deref(),
+                                    quantity,
+                                    &ts_utc,
+                                ) {
+                                    Some(use_id) => use_id,
+                                    None => continue,
+                                };
+                                let source_details =
+                                    format!("{{\"survey_use_id\":{use_id}}}");
+                                if tx
+                                    .execute(
+                                        "UPDATE item_transactions
+                                            SET source_kind = 'survey_chat',
+                                                source_details = ?1
+                                          WHERE rowid = (
+                                            SELECT rowid FROM item_transactions
+                                             WHERE timestamp = ?2
+                                               AND character_name = ?3
+                                               AND server_name = ?4
+                                               AND source = 'chat_status'
+                                               AND source_kind IS NULL
+                                               AND item_name = ?5
+                                               AND quantity = ?6
+                                             ORDER BY rowid DESC LIMIT 1
+                                          )",
+                                        rusqlite::params![
+                                            source_details,
+                                            ts_utc,
+                                            id.character,
+                                            id.server,
+                                            item_name,
+                                            quantity as i64,
+                                        ],
+                                    )
+                                    .is_err()
+                                {
+                                    eprintln!("[coordinator] survey row tag failed, rolled back");
+                                    continue;
+                                }
+                                if tx.commit().is_err() {
+                                    eprintln!("[coordinator] survey attr txn commit failed, rolled back");
+                                    continue;
+                                }
+                            }
                         }
                         let _ = item_type_id;
                     }
