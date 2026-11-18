@@ -1034,12 +1034,23 @@ impl DataIngestCoordinator {
                                 .unwrap_or((None, None));
                         let ts_utc = msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
                         if is_live {
-                            // Correct inventory/storage stack sizes.
-                            let corrected = self.game_state.correct_stack_from_chat(
-                                &item_name,
-                                quantity,
-                                &self.db_pool,
-                            );
+                            // Correct the gain's own session slice: the
+                            // dispatch above wrote under `identity`
+                            // (tag-preferred), so the correction must too —
+                            // a B-login-then-A-gain poll would otherwise fix
+                            // B's placeholder for A's gain. Matches active
+                            // when tag and active agree; `None` corrects
+                            // nothing (active is also `None` then).
+                            let corrected = match identity.as_ref() {
+                                Some(id) => self.game_state.correct_stack_for_session(
+                                    &id.character,
+                                    &id.server,
+                                    &item_name,
+                                    quantity,
+                                    &self.db_pool,
+                                ),
+                                None => vec![],
+                            };
                             if !corrected.is_empty() {
                                 self.app_handle.emit("game-state-updated", &corrected).ok();
                             }
@@ -1097,32 +1108,43 @@ impl DataIngestCoordinator {
                                 };
                                 let source_details =
                                     format!("{{\"survey_use_id\":{use_id}}}");
-                                let tag_rows = tx
-                                    .execute(
-                                        "UPDATE item_transactions
-                                            SET source_kind = 'survey_chat',
-                                                source_details = ?1
-                                          WHERE rowid = (
-                                            SELECT rowid FROM item_transactions
-                                             WHERE timestamp = ?2
-                                               AND character_name = ?3
-                                               AND server_name = ?4
-                                               AND source = 'chat_status'
-                                               AND source_kind IS NULL
-                                               AND item_name = ?5
-                                               AND quantity = ?6
-                                             ORDER BY rowid DESC LIMIT 1
-                                          )",
-                                        rusqlite::params![
-                                            source_details,
-                                            ts_utc,
-                                            id.character,
-                                            id.server,
-                                            item_name,
-                                            quantity as i64,
-                                        ],
-                                    )
-                                    .map_err(|e| format!("survey row tag failed: {e}"))?;
+                                let tag_rows = match tx.execute(
+                                    "UPDATE item_transactions
+                                        SET source_kind = 'survey_chat',
+                                            source_details = ?1
+                                      WHERE rowid = (
+                                        SELECT rowid FROM item_transactions
+                                         WHERE timestamp = ?2
+                                           AND character_name = ?3
+                                           AND server_name = ?4
+                                           AND source = 'chat_status'
+                                           AND source_kind IS NULL
+                                           AND item_name = ?5
+                                           AND quantity = ?6
+                                         ORDER BY rowid DESC LIMIT 1
+                                      )",
+                                    rusqlite::params![
+                                        source_details,
+                                        ts_utc,
+                                        id.character,
+                                        id.server,
+                                        item_name,
+                                        quantity as i64,
+                                    ],
+                                ) {
+                                    Ok(n) => n,
+                                    // A failed tag must not abort the whole
+                                    // batch via `?`: roll back this gain and
+                                    // move on so the remaining gains still
+                                    // process (same shape as the zero-match
+                                    // arm below).
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[coordinator] survey row tag failed: {e}, rolled back"
+                                        );
+                                        continue;
+                                    }
+                                };
                                 // The tag must land on exactly one untagged
                                 // ledger row: zero means the row vanished (or
                                 // never matched) between checkouts — commit

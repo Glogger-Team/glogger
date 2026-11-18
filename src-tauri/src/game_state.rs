@@ -238,27 +238,6 @@ impl GameStateManager {
         domains
     }
 
-    /// Correct inventory/storage stack sizes using chat status data.
-    ///
-    /// Player.log's ProcessAddItem always records stack_size=1. The chat log's
-    /// "[Status] Item x5 added to inventory." gives us the real quantity.
-    /// This finds recent `source = 'log'` placeholder rows with stack_size=1
-    /// for the matching item and updates them, returning which domains were
-    /// corrected. Report/snapshot rows are never targets: their quantities
-    /// are authoritative and `SET stack_size` would corrupt them.
-    pub fn correct_stack_from_chat(
-        &self,
-        display_name: &str,
-        quantity: u32,
-        db: &DbPool,
-    ) -> Vec<&'static str> {
-        let (character, server) = match (&self.active_character, &self.active_server) {
-            (Some(c), Some(s)) => (c.as_str(), s.as_str()),
-            _ => return vec![],
-        };
-        self.correct_stack_for_session(character, server, display_name, quantity, db)
-    }
-
 }
 /// Scan-callable session-keyed stack correction. Same targeting as
 /// `GameStateManager::correct_stack_for_session` but without the manager:
@@ -431,7 +410,7 @@ mod tests {
         let db_path = unique_temp_db("glogger_session_stack_correct_test");
         let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
 
-        let mut manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
+        let manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
             crate::game_data::GameData::empty(),
         )));
 
@@ -481,15 +460,6 @@ mod tests {
         assert_eq!(stack("OtherAlt", "log"), 5, "staged session corrected");
         assert_eq!(stack("TestPlayer", "log"), 1, "other session untouched");
         assert_eq!(stack("TestPlayer", "snapshot"), 1, "report row never a target");
-
-        // Live wrapper targets the active slice.
-        manager.set_active_character_name("TestPlayer");
-        manager.set_active_server_name("Dreva");
-        let domains = manager.correct_stack_from_chat("Fluorite", 3, &pool);
-        assert!(domains.contains(&"inventory"));
-        assert_eq!(stack("TestPlayer", "log"), 3, "active slice corrected");
-        assert_eq!(stack("OtherAlt", "log"), 5, "staged correction survived");
-        assert_eq!(stack("TestPlayer", "snapshot"), 1, "report row survives live correction");
 
         // Drop the pool first: Windows won't delete a file with an open handle.
         drop(pool);
