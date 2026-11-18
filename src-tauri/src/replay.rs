@@ -285,11 +285,13 @@ fn run_replay(
 /// This is a parse-and-preview tool for debugging, NOT a backfill path: it
 /// never writes to the database (the message branch parses status lines and
 /// emits `chat-status-event` / `character-login` / `server-detected` only).
-/// Identity comes from the log's own login lines, so replaying another
-/// character's log flips the active character/session feed to that identity
-/// while it runs. Live tailing, scans, and report imports remain the only
-/// writers. (The old dual-log replay also fed a Player.log; that pipeline
-/// was deleted, so only the chat path is replayed.)
+/// Identity: this is a debug preview only. All login lines are forced to
+/// utc_second 0 so they sort before every message, and the last login in the
+/// file wins for the whole preview (per-segment identity is not preserved).
+/// Replay flips the active character/session feed to that identity while it
+/// runs. Live tailing, scans, and report imports remain the only writers.
+/// (The old dual-log replay also fed a Player.log; that pipeline was
+/// deleted, so only the chat path is replayed.)
 #[tauri::command]
 pub async fn replay_chat_log(
     chat_log_path: String,

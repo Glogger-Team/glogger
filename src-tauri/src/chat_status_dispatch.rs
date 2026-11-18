@@ -314,7 +314,6 @@ pub fn dispatch_chat_message(
                                 timestamp,
                             )
                     {
-                        out.domain("enemy_kills");
                         out.enemy_killed = Some(combat_event);
                     }
                 }
@@ -659,8 +658,11 @@ fn insert_json_receipt_guarded(
     // point: the receipt's entity links the item to its FATALITY row.
     if let Some(entity_id) = from_entity_id {
         // Rescan re-runs this call idempotently (`WHERE NOT EXISTS`), so a
-        // transient link failure heals on the next scan — but only if it is
-        // visible. Log the error; `Ok(false)` (no matching kill) is normal.
+        // transient link failure heals on the next scan — but only when the
+        // receipt side re-runs. Receipts recorded before the kill (newest-first
+        // scans) are healed by the kill side (`link_kill_loot_for_kill`); a
+        // kill recorded after its receipt's scan window has passed may still
+        // miss, but only if both sides never re-run. `Ok(false)` (no matching
         if let Err(e) = crate::db::kill_tracking_commands::link_kill_loot(
             &conn,
             character,
@@ -862,22 +864,22 @@ fn dispatch_json_event(
                         .map(|c| c == *body)
                         .unwrap_or(false);
                     current = same;
-                    if !same {
-                        let dt = chrono::Utc::now().to_rfc3339();
-                        if conn
+                    if !same
+                        && conn
                             .execute(
                                 "INSERT INTO game_state_books (character_name, server_name, book_type, title, content, captured_at)
                                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                                  ON CONFLICT(character_name, server_name, book_type, title) DO UPDATE SET
                                     content = excluded.content,
-                                    captured_at = excluded.captured_at",
-                                rusqlite::params![id.character, id.server, book_type, title, body, dt],
+                                    captured_at = excluded.captured_at
+                                 WHERE captured_at <= excluded.captured_at",
+                                rusqlite::params![id.character, id.server, book_type, title, body, timestamp],
                             )
-                            .is_ok()
-                        {
-                            out.domain("books");
-                            current = true;
-                        }
+                            .map(|n| n > 0)
+                            .unwrap_or(false)
+                    {
+                        out.domain("books");
+                        current = true;
                     }
                 }
                 // Content triggers (gourmand/hoplology/teleports/report-stats)
@@ -1203,7 +1205,7 @@ fn record_player_message(
          WHERE NOT EXISTS (
             SELECT 1 FROM player_messages
              WHERE character_name = ?1 AND server_name = ?2 AND timestamp = ?3
-               AND message_type = ?4 AND other_player = ?6 AND body = ?7
+               AND message_type = ?4 AND direction = ?5 AND other_player = ?6 AND body = ?7
         )",
         rusqlite::params![
             character, server, timestamp, message_type, direction, other_player, body, item_name

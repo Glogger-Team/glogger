@@ -106,7 +106,8 @@ pub fn update_first_loot_at(conn: &Connection, session_id: i64, ts: &str) -> Res
 
 pub fn update_last_loot_at(conn: &Connection, session_id: i64, ts: &str) -> Result<()> {
     conn.execute(
-        "UPDATE survey_sessions SET last_loot_at = ?2 WHERE id = ?1",
+        "UPDATE survey_sessions SET last_loot_at = ?2
+         WHERE id = ?1 AND (last_loot_at IS NULL OR last_loot_at < ?2)",
         params![session_id, ts],
     )?;
     Ok(())

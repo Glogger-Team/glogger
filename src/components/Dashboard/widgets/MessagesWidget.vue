@@ -2,7 +2,7 @@
 <template>
   <div class="flex flex-col gap-3 text-sm">
     <div v-if="messages.length === 0" class="text-xs text-text-dim italic">
-      No pigeon or stall note messages recorded yet.
+      No pigeon, arena tip, or stall note messages recorded yet.
     </div>
     <div v-else class="flex flex-col gap-1.5">
       <div
@@ -15,14 +15,14 @@
             <!-- Direction arrow -->
             <span
               class="text-xs shrink-0"
-              :class="msg.direction === 'received' ? 'text-value-positive' : 'text-value-negative'"
-              :title="msg.direction === 'received' ? 'Received' : 'Sent'"
+               :class="msg.direction !== 'out' ? 'text-value-positive' : 'text-value-negative'"
+               :title="msg.direction !== 'out' ? 'Received' : 'Sent'"
             >
-              {{ msg.direction === 'received' ? '\u2B07' : '\u2B06' }}
+               {{ msg.direction !== 'out' ? '\u2B07' : '\u2B06' }}
             </span>
             <!-- Message type icon -->
-            <span class="text-xs shrink-0" :title="msg.message_type === 'pigeon' ? 'Pigeon' : 'Stall Note'">
-              {{ msg.message_type === 'pigeon' ? '\uD83D\uDC26' : '\uD83D\uDCDD' }}
+             <span class="text-xs shrink-0" :title="msg.message_type === 'pigeon' ? 'Pigeon' : msg.message_type === 'entity_report' ? 'Arena Tip' : 'Stall Note'">
+               {{ msg.message_type === 'pigeon' ? '\uD83D\uDC26' : msg.message_type === 'entity_report' ? '\uD83D\uDCC4' : '\uD83D\uDCDD' }}
             </span>
             <!-- Player name -->
             <span class="text-text-primary font-medium truncate">

@@ -1102,6 +1102,7 @@ impl DataIngestCoordinator {
                                     internal_name.as_deref(),
                                     quantity,
                                     &ts_utc,
+                                    Some(item_name.as_str()),
                                 ) {
                                     Some(use_id) => use_id,
                                     None => continue,
@@ -1119,6 +1120,10 @@ impl DataIngestCoordinator {
                                            AND server_name = ?4
                                            AND source = 'chat_status'
                                            AND source_kind IS NULL
+                                           -- staged survey gains are loot only
+                                           -- (summoned rows share source='chat_status'
+                                           -- / source_kind NULL); exclude them.
+                                           AND context = 'loot'
                                            AND item_name = ?5
                                            AND quantity = ?6
                                          ORDER BY rowid DESC LIMIT 1
@@ -1947,7 +1952,8 @@ pub fn persist_book_content(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(character_name, server_name, book_type, title) DO UPDATE SET
             content = excluded.content,
-            captured_at = excluded.captured_at",
+            captured_at = excluded.captured_at
+         WHERE captured_at <= excluded.captured_at",
         rusqlite::params![character, server, book_type, title, content, dt],
     )
     .map_err(|e| format!("Failed to persist book: {e}"))?;
