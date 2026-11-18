@@ -278,10 +278,12 @@ pub fn dispatch_chat_message(
         if let Some(combat_event) = chat_combat_parser::parse_combat_message(ctx.msg, &id.character) {
             match &combat_event {
                 ChatCombatEvent::PlayerDeath { .. } => {
+                    // Gate the event like the domain: a replayed death row
+                    // already exists, so only a fresh persist notifies.
                     if persist_death_event(ctx.db, ctx.game_data, id, &combat_event, state) {
                         out.domain("deaths");
+                        out.character_death = Some(combat_event);
                     }
-                    out.character_death = Some(combat_event);
                     state.recent_damage.clear();
                 }
                 ChatCombatEvent::EnemyKilled {
@@ -296,23 +298,25 @@ pub fn dispatch_chat_message(
                     // `FromEntityId` (paired live 2026-11-17: slimes #488966 /
                     // #488976, shark #19868) — the loot↔kill join key. Group
                     // kills where another lands the blow emit no FATALITY.
+                    // Gate both the domain and the event on a fresh insert:
+                    // replays and write failures stay silent.
                     if let Ok(conn) = ctx.db.get_write()
-                        && crate::db::kill_tracking_commands::record_enemy_kill(
-                            &conn,
-                            &id.character,
-                            &id.server,
-                            enemy_name,
-                            enemy_entity_id,
-                            killing_ability,
-                            *health_damage as i64,
-                            *armor_damage as i64,
-                            timestamp,
-                        )
-                        .is_ok()
+                        && let Ok(Some(_)) =
+                            crate::db::kill_tracking_commands::record_enemy_kill(
+                                &conn,
+                                &id.character,
+                                &id.server,
+                                enemy_name,
+                                enemy_entity_id,
+                                killing_ability,
+                                *health_damage as i64,
+                                *armor_damage as i64,
+                                timestamp,
+                            )
                     {
                         out.domain("enemy_kills");
+                        out.enemy_killed = Some(combat_event);
                     }
-                    out.enemy_killed = Some(combat_event);
                 }
                 ChatCombatEvent::DamageOnPlayer { .. } => {
                     if state.recent_damage.len() >= 10 {
@@ -389,7 +393,11 @@ fn dispatch_status_event(
                 .unwrap_or((None, None));
 
             if let Some(id) = ctx.identity {
-                out.staged_gains.push((item_name.clone(), *quantity));
+                // Stage the gain only when this line wrote the row: in
+                // JSON-first order the JSON twin already staged it, and the
+                // English twin's guard skips the insert — staging again would
+                // double-count downstream (previously masked only by the
+                // survey `already_counted` guard).
                 let survey_use_id = if context == "loot" {
                     match survey_hook {
                         Some(hook) => hook(internal_name.as_deref(), *quantity, timestamp),
@@ -398,7 +406,7 @@ fn dispatch_status_event(
                 } else {
                     None
                 };
-                insert_item_transaction_guarded(
+                if insert_item_transaction_guarded(
                     ctx.db,
                     ItemLedgerCtx {
                         timestamp,
@@ -411,7 +419,9 @@ fn dispatch_status_event(
                         context,
                         survey_use_id,
                     },
-                );
+                ) {
+                    out.staged_gains.push((item_name.clone(), *quantity));
+                }
             }
         }
         ChatStatusEvent::ItemStudied { timestamp, item_name } => {
@@ -856,6 +866,9 @@ fn dispatch_json_event(
                             (info.name.clone(), giftable)
                         })
                     })
+                    // Unknown NPC (CDN gap) defaults to giftable: a positive
+                    // delta is more likely a real gift than quest noise, and a
+                    // missed real gift is worse than a spurious gift row.
                     .unwrap_or_else(|| (npc.clone(), true));
                 if let Ok(conn) = ctx.db.get_write() {
                     // Rescan guard: favor accrual is additive and gift rows are
@@ -961,6 +974,11 @@ fn dispatch_json_event(
                     ) {
                         out.domain("player_messages");
                     }
+                } else {
+                    // Counting, not dropping: a title that is not
+                    // "Pigeon From <name>" (a future send line, format drift)
+                    // must stay visible in malformed counters, never vanish.
+                    out.malformed_json.push("Pigeon".to_string());
                 }
             }
         }
@@ -2165,6 +2183,23 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn json_pigeon_unparseable_title_is_counted_not_dropped() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 16:55:59";
+        let body = "{\"Title\":\"Pigeon To Somebody\", \"Body\":\"...\"}";
+        let msg = json_msg("Pigeon", body, ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        // No message row, but the line stays visible in malformed counters.
+        assert!(out.domains.iter().all(|d| d != "player_messages"));
+        assert_eq!(out.malformed_json, vec!["Pigeon".to_string()]);
     }
 
     #[test]

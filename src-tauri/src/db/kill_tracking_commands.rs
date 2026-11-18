@@ -272,8 +272,9 @@ fn combine_loot_rows(
 }
 
 /// Record a player-landed FATALITY as a kill row. Rescan-safe: the same
-/// (character, server, entity, killed_at) line replays to the existing row
-/// and returns its id. Returns the kill id on success.
+/// (character, server, entity, killed_at) line replays to the existing row.
+/// Returns the new row's id, or `None` when the row already existed — callers
+/// gate domains/events on `Some` so replays stay silent.
 #[allow(clippy::too_many_arguments)]
 pub fn record_enemy_kill(
     conn: &rusqlite::Connection,
@@ -285,23 +286,27 @@ pub fn record_enemy_kill(
     health_damage: i64,
     armor_damage: i64,
     killed_at: &str,
-) -> Result<i64, String> {
-    conn.execute(
-        "INSERT INTO enemy_kills
-            (enemy_name, enemy_entity_id, killing_ability, health_damage, armor_damage,
-             killed_at, character_name, server_name)
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
-         WHERE NOT EXISTS (
-            SELECT 1 FROM enemy_kills
-             WHERE character_name = ?7 AND server_name = ?8
-               AND enemy_entity_id = ?2 AND killed_at = ?6
-         )",
-        rusqlite::params![
-            enemy_name, enemy_entity_id, killing_ability, health_damage, armor_damage,
-            killed_at, character, server
-        ],
-    )
-    .map_err(|e| format!("Failed to record enemy kill: {e}"))?;
+) -> Result<Option<i64>, String> {
+    let inserted = conn
+        .execute(
+            "INSERT INTO enemy_kills
+                (enemy_name, enemy_entity_id, killing_ability, health_damage, armor_damage,
+                 killed_at, character_name, server_name)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+             WHERE NOT EXISTS (
+                SELECT 1 FROM enemy_kills
+                 WHERE character_name = ?7 AND server_name = ?8
+                   AND enemy_entity_id = ?2 AND killed_at = ?6
+             )",
+            rusqlite::params![
+                enemy_name, enemy_entity_id, killing_ability, health_damage, armor_damage,
+                killed_at, character, server
+            ],
+        )
+        .map_err(|e| format!("Failed to record enemy kill: {e}"))?;
+    if inserted == 0 {
+        return Ok(None);
+    }
     conn.query_row(
         "SELECT id FROM enemy_kills
           WHERE character_name = ?1 AND server_name = ?2
@@ -309,6 +314,7 @@ pub fn record_enemy_kill(
         rusqlite::params![character, server, enemy_entity_id, killed_at],
         |row| row.get(0),
     )
+    .map(Some)
     .map_err(|e| format!("Failed to read back kill id: {e}"))
 }
 

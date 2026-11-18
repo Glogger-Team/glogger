@@ -553,6 +553,15 @@ fn run_scan_dispatch(
             None,
             &mut dstate,
         );
+        // Structured domains (skills, favor, recipes, kills, books, ...) must
+        // refresh the UI after a scan exactly like the live drain: merge the
+        // dispatch outcome into the accumulated set (deduped). Without this,
+        // backfilled rows stay invisible until an unrelated live line fires.
+        for d in std::mem::take(&mut outcome.domains) {
+            if !domains.contains(&d) {
+                domains.push(d);
+            }
+        }
         // Session-keyed stack correction (see `DispatchOutcome::staged_gains`
         // docs): the Player.log drain wrote fallback `stack_size = 1` rows,
         // and the chat line carries the real quantity. Correct inline per
