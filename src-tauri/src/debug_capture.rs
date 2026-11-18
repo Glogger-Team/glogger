@@ -692,9 +692,10 @@ pub struct ReplayKillEvent {
     pub killing_ability: String,
 }
 
-/// Replay a debug capture JSON file through the parser and return all
-/// LootPickedUp events with their attributions. No database interaction —
-/// pure parser validation.
+/// Replay a debug capture JSON file through the chat parser and return the
+/// detected enemy kills. No database interaction — pure parser validation.
+/// Loot attribution replay retired with the Player.log pipeline:
+/// `player_lines` is always 0 and `loot_events` always empty.
 #[tauri::command]
 pub fn replay_capture_file(path: String) -> Result<CaptureReplayResult, String> {
     let content =

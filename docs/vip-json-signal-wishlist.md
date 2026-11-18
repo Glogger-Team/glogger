@@ -4,7 +4,7 @@ Signals glogger could build on but has no live writer or fixture for. Entries
 marked HAVE exist in logs or code but aren't wired to a feature yet. Remove
 entries as fixtures land and recorders ship.
 
-## Kill line (enemy killed) — SHIPPED 2026-11-17, veto display follow-up open
+## Kill line (enemy killed) — SHIPPED 2026-11-17 (veto shipped 2026-11-18)
 
 - **Recorder:** `record_enemy_kill` writes every FATALITY to `enemy_kills`
   (rescan-safe on character/server/entity/killed_at), hooked in the shared
@@ -18,15 +18,17 @@ entries as fixtures land and recorders ship.
   (17:04:42 → 17:04:47), #488976 (17:06:36 → 17:06:39), Clawstrider Shark
   #19868 (17:12:46 → 17:12:51). Denominator: #488964 FATALITY, no receipt.
   Veto case: #488970 killed 17:08:21, player died 17:08:22, no receipt.
-- **Open:** player-death veto in kill *inference* (suppress unlooted-kill
-  candidates near a recorded death) — display-side, not recording-side.
+- **Shipped:** player-death veto recording-side — `mine_total_kills` and the
+  mine-scope enemy search exclude lootless kills with a same-character death
+  within 5 min after `killed_at` (looted kills never vetoed, legacy NULL rows
+  unaffected, forward-only by design). Test pins the live #488970 case.
 
-## Player death — HAVE the signal, NEED the veto wiring
+## Player death — HAVE the signal, veto WIRED 2026-11-18
 
 - **Signal:** `PlayerDeath` parsed + persisted (`persist_death_event`,
   `character_deaths`, `deaths` domain, `character-death` event live + scan).
-- **Missing:** consume it in kill inference — suppress unlooted-kill
-  candidates for entities with combat activity near a recorded death.
+- **Wired:** consumed by the kill veto (see Kill line entry) — same-character
+  deaths within 5 min after a lootless kill exclude it from denominators.
 
 ## `JSON:Pigeon` (receive direction) — SHIPPED 2026-11-17
 
