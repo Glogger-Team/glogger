@@ -31,7 +31,7 @@ Identity key stays `(timestamp, character, server, item, qty, context, source='c
 - JSON second (usual): guard hits → `UPDATE` the row's `from_name`/`from_entity_id` (V91) instead of skipping. Exactly one row, with entity. Survey columns are never touched — enrichment is identity-adjacent, not attribution.
 - JSON first: JSON inserts with entity; English twin guard-hits → skip without nulling enrichment.
 - Rescan: both twins re-fire → guard-hit → no new rows (entity re-stamped, harmless).
-- Schema: V91 adds `item_transactions.from_name/from_entity_id` (looted-from entity); V94 replaces the V92 `json_favor_processed` rescan marker with `favor_events` (one row per line — the log IS the guard) and retires the `cumulative_delta` integral (session sums by query).
+- Schema: V91 adds `item_transactions.from_name/from_entity_id` (looted-from entity), the `favor_events` per-line log (one row per line — the log IS the guard; the `cumulative_delta` integral is retired, session sums by query), and `character_npc_favor.gifts_this_week`.
 
 ## Rescan / replay / scan parity
 
@@ -47,7 +47,7 @@ Scan also never accrues currency (`count_currency: false` — no per-line accumu
 
 ## VIP character report delta (this patch)
 
-- `NPCs.<npc>` gains `"GiftsThisWeek": N` (observed: `NPC_Elune → 1`, `NPC_Sulafa → 5`; absent = key missing, not 0). Shipped: `#[serde(default)] gifts_this_week` on `NpcFavorData`, V93 `character_npc_favor.gifts_this_week` column, report import + `get_snapshot_npc_favor` round-trip it. Increment proven 2026-11-17: Corinth absent (Before, favor 3075.912) → still absent after talking → `5` after 5 gifts (favor 3286.512, +210.6 = the live `DeltaFavor`).
+- `NPCs.<npc>` gains `"GiftsThisWeek": N` (observed: `NPC_Elune → 1`, `NPC_Sulafa → 5`; absent = key missing, not 0). Shipped: `#[serde(default)] gifts_this_week` on `NpcFavorData`, V91 `character_npc_favor.gifts_this_week` column, report import + `get_snapshot_npc_favor` round-trip it. Increment proven 2026-11-17: Corinth absent (Before, favor 3075.912) → still absent after talking → `5` after 5 gifts (favor 3286.512, +210.6 = the live `DeltaFavor`).
 - Hangout: only signal in this export is the quest string `"HangoutWithJesinaTracker"` (player not on a hangout) — no distinct hangout field observed → optional defaulted field, log-and-skip until a live on-hangout export is captured.
 
 ## Unobserved (parser + log-and-skip until live lines captured)
