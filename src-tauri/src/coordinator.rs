@@ -1177,11 +1177,18 @@ impl DataIngestCoordinator {
 
                     // VIP JSON books: the upsert already ran in shared dispatch
                     // (live + scan + replay); the content triggers below mirror
-                    // the live `BookOpened` arm verbatim and stay live-only —
-                    // the old arm had no scan equivalent either. JSON bodies
-                    // are serde_json-decoded, so newlines are already real and
-                    // the `normalize_book_content` step is skipped.
-                    if let Some((book_type, title, body, at)) = outcome.json_book.take() {
+                    // the live `BookOpened` arm verbatim. They run on live AND
+                    // catch-up, attributed to the line's own session identity
+                    // (live identity IS the active pair, so live behavior is
+                    // unchanged). Dispatch only populates `json_book` when the
+                    // line had identity, so `id` is always `Some` here.
+                    // JSON bodies are serde_json-decoded, so newlines are
+                    // already real and the `normalize_book_content` step is skipped.
+                    if let Some((book_type, title, body, at)) = outcome.json_book.take()
+                        && let Some(id) = identity.as_ref()
+                    {
+                        let character = id.character.as_str();
+                        let server = id.server.as_str();
                         if book_type == "SkillReport"
                             && body.trim_start().starts_with("Foods Consumed:")
                             && let Ok(conn) = self.db_pool.get_write()
@@ -1203,24 +1210,21 @@ impl DataIngestCoordinator {
                         if book_type == "SkillReport"
                             && body.trim_start().starts_with("Equipment Studied:")
                         {
-                            self.ingest_hoplology_report(&at, &body);
+                            self.ingest_hoplology_report(&at, &body, character, server);
                         }
                         if book_type == "SkillReport"
                             && body.contains("Primary Bind Location:")
                         {
-                            self.ingest_teleportation_binds(&body);
+                            self.ingest_teleportation_binds(&body, character, server);
                         }
                         if title == "Gardening Almanac" {
                             // Title-only is the whole gate: `json_book` is
                             // only populated by the Book arm, and the title
                             // classifier leaves this title in the "JSON"
-                            // bucket (never "SkillReport"). Live-only like
-                            // the other content triggers.
-                            if let Some((character, server)) = self.active_character_server()
-                                && let Ok(conn) = self.db_pool.get_write()
-                            {
+                            // bucket (never "SkillReport").
+                            if let Ok(conn) = self.db_pool.get_write() {
                                 match crate::db::game_state_commands::import_garden_almanac(
-                                    &conn, &character, &server, &body, &at,
+                                    &conn, character, server, &body, &at,
                                 ) {
                                     Ok(n) if n > 0 => outcome.domains.push("gardening".into()),
                                     Ok(_) => {}
@@ -1233,7 +1237,7 @@ impl DataIngestCoordinator {
                             }
                         }
                         if book_type == "PlayerAge" || book_type == "HelpScreen" {
-                            self.ingest_report_stats(&book_type, &body);
+                            self.ingest_report_stats(&book_type, &body, character, server);
                         }
                     }
                     if !outcome.domains.is_empty() {
@@ -1411,15 +1415,12 @@ impl DataIngestCoordinator {
 
     /// Parse structured stats from PlayerAge or Behavior Report books and
     /// persist them to the `character_stats` table as key-value pairs.
-    fn ingest_report_stats(&self, book_type: &str, content: &str) {
-        let Some((character, server)) = self.active_character_server() else {
-            return;
-        };
+    fn ingest_report_stats(&self, book_type: &str, content: &str, character: &str, server: &str) {
         ingest_report_stats_content(
             &self.db_pool,
             &self.app_handle,
-            &character,
-            &server,
+            character,
+            server,
             book_type,
             content,
         )
@@ -1438,10 +1439,7 @@ impl DataIngestCoordinator {
     /// Last Used Location: Statehelm\n
     /// Most Common Destination: Serbule\n
     /// ```
-    fn ingest_teleportation_binds(&self, content: &str) {
-        let Some((character, server)) = self.active_character_server() else {
-            return;
-        };
+    fn ingest_teleportation_binds(&self, content: &str, character: &str, server: &str) {
         // Live ProcessBook content carries escaped newlines; the file path
         // carries real ones. Normalize once here so `extract_bind_field`
         // sees real line breaks on both paths (historically the live path
@@ -1450,8 +1448,8 @@ impl DataIngestCoordinator {
         if let Err(e) = ingest_teleport_binds_content(
             &self.db_pool,
             &self.app_handle,
-            &character,
-            &server,
+            character,
+            server,
             &content,
         ) {
             eprintln!("[coordinator] Teleportation binds failed: {e}");
@@ -1462,10 +1460,7 @@ impl DataIngestCoordinator {
     ///
     /// Content format (escaped newlines):
     ///   "Equipment Studied:\n\n  CrudBurst's Hammer of Thumping\n  Thentree Harness\n"
-    fn ingest_hoplology_report(&self, _timestamp: &str, content: &str) {
-        let Some((character, server)) = self.active_character_server() else {
-            return;
-        };
+    fn ingest_hoplology_report(&self, _timestamp: &str, content: &str, character: &str, server: &str) {
         // Live ProcessBook content carries escaped newlines; the file path
         // carries real ones. Normalize once here so the line splitter sees
         // real line breaks on both paths (historically the live path split
@@ -1475,8 +1470,8 @@ impl DataIngestCoordinator {
             &self.db_pool,
             &self.game_data,
             &self.app_handle,
-            &character,
-            &server,
+            character,
+            server,
             &content,
         ) {
             Ok(0) => startup_log!("[coordinator] Hoplology report: no new items"),

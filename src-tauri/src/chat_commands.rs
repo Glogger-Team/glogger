@@ -627,6 +627,15 @@ fn run_scan_dispatch(
         for t in std::mem::take(&mut outcome.unknown_json) {
             eprintln!("[run_scan_dispatch] Unobserved JSON chat line of type: {t} (raw row kept)");
         }
+
+        // Scan never runs book content triggers (gourmand/hoplology/
+        // teleports/report-stats/garden): the tables they fill are
+        // current-state, and backfilled books are historical — importing a
+        // months-old almanac or bind list as current would clobber live
+        // state. Re-open the book live to populate. Logged, not silent.
+        if let Some((_, title, _, _)) = outcome.json_book.take() {
+            eprintln!("[run_scan_dispatch] Skipping scan JSON book content import (re-open live): {title}");
+        }
     }
     if !domains.is_empty()
         && let Some(app) = app {
