@@ -948,18 +948,22 @@ fn dispatch_json_event(
                     // Tier/name touch-up so log-only NPCs (no report row yet)
                     // still render. Snapshot tiers are never overwritten with
                     // NULL — the upsert only fills name and recency.
+                    // Recency-guarded like the snapshot seeder: an unseen
+                    // older-stamped delta (catch-up scan of a rotated log)
+                    // must not rewind `last_confirmed_at`, or a later report
+                    // with a middle timestamp would replace a newer tier.
                     if let Err(e) = tx.execute(
                         "INSERT INTO game_state_favor (character_name, server_name, npc_key, npc_name, favor_tier, last_confirmed_at, source)
                          VALUES (?1, ?2, ?3, ?4, NULL, ?5, 'log')
                          ON CONFLICT(character_name, server_name, npc_key) DO UPDATE SET
                             npc_name = excluded.npc_name,
-                            last_confirmed_at = excluded.last_confirmed_at",
+                            last_confirmed_at = excluded.last_confirmed_at
+                         WHERE excluded.last_confirmed_at > game_state_favor.last_confirmed_at",
                         rusqlite::params![id.character, id.server, npc, display_name, timestamp],
                     ) {
                         eprintln!("[chat_status_dispatch] favor touch-up failed, rolled back: {e}");
                         return;
                     }
-                    // Gift row unless the game's own signals say "not a gift":
                     // capped-area counts belong to the report reconcile, and
                     // tasteless NPCs cannot receive gifts (card readings etc.).
                     // Quest-payout noise for uncapped NPCs is accepted and
@@ -2144,6 +2148,60 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM game_state_gift_log", [], |r| r.get(0))
             .unwrap();
         assert_eq!(gifts, 0);
+    }
+
+    #[test]
+    fn json_favor_older_delta_does_not_rewind_confirmed_at() {
+        // An unseen older-stamped delta (catch-up scan of a rotated log)
+        // must not rewind `last_confirmed_at`: the snapshot seeder's
+        // recency guard compares against it, so a rewind would let a later
+        // older report replace a newer tier. The event row itself still
+        // lands (the ledger is append-only); only the watermark is guarded.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        seed_npc(&gd, "NPC_Elune", "Elune", Some("AreaSerbule"), true);
+        let conn = pool.get_write().unwrap();
+        conn.execute(
+            "INSERT INTO game_state_favor
+                (character_name, server_name, npc_key, npc_name, favor_tier, last_confirmed_at, source)
+             VALUES ('Alice', 'Dreva', 'NPC_Elune', 'Elune', 'Close Friends', '2026-11-17 10:00:00', 'snapshot')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let old_ts = "26-11-17 08:00:00";
+        let old = json_msg("DeltaFavor", "{\"Npc\":\"NPC_Elune\", \"Delta\": 5.0}", old_ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &old, old_ts, &mut st);
+        let conn = pool.get().unwrap();
+        let (tier, confirmed): (Option<String>, String) = conn
+            .query_row(
+                "SELECT favor_tier, last_confirmed_at FROM game_state_favor
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tier.as_deref(), Some("Close Friends"));
+        assert_eq!(confirmed, "2026-11-17 10:00:00");
+        drop(conn);
+        let new_ts = "26-11-17 11:00:00";
+        let new = json_msg("DeltaFavor", "{\"Npc\":\"NPC_Elune\", \"Delta\": 5.0}", new_ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &new, new_ts, &mut st);
+        let conn = pool.get().unwrap();
+        let confirmed: String = conn
+            .query_row(
+                "SELECT last_confirmed_at FROM game_state_favor
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(confirmed, "2026-11-17 11:00:00");
     }
 
     #[test]

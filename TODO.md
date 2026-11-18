@@ -62,6 +62,8 @@ Small items the B round verified as currently harmless. Each is an isolated slic
   - **Suspects:** `scripts/check-migration-chain.py` (`CHAIN_RE`, `check_integrity`).
 - [ ] Scan stack-correction retry after writer-checkout failure (P3, no observed trigger): in `run_scan_dispatch`, a failed `get_write` at the session-keyed correction step skips the fix, and the next rescan finds the ledger row and no longer stages the gain — the fallback `stack_size = 1` row keeps the wrong quantity. Pool timeout (15s) is the only failure path and has never fired mid-scan. Hardening only: separate new-gain attribution from idempotent stack correction so replay can repair an unfinished correction without double-counting.
   - **Suspects:** `src-tauri/src/chat_commands.rs` (`run_scan_dispatch` staged-gains consumer), `src-tauri/src/chat_status_dispatch.rs` (stage-only-on-insert guard).
+- [ ] Chat-pipeline `unwrap_or(false)` EXISTS guards (P3, no observed trigger): `player_gain_already_counted` / `untagged_player_gain_exists` map a query error to "not counted", so a busy/locked DB at that instant would double-bump `loot_qty` with no error and no log (fail-dangerous direction). Same class as the `session_time_bounds` `?` fix, which landed while these stayed. No trigger observed (same-conn queries; writers are pool-serialized). If touched: propagate `?` and skip attribution on error (healable via retro-claim) instead of bumping blind. Note: the AGENTS.md `.unwrap_or(false)` sanction covers absent-table migrations, not live-pipeline guards.
+  - **Suspects:** `src-tauri/src/survey/persistence.rs` (both helpers), `src-tauri/src/survey/aggregator.rs` (`record_chat_attribution` callers).
 
 ---
 

@@ -39,11 +39,21 @@ DEREF_RE = re.compile(r"(?:needs|steps)\.[A-Za-z0-9_.]+\.outputs\.([A-Za-z0-9_.-
 VALID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # `needs.<job>.outputs.<name>` — job and output name per dereference.
 NEEDS_DEREF_RE = re.compile(r"needs\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_.-]+)")
-# Two-space `job:` headers, their four-space `needs: [...]` lists, and the
-# `changes` job's six-space `outputs:` mappings (`name: ${{ steps... }}`).
+# Two-space `job:` headers, their four-space `needs:` lists (flow
+# `[...]`, scalar `name`, or quoted variants), and the `changes` job's
+# six-space `outputs:` mappings (`name: ${{ steps... }}`).
 JOB_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 NEEDS_LIST_RE = re.compile(r"^    needs: \[(.*?)\]\s*$")
+NEEDS_SCALAR_RE = re.compile(r"^    needs: (\S+)\s*$")
 OUTPUT_MAP_RE = re.compile(r"^      ([A-Za-z0-9_-]+): \$\{\{")
+
+
+def strip_quotes(s: str) -> str:
+    """Unquote a YAML scalar (`"changes"`, `'changes'`)."""
+    s = s.strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+        return s[1:-1]
+    return s
 
 
 def check_file(path: Path) -> list[str]:
@@ -143,7 +153,11 @@ def check_wiring(path: Path, text: str) -> list[str]:
                 break
             m = NEEDS_LIST_RE.match(line)
             if m:
-                needs = {n.strip() for n in m.group(1).split(",") if n.strip()}
+                needs = {strip_quotes(n) for n in m.group(1).split(",") if n.strip()}
+                break
+            m = NEEDS_SCALAR_RE.match(line)
+            if m:
+                needs = {strip_quotes(m.group(1))}
                 break
         if needs_block:
             continue
