@@ -585,11 +585,16 @@ fn insert_json_receipt_guarded(
         return false;
     };
     if from_name.is_some() {
+        // Scope to a single row: identical same-second receipts from
+        // different entities (AoE farming) share the whole key, and stamping
+        // every NULL row would attach the first entity to all of them while
+        // the second twin then matches nothing. Earliest unstamped wins.
         conn.execute(
             "UPDATE item_transactions SET from_name = ?1, from_entity_id = ?2
-             WHERE timestamp = ?3 AND character_name = ?4 AND server_name = ?5
-               AND item_name = ?6 AND quantity = ?7 AND context = 'loot'
-               AND source = 'chat_status' AND from_name IS NULL",
+             WHERE rowid = (SELECT MIN(rowid) FROM item_transactions
+                 WHERE timestamp = ?3 AND character_name = ?4 AND server_name = ?5
+                   AND item_name = ?6 AND quantity = ?7 AND context = 'loot'
+                   AND source = 'chat_status' AND from_name IS NULL)",
             rusqlite::params![
                 from_name,
                 from_entity_id,
@@ -857,6 +862,10 @@ fn dispatch_json_event(
                     // plain inserts, so neither is naturally idempotent. The
                     // marker makes the second application a no-op; the scan
                     // path replays the same lines on every backfill.
+                    // Known limit: the key is (npc, second, delta), so two
+                    // genuinely distinct same-second same-delta gifts collapse
+                    // into one — accepted (second-granularity logs give no
+                    // finer key; rapid same-item gifting is rare).
                     let fresh = conn
                         .execute(
                             "INSERT OR IGNORE INTO json_favor_processed
@@ -885,8 +894,9 @@ fn dispatch_json_event(
                     // capped-area counts belong to the report reconcile, and
                     // tasteless NPCs cannot receive gifts (card readings etc.).
                     // Quest-payout noise for uncapped NPCs is accepted and
-                    // documented — JSON carries no is_gift flag.
-                    if giftable {
+                    // documented — JSON carries no is_gift flag. Favor losses
+                    // are never gifts, whatever the NPC's tastes.
+                    if giftable && *delta > 0.0 {
                         conn.execute(
                             "INSERT INTO game_state_gift_log (character_name, server_name, npc_key, npc_name, gifted_at, favor_delta)
                              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -1762,6 +1772,59 @@ mod tests {
     }
 
     #[test]
+    fn json_receipt_enrichment_stamps_single_row() {
+        // Same-second identical receipts from different entities share the
+        // whole enrichment key. Live English lines dedupe, so two NULL rows
+        // can only arise from out-of-band writes — but the UPDATE must still
+        // stamp exactly one (earliest) and leave the other for its own twin.
+        let (pool, _guard) = test_pool();
+        {
+            // Scope the seed writes: the pool has a single writer, and the
+            // function under test checks out its own.
+            let conn = pool.get_write().unwrap();
+            for _ in 0..2 {
+                conn.execute(
+                    "INSERT INTO item_transactions
+                        (timestamp, character_name, server_name, item_name, quantity,
+                         context, source, from_name, from_entity_id)
+                     VALUES ('26-11-17 08:50:27', 'Alice', 'Dreva', 'Toxic Sludge', 1,
+                         'loot', 'chat_status', NULL, NULL)",
+                    [],
+                )
+                .unwrap();
+            }
+        }
+        insert_json_receipt_guarded(
+            &pool,
+            "26-11-17 08:50:27",
+            "Alice",
+            "Dreva",
+            "Toxic Sludge",
+            None,
+            None,
+            1,
+            Some("Olugax The Ever-Pudding"),
+            Some(257400),
+        );
+        let conn = pool.get().unwrap();
+        let stamped: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM item_transactions WHERE from_entity_id = 257400",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let unstamped: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM item_transactions WHERE from_name IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((stamped, unstamped), (1, 1));
+    }
+
+    #[test]
     fn json_additem_twins_converge_json_first() {
         let (pool, _guard) = test_pool();
         let gd = game_data();
@@ -1906,6 +1969,36 @@ mod tests {
             )
             .unwrap();
         assert_eq!(gifts, 1);
+    }
+
+    #[test]
+    fn json_favor_negative_delta_accrues_but_writes_no_gift_row() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        seed_npc(&gd, "NPC_Elune", "Elune", Some("AreaSerbule"), true);
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:32:34";
+        let json = json_msg("DeltaFavor", "{\"Npc\":\"NPC_Elune\", \"Delta\": -52.65}", ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        let conn = pool.get().unwrap();
+        // Favor loss is real and accrues negative.
+        let cumulative: f64 = conn
+            .query_row(
+                "SELECT cumulative_delta FROM game_state_favor
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!((cumulative + 52.65).abs() < 1e-9);
+        // But a loss is never a gift, even for a giftable NPC.
+        let gifts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM game_state_gift_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(gifts, 0);
     }
 
     #[test]
