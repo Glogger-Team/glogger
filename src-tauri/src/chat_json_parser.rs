@@ -174,7 +174,9 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
                 return None;
             }
             let delta = v.delta?;
-            if delta == 0.0 {
+            // Overflow (`1e309`) deserializes to inf, not an error — an
+            // infinite delta would poison SUM(delta) with no repair path.
+            if !delta.is_finite() || delta == 0.0 {
                 return None;
             }
             Some(ChatJsonEvent::FavorDelta {
@@ -413,6 +415,8 @@ mod tests {
             "26-11-17 08:52:00\t[JSON:EarnedXP] {\"Skill\":\"Sword\", \"XP\": 0, \"OldLevel\": 4, \"NewLevel\": 5}\n",
             "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Npc\":\"NPC_Elune\"}\n",
             "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Npc\":\"NPC_Elune\", \"Delta\": 0}\n",
+            "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Npc\":\"NPC_Elune\", \"Delta\": 1e309}\n",
+            "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Npc\":\"NPC_Elune\", \"Delta\": -1e309}\n",
             "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Delta\": 5.0}\n",
             "26-11-17 08:52:00\t[JSON:AddItem] {\"Name\":\"Toxic Sludge\"}\n",
             "26-11-17 08:52:00\t[JSON:AddItem] {\"Name\":\"Toxic Sludge\", \"Stack\": 0}\n",
