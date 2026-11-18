@@ -496,6 +496,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Full history: the migration-chain step diffs against the PR base
+          # (or push `before`) sha, which a depth-1 checkout does not contain
+          # (same reason the markdown job sets fetch-depth: 0).
+          fetch-depth: 0
 
       - name: Log gate inputs (#133)
         # Reads the path-filter outputs this job gates on; informational only.

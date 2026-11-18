@@ -827,6 +827,12 @@ fn dispatch_json_event(
         E::Book { timestamp, title, body } => {
             if let Some(id) = ctx.identity {
                 let book_type = classify_json_book_title(title);
+                // `current` tracks whether the row is known to hold this
+                // body: identical content (rescan no-op) or a successful
+                // write. A failed write leaves it false so caller-side
+                // imports never derive content tables from a row that
+                // never landed.
+                let mut current = false;
                 if let Ok(conn) = ctx.db.get_write() {
                     // Same upsert as `persist_book_content` (no emit here —
                     // the caller owns emits; the domain carries the refresh).
@@ -842,6 +848,7 @@ fn dispatch_json_event(
                         )
                         .map(|c| c == *body)
                         .unwrap_or(false);
+                    current = same;
                     if !same {
                         let dt = chrono::Utc::now().to_rfc3339();
                         if conn
@@ -856,6 +863,7 @@ fn dispatch_json_event(
                             .is_ok()
                         {
                             out.domain("books");
+                            current = true;
                         }
                     }
                 }
@@ -863,7 +871,9 @@ fn dispatch_json_event(
                 // run caller-side: they need `AppHandle` for their emits.
                 // Bodies are serde_json-decoded, so newlines are already real —
                 // no `normalize_book_content` step.
-                out.json_book = Some((book_type.to_string(), title.clone(), body.clone(), timestamp.clone()));
+                if current {
+                    out.json_book = Some((book_type.to_string(), title.clone(), body.clone(), timestamp.clone()));
+                }
             }
         }
         E::FavorDelta {
@@ -1116,8 +1126,12 @@ fn record_poop(db: &DbPool, character: &str, server: &str, target: &str, local_t
 }
 
 /// Persist a player/entity message (pigeon mail, entity reports) with a
-/// rescan guard (same character/server/timestamp/type/sender → skip).
-/// Returns `true` when a row was written (caller emits `player_messages`).
+/// rescan guard (same character/server/timestamp/type/sender/body → skip).
+/// The body is in the key: two mails in the same second from one sender
+/// must not collapse (live fixture: text-only pigeon and the item-bearing
+/// one share a timestamp). Byte-identical resends still collapse, which is
+/// the point. Returns `true` when a row was written (caller emits
+/// `player_messages`).
 #[allow(clippy::too_many_arguments)]
 fn record_player_message(
     db: &DbPool,
@@ -1140,8 +1154,8 @@ fn record_player_message(
          WHERE NOT EXISTS (
             SELECT 1 FROM player_messages
              WHERE character_name = ?1 AND server_name = ?2 AND timestamp = ?3
-               AND message_type = ?4 AND other_player = ?6
-         )",
+               AND message_type = ?4 AND other_player = ?6 AND body = ?7
+        )",
         rusqlite::params![
             character, server, timestamp, message_type, direction, other_player, body, item_name
         ],
@@ -2231,9 +2245,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(item.as_deref(), Some("Mulberry Salad"));
-        // Rescan: same line replays to the existing row.
+        // Same-second pair from the live fixture: the text-only line lands
+        // first and must not swallow the item-bearing one (body is in the
+        // rescan key, not just the sender + second).
+        let plain = json_msg("Pigeon", "{\"Title\":\"Pigeon From TestFriend\", \"Body\":\"This is a pigeon\\n\"}", ts);
         let mut st = state(&mut arena, &mut rez, &mut dmg);
-        dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        let out = dispatch(&pool, &gd, Some(&id()), &plain, ts, &mut st);
+        assert!(out.domains.iter().any(|d| d == "player_messages"));
         let count: i64 = pool
             .get_write()
             .unwrap()
@@ -2241,7 +2259,22 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 2);
+        // Rescan: both lines replay to the existing rows, domains stay silent.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        assert!(out.domains.iter().all(|d| d != "player_messages"));
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &plain, ts, &mut st);
+        assert!(out.domains.iter().all(|d| d != "player_messages"));
+        let count: i64 = pool
+            .get_write()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM player_messages WHERE message_type = 'pigeon'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 2);
     }
 
     #[test]
