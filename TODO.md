@@ -26,6 +26,30 @@ Small, user-action-triggered or cosmetic items found by the full-PR adversarial 
 
 - [ ] rez-dedup 30s window calibration — see `docs/plans/deferred-tuning.md` (bidirectional `abs()<=30s` window shipped in `rez_within_dedup_window`; still needs a captured rez pair to calibrate 30s vs 60s; no fixture contains either phrasing; watch for duplicate `character_resuscitations` rows, cosmetic only). **Suspects:** `src-tauri/src/chat_status_dispatch.rs` (`rez_within_dedup_window`), `src-tauri/src/chat_resuscitate_parser.rs`.
 
+## VIP JSON review backlog (frozen-review B round 2026-11-17, all accepted/dormant — no review round needed)
+
+Small items the B round verified as currently harmless. Each is an isolated slice when wanted.
+
+- [ ] Session-vs-absolute progress semantics (P3): `before` snapshot (FE `get_snapshot`) vs absolute restore counters are separate loans; the reviewed range leaves them distinct. No merge intended without a new contract row.
+- [ ] Dead `'both'` union member (P3): union-widening contract rows carry a `'both'` member with no writer; remove or wire when the contract needs it.
+- [ ] Unknown-skill twin double-count (P3): English `LevelUp` + JSON `Xp` arms each push `unknown_skills` for an unresolvable skill → `skipped_unknown_skills` counts 2 and two coordinator lines. Dedupe at accounting or document.
+  - **Suspects:** `src-tauri/src/chat_status_dispatch.rs` (English `LevelUp` + JSON `Xp` `None` arms).
+- [ ] English-twin staging test comment (P3): `json_additem_twins_converge_json_first` comment says the English arm "stages unconditionally"; it guard-skips (single staging via `out1`). Reword to state the guard-skip.
+- [ ] Gate-script anchoring (P3): `FN_RE`/`CHAIN_RE` in `scripts/check-migration-chain.py` also match doc comments (e.g. `migrations.rs:13` `if current_version < 2`); benign today (v2 exists in both sets). Anchor to line-start when it next trips.
+- [ ] Stale-`main` local base (P3): local `--added-since` with no resolvable upstream (or stale local `main`) fails closed / overcounts. Documented design (fail closed); no change.
+- [ ] Self-milk rescan domain (P3, PRE-EXISTING, predates vip-json range): self-milk arm emits `out.domain("milking")` unconditionally on rescan without a changed row. Flagged by the B round, not filed as fix-now; fix with the scan-emit dedup slice.
+
+## CodeRabbit C-round backlog (branch `feature/vip-json-logging`, 2026-11-17 — refuted as fix-now with evidence, or accepted hardening; no review round needed)
+
+- [ ] Entity-aware receipt dedup (P2): `insert_json_receipt_guarded` EXISTS key is entity-blind, so same-second same-item+qty gains from a second entity collapse (documented "Earliest unstamped wins" tradeoff). Fix shape: match existing rows by entity identity (`from_name IS NULL OR from_name = ?entity`) on both the JSON and English paths without breaking twin convergence (JSON-first stamps, English-first enriches). Needs twin-order tests both ways before the key changes.
+  - **Suspects:** `src-tauri/src/chat_status_dispatch.rs` (`insert_json_receipt_guarded` + enrichment UPDATE).
+- [ ] Login-time inventory clear vs report rebuild (P2, PRE-EXISTING, `55f69fc` in `main`): `apply_catch_up_login(clear_inventory=true)` deletes `game_state_inventory`, trusting a later report import to rebuild it. Hole: a login with no new report (or a duplicate-skipped unchanged report) leaves inventory empty until the next fresh import. Accepted by the combat-conversion round; fix = defer the delete until a successful inventory snapshot import.
+  - **Suspects:** `src-tauri/src/coordinator.rs` (`apply_catch_up_login`), report inventory import.
+- [ ] Derived-state recency hardening (P3): book-trigger imports (`ingest_teleportation_binds`, garden, report-stats) and the `game_state_books` upsert carry no event timestamp, so a hypothetical older-book-after-newer write would rewind binds/content with `captured_at = now`. No reachable trigger today (live/rotation move forward, scan skips book triggers, replay never dispatches). Hardening only: thread the book event timestamp through and reject older updates.
+  - **Suspects:** `src-tauri/src/chat_status_dispatch.rs` (Book arm `captured_at`), `src-tauri/src/coordinator.rs` (book-trigger block), `src-tauri/src/db/game_state_commands.rs` (`import_garden_almanac`, `ingest_teleport_binds_content`).
+- [ ] Manual-replay session-feed attribution (P3): `replay_chat_log` is emit-only (no persistence — verified), but its `chat-status-event`s flow into the live session feed, and `character-login` flips the active character to the log's identity. Replaying another character's log pollutes the current session feed. Fix = tag replay-originated events and skip feed accumulation (startup catch-up already skips the same way).
+  - **Suspects:** `src-tauri/src/replay.rs`, `src/stores/gameStateStore.ts` (`handleChatStatusEvent`).
+
 ---
 
 ## Product decisions (decided 2026-11-03 — in git history, pruned 2026-11-08)
