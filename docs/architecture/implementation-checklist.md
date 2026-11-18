@@ -2,17 +2,6 @@
 
 Quick checklist for implementing common features in the glogger data architecture.
 
-## Adding a New Player.log Event
-
-See [`player-event-parser.md`](player-event-parser.md) for full details.
-
-- [ ] Add `PlayerEvent` variant in [`player_event_parser.rs`](../../src-tauri/src/player_event_parser.rs)
-- [ ] Add `parse_xxx` method on `PlayerEventParser`
-- [ ] Add dispatch branch in `process_line`
-- [ ] Add test cases
-- [ ] Handle in coordinator if persistence needed (follow `GameStateManager` pattern)
-- [ ] Update `player-event-parser.md` and `live-event-streams.md`
-
 ## Adding a New Chat Status Event
 
 See [`live-event-streams.md`](live-event-streams.md) for full details.
@@ -147,6 +136,7 @@ See [`live-event-streams.md`](live-event-streams.md) for full details.
 ## Quick Reference: File Locations
 
 **Rust Backend:**
+
 - Main entry: `src-tauri/src/lib.rs`
 - Coordinator: `src-tauri/src/coordinator.rs`
 - Log watchers: `src-tauri/src/log_watchers.rs`
@@ -157,12 +147,14 @@ See [`live-event-streams.md`](live-event-streams.md) for full details.
   - Commands: `*_commands.rs`
 
 **Frontend:**
+
 - Main app: `src/App.vue`
 - Stores: `src/stores/`
 - Components: `src/components/`
 - Types: `src/types/`
 
 **Documentation:**
+
 - Architecture: `docs/architecture/`
 - Features: `docs/features/`
 - Plans: `docs/plans/`

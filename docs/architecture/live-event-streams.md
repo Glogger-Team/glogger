@@ -262,14 +262,6 @@ formatDateTimeShort('2026-03-27 22:12:48')
 
 ## Extending the Parsers
 
-### Adding a new PlayerEvent variant
-
-1. Add a variant to `PlayerEvent` in [`player_event_parser.rs`](../../src-tauri/src/player_event_parser.rs)
-2. Add a `parse_xxx` method on `PlayerEventParser`
-3. Add a dispatch branch in `process_line` (check for `"ProcessXxx("`)
-4. Add tests
-5. Update [`player-event-parser.md`](player-event-parser.md)
-
 ### Adding a new ChatStatusEvent variant
 
 1. Add a variant to `ChatStatusEvent` in [`chat_status_parser.rs`](../../src-tauri/src/chat_status_parser.rs)

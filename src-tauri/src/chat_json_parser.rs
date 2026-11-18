@@ -174,8 +174,13 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
                 return None;
             }
             let delta = v.delta?;
-            // Overflow (`1e309`) deserializes to inf, not an error — an
-            // infinite delta would poison SUM(delta) with no repair path.
+            // Out-of-range floats (`1e309`) are rejected by `serde_json::from_str`
+            // today: vendored serde_json 1.0.154 `f64_from_parts` returns
+            // `Err(NumberOutOfRange)` when the result is infinite. The
+            // `!delta.is_finite()` check below is therefore belt-and-suspenders
+            // against a serde behavior change, not the live rejection path; keep
+            // it as future-proofing (an infinite delta would poison SUM(delta)
+            // with no repair path).
             if !delta.is_finite() || delta == 0.0 {
                 return None;
             }
@@ -415,8 +420,8 @@ mod tests {
             "26-11-17 08:52:00\t[JSON:EarnedXP] {\"Skill\":\"Sword\", \"XP\": 0, \"OldLevel\": 4, \"NewLevel\": 5}\n",
             "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Npc\":\"NPC_Elune\"}\n",
             "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Npc\":\"NPC_Elune\", \"Delta\": 0}\n",
-            "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Npc\":\"NPC_Elune\", \"Delta\": 1e309}\n",
-            "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Npc\":\"NPC_Elune\", \"Delta\": -1e309}\n",
+            "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Npc\":\"NPC_Elune\", \"Delta\": 1e309}\n", // from_str-level rejection (NumberOutOfRange today; guard covers serde saturation)
+            "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Npc\":\"NPC_Elune\", \"Delta\": -1e309}\n", // from_str-level rejection (NumberOutOfRange today; guard covers serde saturation)
             "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Delta\": 5.0}\n",
             "26-11-17 08:52:00\t[JSON:AddItem] {\"Name\":\"Toxic Sludge\"}\n",
             "26-11-17 08:52:00\t[JSON:AddItem] {\"Name\":\"Toxic Sludge\", \"Stack\": 0}\n",

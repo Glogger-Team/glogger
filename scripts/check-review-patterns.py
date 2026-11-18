@@ -6,7 +6,9 @@ import sys
 from pathlib import Path
 
 FILTER_MAP_RE = re.compile(
-    r"filter_map\(\s*\|\s*([A-Za-z_][A-Za-z0-9_]*)\s*\|\s*\1\.ok\(\)",
+    r"filter_map\(\s*Result::ok\s*\)"
+    r"|filter_map\(\s*\|\s*[A-Za-z_][A-Za-z0-9_]*\s*\|\s*[A-Za-z_][A-Za-z0-9_]*\.ok\(\)\s*\)"
+    r"|filter_map\(\s*\|\s*[A-Za-z_][A-Za-z0-9_]*\s*\|\s*\{[^}]*\.ok\(\)[^}]*\}\s*\)",
     re.DOTALL,
 )
 LET_DISCARD_RE = re.compile(
@@ -22,30 +24,34 @@ FINDING_LET_DISCARD = (
     "review-patterns: discarded migration write/row-read (let _ = ...)"
     " \u2014 propagate with ? (v81 lesson)"
 )
-# A silenced DB Result outside migrations: `let _ =` on a pool/connection
-# call, on a db-verb helper (insert_/record_/link_/...), or on any call
-# taking the connection as an argument drops write/link failures with no
-# log and no retry (kill-loot link lesson, PR #202 — the line sat one inch
-# below the rescan guard and never healed). The conn-arg branch is the
-# class rule: any discarded call receiving `conn`/`tx` is a write-path
-# silence regardless of verb (add_/set_/tighten_ all slipped a verb list
-# once — B round, PR #202). Emits, fs ops, and test cleanup are
-# deliberately out of scope: this gate owns the write path only.
+# A silenced DB Result outside migrations: `let _ =` on any call whose
+# method name is a SQL op (execute/.../commit) — those only exist on
+# rusqlite types, so a discarded call is a DB silence by definition (any
+# receiver, incl. pool.get_write().unwrap()); on a db-verb helper
+# (insert_/record_/link_/...); or on any call taking `conn` as an arg
+# (conn-arg branch is the class rule). `tx`-only args no longer trip
+# branch 3; read-verb callees (get/fetch/...) are excluded. Multi-line
+# rustfmt-wrapped writes are joined (cap 5) before matching. Test modules
+# (`mod \w*tests?`, cfg(test) mod blocks) are skipped. Drops write/link
+# failures with no log and no retry (kill-loot link lesson, PR #202).
+# Emits, fs ops, and test cleanup are deliberately out of scope.
 # Sanctioned shape (like the migration gate's EXISTS guards): ROLLBACK
 # cleanup in an already-failing path — the real error is propagated
 # either way, so only the compensation can fail silently.
 DB_SILENCE_RE = re.compile(
     r"let\s+_\s*=\s*(?!.*\bROLLBACK\b)"
     r"(?:"
-    r".*\b(?:conn|tx|stmt)\s*\.\s*"
-    r"(?:execute|execute_batch|query_row|query_map|query|transaction|prepare|commit)\b"
-    r"|(?:(?:crate|super|self|db|[a-z_][a-z0-9_]*)::)*"
-    r"(?:link|insert|record|persist|upsert|import|delete|update|backfill|reconcile|claim|attach|tag|add|set|tighten)"
+    r".*\.\s*(?:execute|execute_batch|query_row|query_map|query|transaction|prepare|commit)\b"
+    r"|(?:::)?(?:(?:crate|super|self|db|[a-z_][a-z0-9_]*)::)*"
+    r"(?:link|insert|record|persist|upsert|import|delete|update|backfill|"
+    r"reconcile|claim|attach|tag|add|set|tighten)"
     r"_[a-z0-9_]*\s*\("
-    r"|\b[a-z_][a-z0-9_:]*\s*\([^;()]*\b(?:conn|tx)\b[^;()]*\)"
+    r"|\b(?:[a-z_][a-z0-9_]*::)*+"
+    r"(?!(?:get|fetch|load|read|find|search|list|check|exists|count|lookup|validate)(?:_|\b))"
+    r"[a-z_][a-z0-9_]*\s*\([^;()]*\bconn\b[^;()]*\)"
     r")"
 )
-MOD_TESTS_RE = re.compile(r"^\s*mod\s+tests\s*\{")
+MOD_TESTS_RE = re.compile(r"^\s*(?:pub\s+)?mod\s+\w*tests?\b")
 FINDING_DB_SILENCE = (
     "review-patterns: silenced DB write/link ({path}:{lineno})"
     " \u2014 propagate with ? or log like the receipt side (PR #202 link lesson)"
@@ -60,7 +66,7 @@ def read_body(root: Path) -> str:
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     out = []
     for line in lines:
-        if re.match(r"^mod tests \{$", line.rstrip("\r\n")):
+        if re.match(r"^mod \w*tests?\b", line.rstrip("\r\n")):
             break
         out.append(line)
     return "".join(out)
@@ -70,13 +76,30 @@ def code_lines(path: Path) -> list[tuple[int, str]]:
     """(lineno, line) outside `mod tests` blocks (brace-depth tracked)."""
     out: list[tuple[int, str]] = []
     skip_depth = 0
+    prev_sig = ""
     for i, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if skip_depth:
             skip_depth = max(0, skip_depth + raw.count("{") - raw.count("}"))
             continue
-        if MOD_TESTS_RE.match(raw):
+        stripped = raw.strip()
+        is_test_mod = (
+            MOD_TESTS_RE.match(raw) is not None
+            or (
+                re.match(r"^\s*(?:pub\s+)?mod\s+\w+\s*\{", raw) is not None
+                and prev_sig == "#[cfg(test)]"
+            )
+            or (
+                re.search(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]", raw) is not None
+                and re.search(r"\bmod\b\s+\w+\s*\{", raw) is not None
+            )
+        )
+        if is_test_mod:
             skip_depth = raw.count("{") - raw.count("}")
+            if stripped:
+                prev_sig = stripped
             continue
+        if stripped:
+            prev_sig = stripped
         out.append((i, raw))
     return out
 
@@ -85,14 +108,34 @@ def findings_for_tree(root: Path) -> list[str]:
     findings: list[str] = []
     src = root / "src-tauri" / "src"
     for path in sorted(src.rglob("*.rs")):
-        for lineno, line in code_lines(path):
+        cl = code_lines(path)
+        i = 0
+        n = len(cl)
+        while i < n:
+            lineno, line = cl[i]
             code = line.split("//")[0]
-            if DB_SILENCE_RE.search(code):
+            joined = code
+            consumed = 1
+            if "let _" in code and "=" in code:
+                opens = code.count("(") - code.count(")")
+                if opens > 0:
+                    cur = code
+                    while opens > 0 and consumed < 5 and i + consumed < n:
+                        _nlineno, nline = cl[i + consumed]
+                        ncode = nline.split("//")[0]
+                        cur = cur + " " + ncode
+                        opens += ncode.count("(") - ncode.count(")")
+                        consumed += 1
+                        if opens <= 0:
+                            break
+                    joined = cur
+            if DB_SILENCE_RE.search(joined):
                 findings.append(
                     FINDING_DB_SILENCE.format(
                         path=path.relative_to(root), lineno=lineno
                     )
                 )
+            i += consumed
     return findings
 
 
