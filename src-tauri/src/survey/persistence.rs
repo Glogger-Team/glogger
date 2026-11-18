@@ -418,7 +418,7 @@ pub fn session_time_bounds(conn: &Connection, session_id: i64) -> Result<Session
             params![session_id],
             |row| row.get::<_, Option<String>>(0),
         )
-        .unwrap_or(None);
+        ?;
 
     let latest: Option<String> = conn
         .query_row(
@@ -435,7 +435,7 @@ pub fn session_time_bounds(conn: &Connection, session_id: i64) -> Result<Session
             params![session_id],
             |row| row.get::<_, Option<String>>(0),
         )
-        .unwrap_or(None);
+        ?;
 
     Ok(SessionTimeBounds { earliest, latest })
 }

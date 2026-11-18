@@ -150,7 +150,7 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
         }
         "Book" => {
             let v: BookJson = serde_json::from_str(body).ok()?;
-            if v.title.is_empty() {
+            if v.title.is_empty() || v.body.is_empty() {
                 return None;
             }
             Some(ChatJsonEvent::Book {
@@ -172,7 +172,7 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
         }
         "RecipeUsage" => {
             let v: RecipeUsageJson = serde_json::from_str(body).ok()?;
-            if v.recipe_name.is_empty() {
+            if v.recipe_name.is_empty() || v.recipe_id == 0 || v.completions == 0 {
                 return None;
             }
             Some(ChatJsonEvent::RecipeUsed {
@@ -183,7 +183,7 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
         }
         "Pigeon" => {
             let v: BookJson = serde_json::from_str(body).ok()?;
-            if v.title.is_empty() {
+            if v.title.is_empty() || v.body.is_empty() {
                 return None;
             }
             Some(ChatJsonEvent::PigeonReceived {
@@ -207,7 +207,7 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
         }
         "EntityReport" => {
             let v: BookJson = serde_json::from_str(body).ok()?;
-            if v.title.is_empty() {
+            if v.title.is_empty() || v.body.is_empty() {
                 return None;
             }
             Some(ChatJsonEvent::EntityReport {
@@ -370,6 +370,23 @@ mod tests {
         let msgs = parse_chat_lines("26-11-17 08:50:27\t[JSON:AddItem] not-json\n");
         assert_eq!(msgs.len(), 1);
         assert!(parse_json_message(&msgs[0]).is_none());
+    }
+
+    #[test]
+    fn missing_required_fields_yield_none_not_zeros() {
+        // Struct-level `default` must not turn a missing required field
+        // into a destructive zero/empty event: zero completions would wipe
+        // a stored total, an empty body would wipe book content.
+        for line in [
+            "26-11-17 08:52:00\t[JSON:RecipeUsage] {\"RecipeName\":\"Recall Heart's Home\", \"RecipeId\": 9008}\n",
+            "26-11-17 08:52:00\t[JSON:RecipeUsage] {\"RecipeName\":\"Recall Heart's Home\", \"RecipeId\": 9008, \"Completions\": 0}\n",
+            "26-11-17 08:52:00\t[JSON:Book] {\"Title\":\"Skill Info\"}\n",
+            "26-11-17 08:52:00\t[JSON:Pigeon] {\"Title\":\"Pigeon From TestFriend\"}\n",
+        ] {
+            let msgs = parse_chat_lines(line);
+            assert_eq!(msgs.len(), 1);
+            assert!(parse_json_message(&msgs[0]).is_none(), "accepted {line:?}");
+        }
     }
 
     #[test]

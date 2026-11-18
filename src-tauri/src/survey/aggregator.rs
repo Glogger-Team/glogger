@@ -576,14 +576,21 @@ impl SurveySessionAggregator {
     }
 
     /// Cached active-session-id lookup.
-    /// Drop the cached active-session id so the next lookup re-resolves from
-    /// the DB. Call this when a session is removed by a path that bypasses the
+    /// Drop the cached active-session id (and the recent-Basic-use window,
+    /// which is keyed by use id) so the next lookup re-resolves from the
+    /// DB. Call this when a session is removed by a path that bypasses the
     /// aggregator's own start/end flow — notably the History UI's
     /// `survey_tracker_delete_session`, which deletes rows directly. Without
     /// this, the cache would keep handing out a now-missing session id and
-    /// every subsequent `insert_use` would fail the FK constraint.
+    /// every subsequent `insert_use` would fail the FK constraint, and a
+    /// queued gain could still attribute to the deleted Basic use.
     pub fn invalidate_session_cache(&mut self) {
         self.cached_active_session = None;
+        // The Basic-use window is keyed by use id too: a deleted use must
+        // not keep attracting gains timestamped inside its old window.
+        // Worst case a gain goes unattributed (healable via retro-claim)
+        // instead of landing on a use that no longer exists.
+        self.recent_basic_uses.clear();
     }
 
     fn fetch_active_session(
