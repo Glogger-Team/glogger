@@ -432,11 +432,12 @@ pub fn get_game_state_favor(
 }
 
 /// Session favor sums: per-NPC total of `favor_events` deltas since the
-/// active session started. The session singleton stores `last_login_at` in
-/// UTC while event timestamps are local wall-clock, so the boundary converts
-/// with `datetime(..., 'localtime')` (box tz == log tz). No session row, a
-/// row for a different character (viewing a non-active character), or a
-/// missing events table (minimal fixtures) → empty map, i.e. all zeros.
+/// active session started. Both sides are UTC: the live drain converts Chat
+/// timestamps before dispatch and the scan path passes UTC messages, while
+/// the session singleton stores `Utc::now()` — so the boundary binds
+/// directly with no frame conversion. No session row, a row for a different
+/// character (viewing a non-active character), or a missing events table
+/// (minimal fixtures) → empty map, i.e. all zeros.
 /// Covers capped (Statehelm) and uncapped NPCs alike — it sums every delta,
 /// while gift *detection* stays exclusions-aware at write time.
 pub fn session_favor_sums(
@@ -456,7 +457,7 @@ pub fn session_favor_sums(
     }
     let start: Option<String> = conn
         .query_row(
-            "SELECT datetime(last_login_at, 'localtime') FROM game_state_session
+            "SELECT last_login_at FROM game_state_session
              WHERE id = 1 AND character_name = ?1 AND server_name = ?2",
             rusqlite::params![character_name, server_name],
             |r| r.get(0),
@@ -2585,9 +2586,9 @@ mod tests {
     #[test]
     fn session_favor_sums_ranges_by_login_and_covers_capped() {
         let conn = setup();
-        // Session started 2026-11-16 12:00 UTC: local equivalent lands on
-        // 11-16 for every real timezone, so the 11-17 lines below are in
-        // session and the 11-15 line is out — no box-tz dependence.
+        // Both sides UTC: session started 2026-11-16 12:00Z, so the 11-17
+        // lines below are in session and the 11-15 line is out — no frame
+        // conversion anywhere.
         conn.execute(
             "INSERT INTO game_state_session (id, character_name, server_name, last_login_at, updated_at)
              VALUES (1, 'Alice', 'Dreva', '2026-11-16 12:00:00', '2026-11-16 12:00:00')",
