@@ -115,25 +115,11 @@ Full details: [`economics-surveying.md`](../features/screens/economics/economics
 
 ## Subscribing to Events (Frontend)
 
-All events use Tauri's event system. Both `PlayerEvent` and `ChatStatusEvent` use `#[serde(tag = "kind")]`, so every payload includes a `kind` field for discriminating variants.
+All events use Tauri's event system. `ChatStatusEvent` uses `#[serde(tag = "kind")]`, so its payload includes a `kind` field for discriminating variants; `game-state-updated` carries a plain string array of changed domain names.
 
 ```typescript
 import { listen } from '@tauri-apps/api/event'
 import type { UnlistenFn } from '@tauri-apps/api/event'
-
-// Listen to player events (arrives as batches of 1-50 events)
-const unlistenPlayer: UnlistenFn = await listen<PlayerEvent[]>('game-state-updated', (event) => {
-  for (const e of event.payload) {
-    switch (e.kind) {
-      case 'ItemAdded':
-        console.log(`Item: ${e.item_name} (new: ${e.is_new})`)
-        break
-      case 'FavorChanged':
-        console.log(`Favor: ${e.npc_name} ${e.delta > 0 ? '+' : ''}${e.delta}`)
-        break
-    }
-  }
-})
 
 // Listen to chat status events
 const unlistenStatus: UnlistenFn = await listen<ChatStatusEvent>('chat-status-event', (event) => {
@@ -162,14 +148,9 @@ const unlistenState: UnlistenFn = await listen<string[]>('game-state-updated', (
 
 | You need... | Subscribe to... | Why |
 |---|---|---|
-| Item identity, instance IDs, slot positions | `"game-state-updated"` (`ItemAdded`, `ItemDeleted`) | Player.log has the game engine data |
 | Item quantities for new stacks | `"chat-status-event"` (`ItemGained`) | Chat Status has the actual stack size |
-| Cumulative skill XP/level | `"game-state-updated"` (`SkillsLoaded`) or `"game-state-updated"` | Player.log has the full snapshot |
 | Per-action XP deltas | `"chat-status-event"` (`XpGained`) | Only available in Status channel |
-| Vendor transactions | `"game-state-updated"` (`VendorSold`, `VendorGoldChanged`) | Only in Player.log |
 | Coin/council economy | `"chat-status-event"` (`CoinsLooted`, `CouncilsChanged`) | Only in Status channel |
-| Storage vault changes | `"game-state-updated"` (`StorageDeposit`, `StorageWithdrawal`) | Player.log has vault keys |
-| NPC favor changes | `"game-state-updated"` (`FavorChanged`) | Player.log has numeric delta |
 | Survey triangulation | `"chat-status-event"` (`TreasureDistance`) | Only in Status channel |
 | Level-up notifications | `"chat-status-event"` (`LevelUp`) | Only in Status channel |
 | Refreshing a view after DB changes | `"game-state-updated"` | Signals which domains changed |
@@ -193,12 +174,10 @@ Both sources also write to the `item_transactions` ledger table (v15 migration) 
 
 ```typescript
 // Example: track items with correct quantities
-listen<PlayerEvent[]>('game-state-updated', (event) => {
-  for (const e of event.payload) {
-    if (e.kind === 'ItemAdded' && e.is_new) {
-      // Record the item with instance ID — quantity starts at 1
-      addItem(e.instance_id, e.item_name, 1)
-    }
+listen<string[]>('game-state-updated', (event) => {
+  if (event.payload.includes('inventory')) {
+    // Reload item rows from the DB — quantities already corrected
+    await refreshInventory()
   }
 })
 
@@ -214,7 +193,7 @@ listen<ChatStatusEvent>('chat-status-event', (event) => {
 
 When a feature needs to persist events to the database, add a handler in the coordinator. Follow the existing patterns:
 
-### For PlayerEvent persistence
+### For LogEvent persistence
 
 `process_player_events` handles only `CharacterLogin`, `ChatLogPath`, and
 `AreaTransition` (coordinator.rs:818-920); there is no generic `PlayerEvent`
@@ -242,7 +221,7 @@ All timestamps are **UTC internally**. The frontend converts to local time for d
 
 | Source | Raw Format | How it becomes UTC |
 |---|---|---|
-| Player.log | `[HH:MM:SS]` (already UTC, no date) | Dated by [`parsers::LogDateResolver`](../../src-tauri/src/parsers.rs) in [`parsers.rs`](../../src-tauri/src/parsers.rs) — an explicit base date for replay / solo reparse, else the session date from the log's own login line (`PlayerEvent::LogSessionAnchored`), else the clock with a one-day rollback when the line's time of day is ahead of it |
+| Player.log | `[HH:MM:SS]` (already UTC, no date) | Dated by [`to_utc_datetime_with_base`](../../src-tauri/src/parsers.rs) in [`parsers.rs`](../../src-tauri/src/parsers.rs) — an explicit base date for replay / solo reparse, else the session date from the log's own login line ([`parse_player_log_login_line`](../../src-tauri/src/parsers.rs)), else the clock with a one-day rollback when the line's time of day is ahead of it |
 | Chat.log | `YY-MM-DD HH:MM:SS` (player's local time) | Converted to UTC via `chat_local_to_utc()` in [`parsers.rs`](../../src-tauri/src/parsers.rs) using the detected timezone offset |
 | Timezone offset | `Timezone Offset -07:00:00` in chat login line | Parsed by `parse_timezone_offset()` in [`chat_parser.rs`](../../src-tauri/src/chat_parser.rs), stored in settings, used for Chat.log timestamp conversion |
 
