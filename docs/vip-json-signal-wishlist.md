@@ -50,9 +50,11 @@ entries as fixtures land and recorders ship.
   `<indent=20>` markup.
 - **Shipped:** `parse_garden_almanac_body` + `import_garden_almanac` fill
   `garden_almanac` (snapshot replace) + `garden_almanac_history`, via a
-  coordinator trigger on the live book (rescan-safe no-op). Same
-  parse/import + snapshot/history shape as gourmand; the trigger gate is
-  title-only (the title classifier leaves it outside `SkillReport`).
+  coordinator trigger on the live book (rescan-safe no-op; emits domain
+  `garden_almanac`). Same parse/import + snapshot/history shape as gourmand;
+  the trigger gate is title-only (the title classifier leaves it outside
+  `SkillReport`). `GardenAlmanacWidget.vue` already reads this shape but is
+  unregistered (dark) — enabling it is a separate product call.
   Harvest-NPC extraction still needs its own signal.
 
 ## Hangout-active character export
@@ -76,7 +78,9 @@ entries as fixtures land and recorders ship.
   (arena tip). Dispatch writes `player_messages`
   (message_type='entity_report'), rescan-safe — read path exists.
 - **Capture:** more `EntityReport` titles/bodies to learn whether this is
-  arena-tips-only or a general entity channel.
+  arena-tips-only or a general entity channel. No fixture file yet (the
+  single observed line is pinned by a synthetic dispatch test, not a
+  `chat-entityreport.log` — do not invent lines).
 
 ## Prodigy-overflow `EarnedXP`
 
