@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""Gate: retired-identifier doc orphans.
+
+Scans Rust files changed in the working tree (staged + unstaged + untracked +
+unpushed commits — same scope resolution as scripts/lint-markdown-changed.py's
+no-`--base` behavior; mirrored here, not imported) for removed identifiers,
+then greps docs/ for any survivor. A hit means a doc still names something the
+code no longer defines: the author must update/close that spot or narrow the
+symbol.
+
+Scope resolution mirrors lint-markdown-changed.py (no --base): worktree diff
+against HEAD, untracked files, plus unpushed commits via unpushed_base().
+"""
+# Mirrors scope logic from scripts/lint-markdown-changed.py (no --base).
+
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+
+STOPWORDS = {
+    "id",
+    "name",
+    "conn",
+    "tx",
+    "msg",
+    "event",
+    "data",
+    "path",
+    "text",
+    "title",
+    "body",
+    "self",
+    "new",
+    "get",
+    "set",
+    "default",
+    "result",
+    "error",
+}
+
+MOD_TESTS_RE = re.compile(r"^\s*(?:pub\s+)?mod\s+\w*tests?\b")
+
+
+def git(*args: str) -> list[str]:
+    out = subprocess.run(
+        ["git", *args, "-z"], capture_output=True, text=False, check=True
+    ).stdout
+    return [p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p]
+
+
+def unpushed_base() -> str | None:
+    for base_ref in ("@{u}", "origin/HEAD"):
+        try:
+            base = subprocess.run(
+                ["git", "merge-base", "HEAD", base_ref],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        except subprocess.CalledProcessError:
+            continue
+        if base:
+            return base
+    return None
+
+
+def test_module_lines(text: str) -> set[int]:
+    """1-based line numbers that fall inside a `mod tests` / cfg(test) block."""
+    out: set[int] = set()
+    skip_depth = 0
+    prev_sig = ""
+    for i, raw in enumerate(text.splitlines(), 1):
+        if skip_depth:
+            skip_depth = max(0, skip_depth + raw.count("{") - raw.count("}"))
+            out.add(i)
+            continue
+        stripped = raw.strip()
+        is_test_mod = (
+            MOD_TESTS_RE.match(raw) is not None
+            or (
+                re.match(r"^\s*(?:pub\s+)?mod\s+\w+\s*\{", raw) is not None
+                and prev_sig == "#[cfg(test)]"
+            )
+            or (
+                re.search(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]", raw) is not None
+                and re.search(r"\bmod\b\s+\w+\s*\{", raw) is not None
+            )
+        )
+        if is_test_mod:
+            skip_depth = raw.count("{") - raw.count("}")
+            out.add(i)
+            if stripped:
+                prev_sig = stripped
+            continue
+        if stripped:
+            prev_sig = stripped
+    return out
+
+
+def parse_minus_lines(diff_text: str, old_text: str | None) -> list[str]:
+    """Return removed source lines (without leading '-') with test-module
+    lines filtered out using old-file line numbers."""
+    skip = test_module_lines(old_text) if old_text is not None else set()
+    filtered: list[str] = []
+    old_lineno = 0
+    in_hunk = False
+    for raw in diff_text.splitlines():
+        m = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", raw)
+        if m:
+            old_lineno = int(m.group(1))
+            in_hunk = True
+            continue
+        if not in_hunk:
+            continue
+        if raw.startswith(("diff ", "index ", "---", "+++")):
+            in_hunk = False
+            continue
+        if raw.startswith("\\"):
+            continue
+        if raw.startswith("-"):
+            if not (old_lineno and old_lineno in skip):
+                filtered.append(raw[1:])
+            old_lineno += 1
+        elif raw.startswith("+"):
+            pass
+        else:
+            old_lineno += 1
+    return filtered
+
+
+def extract_identifiers(removed_lines: list[str]) -> set[str]:
+    idents: set[str] = set()
+    # fn/struct/enum definition names
+    for line in removed_lines:
+        for m in re.finditer(
+            r"\b(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?"
+            r"(?:fn|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)",
+            line,
+        ):
+            name = m.group(1)
+            if len(name) >= 4 and name.lower() not in STOPWORDS:
+                idents.add(name)
+    # CamelCase tokens (enum-variant-ish, multi-word). Single-word
+    # variants are covered by string-literal PascalCase when quoted.
+    for line in removed_lines:
+        for m in re.finditer(r"\b[A-Z][a-z]+[A-Z][A-Za-z0-9]*\b", line):
+            name = m.group(0)
+            if len(name) >= 4 and name.lower() not in STOPWORDS:
+                idents.add(name)
+        # also catch all-caps? no.
+    # String literals: kebab-case or PascalCase
+    for line in removed_lines:
+        for m in re.finditer(r'"([^"]*)"', line):
+            s = m.group(1)
+            if len(s) < 4:
+                continue
+            if s.lower() in STOPWORDS:
+                continue
+            is_kebab = bool(re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)+", s))
+            is_pascal = bool(re.fullmatch(r"[A-Z][A-Za-z0-9]*", s))
+            if (is_kebab or is_pascal) and s.lower() not in STOPWORDS:
+                idents.add(s)
+    return idents
+
+
+def old_content_for(path: str, ref: str) -> str | None:
+    try:
+        out = subprocess.run(
+            ["git", "show", f"{ref}:{path}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        return out
+    except subprocess.CalledProcessError:
+        return None
+
+
+def collect_changed_rs() -> list[str]:
+    files: list[str] = []
+    try:
+        files += git("diff", "--name-only", "HEAD")
+    except subprocess.CalledProcessError:
+        pass
+    try:
+        files += git("ls-files", "--others", "--exclude-standard")
+    except subprocess.CalledProcessError:
+        pass
+    base = unpushed_base()
+    if base is not None:
+        try:
+            files += git("diff", "--name-only", base, "HEAD")
+        except subprocess.CalledProcessError:
+            pass
+    out = []
+    seen = set()
+    for f in files:
+        if f.endswith(".rs") and f not in seen:
+            seen.add(f)
+            out.append(f)
+    return out
+
+
+def main() -> int:
+    os.chdir(ROOT)
+    changed = collect_changed_rs()
+    idents: set[str] = set()
+
+    # Worktree diff (staged + unstaged) against HEAD
+    for path in changed:
+        try:
+            diff = subprocess.run(
+                ["git", "diff", "-U0", "HEAD", "--", path],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        except subprocess.CalledProcessError:
+            diff = ""
+        old = old_content_for(path, "HEAD")
+        idents |= extract_identifiers(parse_minus_lines(diff, old))
+
+    # Unpushed commits
+    base = unpushed_base()
+    if base is not None:
+        for path in changed:
+            try:
+                diff = subprocess.run(
+                    ["git", "diff", "-U0", base, "HEAD", "--", path],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout
+            except subprocess.CalledProcessError:
+                diff = ""
+            old = old_content_for(path, base)
+            idents |= extract_identifiers(parse_minus_lines(diff, old))
+
+    # Untracked files have no minus lines (nothing to extract).
+
+    # Grep docs/
+    docs_root = ROOT / "docs"
+    findings: list[str] = []
+    if docs_root.exists():
+        md_files = sorted(docs_root.rglob("*.md"))
+        for ident in sorted(idents):
+            pat = re.compile(
+                r"(?<![A-Za-z0-9_])" + re.escape(ident) + r"(?![A-Za-z0-9_])"
+            )
+            for doc in md_files:
+                try:
+                    text = doc.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+                for i, line in enumerate(text.splitlines(), 1):
+                    if pat.search(line):
+                        rel = doc.relative_to(ROOT).as_posix()
+                        findings.append(f"{rel}:{i}: {ident}")
+
+    findings = sorted(set(findings))
+    for f in findings:
+        print(f)
+    print(
+        f"scanned {len(changed)} changed .rs files; "
+        f"{len(idents)} identifiers; {len(findings)} doc hits",
+        file=sys.stderr,
+    )
+    return 1 if findings else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

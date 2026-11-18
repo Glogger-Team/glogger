@@ -73,6 +73,10 @@ run = ["python scripts/check-migration-chain.py", "python scripts/check-migratio
 [tasks."lint:review"]
 description = "Review-patterns gate: decided defect shapes (commit-fast slice)"
 run = ["python scripts/check-review-patterns.py"]
+
+[tasks."lint:authoring"]
+description = "Author-discipline greps: command registration, store HMR, exec bit, doc orphans (commit set)"
+run = ["python scripts/check-tauri-commands.py", "python scripts/check-store-hmr.py", "python scripts/check-exec-bit.py", "python scripts/check-doc-orphans.py"]
 [tasks."lint:parity"]
 description = "Lint-parity drift guard: hook/docs refs resolve, TODO location contract, fast-set weight (commit-fast slice)"
 # Fails closed on drift between mise.toml (single source of truth),
@@ -116,7 +120,7 @@ run = ["python scripts/check-glogger-constraints.py"]
 
 [tasks."lint:fast"]
 description = "Commit stage: seconds-scale checks, no build/test/network"
-depends = ["lint:ruff", "lint:commit", "lint:yaml", "lint:workflow", "lint:markdown", "lint:grids", "lint:review", "lint:parity", "lint:parity-ipc", "lint:version-sync", "lint:migrations"]
+depends = ["lint:authoring", "lint:ruff", "lint:commit", "lint:yaml", "lint:workflow", "lint:markdown", "lint:grids", "lint:review", "lint:parity", "lint:parity-ipc", "lint:version-sync", "lint:migrations"]
 
 [tasks.lint]
 description = "Push-weight gates (pre-push hook entrypoint; manual stage A runs lint:full, CI adds lint:build)"

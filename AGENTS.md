@@ -183,6 +183,7 @@ Before committing, lint every file type you changed and fix what the linter repo
 | Commit-msg hook | warn-only prefix check (no linter) | `lint:fast` → `lint:commit` (`python scripts/check-commit-msg.py --self-test`; commit set, also in push via `lint:fast`) |
 | Version sync (release staging + stamps) | `python scripts/check-version-sync.py` (+ `--self-test`) | `lint:fast` → `lint:version-sync` (commit set, also in push via `lint:fast`); CI `lint.yml:version-sync` job |
 | Migration chain (SQLite) | `python scripts/check-migration-chain.py` (chain integrity always + `--added-since`: at most one new version vs base) | `lint:fast` → `lint:migrations` (commit set, also in push via `lint:fast`); CI `lint.yml` migration-chain step (explicit base: PR base on pull_request; push runs integrity only by design) |
+| Author-discipline (command registration, store HMR, exec bit, doc orphans) | `python scripts/check-tauri-commands.py`, `python scripts/check-store-hmr.py`, `python scripts/check-exec-bit.py`, `python scripts/check-doc-orphans.py` | `lint:fast` → `lint:authoring` (commit set, also in push via `lint:fast`) |
 
 Not installed, add only if wanted: stylelint (CSS), eslint-plugin-jsonc (JSON validity), `gasa` (no mise package). Formatters are a separate job from lint: `cargo fmt`, `ruff format` (prettier is not configured).
 
