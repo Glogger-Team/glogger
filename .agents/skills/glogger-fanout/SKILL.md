@@ -17,7 +17,7 @@ description: Fan out N small disjoint TODO slices, one branch + git worktree + w
 - Prefer entries marked small with file-level scope; reject report-gated / Large / blocked items.
 - Slices MUST be file-disjoint. Name each `feature/<slug>` cut from `main`.
 - Confirm `main` clean (`git status --porcelain=v1 --branch`) before cutting.
-- **Trivial-slice fast path.** One file, ≤30 changed lines, no behaviour change (docs, comments, test-data, mechanical renames): single worker, A gates only, parent verifies freeze + gates and merges — no B/C/D. Write no marker; the next frozen-review pass covers the range as usual.
+- **Trivial-slice fast path.** One file, ≤30 changed lines, no behaviour change (comments, test-data fixtures with unchanged expectations, mechanical renames — never process docs: `AGENTS.md`, skills, workflows, gate scripts, which keep their B pass): single worker, A gates only, parent verifies freeze + gates and merges — no B/C/D. The slice report states explicitly `no process-behaviour change`. Write no marker; the next frozen-review pass covers the range as usual.
 
 ## 2. Cut worktrees (plain git) + launch one worker each
 
