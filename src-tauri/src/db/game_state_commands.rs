@@ -1450,7 +1450,9 @@ pub fn import_garden_almanac(
 ) -> Result<usize, String> {
     let seasons = parse_garden_almanac_body(body, captured_at);
     if seasons.is_empty() {
-        // Never wipe a good snapshot on an unparseable body.
+        // Never wipe a good snapshot on an unparseable body. Tradeoff: a
+        // genuinely empty almanac (never observed) would also no-op instead
+        // of clearing — clearing needs a distinct parsed-empty signal.
         return Ok(0);
     }
     // Identical re-import (rescan) is a pure no-op: no snapshot churn, no
@@ -2472,8 +2474,10 @@ mod tests {
             })
             .unwrap();
         assert_eq!(snap, 5);
-        // Re-import (rescan): pure no-op — snapshot still 5, no duplicate history.
-        import_garden_almanac(
+        // Re-import (rescan): pure no-op — returns 0, snapshot still 5, no
+        // duplicate history. Returning 0 (not the parsed count) is what keeps
+        // the coordinator from re-emitting the `gardening` domain.
+        let n = import_garden_almanac(
             &conn,
             "T",
             "Dreva",
@@ -2481,6 +2485,7 @@ mod tests {
             "2026-11-17 16:47:31",
         )
         .unwrap();
+        assert_eq!(n, 0);
         let snap: i64 = conn
             .query_row("SELECT COUNT(*) FROM garden_almanac WHERE character_name = 'T'", [], |r| {
                 r.get(0)
