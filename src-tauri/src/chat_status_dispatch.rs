@@ -824,19 +824,33 @@ fn dispatch_json_event(
                 if let Ok(conn) = ctx.db.get_write() {
                     // Same upsert as `persist_book_content` (no emit here —
                     // the caller owns emits; the domain carries the refresh).
-                    let dt = chrono::Utc::now().to_rfc3339();
-                    if conn
-                        .execute(
-                            "INSERT INTO game_state_books (character_name, server_name, book_type, title, content, captured_at)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                             ON CONFLICT(character_name, server_name, book_type, title) DO UPDATE SET
-                                content = excluded.content,
-                                captured_at = excluded.captured_at",
-                            rusqlite::params![id.character, id.server, book_type, title, body, dt],
+                    // Gate on content: identical re-reads skip the write AND
+                    // the domain, so rescans stay silent like every other arm.
+                    let same: bool = conn
+                        .query_row(
+                            "SELECT content FROM game_state_books
+                             WHERE character_name = ?1 AND server_name = ?2
+                               AND book_type = ?3 AND title = ?4",
+                            rusqlite::params![id.character, id.server, book_type, title],
+                            |r| r.get::<_, String>(0),
                         )
-                        .is_ok()
-                    {
-                        out.domain("books");
+                        .map(|c| c == *body)
+                        .unwrap_or(false);
+                    if !same {
+                        let dt = chrono::Utc::now().to_rfc3339();
+                        if conn
+                            .execute(
+                                "INSERT INTO game_state_books (character_name, server_name, book_type, title, content, captured_at)
+                                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                                 ON CONFLICT(character_name, server_name, book_type, title) DO UPDATE SET
+                                    content = excluded.content,
+                                    captured_at = excluded.captured_at",
+                                rusqlite::params![id.character, id.server, book_type, title, body, dt],
+                            )
+                            .is_ok()
+                        {
+                            out.domain("books");
+                        }
                     }
                 }
                 // Content triggers (gourmand/hoplology/teleports/report-stats)
@@ -2116,6 +2130,12 @@ mod tests {
             out.json_book.expect("book trigger payload");
         assert_eq!((t.as_str(), b.as_str(), at.as_str()), ("SkillReport", "Skill Info", "2026-11-17 08:31:58"));
         assert!(by.contains("Bacon"));
+        // Rescan of the identical book: no write, no domain — but the
+        // trigger payload still flows so caller-side imports stay converged.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out2 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out2.domains.iter().all(|d| d != "books"));
+        assert!(out2.json_book.is_some());
     }
 
     #[test]

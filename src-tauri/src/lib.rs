@@ -150,7 +150,8 @@ use coordinator::{
     PollingHandle,
 };
 use db::admin_commands::{
-    compact_database, force_rebuild_cdn_tables, get_database_stats, purge_player_data,
+    backup_database, compact_database, force_rebuild_cdn_tables, get_database_stats,
+    purge_player_data,
 };
 use db::aggregate_commands::{
     get_aggregate_inventory, get_aggregate_skills, get_aggregate_vendor, get_aggregate_wealth,
@@ -820,6 +821,7 @@ pub fn run() {
             get_recent_events,
             // Database admin
             get_database_stats,
+            backup_database,
             compact_database,
             force_rebuild_cdn_tables,
             purge_player_data,

@@ -1226,7 +1226,7 @@ impl DataIngestCoordinator {
                                 match crate::db::game_state_commands::import_garden_almanac(
                                     &conn, character, server, &body, &at,
                                 ) {
-                                    Ok(n) if n > 0 => outcome.domains.push("gardening".into()),
+                                    Ok(n) if n > 0 => outcome.domains.push("garden_almanac".into()),
                                     Ok(_) => {}
                                     Err(e) => {
                                         eprintln!(
