@@ -64,6 +64,7 @@ jobs:
       review: ${{ steps.filter.outputs.review }}
       parity_ipc: ${{ steps.filter.outputs.parity_ipc }}
       migration_chain: ${{ steps.filter.outputs.migration_chain }}
+      grids: ${{ steps.filter.outputs.grids }}
       version_sync: ${{ steps.filter.outputs.version_sync }}
       rust: ${{ steps.filter.outputs.rust }}
       audit: ${{ steps.filter.outputs.audit }}
