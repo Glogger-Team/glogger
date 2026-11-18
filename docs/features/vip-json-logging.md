@@ -12,7 +12,7 @@ Line shape: `YY-MM-DD HH:MM:SS\t[JSON:Type] {single-line JSON}` — no sender pr
 |---|---|---|---|
 | `AddItem` | `{"Name": "Toxic Sludge", "TypeId": 1137, "Stack": 1, "Flags": [], "FromName": "Olugax The Ever-Pudding", "FromEntityId": 257400}` (`From*` absent when not loot) | Yes — English `[Status] <Name> [xN] added to inventory.` immediately before, same second | `insert_item_transaction_guarded` + `staged_gains` + survey hook, domain `inventory` |
 | `EarnedXP` | `{"Skill":"Teleportation", "XP": 53, "OldLevel": 46, "NewLevel": 46}` | Yes — English `[Status] You earned N XP in <Skill>.` same second | Skill XP upsert / `apply_chat_level_up` when `NewLevel > OldLevel`, domain `skills` |
-| `Book` | `{"Title":"Skill Info", "Body":"Foods Consumed:\n\n ..."}` | No — sole record | `persist_book_content` upsert on `game_state_books`; gourmand/hoplology/teleport/report-stats triggers run on the body |
+| `Book` | `{"Title":"Skill Info", "Body":"Foods Consumed:\n\n ..."}` | No — sole record | `persist_book_content` upsert on `game_state_books`; gourmand/hoplology/teleport/report-stats/gardening triggers run on the body. Gardening: `parse_garden_almanac_body` + `import_garden_almanac` fill `garden_almanac` (snapshot) + `garden_almanac_history`, domain `gardening`; rescan-safe no-op |
 | `DeltaFavor` | `{"Npc":"NPC_Elune", "Delta": 18.06948}` | Display-only English (`You gained 18.1 favor` — rounded, unparsed); JSON exact value is authoritative | Additive upsert on `game_state_favor` + conditional `game_state_gift_log` INSERT (giftable only), guarded by `json_favor_processed`, domain `favor`. Sole structured favor source after LocalPlayer deletion |
 | `RecipeUsage` | `{"RecipeName":"Recall Heart's Home", "RecipeId": 9008, "Completions": 211}` | No English twin (only the sibling XP line) | Upsert `game_state_recipes` `completion_count`, domain `recipes`. `Completions` is an **absolute total** (matches snapshot `RecipeCompletions` shape) — set newer-wins, never increment. Proven: Distill 776 → 777 across two live uses, 2026-11-17 |
 | `Pigeon` | `{"Title":"Pigeon From <friend>", "Body":"...<i>You received:\n<Item> xN</i>"}` (receive only — send emits nothing) | No twin | `player_messages` (message_type='pigeon', direction='in', sender + item parsed), domain `player_messages`. Rescan-safe. Fixture: `chat-pigeon.log` |
@@ -46,7 +46,7 @@ VIP + chat logs on + "non-combat logging" checked (default on). Combat logging u
 
 ## Wanted signals
 
-Unobserved lines that would unlock features (kill recorder, pigeons, almanac
-auto-extraction, hangout persistence) are tracked in
+Unobserved lines that would unlock features (harvest-NPC almanac extraction,
+hangout persistence) are tracked in
 `docs/vip-json-signal-wishlist.md`, with in-game capture steps in
 `docs/vip-json-observation-checklist.md`. Remove entries as fixtures land.

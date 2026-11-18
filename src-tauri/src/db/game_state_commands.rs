@@ -1333,6 +1333,203 @@ pub fn get_harvest_almanac(
         .map_err(|e| format!("Row error: {e}"))
 }
 
+
+/// One gardening season parsed from a Gardening Almanac body.
+pub struct GardenSeason {
+    pub crop: String,
+    pub zone: String,
+    pub is_current: bool,
+    pub event_start: Option<String>,
+    pub event_end: Option<String>,
+}
+
+/// Snapshot-comparison key for one garden season row.
+type GardenSeasonKey = (String, String, i64, Option<String>, Option<String>);
+
+/// Parse a Gardening Almanac `JSON:Book` body (observed 2026-11-17) into
+/// per-crop seasons. Current/upcoming split comes from the section headers;
+/// `event_start`/`event_end` are absolute (`%Y-%m-%d %H:%M:%S`) computed from
+/// `captured_at` plus the relative text (NULL when unparseable).
+pub fn parse_garden_almanac_body(body: &str, captured_at: &str) -> Vec<GardenSeason> {
+    let upcoming_at = body.find("Upcoming Gardening Events:").unwrap_or(usize::MAX);
+    let base = chrono::NaiveDateTime::parse_from_str(captured_at, "%Y-%m-%d %H:%M:%S");
+    let mut out = Vec::new();
+    let mut search_from = 0usize;
+    while let Some(rel) = body[search_from..].find("<h2>") {
+        let h2 = search_from + rel;
+        let title_start = h2 + "<h2>".len();
+        let Some(end_rel) = body[title_start..].find("</h2>") else {
+            break;
+        };
+        let title = &body[title_start..title_start + end_rel];
+        let rest_start = title_start + end_rel + "</h2>".len();
+        // Next <h2> (or end of body) bounds this event's block.
+        let block_end = body[rest_start..]
+            .find("<h2>")
+            .map(|r| rest_start + r)
+            .unwrap_or(body.len());
+        let block = &body[rest_start..block_end];
+        search_from = block_end;
+        let Some((crop, zone)) = title.split_once(" Season in ") else {
+            continue;
+        };
+        let timing = block
+            .find("<i>")
+            .and_then(|s| {
+                block[s + "<i>".len()..]
+                    .find("</i>")
+                    .map(|e| block[s + "<i>".len()..s + "<i>".len() + e].trim().to_string())
+            })
+            .filter(|s| !s.is_empty());
+        let is_current = h2 < upcoming_at;
+        let (event_start, event_end) = match timing.as_deref() {
+            Some(t) if t.starts_with("Starts in ") => (
+                relative_to(&base, t.trim_start_matches("Starts in ")),
+                None,
+            ),
+            Some(t) if t.starts_with("Ends in ") => (
+                None,
+                relative_to(&base, t.trim_start_matches("Ends in ")),
+            ),
+            _ => (None, None),
+        };
+        out.push(GardenSeason {
+            crop: crop.trim().to_string(),
+            zone: zone.trim().to_string(),
+            is_current,
+            event_start,
+            event_end,
+        });
+    }
+    out
+}
+
+/// Add a parsed relative duration ("6 hours 12 minutes", "1 day 6 hours")
+/// to a base timestamp. Returns `None` when either side is unparseable.
+fn relative_to(
+    base: &Result<chrono::NaiveDateTime, chrono::ParseError>,
+    rel: &str,
+) -> Option<String> {
+    let base = base.as_ref().ok()?;
+    let mut secs: i64 = 0;
+    let mut num: Option<i64> = None;
+    for tok in rel.split_whitespace() {
+        if let Ok(n) = tok.parse::<i64>() {
+            num = Some(n);
+            continue;
+        }
+        let unit = tok.trim_end_matches('s');
+        let mult = match unit {
+            "day" => 86_400,
+            "hour" => 3_600,
+            "minute" => 60,
+            _ => {
+                num = None;
+                continue;
+            }
+        };
+        if let Some(n) = num.take() {
+            secs += n * mult;
+        }
+    }
+    if secs <= 0 {
+        return None;
+    }
+    Some((*base + chrono::Duration::seconds(secs)).format("%Y-%m-%d %H:%M:%S").to_string())
+}
+
+/// Replace a character's garden snapshot from an almanac body and append the
+/// rows to history. Returns the number of rows written: identical re-imports
+/// (rescans) and unparseable bodies are pure no-ops returning 0.
+pub fn import_garden_almanac(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    body: &str,
+    captured_at: &str,
+) -> Result<usize, String> {
+    let seasons = parse_garden_almanac_body(body, captured_at);
+    if seasons.is_empty() {
+        // Never wipe a good snapshot on an unparseable body.
+        return Ok(0);
+    }
+    // Identical re-import (rescan) is a pure no-op: no snapshot churn, no
+    // duplicate history rows.
+    let current: Vec<GardenSeasonKey> = conn
+        .prepare(
+            "SELECT crop_name, zone_name, is_current, event_start, event_end
+             FROM garden_almanac WHERE character_name = ?1 AND server_name = ?2 ORDER BY crop_name, zone_name",
+        )
+        .map_err(|e| format!("Failed to read garden snapshot: {e}"))?
+        .query_map(rusqlite::params![character, server], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+        })
+        .map_err(|e| format!("Failed to read garden snapshot: {e}"))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("Failed to read garden snapshot: {e}"))?;
+    let mut fresh: Vec<GardenSeasonKey> = seasons
+        .iter()
+        .map(|s| {
+            (
+                s.crop.clone(),
+                s.zone.clone(),
+                s.is_current as i64,
+                s.event_start.clone(),
+                s.event_end.clone(),
+            )
+        })
+        .collect();
+    fresh.sort();
+    if current == fresh {
+        return Ok(0);
+    }
+    // One transaction: a crash or error mid-replace must not leave a partial
+    // snapshot (the pool is the only lock, so BEGIN IMMEDIATE is enough).
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| format!("Failed to begin garden import: {e}"))?;
+    let replaced = (|| -> Result<usize, String> {
+        conn.execute(
+            "DELETE FROM garden_almanac WHERE character_name = ?1 AND server_name = ?2",
+            rusqlite::params![character, server],
+        )
+        .map_err(|e| format!("Failed to clear garden snapshot: {e}"))?;
+        let mut n = 0;
+        for s in &seasons {
+            conn.execute(
+                "INSERT INTO garden_almanac
+                    (character_name, server_name, crop_name, zone_name, event_start, event_end, is_current, captured_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    character, server, s.crop, s.zone, s.event_start, s.event_end,
+                    s.is_current as i64, captured_at
+                ],
+            )
+            .map_err(|e| format!("Failed to insert garden season: {e}"))?;
+            conn.execute(
+                "INSERT INTO garden_almanac_history
+                    (character_name, server_name, crop_name, zone_name, event_start, event_end, captured_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    character, server, s.crop, s.zone, s.event_start, s.event_end, captured_at
+                ],
+            )
+            .map_err(|e| format!("Failed to insert garden history: {e}"))?;
+            n += 1;
+        }
+        Ok(n)
+    })();
+    match replaced {
+        Ok(n) => {
+            conn.execute_batch("COMMIT")
+                .map_err(|e| format!("Failed to commit garden import: {e}"))?;
+            Ok(n)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
 // ── Garden Almanac ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -2220,5 +2417,105 @@ mod tests {
         assert_eq!(e.anchor_at.as_deref(), Some("2026-10-26 12:00:00"));
         assert_eq!(e.estimated, 4680);
         assert!(get_currency_estimate_for(&conn, "Alt", "Dreva").unwrap().is_none());
+    }
+
+    #[test]
+    fn garden_almanac_body_parses_seasons() {
+        let body = include_str!("../../../test_data/vip_json/chat-book.log")
+            .lines()
+            .find(|l| l.contains("Gardening Almanac"))
+            .expect("almanac fixture line");
+        let json: serde_json::Value =
+            serde_json::from_str(body.split_once('\t').unwrap().1.trim_start_matches("[JSON:Book] ")).unwrap();
+        let seasons = parse_garden_almanac_body(
+            json["Body"].as_str().unwrap(),
+            "2026-11-17 16:47:31",
+        );
+        assert_eq!(seasons.len(), 5);
+        assert!(seasons.iter().filter(|s| s.is_current).count() == 2);
+        assert!(seasons.iter().filter(|s| !s.is_current).count() == 3);
+        let barley = seasons.iter().find(|s| s.crop == "Barley").unwrap();
+        assert_eq!(barley.zone, "Gazluk");
+        assert!(barley.is_current);
+        // 16:47:31 + 6h12m.
+        assert_eq!(barley.event_end.as_deref(), Some("2026-11-17 22:59:31"));
+        let carrot = seasons.iter().find(|s| s.crop == "Carrot").unwrap();
+        assert!(!carrot.is_current);
+        assert_eq!(carrot.event_start.as_deref(), Some("2026-11-17 22:59:31"));
+        let potato = seasons.iter().find(|s| s.crop == "Potato").unwrap();
+        // 16:47:31 + 1d6h.
+        assert_eq!(potato.event_start.as_deref(), Some("2026-11-18 22:47:31"));
+    }
+
+    #[test]
+    fn garden_almanac_import_replaces_snapshot_and_appends_history() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run_migrations(&conn, None).unwrap();
+        let body = include_str!("../../../test_data/vip_json/chat-book.log")
+            .lines()
+            .find(|l| l.contains("Gardening Almanac"))
+            .expect("almanac fixture line");
+        let json: serde_json::Value =
+            serde_json::from_str(body.split_once('\t').unwrap().1.trim_start_matches("[JSON:Book] ")).unwrap();
+        let n = import_garden_almanac(
+            &conn,
+            "T",
+            "Dreva",
+            json["Body"].as_str().unwrap(),
+            "2026-11-17 16:47:31",
+        )
+        .unwrap();
+        assert_eq!(n, 5);
+        let snap: i64 = conn
+            .query_row("SELECT COUNT(*) FROM garden_almanac WHERE character_name = 'T'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(snap, 5);
+        // Re-import (rescan): pure no-op — snapshot still 5, no duplicate history.
+        import_garden_almanac(
+            &conn,
+            "T",
+            "Dreva",
+            json["Body"].as_str().unwrap(),
+            "2026-11-17 16:47:31",
+        )
+        .unwrap();
+        let snap: i64 = conn
+            .query_row("SELECT COUNT(*) FROM garden_almanac WHERE character_name = 'T'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let hist: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM garden_almanac_history WHERE character_name = 'T'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((snap, hist), (5, 5));
+    }
+
+    #[test]
+    fn garden_almanac_import_empty_body_is_noop_and_returns_zero() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run_migrations(&conn, None).unwrap();
+        // Seed a good snapshot, then feed garbage: the snapshot must survive.
+        conn.execute(
+            "INSERT INTO garden_almanac
+                (character_name, server_name, crop_name, zone_name, event_start, event_end, is_current, captured_at)
+             VALUES ('T', 'Dreva', 'Barley', 'Gazluk', NULL, '2026-11-17 22:59:31', 1, '2026-11-17 16:47:31')",
+            [],
+        )
+        .unwrap();
+        let n = import_garden_almanac(&conn, "T", "Dreva", "not an almanac", "2026-11-17 16:47:31")
+            .unwrap();
+        assert_eq!(n, 0);
+        let snap: i64 = conn
+            .query_row("SELECT COUNT(*) FROM garden_almanac WHERE character_name = 'T'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(snap, 1);
     }
 }

@@ -41,13 +41,17 @@ entries as fixtures land and recorders ship.
 - **Unlocks:** popup/report ingestion (Book is observed; these are not).
 - **Capture:** open a popup, a book, a report; save the slice.
 
-## Gardening Almanac `JSON:Book` — OBSERVED 2026-11-17, fixture frozen
+## Gardening Almanac `JSON:Book` — SHIPPED 2026-11-17
 
 - **Observed:** `{"Title":"Gardening Almanac"}` 16:47:31, 4th line of
   `test_data/vip_json/chat-book.log`. Current/upcoming season blocks with
   `<indent=20>` markup.
-- **Unblocks:** harvest-table extraction design (same pattern as the gourmand
-  trigger). Entry kept until the extractor ships.
+- **Shipped:** `parse_garden_almanac_body` + `import_garden_almanac` fill
+  `garden_almanac` (snapshot replace) + `garden_almanac_history`, via a
+  coordinator trigger on the live book (rescan-safe no-op). Same
+  parse/import + snapshot/history shape as gourmand; the trigger gate is
+  title-only (the title classifier leaves it outside `SkillReport`).
+  Harvest-NPC extraction still needs its own signal.
 
 ## Hangout-active character export
 

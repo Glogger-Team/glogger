@@ -1181,7 +1181,7 @@ impl DataIngestCoordinator {
                     // the old arm had no scan equivalent either. JSON bodies
                     // are serde_json-decoded, so newlines are already real and
                     // the `normalize_book_content` step is skipped.
-                    if let Some((book_type, _title, body, at)) = outcome.json_book.take() {
+                    if let Some((book_type, title, body, at)) = outcome.json_book.take() {
                         if book_type == "SkillReport"
                             && body.trim_start().starts_with("Foods Consumed:")
                             && let Ok(conn) = self.db_pool.get_write()
@@ -1209,6 +1209,28 @@ impl DataIngestCoordinator {
                             && body.contains("Primary Bind Location:")
                         {
                             self.ingest_teleportation_binds(&body);
+                        }
+                        if title == "Gardening Almanac" {
+                            // Title-only is the whole gate: `json_book` is
+                            // only populated by the Book arm, and the title
+                            // classifier leaves this title in the "JSON"
+                            // bucket (never "SkillReport"). Live-only like
+                            // the other content triggers.
+                            if let Some((character, server)) = self.active_character_server()
+                                && let Ok(conn) = self.db_pool.get_write()
+                            {
+                                match crate::db::game_state_commands::import_garden_almanac(
+                                    &conn, &character, &server, &body, &at,
+                                ) {
+                                    Ok(n) if n > 0 => outcome.domains.push("gardening".into()),
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[coordinator] Failed to import gardening seasons from JSON book: {e}"
+                                        );
+                                    }
+                                }
+                            }
                         }
                         if book_type == "PlayerAge" || book_type == "HelpScreen" {
                             self.ingest_report_stats(&book_type, &body);
