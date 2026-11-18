@@ -683,7 +683,14 @@ fn scan_session_identity(
             if file_tz_offset.is_none() {
                 file_tz_offset = info.timezone_offset_seconds;
             }
-        } else if line.contains("******** Logged Out") && fallback.is_none() {
+        } else if line.contains("******** Logged Out")
+            && fallback.is_none()
+            // Same scoping as the dispatch session tracker: a `[JSON:*]`
+            // body or player chat line mentioning the marker is not a real
+            // logout — only a non-JSON system line closes the session.
+            && chat_parser::parse_chat_line(line)
+                .is_none_or(|m| m.json_type.is_none() && m.is_system)
+        {
             // Resumed slice whose first login comes after a logout: the
             // pre-login lines belong to a closed session, not to whoever
             // logs in next — no fallback attribution (skip those lines).
@@ -1276,6 +1283,22 @@ mod tests {
         assert_eq!(fallback2, None);
         assert_eq!(tz2, None);
         assert!(at_line2.iter().all(|s| s.is_none()));
+    }
+
+    #[test]
+    fn scan_identity_json_marker_does_not_void_fallback() {
+        // A `[JSON:*]` body mentioning the logout marker before the first
+        // login must not void the fallback (same scoping as dispatch);
+        // a real system logout still does.
+        let raw = "26-03-09 05:04:00\t[JSON:PigeonReceived] {\"Title\": \"Gossip\", \"Body\": \"saw ******** Logged Out on the board\"}\n\
+                   26-03-09 05:05:00\t**************************************** Logged In As Zenith. Server Dreva. Timezone Offset -07:00:00.\n";
+        let (_, fallback, _) = scan_session_identity(raw, 2);
+        assert_eq!(fallback.as_deref(), Some("Zenith"));
+
+        let raw2 = "26-03-09 05:04:00\t**************************************** Logged Out.\n\
+                    26-03-09 05:05:00\t**************************************** Logged In As Zenith. Server Dreva. Timezone Offset -07:00:00.\n";
+        let (_, fallback2, _) = scan_session_identity(raw2, 2);
+        assert_eq!(fallback2, None);
     }
 
     #[test]
