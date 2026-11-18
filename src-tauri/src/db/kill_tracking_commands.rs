@@ -139,6 +139,11 @@ fn drop_binds(
 /// died 17:08:22, no receipt) — the player never got to loot, so it must not
 /// dilute the denominator. Looted kills are never vetoed (loot proves the
 /// corpse was reached). Legacy rows with no character keep old behavior.
+/// Forward-only on purpose: a death *before* the kill means the player rezzed
+/// and killed afterwards, so a later lootless kill is a real denominator row.
+/// Residual skew (an unrelated death inside the window over-vetoing a
+/// genuinely unlooted kill) is accepted — the window covers loot lag, and
+/// over-vetoing one denominator row beats counting an unlootable kill.
 fn mine_total_kills<C: DbRead + ?Sized>(
     conn: &C,
     enemy_name: &str,
@@ -609,9 +614,17 @@ pub fn search_database_enemies(
     let mut agg: EnemyAgg = HashMap::new();
 
     if scope == "mine" || scope == "combined" {
+        // Same died-before-looting veto as `mine_total_kills`: lootless kills
+        // followed by a player death within 5 minutes never got looted, so
+        // they must not inflate these totals either.
         let sql = format!(
-            "SELECT enemy_name, zone, COUNT(*) FROM enemy_kills{} GROUP BY enemy_name, zone",
-            lf.where_clause("combat_skills")
+            "SELECT enemy_name, zone, COUNT(*) FROM enemy_kills k WHERE NOT EXISTS (
+                SELECT 1 FROM character_deaths d
+                 WHERE d.character_name = k.character_name AND d.server_name = k.server_name
+                   AND d.died_at >= k.killed_at AND d.died_at <= datetime(k.killed_at, '+5 minutes')
+                   AND NOT EXISTS (SELECT 1 FROM enemy_kill_loot l WHERE l.kill_id = k.id)
+            ){} GROUP BY enemy_name, zone",
+            lf.sql("k.combat_skills"),
         );
         let mut kill_stmt = conn
             .prepare(&sql)
