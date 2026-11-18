@@ -24,9 +24,10 @@ Usage:
     python scripts/check-migration-chain.py
     python scripts/check-migration-chain.py --added-since [<ref>]
 
-With no <ref>, the base is the merge-base of HEAD with the upstream
-(`@{u}`, `origin/HEAD`, `main` — same shape as lint-markdown-changed.py).
-CI passes an explicit base (PR base / push `before`).
+With no <ref>, the base is the merge-base of HEAD with the PR target
+(`origin/HEAD`, then `main`, then `@{u}` — NOT the feature upstream first:
+after the branch is pushed, `@{u}` is the remote feature tip and would
+undercount). CI passes an explicit base (PR base / push `before`).
 """
 
 from __future__ import annotations

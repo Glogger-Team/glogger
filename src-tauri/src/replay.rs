@@ -1,5 +1,5 @@
-/// Chat.log replay — re-processes archived chat logs through the live
-/// dispatch pipeline for backfills and debugging.
+/// Chat.log replay — re-parses archived chat logs and re-emits their events
+/// (emit-only preview for debugging; never writes to the database).
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -116,7 +116,8 @@ fn parse_chat_log_events(path: &PathBuf) -> Result<Vec<TimedEvent>, String> {
     Ok(events)
 }
 
-/// Core replay logic — replays Chat.log events through the live dispatch pipeline.
+/// Core replay logic — re-parses Chat.log events and re-emits them as frontend
+/// events (emit-only; the live dispatch pipeline is never invoked).
 fn run_replay(
     chat_log_path: PathBuf,
     app: &AppHandle,
