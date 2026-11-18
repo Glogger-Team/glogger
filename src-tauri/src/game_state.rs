@@ -389,19 +389,9 @@ mod tests {
         std::env::temp_dir().join(format!("{prefix}_{}_{nanos}_{n}.db", std::process::id()))
     }
 
-    /// Two Player.log sessions in one catch-up: each session's full-state
-    /// `SkillsLoaded` dump must land under the identity in force when it was
-    /// replayed. `SkillsLoaded` deletes the character+server slice before
-    /// inserting, so a session replayed under the *other* character's identity
-    /// silently replaced its rows (measured before the per-session
-    /// attribution: TestPlayer ended up with OtherAlt's skill load).
-    ///
-    /// Contract guard, not a regression pin: this drives `GameStateManager`
-    /// directly, and none of those calls changed — it passes on the pre-change
-    /// code too. What routes a session to its own identity is the coordinator's
-    /// `adopt_player_log_session` (covered by the catch-up smoke); what this
-    /// pins is that the pair-scoped dump keeps two sessions' rows apart once the
-    /// identity is right.
+    /// Pins that a session-scoped stack correction touches only the named
+    /// character/server slice: a correction for OtherAlt leaves TestPlayer's
+    /// log rows (and any report-backed row) untouched.
 
     #[test]
     fn session_scoped_stack_correction_keys_by_session() {

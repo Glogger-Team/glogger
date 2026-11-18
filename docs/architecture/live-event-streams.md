@@ -21,36 +21,29 @@ Player.log                                  Chat.log (Chat-YY-MM-DD.log)
     v                                            v
 PlayerLogWatcher::poll()                    ChatLogWatcher::poll()
     |                                            |
-    +-- PlayerEventParser::process_line()         +-- parse_chat_lines()
-    |       |                                    |       |
-    |       v                                    |       v
-    |   Vec<PlayerEvent>                         |   Vec<LogEvent::ChatMessage>
-    |                                            |
+    +-- process_player_events()                  +-- parse_chat_lines()
+    |   (CharacterLogin/ChatLogPath/             |       |
+    |    AreaTransition only)                    |       v
+    |                                            |   Vec<LogEvent::ChatMessage>
     v                                            v
 DataIngestCoordinator                       DataIngestCoordinator
   ::process_player_events()                   ::process_chat_events()
     |                                            |
-    +-- GameStateManager                         +-- parse_status_message()
-    |     .process_event()                       |       |
-    |       |                                    |       v
-    |       +-- accumulate domains               |   Option<ChatStatusEvent>
-    |                                            |       |
-    +-- SurveySessionAggregator                  |       +-- emit "chat-status-event"
-    |     .handle_event()                        |
-    |       |                                    +-- insert_chat_messages()
-    |       +-- stitches SurveyMapUse → Mining   |     (excluded_channels applied here)
-    |       +-- emit survey-tracker-* events     |
-    |                                            +-- evaluate_rules()
-    +-- accumulate PlayerEvents                        |
-    +-- flush batches ──┐                              +-- emit "watch-rule-triggered"
-    |                   +-- emit "player-events-batch" +-- emit "chat-messages-inserted"
-    |                   +-- emit "game-state-updated"
-    +-- emit "skill-update"                    +-- GameStateManager
-    +-- emit "character-login"                 |     .correct_stack_for_session()
-    +-- emit "area-transition"                 |     (fixes stack_size=1 rows)
-                                               |     +-- emit "game-state-updated"
-                                               +-- item_transactions ledger
-                                                     (records chat-sourced gains)
+    +-- area-transition emit                     +-- parse_status_message()
+    +-- game-state-updated (area)                |       |
+                                                |       v
+                                                |   Option<ChatStatusEvent>
+                                                |       |
+                                                +-- emit "chat-status-event"
+                                                +-- insert_chat_messages()
+                                                +-- evaluate_rules()
+                                                +-- emit "watch-rule-triggered"
+                                                +-- emit "chat-messages-inserted"
+                                                +-- GameStateManager
+                                                |     .correct_stack_for_session()
+                                                |     +-- emit "game-state-updated"
+                                                +-- item_transactions ledger
+                                                      (records chat-sourced gains)
 ```
 
 ### Poll cycle ordering
@@ -62,54 +55,9 @@ Both watchers are polled on the same coordinator tick (every 500ms — `spawn_po
 3. **Game state switches to live mode** after the first poll (catch-up replay complete) — i.e. after both drains: the chat login marker's `set_active_character` clears transient state when live, and that must not land on rows the replay just built
 4. **Watcher positions saved** to database
 
-This ordering means a `PlayerEvent::ItemAdded` always arrives before the corresponding `ChatStatusEvent::ItemGained` for the same game action. Features that correlate across streams can rely on this.
-
-### Batching strategy
-
-Tauri's `emit()` sends events through the Windows webview via `PostMessage`. Each call is one message in the OS message queue, which has a finite capacity (~10,000). During startup catch-up, the coordinator can process thousands of `PlayerEvent`s in a single poll tick — emitting each one individually would overflow the queue and produce `PostMessage failed; Error code 0x80070718` errors.
-
-To prevent this, high-volume event types are **batched** before emission:
-
-| Constant | Value | Purpose |
-|---|---|---|
-| `BATCH_MAX_SIZE` | 50 | Flush when the batch reaches this many events |
-| `BATCH_MAX_AGE` | 20ms | Flush when this much time has passed since the batch started |
-
-The coordinator accumulates `PlayerEvent`s and domain update strings as it processes `LogEvent::PlayerEventParsed` variants. When either threshold is hit, it flushes:
-
-- `"player-events-batch"` — `Vec<PlayerEvent>` (1–50 events per emission)
-- `"game-state-updated"` — deduplicated `Vec<&str>` of domain names
-
-Low-volume events (`character-login`, `area-transition`, `skill-update`, `survey-*`) are still emitted individually since they don't contribute meaningfully to queue pressure.
-
-A `character-login` event forces an immediate flush of any pending batch, ensuring the frontend processes all events for the previous character before the identity changes.
-
-Chat events don't need this treatment — `ChatMessage`s are already bulk-inserted into the DB with a single `chat-messages-inserted` count emit, and the per-message `chat-status-event` / `survey-loot-correction` emits are low-volume (only Status channel messages generate them).
+This ordering means a Player.log login/area line always lands before the corresponding chat messages for the same game action. Features that correlate across streams can rely on this.
 
 ## Event Streams Reference
-
-### Stream: `"player-events-batch"`
-
-**Source:** Player.log via [`PlayerEventParser`](../../src-tauri/src/player_event_parser.rs)
-
-Raw structured events from the game engine, **emitted in batches**. Every `ProcessXxx(...)` line becomes a typed `PlayerEvent`. The parser is **stateful** — it tracks item instances, stack sizes, and interaction context to resolve identities and compute deltas.
-
-The backend accumulates `PlayerEvent`s and flushes them as a `Vec<PlayerEvent>` array when the batch reaches **50 events** or **20ms** has elapsed — whichever comes first. This reduces the number of IPC messages through the Windows webview PostMessage layer, preventing message queue overflow during large catch-up replays. See [Batching Strategy](#batching-strategy) for details.
-
-Full event catalog: [`player-event-parser.md`](player-event-parser.md)
-
-Key event categories:
-
-- **Items:** `ItemAdded`, `ItemStackChanged`, `ItemDeleted` (with context: storage transfer, vendor sale, unknown)
-- **Skills:** `SkillsLoaded`
-- **NPCs:** `InteractionStarted`, `InteractionEnded`, `FavorChanged`
-- **Vendors:** `VendorSold`, `VendorStackUpdated`, `VendorGoldChanged`
-- **Storage:** `StorageDeposit`, `StorageWithdrawal`
-- **Actions:** `DelayLoopStarted`, `ScreenText`, `BookOpened`
-- **State:** `ActiveSkillsChanged`, `MountStateChanged`, `WeatherChanged`, `CombatStateChanged`
-- **Recipes:** `RecipeUpdated`
-- **Login snapshots:** `AbilitiesLoaded`, `RecipesLoaded`, `EquipmentChanged`, `AttributesChanged`
-- **Effects:** `EffectsAdded`, `EffectsRemoved`, `EffectNameUpdated`
 
 ### Stream: `"chat-status-event"`
 
@@ -138,17 +86,17 @@ Emitted when the game writes a character or inventory report to disk (triggered 
 
 ### Stream: `"game-state-updated"`
 
-**Source:** Player.log via [`GameStateManager`](../../src-tauri/src/game_state.rs)
+**Source:** chat dispatch + `GameStateManager` (active character/session) — see [`game-state.md`](game-state.md)
 
-Not a raw event stream — this is a **domain notification**. When `GameStateManager` processes a `PlayerEvent` and persists changes to the database, it accumulates which domains were updated. At batch flush time, the coordinator deduplicates the domain list and emits it as a single array (e.g., `["skills", "inventory"]`). Frontend stores use this to know when to refresh their data from the DB.
+Not a raw event stream — this is a **domain notification**. When chat dispatch persists changes to the database, it accumulates which domains were updated and emits them as a single array (e.g., `["skills", "inventory"]`). Frontend stores use this to know when to refresh their data from the DB.
 
 Full details: [`game-state.md`](game-state.md)
 
 ### Stream: `"survey-tracker-*"`
 
-**Source:** [`SurveySessionAggregator`](../../src-tauri/src/survey/aggregator.rs) consuming `PlayerEvent`s in the coordinator.
+**Source:** [`SurveySessionAggregator`](../../src-tauri/src/survey/aggregator.rs) driven by chat loot gains (`attribute_chat_gain`) and manual sessions.
 
-Downstream consumer of `PlayerEvent`s. The aggregator is **stateful** — it tracks survey sessions, stitches `SurveyMapUse` → `Mining` attribution, and manages open multihit nodes (persisted to DB).
+Downstream consumer of chat loot gains. The aggregator is **stateful** — it tracks survey sessions, stitches survey attribution, and manages open multihit nodes (persisted to DB).
 
 Events emitted: `survey-tracker-session-started`, `survey-tracker-session-ended`, `survey-tracker-use-recorded`, `survey-tracker-use-completed`, `survey-tracker-multihit-opened`, `survey-tracker-multihit-closed`.
 
@@ -158,7 +106,6 @@ Full details: [`economics-surveying.md`](../features/screens/economics/economics
 
 | Event | Source | Purpose |
 |---|---|---|
-| `"skill-update"` | Player.log `ProcessUpdateSkill` | Legacy per-skill XP/level update (predates PlayerEventParser) |
 | `"character-login"` | Both logs | Character name detected |
 | `"server-detected"` | Chat.log login line | Server name + timezone offset |
 | `"area-transition"` | Player.log `LOADING LEVEL` | Area change |
@@ -175,7 +122,7 @@ import { listen } from '@tauri-apps/api/event'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 
 // Listen to player events (arrives as batches of 1-50 events)
-const unlistenPlayer: UnlistenFn = await listen<PlayerEvent[]>('player-events-batch', (event) => {
+const unlistenPlayer: UnlistenFn = await listen<PlayerEvent[]>('game-state-updated', (event) => {
   for (const e of event.payload) {
     switch (e.kind) {
       case 'ItemAdded':
@@ -215,14 +162,14 @@ const unlistenState: UnlistenFn = await listen<string[]>('game-state-updated', (
 
 | You need... | Subscribe to... | Why |
 |---|---|---|
-| Item identity, instance IDs, slot positions | `"player-events-batch"` (`ItemAdded`, `ItemDeleted`) | Player.log has the game engine data |
+| Item identity, instance IDs, slot positions | `"game-state-updated"` (`ItemAdded`, `ItemDeleted`) | Player.log has the game engine data |
 | Item quantities for new stacks | `"chat-status-event"` (`ItemGained`) | Chat Status has the actual stack size |
-| Cumulative skill XP/level | `"player-events-batch"` (`SkillsLoaded`) or `"game-state-updated"` | Player.log has the full snapshot |
+| Cumulative skill XP/level | `"game-state-updated"` (`SkillsLoaded`) or `"game-state-updated"` | Player.log has the full snapshot |
 | Per-action XP deltas | `"chat-status-event"` (`XpGained`) | Only available in Status channel |
-| Vendor transactions | `"player-events-batch"` (`VendorSold`, `VendorGoldChanged`) | Only in Player.log |
+| Vendor transactions | `"game-state-updated"` (`VendorSold`, `VendorGoldChanged`) | Only in Player.log |
 | Coin/council economy | `"chat-status-event"` (`CoinsLooted`, `CouncilsChanged`) | Only in Status channel |
-| Storage vault changes | `"player-events-batch"` (`StorageDeposit`, `StorageWithdrawal`) | Player.log has vault keys |
-| NPC favor changes | `"player-events-batch"` (`FavorChanged`) | Player.log has numeric delta |
+| Storage vault changes | `"game-state-updated"` (`StorageDeposit`, `StorageWithdrawal`) | Player.log has vault keys |
+| NPC favor changes | `"game-state-updated"` (`FavorChanged`) | Player.log has numeric delta |
 | Survey triangulation | `"chat-status-event"` (`TreasureDistance`) | Only in Status channel |
 | Level-up notifications | `"chat-status-event"` (`LevelUp`) | Only in Status channel |
 | Refreshing a view after DB changes | `"game-state-updated"` | Signals which domains changed |
@@ -246,7 +193,7 @@ Both sources also write to the `item_transactions` ledger table (v15 migration) 
 
 ```typescript
 // Example: track items with correct quantities
-listen<PlayerEvent[]>('player-events-batch', (event) => {
+listen<PlayerEvent[]>('game-state-updated', (event) => {
   for (const e of event.payload) {
     if (e.kind === 'ItemAdded' && e.is_new) {
       // Record the item with instance ID — quantity starts at 1
@@ -269,19 +216,10 @@ When a feature needs to persist events to the database, add a handler in the coo
 
 ### For PlayerEvent persistence
 
-Follow the `GameStateManager` or `SurveySessionTracker` pattern:
-
-1. Create a persistence module (e.g., `src-tauri/src/my_feature_persistence.rs`)
-2. Add a tracker struct to `DataIngestCoordinator`
-3. Match on specific `PlayerEvent` variants in `process_player_events`
-
-```rust
-// In coordinator.rs, inside the PlayerEventParsed match arm:
-LogEvent::PlayerEventParsed(player_event) => {
-    self.my_tracker.process_event(&player_event, &self.db_pool);
-    // ...existing game_state processing, batch accumulation...
-}
-```
+`process_player_events` handles only `CharacterLogin`, `ChatLogPath`, and
+`AreaTransition` (coordinator.rs:818-920); there is no generic `PlayerEvent`
+dispatch arm. Player.log is not a persistence surface for new features — add
+chat-status or report-based persistence instead.
 
 ### For ChatStatusEvent persistence
 

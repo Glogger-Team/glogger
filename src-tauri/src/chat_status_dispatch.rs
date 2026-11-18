@@ -311,6 +311,7 @@ pub fn dispatch_chat_message(
                                 killing_ability,
                                 *health_damage as i64,
                                 *armor_damage as i64,
+                                state.current_area.as_deref(),
                                 timestamp,
                             )
                     {
@@ -2497,7 +2498,9 @@ mod tests {
         let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 16:55:02";
-        let msg = json_msg("EntityReport", "{\"Title\":\"Eveline Rastin\", \"Body\":\"tip\"}", ts);
+        let msgs = crate::chat_parser::parse_chat_lines(include_str!("../../test_data/vip_json/chat-entityreport.log"));
+        assert_eq!(msgs.len(), 1);
+        let msg = msgs.into_iter().next().unwrap();
         let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
         assert!(out.domains.iter().any(|d| d == "player_messages"));
@@ -2510,7 +2513,8 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(row, ("Eveline Rastin".to_string(), "tip".to_string()));
+        assert_eq!(row.0, "Eveline Rastin".to_string());
+        assert!(row.1.contains("Ushug"));
     }
 
     #[test]

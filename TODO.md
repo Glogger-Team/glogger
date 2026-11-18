@@ -184,9 +184,9 @@ WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history.
 - [ ] Reevaluate test suite
   - Think about what tests make sense, what isn't giving value, and how to harden against future failures.
   - need to figure out if we can build some sample data or something that makes sense for tests.
-  - **Audit: re-scoped — the sample-data ask is done; only hardening remains.** `test_data/` now holds **8** replay datasets under `surveyLogs/` (`Player.log` + `Chat.log`; 6 of them also carry a hand-recorded `results.txt`, and those 6 are the set the accuracy report iterates — `survey/replay_tests.rs:985-1034`) plus inventory/login-state fixtures, exercised by `survey::replay_tests`. Census: **709 `#[test]` across 57 files, 6 `#[ignore]`** (5 replay + 1 chat backfill); no integration dir, no JS tests. Slow suites: `survey::replay_tests`, `cdn_items_load_smoke`. (Counts match `AGENTS.md`; `cargo test --lib` reports 703 passed + 6 ignored.)
+  - **Audit: re-scoped — the sample-data ask is done; only hardening remains.** The `surveyLogs/` replay datasets were retired with the Player.log pipeline (PR #202): `survey/replay_tests.rs` deleted (dual-pipeline interleave un-portable; chat-only harness dropped — the map-use signal lived in Player.log, so rebuilding it would be synthesis, not replay), `test_data/surveyLogs/` removed, `survey-test` script removed. Census: **676 `#[test]` across 61 files, 2 `#[ignore]`** (chat-log backfill + character-report import); no integration dir, no JS tests. (Counts match `AGENTS.md`; `cargo test --lib` reports 674 passed + 2 ignored.)
   - **Effort: Large | Impact: Medium (reliability/confidence)**
-  - **Suspects:** `src-tauri/src/survey/replay_tests.rs`, `test_data/surveyLogs/`, `src-tauri/src/db/migrations.rs` (v74/v81 test patterns).
+  - **Suspects:** `src-tauri/src/db/migrations.rs` (v74/v81 test patterns).
 
 - [ ] Analyze what should move from frontend to Rust
   - Some frontend logic may be better served on the Rust backend. Needs analysis to identify candidates.

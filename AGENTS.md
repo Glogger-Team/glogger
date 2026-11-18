@@ -35,10 +35,9 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 | `src/dev-panel/` | Second Vue app (own entrypoint) for live testing/debugging |
 | `src-tauri/src/db/` | `<domain>_commands.rs` modules + `migrations.rs` |
 | `src-tauri/src/coordinator.rs` | Log ingestion core (watchers → parsers → DB → events) |
-| `src-tauri/src/survey/` | Survey tracker pipeline + slow replay accuracy tests |
+| `src-tauri/src/survey/` | Survey tracker pipeline |
 | `src-tauri/src/game_data/`, `cdn_commands.rs` | CDN game-data load/persistence |
 | `scripts/` | Version bump, changelog, log analysis utilities |
-| `test_data/surveyLogs/` | Replay fixtures (Player.log/Chat.log + ground-truth `results.txt`) |
 | `docs/features/`, `docs/plans/` | Feature specs and plans |
 
 ## Development Commands
@@ -52,7 +51,6 @@ Vue 3 + Pinia frontend (src/)  ◄────────  lib.rs generate_hand
 | Rust tests | `cd src-tauri && cargo test --lib` | Count reported per run; all fast except `#[ignore]`-gated suites |
 |Grid standards|`npm run check:grids`|Raw-`<table>`/census/exemption gate (`scripts/check-grid-standards.py` owns the machine list) — run it when touching a table or the census, and hand its output to a review round (see *Code review loop*)|
 | Full Rust tests | `cd src-tauri && cargo test` | No `src-tauri/tests/` dir exists; everything is in-lib |
-| Survey replay | `npm run survey-test` | `--ignored` accuracy report, minutes-scale, needs `test_data/` + `docs/CDN-full-examples/` |
 | Version bump | `npm run version:bump patch\|minor\|major\|x.y.z`|See version section|
 | Release | `npm run release [vX.Y.Z]`|On `main`, clean tree: bare run suggests the tag via `scripts/next-version.py` (subjects + squash-body `* type:` bullets; `!:`/BREAKING → major, `feat:` → minor, else patch) with a confirm gate, triage pass in $EDITOR (.txt temp — raw-text editor: `code --wait`, Notepad++ (`notepad++.exe -multiInst -nosession`, close that window after saving); not formatted-markdown Notepad), explicit version skips the suggest; commits `release-notes/<tag>.md` triage notes, then creates + pushes the annotated tag `v<semver>` (no version-file commits). CI syncs the tag version, generates notes since the last *published* release (`scripts/last-published-tag.py`), builds + signs + publishes, refreshes the channel. The tag is the version record — committed version files are a dev fallback |
 | Release (agent) | `release.py vX.Y.Z --notes-file PATH` / `--tag-only` | Run from the repo root (root = cwd). Same preconditions as Release, no $EDITOR: `--dry-run` for rows (consumes no `--notes-file`) → write PATH (STE-flavored; the asd-ste100 skill's external `ste-lint.py` reports 0 hard violations) → `--notes-file` consumes it (mutually exclusive with `--yes`); merge the notes PR → `--tag-only` cuts the tag with no re-triage (requires explicit version + committed notes file). `--yes` with an empty range writes the stability-update stub (pre-rewrite: wrote nothing). Refusals, fail closed: existing `release-notes/<tag>.md` blocks re-triage; same-content-different-hash divergence prints `git reset --hard origin/main` + `--tag-only` instead of merging. |
@@ -136,7 +134,6 @@ Frozen-review + CodeRabbit rounds on the `todo-burndown` series (22 commits, ~ha
 | `src-tauri/src/lib.rs` | Wiring hub: startup sequence, command registration, event emission |
 | `src-tauri/src/db/migrations.rs` | Schema; additive-only convention |
 | `src-tauri/src/coordinator.rs` | Log ingestion pipeline (3k+ lines) |
-| `src-tauri/src/survey/replay_tests.rs` | Slow accuracy tests vs ground truth |
 | `src/App.vue` | Phase-driven shell (splash → wizard → ready), view keep-alive |
 | `src/components/Dashboard/dashboardWidgets.ts` | Widget registry |
 | `src-tauri/tauri.conf.json` | Local-build version source of truth + updater + window config (the pushed tag is the release version record; CI syncs workspaces in-build) |
@@ -148,7 +145,7 @@ Frozen-review + CodeRabbit rounds on the `todo-burndown` series (22 commits, ~ha
 
 ## Testing & QA
 
-- **Rust only**; conventional in-file `#[cfg(test)] mod tests` blocks at file bottom, no external runner, no integration dir. Count per `cargo test --lib` run; all fast except the slow/path-dependent suites, which are `#[ignore]`-gated (survey replay + chat-log backfill).
+- **Rust only**; conventional in-file `#[cfg(test)] mod tests` blocks at file bottom, no external runner, no integration dir. Count per `cargo test --lib` run; all fast except the slow/path-dependent suites, which are `#[ignore]`-gated (chat-log backfill + character-report import).
 - DB tests use `rusqlite::Connection::open_in_memory()` + `crate::db::migrations::run_migrations` via a local `setup()` helper per module; parser tests embed real log-line fixtures as string constants.
 - **Full-fixture tests.** Parser/dispatch tests feed the whole fixture file (`parse_all`-style) plus targeted asserts — single-line synthetics encode the implementation (the pigeon same-second pair and the Riding XP sequence both escaped tests that dispatched one line; the full-fixture dispatch caught them). Synthetic single-line only when ≤1 live exemplar is observed (entity_report today: one arena-tip line).
 - Frontend: **no tests** — `vue-tsc --noEmit` is the only gate; the dev panel is for manual/live testing.
@@ -180,7 +177,7 @@ Before committing, lint every file type you changed and fix what the linter repo
 | Markdown (`.md`) | markdownlint-cli2 (changed-files gate: all hand-maintained docs; `CHANGELOG.md` excluded as generated) | commit `lint:fast` → `lint:markdown` (no-`--base`: worktree files + unpushed commits); push `lint` → `lint:markdown-push` (`--push`: unpushed only, fail on worktree overlap); CI passes `--base`, same scope script; full-tree cleanup: `markdownlint-cli2 --fix --config .markdownlint-cli2.json "**/*.md" "!CHANGELOG.md"` |
 | Commit-msg hook | warn-only prefix check (no linter) | `lint:fast` → `lint:commit` (`python scripts/check-commit-msg.py --self-test`; commit set, also in push via `lint:fast`) |
 | Version sync (release staging + stamps) | `python scripts/check-version-sync.py` (+ `--self-test`) | `lint:fast` → `lint:version-sync` (commit set, also in push via `lint:fast`); CI `lint.yml:version-sync` job |
-| Migration chain (SQLite) | `python scripts/check-migration-chain.py` (chain integrity always + `--added-since`: at most one new version vs base) | `lint:fast` → `lint:migrations` (commit set, also in push via `lint:fast`); CI `lint.yml` migration-chain step (explicit base: PR base / push `before`) |
+| Migration chain (SQLite) | `python scripts/check-migration-chain.py` (chain integrity always + `--added-since`: at most one new version vs base) | `lint:fast` → `lint:migrations` (commit set, also in push via `lint:fast`); CI `lint.yml` migration-chain step (explicit base: PR base on pull_request; push runs integrity only by design) |
 
 Not installed, add only if wanted: stylelint (CSS), eslint-plugin-jsonc (JSON validity), `gasa` (no mise package). Formatters are a separate job from lint: `cargo fmt`, `ruff format` (prettier is not configured).
 

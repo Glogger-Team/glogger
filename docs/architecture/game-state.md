@@ -1,6 +1,6 @@
 # Game State System
 
-Centralized, persisted representation of the player's current game state. Merges data from two sources — **character/inventory JSON exports** (complete reports, manually triggered) and **Player.log events** (real-time but partial) — into a single source of truth that any feature can query.
+Centralized, persisted representation of the player's current game state. Merges data from two sources — **character/inventory JSON exports** (complete reports, manually triggered) and **chat status events** (real-time but partial) — into a single source of truth that any feature can query.
 
 ## Design Principles
 
@@ -25,18 +25,12 @@ On `CharacterLogin`, the game dumps full state across many events (items, skills
 ### Data Flow
 
 ```text
-Player.log → LogWatcher → PlayerEventParser → LogEvent::PlayerEventParsed
-                                                        ↓
-                                              DataIngestCoordinator
-                                                   ↓              ↓
-                                        GameStateManager     accumulate player events
-                                         (writes to DB)       + domain names into batch
-                                                ↓
-                                    flush → emit("player-events-batch")
-                                          + emit("game-state-updated", [domain names])
-                                                ↓
-                                          gameStateStore
-                                       (refreshDomain per domain)
+Chat.log → ChatLogWatcher → chat_status_dispatch::dispatch_chat_message → writes game_state_* tables
+                                                                            ↓
+                                                                  emit("game-state-updated", [domain names])
+                                                                            ↓
+                                                                  gameStateStore
+                                                               (refreshDomain per domain)
 
 Report Import → seed_game_state_from_snapshot() → same DB tables
 ```
@@ -45,12 +39,12 @@ Report Import → seed_game_state_from_snapshot() → same DB tables
 
 | File | Role |
 |---|---|
-| `src-tauri/src/game_state.rs` | `GameStateManager` — processes `PlayerEvent`s into DB writes |
+| `src-tauri/src/game_state.rs` | `GameStateManager` — active character/server + session singleton; clears transient state on live login |
 | `src-tauri/src/db/game_state_commands.rs` | Tauri query commands (one per domain) |
 | `src-tauri/src/db/migrations.rs` | All `game_state_*` table definitions (V1 schema) |
 | `src-tauri/src/db/character_commands.rs` | Report seeding for skills, attributes, recipes, equipment, favor, currencies, storage |
 | `src-tauri/src/db/inventory_commands.rs` | Report seeding for inventory |
-| `src-tauri/src/coordinator.rs` | Wires `GameStateManager` into event loop, emits `game-state-updated` |
+| `src-tauri/src/coordinator.rs` | Wires `GameStateManager` into the chat dispatch loop, emits `game-state-updated` |
 | `src/stores/gameStateStore.ts` | Frontend Pinia store — single source of truth for all game state |
 | `src/types/gameState.ts` | TypeScript interfaces matching Rust response structs |
 
@@ -109,36 +103,23 @@ Added in V15 migration. Records every item gain/loss event from both Player.log 
 
 Lightweight struct with `active_character: Option<String>` and `active_server: Option<String>`. Receives `&DbPool` per call.
 
-### Event → Domain Mapping
+### Domain Write Sources
 
-| PlayerEvent | Table | Operation | Domain |
+| Source | Table | Operation | Domain |
 |---|---|---|---|
-| SkillsLoaded | game_state_skills | DELETE all + bulk INSERT | `skills` |
-| ActiveSkillsChanged | game_state_active_skills | UPSERT | `active_skills` |
-| AttributesChanged | game_state_attributes | Batch UPSERT (transaction) | `attributes` |
-| WeatherChanged | game_state_weather | UPSERT singleton | `weather` |
-| CombatStateChanged | game_state_combat | UPSERT | `combat` |
-| MountStateChanged | game_state_mount | UPSERT | `mount` |
-| ItemAdded | game_state_inventory | INSERT | `inventory` |
-| ItemStackChanged | game_state_inventory | UPDATE | `inventory` |
-| ItemDeleted | game_state_inventory | DELETE | `inventory` |
-| RecipeUpdated | game_state_recipes | UPSERT | `recipes` |
-| EquipmentChanged | game_state_equipment | DELETE all + bulk INSERT | `equipment` |
-| FavorChanged | game_state_favor | UPSERT (increments session_delta) | `favor` |
-| EffectsAdded | game_state_effects | Clear on login batch + bulk INSERT | `effects` |
-| EffectsRemoved | *(signal only)* | Emits domain update | `effects` |
-| EffectNameUpdated | game_state_effects | UPDATE effect_name | `effects` |
-| StorageDeposit | game_state_storage | UPSERT | `storage` |
-| StorageWithdrawal | game_state_storage | DELETE | `storage` |
-| *(AreaTransition — handled in coordinator)* | game_state_area | UPSERT | `area` |
-| MoonPhaseChanged | game_state_moon | UPSERT singleton | `moon` |
-| GuildInfoLoaded | game_state_guild | UPSERT | `guild` |
-| DirectedGoalsLoaded | game_state_directed_goals | DELETE all + bulk INSERT | `directed_goals` |
-| PlayerStringUpdated | game_state_strings | UPSERT per key | `strings` |
-| *(BookOpened — handled in coordinator)* | game_state_books | UPSERT | `books` |
-| *(BookOpened + HelpScreen/PlayerAge — coordinator)* | character_report_stats | UPSERT | `report_stats` |
-| *(Cow milk detection — coordinator)* | milking_timers | UPSERT | `milking` |
-| *(Combat "Poop on X!" line — coordinator + Chat.log backfill)* | player_pooping_log | INSERT OR IGNORE | `report_stats` |
+| `chat_status_dispatch` level-up XP | game_state_skills | UPSERT (xp/level) | `skills` |
+| `chat_status_dispatch` favor/gift | game_state_favor, game_state_gift_log | UPSERT / INSERT | `favor` |
+| `chat_status_dispatch` recipe discovery | game_state_recipes | UPSERT (completion_count) | `recipes` |
+| `chat_status_dispatch` book content | game_state_books | UPSERT | `books` |
+| `chat_status_dispatch` pigeon/entity report | player_messages | INSERT (NOT EXISTS guard) | `player_messages` |
+| `chat_status_dispatch` player death | character_deaths (+ death_damage_sources) | INSERT | `deaths` |
+| `chat_status_dispatch` item gain/loss | item_transactions | INSERT | `item_transactions` |
+| `chat_status_dispatch` milking/poop | player_milking_log, player_pooping_log, milking_timers | INSERT/UPSERT | `milking`, `report_stats` |
+| coordinator `AreaTransition` | game_state_area | UPSERT | `area` |
+| coordinator `set_active_character` (live) | game_state_session | UPSERT; clears inventory/equipment/combat/mount | session |
+| report import (`seed_game_state_from_snapshot`) | all game_state_* | bulk seed | all |
+
+The deleted Player.log → `PlayerEventParser` → `PlayerEvent` pipeline no longer writes these tables.
 
 ### Timestamp Handling
 
@@ -202,12 +183,11 @@ These are not persisted to DB — they reset on login/session restart.
 | Feature | State | Description |
 |---|---|---|
 | Session skills | `sessionSkills` | XP deltas, levels gained, XP/hour per skill since session start |
-| Live inventory | `liveItemMap`, `liveEventLog` | Real-time inventory tracking from `player-event` |
+| Live inventory | `liveItemMap`, `liveEventLog` | Real-time inventory tracking from chat status events |
 
 ### Event Listeners
 
 - `game-state-updated` → `refreshDomain()` per domain in payload
-- `player-event` → `handleInventoryEvent()` for live inventory tracking
 - `character-login` → `resetSessionSkills()`, `clearLiveInventory()`, `loadAll()`
 
 ## Data Domains
