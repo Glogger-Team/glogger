@@ -703,7 +703,8 @@ fn upsert_chat_xp(
             xp = game_state_skills.xp + excluded.xp,
             last_confirmed_at = CASE WHEN excluded.last_confirmed_at > game_state_skills.last_confirmed_at THEN excluded.last_confirmed_at ELSE game_state_skills.last_confirmed_at END,
             source = excluded.source
-         WHERE excluded.last_confirmed_at > game_state_skills.last_confirmed_at",
+         WHERE (excluded.last_confirmed_at > game_state_skills.last_confirmed_at AND excluded.level >= game_state_skills.level)
+            OR excluded.level > game_state_skills.level",
         rusqlite::params![character, server, skill_id, skill_name, level, xp, confirmed_at],
     )
     .map(|n| n > 0)
@@ -2202,6 +2203,46 @@ mod tests {
             )
             .unwrap();
         assert_eq!(confirmed, "2026-11-17 11:00:00");
+    }
+
+    #[test]
+    fn upsert_chat_xp_newer_lower_level_does_not_downgrade() {
+        // Mirrors `apply_chat_level_up`'s guard: a newer-stamped award
+        // carrying a lower level (explicit 0/0 first-XP arriving after the
+        // skill is known, or any out-of-order line) must not rewind the
+        // stored level. The conflicting update is skipped whole, matching
+        // the level-up writer's drop semantics.
+        let (pool, _guard) = test_pool();
+        let conn = pool.get_write().unwrap();
+        conn.execute(
+            "INSERT INTO game_state_skills
+                (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
+             VALUES ('Alice', 'Dreva', 7, 'Sword', 5, 5, 0, 100, 0, 0, '2026-11-17 10:00:00', 'snapshot')",
+            [],
+        )
+        .unwrap();
+        let changed = upsert_chat_xp(&conn, "Alice", "Dreva", 7, "Sword", 0, 53, "2026-11-17 11:00:00");
+        assert!(!changed);
+        let (level, xp): (i64, i64) = conn
+            .query_row(
+                "SELECT level, xp FROM game_state_skills
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND skill_id = 7",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((level, xp), (5, 100));
+        let changed = upsert_chat_xp(&conn, "Alice", "Dreva", 7, "Sword", 6, 10, "2026-11-17 12:00:00");
+        assert!(changed);
+        let (level, xp): (i64, i64) = conn
+            .query_row(
+                "SELECT level, xp FROM game_state_skills
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND skill_id = 7",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((level, xp), (6, 110));
     }
 
     #[test]
