@@ -78,9 +78,8 @@ entries as fixtures land and recorders ship.
    (`get_player_messages`). `MessagesWidget.vue` already reads this shape but is
    unregistered (dark) — enabling it is a separate product call.
 - **Capture:** more `EntityReport` titles/bodies to learn whether this is
-  arena-tips-only or a general entity channel. No fixture file yet (the
-  single observed line is pinned by a synthetic dispatch test, not a
-  `chat-entityreport.log` — do not invent lines).
+  arena-tips-only or a general entity channel. The single observed line is
+  frozen in `test_data/vip_json/chat-entityreport.log` (do not invent lines).
 
 ## Prodigy-overflow `EarnedXP`
 
