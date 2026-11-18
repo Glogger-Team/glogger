@@ -1521,11 +1521,15 @@ pub fn import_garden_almanac(
         Ok(n)
     })();
     match replaced {
-        Ok(n) => {
-            conn.execute_batch("COMMIT")
-                .map_err(|e| format!("Failed to commit garden import: {e}"))?;
-            Ok(n)
-        }
+        Ok(n) => conn
+            .execute_batch("COMMIT")
+            .map_err(|e| {
+                // A failed COMMIT leaves the transaction active; roll back
+                // deterministically instead of relying on connection teardown.
+                let _ = conn.execute_batch("ROLLBACK");
+                format!("Failed to commit garden import: {e}")
+            })
+            .map(|_| n),
         Err(e) => {
             let _ = conn.execute_batch("ROLLBACK");
             Err(e)
