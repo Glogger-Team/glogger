@@ -1,5 +1,8 @@
 # VIP JSON Logging — observed contract (frozen 2026-11-17)
 
+> Addendum 2026-11-18: Gardening Almanac extraction shipped (Book row,
+> wanted signals). "Frozen" dates the observations, not the doc.
+
 Source: live `Chat-26-11-1*.log` on this box, game with VIP + chat logs + non-combat logging on.
 Fixtures: `test_data/vip_json/chat-<type>.log` (names sanitized `TwinkleofToes` → `TestPlayer`),
 `character-report-after.json` (trimmed: exact key shapes, 2 skills, 3 recipes, 3 NPCs).
