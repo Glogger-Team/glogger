@@ -436,22 +436,33 @@ impl SurveySessionAggregator {
         // Identity fallback: survey-yield items count while a session is
         // active, attributed to the most recent use at-or-before the gain
         // (a delayed older-stamped gain must not land on a newer use).
+        // Basic uses only attract same-tick gains: without the window, an
+        // ordinary mining gain minutes after a Basic use would land on it,
+        // bypassing the 5s rule above. Other kinds have no window mechanism,
+        // so the fallback is their only attribution path — preserve it.
         if internal_name.is_some_and(|internal| self.is_survey_loot_item(internal))
             && let Some(session_id) = self.fetch_active_session(conn, character, server)
-                && let Ok(Some(use_id)) = persistence::latest_use_id_for_session(conn, session_id, timestamp) {
-                    return self.record_chat_attribution(
-                        conn,
-                        ChatAttribution {
-                            character,
-                            server,
-                            use_id,
-                            quantity,
-                            timestamp,
-                            item_name: internal_name,
-                            mark_completed: false,
-                        },
-                    );
-                }
+            && let Ok(Some((use_id, kind, used_at))) =
+                persistence::latest_use_for_session(conn, session_id, timestamp)
+            && (kind != SurveyUseKind::Basic || {
+                parse_utc_datetime(&used_at).is_some_and(|used| {
+                    (chat_ts - used).num_seconds().abs() <= CHAT_BASIC_WINDOW_SECS
+                })
+            })
+        {
+            return self.record_chat_attribution(
+                conn,
+                ChatAttribution {
+                    character,
+                    server,
+                    use_id,
+                    quantity,
+                    timestamp,
+                    item_name: internal_name,
+                    mark_completed: false,
+                },
+            );
+        }
 
         None
     }
@@ -586,21 +597,25 @@ impl SurveySessionAggregator {
     }
 
     /// Cached active-session-id lookup.
-    /// Drop the cached active-session id (and the recent-Basic-use window,
-    /// which is keyed by use id) so the next lookup re-resolves from the
-    /// DB. Call this when a session is removed by a path that bypasses the
-    /// aggregator's own start/end flow — notably the History UI's
-    /// `survey_tracker_delete_session`, which deletes rows directly. Without
-    /// this, the cache would keep handing out a now-missing session id and
-    /// every subsequent `insert_use` would fail the FK constraint, and a
-    /// queued gain could still attribute to the deleted Basic use.
-    pub fn invalidate_session_cache(&mut self) {
+    /// Drop the cached active-session id (and the deleted session's
+    /// Basic-use window entries, keyed by use id) so the next lookup
+    /// re-resolves from the DB. Call this when a session is removed by a
+    /// path that bypasses the aggregator's own start/end flow — notably
+    /// the History UI's `survey_tracker_delete_session`, which deletes
+    /// rows directly. Without this, the cache would keep handing out a
+    /// now-missing session id and every subsequent `insert_use` would fail
+    /// the FK constraint, and a queued gain could still attribute to the
+    /// deleted use. Only the deleted session's use ids leave the window
+    /// queue: entries belong to every live session, and a global clear
+    /// would steal the attribution window of an unrelated open use.
+    pub fn invalidate_session_cache(&mut self, deleted_use_ids: &[i64]) {
         self.cached_active_session = None;
         // The Basic-use window is keyed by use id too: a deleted use must
         // not keep attracting gains timestamped inside its old window.
         // Worst case a gain goes unattributed (healable via retro-claim)
         // instead of landing on a use that no longer exists.
-        self.recent_basic_uses.clear();
+        self.recent_basic_uses
+            .retain(|(use_id, _, _, _)| !deleted_use_ids.contains(use_id));
     }
 
     fn fetch_active_session(
@@ -694,6 +709,47 @@ mod tests {
         ))
     }
 
+    /// Aggregator with `IronOre` resolvable as survey yield (`Ore` keyword).
+    /// The fallback path is gated on CDN identity, so tests exercising it
+    /// must seed game data — with `GameData::empty()` the gate is false
+    /// and every gain falls through unattributed.
+    fn seeded_aggregator() -> SurveySessionAggregator {
+        use crate::game_data::ItemInfo;
+        let mut gd = crate::game_data::GameData::empty();
+        gd.items.insert(
+            1,
+            ItemInfo {
+                id: 1,
+                name: "Iron Ore".to_string(),
+                description: None,
+                icon_id: None,
+                value: None,
+                max_stack_size: None,
+                keywords: vec!["Ore".to_string()],
+                effect_descs: vec![],
+                internal_name: Some("IronOre".to_string()),
+                food_desc: None,
+                equip_slot: None,
+                num_uses: None,
+                skill_reqs: None,
+                behaviors: None,
+                bestow_recipes: None,
+                bestow_ability: None,
+                bestow_quest: None,
+                bestow_title: None,
+                craft_points: None,
+                crafting_target_level: None,
+                tsys_profile: None,
+                raw_json: serde_json::Value::Null,
+            },
+        );
+        gd.item_internal_name_index
+            .insert("IronOre".to_string(), 1);
+        SurveySessionAggregator::new(std::sync::Arc::new(
+            tauri::async_runtime::RwLock::new(gd),
+        ))
+    }
+
     fn record_basic(
         agg: &mut SurveySessionAggregator,
         conn: &Connection,
@@ -755,5 +811,74 @@ mod tests {
             "2026-04-15 12:00:04",
         );
         assert_eq!(hit, Some(use_id));
+    }
+
+    #[test]
+    fn late_gain_does_not_fallback_onto_basic_use() {
+        // Basic use at 12:00:00; an ordinary mining gain a minute later
+        // misses the 5s window AND the fallback (Basic attracts same-tick
+        // gains only). Seeded game data opens the yield-identity gate, so
+        // the None comes from the window — never from a closed gate. The
+        // gain stays unattributed instead of inflating the use.
+        let conn = fresh_db();
+        let mut agg = seeded_aggregator();
+        let use_id = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "Zenith",
+            "Dreva",
+            Some("IronOre"),
+            3,
+            "2026-04-15 12:01:00",
+        );
+        assert_eq!(hit, None);
+        let stored = persistence::get_use(&conn, use_id)
+            .expect("read use")
+            .expect("use present");
+        assert_eq!(stored.loot_qty, 0);
+    }
+
+    #[test]
+    fn delete_invalidate_keeps_other_identities_attribution() {
+        // Scoped invalidation drops only the deleted session's use ids:
+        // an unrelated identity keeps attributing (via its retained
+        // window entry), and the deleted use's own in-window gain still
+        // resolves through the Basic-window fallback, not a stale queue.
+        let conn = fresh_db();
+        let mut agg = seeded_aggregator();
+        let use_a = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+        let (use_b, _) = agg
+            .record_manual_use(
+                &conn,
+                ManualUse {
+                    character: "AltB",
+                    server: "Legacy",
+                    area: None,
+                    map_internal_name: "MiningSurveySerbule1",
+                    kind: SurveyUseKind::Basic,
+                    now_iso: "2026-04-15 12:00:00",
+                },
+            )
+            .expect("record manual Basic use");
+        agg.invalidate_session_cache(&[use_a]);
+
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "AltB",
+            "Legacy",
+            Some("IronOre"),
+            1,
+            "2026-04-15 12:00:01",
+        );
+        assert_eq!(hit, Some(use_b));
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "Zenith",
+            "Dreva",
+            Some("IronOre"),
+            1,
+            "2026-04-15 12:00:01",
+        );
+        assert_eq!(hit, Some(use_a));
     }
 }

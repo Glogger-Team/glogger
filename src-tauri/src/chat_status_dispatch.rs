@@ -658,7 +658,10 @@ fn insert_json_receipt_guarded(
     // Both twin orders converge here, so this is also the loot↔kill join
     // point: the receipt's entity links the item to its FATALITY row.
     if let Some(entity_id) = from_entity_id {
-        let _ = crate::db::kill_tracking_commands::link_kill_loot(
+        // Rescan re-runs this call idempotently (`WHERE NOT EXISTS`), so a
+        // transient link failure heals on the next scan — but only if it is
+        // visible. Log the error; `Ok(false)` (no matching kill) is normal.
+        if let Err(e) = crate::db::kill_tracking_commands::link_kill_loot(
             &conn,
             character,
             server,
@@ -666,7 +669,9 @@ fn insert_json_receipt_guarded(
             timestamp,
             item_name,
             quantity as i64,
-        );
+        ) {
+            eprintln!("[dispatch] kill-loot link failed (rescan heals): {e}");
+        }
     }
     wrote
 }

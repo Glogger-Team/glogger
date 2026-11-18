@@ -709,14 +709,25 @@ pub fn replay_capture_file(path: String) -> Result<CaptureReplayResult, String> 
         .and_then(|v| v.as_array())
         .ok_or_else(|| "Capture file has no 'lines' array".to_string())?;
 
-    // Also check for character name in state_at_start for chat combat parsing
+    // Character for chat combat parsing: prefer the snapshot's own
+    // `character` (always set when the capture was taken with an identity
+    // filter), then the active-skills row, then "Unknown". The old lookup
+    // read only the active-skills table, so a capture with no
+    // `game_state_active_skills` row rejected every FATALITY line on a
+    // sender mismatch even though the snapshot knew the character.
     let character_name = json
         .get("state_at_start")
-        .and_then(|s| s.get("active_skills"))
-        .and_then(|s| s.get("character_name"))
+        .and_then(|s| s.get("character"))
         .and_then(|v| v.as_str())
-        .unwrap_or("Unknown")
-        .to_string();
+        .map(String::from)
+        .or_else(|| {
+            json.get("state_at_start")
+                .and_then(|s| s.get("active_skills"))
+                .and_then(|s| s.get("character_name"))
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+        .unwrap_or_else(|| "Unknown".to_string());
 
     let mut kills = Vec::new();
     let mut chat_lines = 0usize;
@@ -759,4 +770,58 @@ pub fn replay_capture_file(path: String) -> Result<CaptureReplayResult, String> 
         loot_events: Vec::new(),
         kills,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_capture(name: &str, state_at_start: serde_json::Value) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "{name}_{}_{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let doc = serde_json::json!({
+            "state_at_start": state_at_start,
+            "lines": [{
+                "source": "chat",
+                "line": "26-03-09 05:05:00\t[Combat] Zenith: Fire Bolt 5 on Skeleton #1234567! Dmg: 500 health. (FATALITY!)"
+            }]
+        });
+        std::fs::write(&path, serde_json::to_string(&doc).unwrap()).unwrap();
+        path
+    }
+
+    #[test]
+    fn replay_prefers_snapshot_character_over_unknown() {
+        // Capture with `state_at_start.character` set but no active-skills
+        // row: the old lookup fell back to "Unknown" and rejected the
+        // FATALITY line on sender mismatch.
+        let path = write_capture(
+            "glogger_replay_char_test",
+            serde_json::json!({ "character": "Zenith" }),
+        );
+        let result = replay_capture_file(path.to_string_lossy().to_string()).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(result.kills.len(), 1);
+        assert_eq!(result.kills[0].enemy_name, "Skeleton");
+    }
+
+    #[test]
+    fn replay_falls_back_to_active_skills_character() {
+        // Older captures without the top-level character still resolve
+        // through the active-skills row.
+        let path = write_capture(
+            "glogger_replay_skills_test",
+            serde_json::json!({ "active_skills": { "character_name": "Zenith" } }),
+        );
+        let result = replay_capture_file(path.to_string_lossy().to_string()).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(result.kills.len(), 1);
+        assert_eq!(result.kills[0].enemy_name, "Skeleton");
+    }
 }

@@ -528,41 +528,25 @@ impl DataIngestCoordinator {
         if should_switch {
             // Different file — do a final flush of any unread content
             // before switching, so we don't lose messages written between
-            // the last poll and this switch.
-            if let Some(watcher) = &mut self.chat_watcher {
+            // the last poll and this switch. The events go through the
+            // shared drain (raw insert + structured dispatch): the old
+            // raw-only flush saved the bytes but never created the
+            // `player_messages` rows for structured lines in the tail.
+            // End the watcher borrow before dispatching — the drain needs
+            // `&mut self` for its trackers and follow-ups.
+            let flushed: Vec<LogEvent> = if let Some(watcher) = &mut self.chat_watcher {
                 startup_log!(
                     "Chat log switching from {:?} → {:?}, flushing old watcher",
                     watcher.get_file_path(),
                     chat_log_path
                 );
-                if let Ok(events) = watcher.poll()
-                    && !events.is_empty() {
-                        startup_log!("Final flush: {} events from old chat log", events.len());
-                        // Process inline to avoid borrow issues with self
-                        let conn = self
-                            .db_pool
-                            .get_write()
-                            .map_err(|e| format!("Database error: {}", e))?;
-                        let log_file = watcher.get_file_name().to_string();
-                        let excluded_channels = &self.settings.get().excluded_chat_channels;
-                        let mut messages = Vec::new();
-                        let tz_offset = self
-                            .settings
-                            .get()
-                            .manual_timezone_override
-                            .or(self.settings.get().timezone_offset_seconds)
-                            .unwrap_or(0);
-                        for event in events {
-                            if let LogEvent::ChatMessage(mut msg, _) = event {
-                                msg.timestamp = chat_local_to_utc(msg.timestamp, tz_offset);
-                                messages.push(msg);
-                            }
-                        }
-                        if !messages.is_empty() {
-                            insert_chat_messages(&conn, &messages, &log_file, excluded_channels)
-                                .ok();
-                        }
-                    }
+                watcher.poll().unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            if !flushed.is_empty() {
+                startup_log!("Final flush: {} events from old chat log", flushed.len());
+                self.process_chat_events(flushed)?;
             }
             self.stop_chat_log_tailing()?;
         }
@@ -972,40 +956,31 @@ impl DataIngestCoordinator {
                     // feeding/correcting now under a drain-order identity.
                     // The tag is the login session that produced the line;
                     // only when the file was resumed mid-session (`None`) do
-                    // we fall back to the drain identity. Live, the tag is
-                    // ignored and the active identity rules.
+                    // we fall back to the drain identity. Live resolves the
+                    // same way: a poll batch can span a login boundary (the
+                    // watcher sorts the login marker first), so a pre-login
+                    // line must keep its own tag instead of inheriting the
+                    // new active identity. Tag-less live lines
+                    // (resume-from-offset polls) use the active identity.
                     let is_live = self.game_state.is_live();
-                    let identity: Option<DispatchIdentity> = if is_live {
-                        match (
-                            self.game_state.get_active_character(),
-                            self.game_state.get_active_server(),
-                        ) {
-                            (Some(c), Some(s)) => Some(DispatchIdentity {
-                                character: c.to_string(),
-                                server: s.to_string(),
-                            }),
-                            _ => None,
-                        }
-                    } else {
-                        session_tag
-                            .as_ref()
-                            .map(|tag| DispatchIdentity {
-                                character: tag.character_name.clone(),
-                                server: tag.server_name.clone(),
-                            })
-                            .or_else(|| {
-                                match (
-                                    self.game_state.get_active_character(),
-                                    self.game_state.get_active_server(),
-                                ) {
-                                    (Some(c), Some(s)) => Some(DispatchIdentity {
-                                        character: c.to_string(),
-                                        server: s.to_string(),
-                                    }),
-                                    _ => None,
-                                }
-                            })
-                    };
+                    let identity: Option<DispatchIdentity> = session_tag
+                        .as_ref()
+                        .map(|tag| DispatchIdentity {
+                            character: tag.character_name.clone(),
+                            server: tag.server_name.clone(),
+                        })
+                        .or_else(|| {
+                            match (
+                                self.game_state.get_active_character(),
+                                self.game_state.get_active_server(),
+                            ) {
+                                (Some(c), Some(s)) => Some(DispatchIdentity {
+                                    character: c.to_string(),
+                                    server: s.to_string(),
+                                }),
+                                _ => None,
+                            }
+                        });
 
                     // The shared dispatch owns every idempotent DB arm. Two
                     // live-only follow-ups stay here because they need
@@ -1122,7 +1097,7 @@ impl DataIngestCoordinator {
                                 };
                                 let source_details =
                                     format!("{{\"survey_use_id\":{use_id}}}");
-                                if tx
+                                let tag_rows = tx
                                     .execute(
                                         "UPDATE item_transactions
                                             SET source_kind = 'survey_chat',
@@ -1147,9 +1122,16 @@ impl DataIngestCoordinator {
                                             quantity as i64,
                                         ],
                                     )
-                                    .is_err()
-                                {
-                                    eprintln!("[coordinator] survey row tag failed, rolled back");
+                                    .map_err(|e| format!("survey row tag failed: {e}"))?;
+                                // The tag must land on exactly one untagged
+                                // ledger row: zero means the row vanished (or
+                                // never matched) between checkouts — commit
+                                // would bump a use with no provenance, so roll
+                                // back and let a later pass reclaim the gain.
+                                if tag_rows != 1 {
+                                    eprintln!(
+                                        "[coordinator] survey row tag matched {tag_rows} rows, rolled back"
+                                    );
                                     continue;
                                 }
                                 if tx.commit().is_err() {
