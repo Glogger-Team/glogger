@@ -54,21 +54,26 @@ pub struct ChatAttribution<'a> {
     pub mark_completed: bool,
 }
 
-/// Per-character aggregator. The coordinator owns one instance; chat gains
-/// and manual survey commands feed it.
+/// Shared aggregator. The coordinator owns one instance for ALL
+/// characters/servers, so every cache below is keyed by identity —
+/// a cache entry for one character must never serve another.
 pub struct SurveySessionAggregator {
     game_data: GameDataState,
 
-    /// Recently-consumed Basic survey uses `(use_id, used_at UTC)`. Chat
-    /// gains attribute to one of these only within
-    /// [`CHAT_BASIC_WINDOW_SECS`] of its `used_at` (Basic loot lands in the
-    /// same game tick as the map's consumption). Bounded FIFO.
-    recent_basic_uses: VecDeque<(i64, chrono::NaiveDateTime)>,
+    /// Recently-consumed Basic survey uses `(use_id, used_at UTC,
+    /// character, server)`. Chat gains attribute to one of these only
+    /// within [`CHAT_BASIC_WINDOW_SECS`] of its `used_at` (Basic loot
+    /// lands in the same game tick as the map's consumption) AND for the
+    /// same identity. Bounded FIFO.
+    recent_basic_uses: VecDeque<(i64, chrono::NaiveDateTime, String, String)>,
 
     /// Cached active session id (DB is the source of truth, but we cache to
     /// avoid a query per event). `None` means "unknown — go check the DB".
-    /// Refreshed when a session is started/ended.
-    cached_active_session_id: Option<Option<i64>>,
+    /// The identity is part of the key: a cached id for (A, server) never
+    /// answers for (B, server). Refreshed when a session is started/ended.
+    /// Lookup failures are never cached — a transient DB error must not
+    /// pin "no session" until the next invalidation.
+    cached_active_session: Option<(String, String, Option<i64>)>,
 }
 
 impl SurveySessionAggregator {
@@ -76,7 +81,7 @@ impl SurveySessionAggregator {
         Self {
             game_data,
             recent_basic_uses: VecDeque::new(),
-            cached_active_session_id: None,
+            cached_active_session: None,
         }
     }
 
@@ -107,7 +112,7 @@ impl SurveySessionAggregator {
             None,
         )
         .map_err(|e| e.to_string())?;
-        self.cached_active_session_id = Some(Some(id));
+        self.cached_active_session = Some((character.to_string(), server.to_string(), Some(id)));
         Ok(id)
     }
 
@@ -135,7 +140,7 @@ impl SurveySessionAggregator {
         persistence::end_session(conn, s.id, now_iso).map_err(|e| e.to_string())?;
         persistence::recompute_session_bounds_and_end(conn, s.id, now_iso)
             .map_err(|e| e.to_string())?;
-        self.cached_active_session_id = Some(None);
+        self.cached_active_session = Some((character.to_string(), server.to_string(), None));
         Ok(Some(s.id))
     }
 
@@ -171,7 +176,7 @@ impl SurveySessionAggregator {
                     None,
                 )
                 .map_err(|e| e.to_string())?;
-                self.cached_active_session_id = Some(Some(id));
+                self.cached_active_session = Some((character.to_string(), server.to_string(), Some(id)));
                 Some(id)
             }
         };
@@ -236,7 +241,7 @@ impl SurveySessionAggregator {
                 Err(_e) if session_id.is_some() && !retried => {
                     retried = true;
                     drop(tx);
-                    self.cached_active_session_id = None;
+                    self.cached_active_session = None;
                     session_id = match self.fetch_active_session(conn, character, server) {
                         Some(id) => Some(id),
                         None => {
@@ -249,7 +254,7 @@ impl SurveySessionAggregator {
                                 None,
                             )
                             .map_err(|e| e.to_string())?;
-                            self.cached_active_session_id = Some(Some(id));
+                            self.cached_active_session = Some((character.to_string(), server.to_string(), Some(id)));
                             Some(id)
                         }
                     };
@@ -257,7 +262,7 @@ impl SurveySessionAggregator {
                 }
                 Err(e) => {
                     eprintln!("[survey-aggregator] insert_use failed: {e}");
-                    self.cached_active_session_id = None;
+                    self.cached_active_session = None;
                     return Err(format!(
                         "survey use insert failed (the session may have been deleted; try again): {e}"
                     ));
@@ -279,30 +284,48 @@ impl SurveySessionAggregator {
         // game tick as the map's consumption).
         if kind == SurveyUseKind::Basic {
             if let Some(used_at) = parse_utc_datetime(now_iso) {
-                remember_bounded(&mut self.recent_basic_uses, (use_id, used_at));
+                remember_bounded(
+                    &mut self.recent_basic_uses,
+                    (use_id, used_at, character.to_string(), server.to_string()),
+                );
             }
-            match persistence::claim_unlinked_chat_loot_near(
-                conn,
-                use_id,
-                character,
-                server,
-                now_iso,
-                CHAT_BASIC_WINDOW_SECS as u32,
-            ) {
+            // One write transaction for the retro-claim: the row links and
+            // the quantity/status updates commit together. If any step
+            // fails, the rollback leaves the rows untagged so a later
+            // pass can reclaim them — never linked rows with a wrong
+            // `loot_qty`. Same unchecked-transaction shape as the use
+            // insert above: no outer transaction is open here.
+            let claim_outcome = (|| -> Result<u32, String> {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(|e| format!("claim txn begin failed: {e}"))?;
+                let claimed = persistence::claim_unlinked_chat_loot_near(
+                    &tx,
+                    use_id,
+                    character,
+                    server,
+                    now_iso,
+                    CHAT_BASIC_WINDOW_SECS as u32,
+                )
+                .map_err(|e| format!("claim rows failed: {e}"))?;
+                if claimed > 0 {
+                    persistence::add_loot_qty(&tx, use_id, claimed)
+                        .map_err(|e| format!("claim qty update failed: {e}"))?;
+                    persistence::set_use_status(&tx, use_id, SurveyUseStatus::Completed)
+                        .map_err(|e| format!("claim status update failed: {e}"))?;
+                }
+                tx.commit().map_err(|e| format!("claim txn commit failed: {e}"))?;
+                Ok(claimed)
+            })();
+            match claim_outcome {
                 Ok(0) => {}
-                Ok(claimed_qty) => {
-                    if let Err(e) = persistence::add_loot_qty(conn, use_id, claimed_qty) {
-                        eprintln!("[survey-aggregator] claimed add_loot_qty failed: {e}");
-                    }
-                    if let Err(e) =
-                        persistence::set_use_status(conn, use_id, SurveyUseStatus::Completed)
-                    {
-                        eprintln!("[survey-aggregator] claimed set_use_status failed: {e}");
-                    }
+                Ok(_) => {
                     update_session_loot_timestamps(conn, use_id, now_iso);
                 }
                 Err(e) => {
-                    eprintln!("[survey-aggregator] claim_unlinked_chat_loot_near failed: {e}");
+                    eprintln!("[survey-aggregator] retro-claim rolled back: {e}");
                 }
             }
         }
@@ -369,13 +392,18 @@ impl SurveySessionAggregator {
 
         // Basic window: same-tick loot around a recent Basic consumption
         // (newest first — back-to-back speed-bonus chains resolve to the
-        // most recent map).
+        // most recent map). Identity-scoped: a use recorded for another
+        // character/server never matches, even inside the time window.
         let basic_hit = self
             .recent_basic_uses
             .iter()
             .rev()
-            .find(|(_, used_at)| (chat_ts - *used_at).num_seconds().abs() <= CHAT_BASIC_WINDOW_SECS)
-            .map(|(use_id, _)| *use_id);
+            .find(|(_, used_at, c, s)| {
+                c == character
+                    && s == server
+                    && (chat_ts - *used_at).num_seconds().abs() <= CHAT_BASIC_WINDOW_SECS
+            })
+            .map(|(use_id, _, _, _)| *use_id);
         if let Some(use_id) = basic_hit {
             return self.record_chat_attribution(
                 conn,
@@ -550,7 +578,7 @@ impl SurveySessionAggregator {
     /// this, the cache would keep handing out a now-missing session id and
     /// every subsequent `insert_use` would fail the FK constraint.
     pub fn invalidate_session_cache(&mut self) {
-        self.cached_active_session_id = None;
+        self.cached_active_session = None;
     }
 
     fn fetch_active_session(
@@ -559,17 +587,30 @@ impl SurveySessionAggregator {
         character: &str,
         server: &str,
     ) -> Option<i64> {
-        if let Some(cached) = self.cached_active_session_id {
-            return cached;
+        // Identity-keyed: a cached id only answers for the identity that
+        // stored it. Anything else re-resolves from the DB.
+        if let Some((c, s, id)) = &self.cached_active_session
+            && c == character
+            && s == server
+        {
+            return *id;
         }
-        let s = persistence::active_session(conn, character, server)
-            .ok()
-            .flatten();
-        let id = s.map(|s| s.id);
-        self.cached_active_session_id = Some(id);
-        id
+        // A failed lookup is NOT cached: caching `None` on a transient DB
+        // error would pin "no session" (and route every later event down
+        // the create-new-session path) until the next invalidation.
+        match persistence::active_session(conn, character, server) {
+            Ok(s) => {
+                let id = s.map(|s| s.id);
+                self.cached_active_session =
+                    Some((character.to_string(), server.to_string(), id));
+                id
+            }
+            Err(e) => {
+                eprintln!("[survey-aggregator] active-session lookup failed, not caching: {e}");
+                None
+            }
+        }
     }
-
 }
 
 /// After attributing loot to a survey use, update the session's

@@ -280,9 +280,15 @@ fn run_replay(
 // Tauri Command
 // ============================================================
 
-/// Replay a Chat.log file through the full coordinator pipeline, in timestamp
-/// order. This simulates live tailing. (The old dual-log replay also fed a
-/// Player.log; that pipeline was deleted, so only the chat path is replayed.)
+/// Re-parse a Chat.log file and re-emit its chat events, in timestamp order.
+/// This is a parse-and-preview tool for debugging, NOT a backfill path: it
+/// never writes to the database (the message branch parses status lines and
+/// emits `chat-status-event` / `character-login` / `server-detected` only).
+/// Identity comes from the log's own login lines, so replaying another
+/// character's log flips the active character/session feed to that identity
+/// while it runs. Live tailing, scans, and report imports remain the only
+/// writers. (The old dual-log replay also fed a Player.log; that pipeline
+/// was deleted, so only the chat path is replayed.)
 #[tauri::command]
 pub async fn replay_chat_log(
     chat_log_path: String,

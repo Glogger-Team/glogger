@@ -675,6 +675,11 @@ fn insert_json_receipt_guarded(
 /// level-up writer, minus the level gate (XP within a level carries no level
 /// signal). No writer for this existed — `[Status]` XP lines were parsed but
 /// never persisted, and `Player.log` skill snapshots are gone.
+/// `xp` here is an AWARDED INCREMENT, not a total (proven by the live
+/// fixture: Riding 250 → 350 → 300 across three lines — totals cannot fall).
+/// Identical resends (same timestamp) are no-ops; newer lines accumulate.
+/// A second award in the same second is dropped — second-granularity logs
+/// give no key that separates it from its own replay.
 #[allow(clippy::too_many_arguments)]
 fn upsert_chat_xp(
     conn: &rusqlite::Connection,
@@ -693,7 +698,7 @@ fn upsert_chat_xp(
          ON CONFLICT(character_name, server_name, skill_id) DO UPDATE SET
             skill_name = excluded.skill_name,
             level = excluded.level,
-            xp = excluded.xp,
+            xp = game_state_skills.xp + excluded.xp,
             last_confirmed_at = CASE WHEN excluded.last_confirmed_at > game_state_skills.last_confirmed_at THEN excluded.last_confirmed_at ELSE game_state_skills.last_confirmed_at END,
             source = excluded.source
          WHERE excluded.last_confirmed_at > game_state_skills.last_confirmed_at",
@@ -909,7 +914,24 @@ fn dispatch_json_event(
                     // genuinely distinct same-second same-delta gifts collapse
                     // into one — accepted (second-granularity logs give no
                     // finer key; rapid same-item gifting is rare).
-                    let fresh = conn
+                    // Single write transaction for event + touch-up + gift:
+                    // a gift-log failure rolls back the event, so a later
+                    // replay retries the whole unit instead of leaving a
+                    // gift-less event behind (INSERT OR IGNORE keeps
+                    // successful replays no-ops). Same unchecked-transaction
+                    // shape as the survey aggregator: the pool checkout is
+                    // exclusive and no outer transaction is open here.
+                    let tx = match rusqlite::Transaction::new_unchecked(
+                        &conn,
+                        rusqlite::TransactionBehavior::Immediate,
+                    ) {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            eprintln!("[chat_status_dispatch] favor txn begin failed: {e}");
+                            return;
+                        }
+                    };
+                    let fresh = tx
                         .execute(
                             "INSERT OR IGNORE INTO favor_events
                                 (character_name, server_name, npc_key, timestamp, delta)
@@ -924,30 +946,39 @@ fn dispatch_json_event(
                     // Tier/name touch-up so log-only NPCs (no report row yet)
                     // still render. Snapshot tiers are never overwritten with
                     // NULL — the upsert only fills name and recency.
-                    conn.execute(
+                    if let Err(e) = tx.execute(
                         "INSERT INTO game_state_favor (character_name, server_name, npc_key, npc_name, favor_tier, last_confirmed_at, source)
                          VALUES (?1, ?2, ?3, ?4, NULL, ?5, 'log')
                          ON CONFLICT(character_name, server_name, npc_key) DO UPDATE SET
                             npc_name = excluded.npc_name,
                             last_confirmed_at = excluded.last_confirmed_at",
                         rusqlite::params![id.character, id.server, npc, display_name, timestamp],
-                    )
-                    .ok();
+                    ) {
+                        eprintln!("[chat_status_dispatch] favor touch-up failed, rolled back: {e}");
+                        return;
+                    }
                     // Gift row unless the game's own signals say "not a gift":
                     // capped-area counts belong to the report reconcile, and
                     // tasteless NPCs cannot receive gifts (card readings etc.).
                     // Quest-payout noise for uncapped NPCs is accepted and
                     // documented — JSON carries no is_gift flag. Favor losses
                     // are never gifts, whatever the NPC's tastes.
-                    if giftable && *delta > 0.0 {
-                        conn.execute(
+                    if giftable
+                        && *delta > 0.0
+                        && let Err(e) = tx.execute(
                             "INSERT INTO game_state_gift_log (character_name, server_name, npc_key, npc_name, gifted_at, favor_delta)
                              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                             rusqlite::params![
                                 id.character, id.server, npc, display_name, timestamp, *delta
                             ],
                         )
-                        .ok();
+                    {
+                        eprintln!("[chat_status_dispatch] gift-log insert failed, rolled back: {e}");
+                        return;
+                    }
+                    if let Err(e) = tx.commit() {
+                        eprintln!("[chat_status_dispatch] favor txn commit failed: {e}");
+                        return;
                     }
                     out.domain("favor");
                 }
@@ -960,7 +991,11 @@ fn dispatch_json_event(
             ..
         } => {
             if let Some(id) = ctx.identity {
-                // Same absolute-count upsert as the old `RecipeUpdated` arm.
+                // Same absolute-count upsert as the old `RecipeUpdated` arm,
+                // with one refinement: an equal-timestamp snapshot carrying a
+                // GREATER total still applies (two crafts in one second).
+                // Identical resends (same ts, same total) stay no-ops, and
+                // older or lesser snapshots never move the total backward.
                 if let Ok(conn) = ctx.db.get_write() {
                     let rows = conn.execute(
                         "INSERT INTO game_state_recipes (character_name, server_name, recipe_id, completion_count, last_confirmed_at, source)
@@ -969,7 +1004,9 @@ fn dispatch_json_event(
                             completion_count = excluded.completion_count,
                             last_confirmed_at = excluded.last_confirmed_at,
                             source = excluded.source
-                         WHERE excluded.last_confirmed_at > game_state_recipes.last_confirmed_at",
+                         WHERE excluded.last_confirmed_at > game_state_recipes.last_confirmed_at
+                            OR (excluded.last_confirmed_at = game_state_recipes.last_confirmed_at
+                                AND excluded.completion_count > game_state_recipes.completion_count)",
                         rusqlite::params![
                             id.character, id.server, *recipe_id as i64, *completions as i64, timestamp
                         ],
@@ -1970,8 +2007,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!((xp, level, n), (53, 46, 1));
+        // Live-fixture sequence: Riding awards 250 → 350 → 300 at rising
+        // timestamps (non-monotonic, so increments, not totals). They
+        // accumulate to 900; the byte-identical resend stays a no-op.
+        seed_skill(&gd, "Riding", 4244);
+        for (ts, amount) in [
+            ("26-11-17 08:44:08", 250),
+            ("26-11-17 08:44:23", 350),
+            ("26-11-17 08:44:38", 300),
+        ] {
+            let json = json_msg(
+                "EarnedXP",
+                &format!("{{\"Skill\":\"Riding\", \"XP\": {amount}, \"OldLevel\": 102, \"NewLevel\": 102}}"),
+                ts,
+            );
+            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        }
+        let xp: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT xp FROM game_state_skills
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND skill_name = 'Riding'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(xp, 900);
     }
-
     #[test]
     fn json_xp_level_up_uses_chat_writer() {
         let (pool, _guard) = test_pool();
@@ -2148,8 +2212,31 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 211);
+        // Same-second progress (212 crafts in the same second) applies;
+        // the byte-identical resend stays a no-op and stays silent.
+        let json = json_msg(
+            "RecipeUsage",
+            "{\"RecipeName\":\"Recall Heart's Home\", \"RecipeId\": 9008, \"Completions\": 212}",
+            ts,
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out.domains.iter().any(|d| d == "recipes"));
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out.domains.iter().all(|d| d != "recipes"));
+        let n: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT completion_count FROM game_state_recipes
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND recipe_id = 9008",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 212);
     }
-
     #[test]
     fn json_book_upserts_and_reports_trigger() {
         let (pool, _guard) = test_pool();

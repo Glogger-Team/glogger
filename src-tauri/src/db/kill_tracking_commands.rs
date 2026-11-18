@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use tauri::State;
+use rusqlite::OptionalExtension;
 
 #[derive(Serialize)]
 pub struct EnemyLootDrop {
@@ -332,6 +333,9 @@ pub fn link_kill_loot(
     item_name: &str,
     quantity: i64,
 ) -> Result<bool, String> {
+    // Distinguishable failure: a missing row is `Ok(false)` (unlooted kill
+    // or a kill line that never arrived); a DB error propagates instead of
+    // masquerading as "no match".
     let kill_id: Option<i64> = conn
         .query_row(
             "SELECT id FROM enemy_kills
@@ -343,7 +347,8 @@ pub fn link_kill_loot(
             rusqlite::params![character, server, enemy_entity_id, receipt_ts],
             |row| row.get(0),
         )
-        .ok();
+        .optional()
+        .map_err(|e| format!("Failed to look up kill for loot link: {e}"))?;
     let Some(kill_id) = kill_id else {
         return Ok(false);
     };

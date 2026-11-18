@@ -85,16 +85,21 @@ def git(*args: str) -> str:
 def resolve_base(explicit: str | None) -> str:
     if explicit:
         return explicit
-    # Local default: merge-base of HEAD with the upstream (same shape as
-    # lint-markdown-changed.py's unpushed_base).
-    for base_ref in ("@{u}", "origin/HEAD", "main"):
+    # Local default: the PR target branch, NOT the feature upstream. After the
+    # feature branch is pushed, `@{u}` resolves to the remote feature tip, so
+    # comparing against it undercounts (local says 1 new version, CI-against-main
+    # says 2). `origin/HEAD` (default branch, usually main) then `main` mirror
+    # the CI explicit-base check; `@{u}` stays last for stacked-diff setups with
+    # no default branch resolvable. Stale local `main` overcounts (fail-closed,
+    # the documented direction).
+    for base_ref in ("origin/HEAD", "main", "@{u}"):
         try:
             base = git("merge-base", "HEAD", base_ref).strip()
         except RuntimeError:
             continue
         if base:
             return base
-    raise RuntimeError("no upstream ref resolves (@{u}, origin/HEAD, main)")
+    raise RuntimeError("no base ref resolves (origin/HEAD, main, @{u})")
 
 
 def check_added_since(ref: str | None, limit: int = 1) -> int:
