@@ -396,16 +396,30 @@ mod tests {
         // Favor/additem deltas and stacks must likewise be present and
         // non-zero. (Explicit zero completions are valid — see
         // `recipe_usage_explicit_zero_completions_valid`.)
+        // This matrix enumerates the class, not past incidents: every typed
+        // arm appears with each of its required fields missing or zeroed,
+        // so the next arm inherits the rule instead of re-learning it.
         for line in [
             "26-11-17 08:52:00\t[JSON:RecipeUsage] {\"RecipeName\":\"Recall Heart's Home\", \"RecipeId\": 9008}\n",
+            "26-11-17 08:52:00\t[JSON:RecipeUsage] {\"RecipeId\": 9008, \"Completions\": 211}\n",
+            "26-11-17 08:52:00\t[JSON:RecipeUsage] {\"RecipeName\":\"Recall Heart's Home\", \"RecipeId\": 0, \"Completions\": 211}\n",
             "26-11-17 08:52:00\t[JSON:Book] {\"Title\":\"Skill Info\"}\n",
+            "26-11-17 08:52:00\t[JSON:Book] {\"Body\":\"text\"}\n",
             "26-11-17 08:52:00\t[JSON:Pigeon] {\"Title\":\"Pigeon From TestFriend\"}\n",
+            "26-11-17 08:52:00\t[JSON:Pigeon] {\"Body\":\"text\"}\n",
             "26-11-17 08:52:00\t[JSON:EarnedXP] {\"Skill\":\"Sword\", \"XP\": 53}\n",
             "26-11-17 08:52:00\t[JSON:EarnedXP] {\"Skill\":\"Sword\", \"XP\": 53, \"OldLevel\": 4}\n",
+            "26-11-17 08:52:00\t[JSON:EarnedXP] {\"XP\": 53, \"OldLevel\": 4, \"NewLevel\": 5}\n",
+            "26-11-17 08:52:00\t[JSON:EarnedXP] {\"Skill\":\"Sword\", \"XP\": 0, \"OldLevel\": 4, \"NewLevel\": 5}\n",
             "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Npc\":\"NPC_Elune\"}\n",
             "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Npc\":\"NPC_Elune\", \"Delta\": 0}\n",
+            "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Delta\": 5.0}\n",
             "26-11-17 08:52:00\t[JSON:AddItem] {\"Name\":\"Toxic Sludge\"}\n",
             "26-11-17 08:52:00\t[JSON:AddItem] {\"Name\":\"Toxic Sludge\", \"Stack\": 0}\n",
+            "26-11-17 08:52:00\t[JSON:AddItem] {\"Stack\": 3}\n",
+            "26-11-17 08:52:00\t[JSON:ParagonXP] {\"Skill\":\"Sword\", \"XP\": 53}\n",
+            "26-11-17 08:52:00\t[JSON:EntityReport] {\"Title\":\"Eveline Rastin\"}\n",
+            "26-11-17 08:52:00\t[JSON:EntityReport] {\"Body\":\"tip\"}\n",
         ] {
             let msgs = parse_chat_lines(line);
             assert_eq!(msgs.len(), 1);

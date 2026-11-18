@@ -666,11 +666,17 @@ impl SurveySessionAggregator {
 fn update_session_loot_timestamps(conn: &Connection, use_id: i64, ts: &str) {
     if let Ok(Some(su)) = persistence::get_use(conn, use_id)
         && let Some(sid) = su.session_id {
-            let _ = persistence::update_first_loot_at(conn, sid, ts);
-            let _ = persistence::update_last_loot_at(conn, sid, ts);
+            if let Err(e) = persistence::update_first_loot_at(conn, sid, ts) {
+                eprintln!("[survey-aggregator] first-loot stamp failed: {e}");
+            }
+            if let Err(e) = persistence::update_last_loot_at(conn, sid, ts) {
+                eprintln!("[survey-aggregator] last-loot stamp failed: {e}");
+            }
             // Keep started_at tight for open sessions so the header
             // reflects actual activity, not the session-creation moment.
-            let _ = persistence::tighten_started_at(conn, sid, ts);
+            if let Err(e) = persistence::tighten_started_at(conn, sid, ts) {
+                eprintln!("[survey-aggregator] started-at tighten failed: {e}");
+            }
         }
 }
 
