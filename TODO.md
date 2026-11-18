@@ -54,6 +54,8 @@ Small items the B round verified as currently harmless. Each is an isolated slic
   - **Suspects:** `src-tauri/src/chat_status_dispatch.rs` (`upsert_chat_xp`), `src-tauri/src/db/game_state_commands.rs` (`apply_chat_level_up`), `src-tauri/src/db/character_commands.rs` (snapshot seeder).
 - [ ] Summon JSON-twin double-count (P2, CONDITIONAL — no observed trigger): if the game ever emits a `[JSON:AddItem]` twin for a summon, the JSON guard hardcodes `context = 'loot'` while the English row is `context = 'summoned'` → two rows, two staged gains, and the coordinator treats the JSON twin as survey-eligible loot. No fixture shows such a twin (twin table: AddItem↔ItemGained only) and the JSON protocol carries no summon marker, so no code fix is possible until observed. If observed: carry a summon marker or match the English `summoned` row.
   - **Suspects:** `src-tauri/src/chat_status_dispatch.rs` (`insert_json_receipt_guarded` guard + INSERT), `src-tauri/src/coordinator.rs` (`is_loot` check).
+- [ ] Block-form `needs:` parsing in `check-workflow-expressions.py` (P3, CONDITIONAL — no in-tree trigger): `check_wiring` skips jobs using block-form `needs:` lists (unparseable by the flow-list regex), so a dangling deref there would pass the gate. No workflow uses block-form today. If adopted: collect `^      - <name>` items while in the block instead of skipping.
+  - **Suspects:** `scripts/check-workflow-expressions.py` (`check_wiring` Pass 2 `needs_block`).
 
 ---
 

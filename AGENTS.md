@@ -146,7 +146,7 @@ Frozen-review + CodeRabbit rounds on the `todo-burndown` series (22 commits, ~ha
 
 - **Rust only**; conventional in-file `#[cfg(test)] mod tests` blocks at file bottom, no external runner, no integration dir. Count per `cargo test --lib` run; all fast except the slow/path-dependent suites, which are `#[ignore]`-gated (survey replay + chat-log backfill).
 - DB tests use `rusqlite::Connection::open_in_memory()` + `crate::db::migrations::run_migrations` via a local `setup()` helper per module; parser tests embed real log-line fixtures as string constants.
-- **Full-fixture tests.** Parser/dispatch tests feed the whole fixture file (`parse_all`-style) plus targeted asserts — single-line synthetics encode the implementation (the pigeon same-second pair and the Riding XP sequence both escaped tests that dispatched one line; the full-fixture dispatch caught them).
+- **Full-fixture tests.** Parser/dispatch tests feed the whole fixture file (`parse_all`-style) plus targeted asserts — single-line synthetics encode the implementation (the pigeon same-second pair and the Riding XP sequence both escaped tests that dispatched one line; the full-fixture dispatch caught them). Synthetic single-line only when ≤1 live exemplar is observed (entity_report today: one arena-tip line).
 - Frontend: **no tests** — `vue-tsc --noEmit` is the only gate; the dev panel is for manual/live testing.
 - Live smoke = `skill://glogger-smoke` recipe (verbatim owner, read it):
   - Launch: `export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222; npm run tauri dev` (same command — the export does not carry across calls).

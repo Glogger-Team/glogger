@@ -19,8 +19,10 @@ Three mechanical defect shapes:
    just missing checks); likewise replacing a `changes` output mapping
    (e.g. `version_sync` → `migration_chain`) while downstream jobs still
    gate on the removed output. Every `needs.<J>.outputs.*` dereference
-   inside a job requires `J` in that job's `needs:` list, and every
-   `needs.changes.outputs.<N>` requires `N` in the `changes` job outputs.
+   inside a flow-form `needs: [...]` job requires `J` in that job's
+   `needs:` list, and every `needs.changes.outputs.<N>` requires `N` in
+   the `changes` job outputs. Block-form `needs:` lists are not parsed —
+   jobs using them are skipped (none in-tree; see TODO backlog).
 
 Stdlib only (matches check-lint-parity.py conventions).
 """
@@ -76,8 +78,9 @@ def check_file(path: Path) -> list[str]:
 
 
 def check_wiring(path: Path, text: str) -> list[str]:
-    """Every `needs.<J>.outputs.*` deref must resolve: J in the reader's
-    `needs:` list, and (for J == changes) the output mapped by changes."""
+    """Every `needs.<J>.outputs.*` deref in a flow-form `needs: [...]` job
+    must resolve: J in the reader's `needs:` list, and (for J == changes)
+    the output mapped by changes. Block-form `needs:` jobs are skipped."""
     findings: list[str] = []
     in_jobs = False
     job: str | None = None
