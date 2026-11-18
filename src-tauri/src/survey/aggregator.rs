@@ -398,16 +398,26 @@ impl SurveySessionAggregator {
         // (newest first — back-to-back speed-bonus chains resolve to the
         // most recent map). Identity-scoped: a use recorded for another
         // character/server never matches, even inside the time window.
-        let basic_hit = self
-            .recent_basic_uses
-            .iter()
-            .rev()
-            .find(|(_, used_at, c, s)| {
-                c == character
-                    && s == server
-                    && (chat_ts - *used_at).num_seconds().abs() <= CHAT_BASIC_WINDOW_SECS
-            })
-            .map(|(use_id, _, _, _)| *use_id);
+        // Newest use at-or-before the gain wins first: a delayed
+        // older-stamped gain arriving after a newer use must not land on
+        // that newer use. Only when nothing precedes the gain, allow a
+        // newer use within the window (pipeline clock skew can stamp the
+        // gain just before the recorded use).
+        let basic_uses_in_window = |after_gain: bool| {
+            self.recent_basic_uses
+                .iter()
+                .rev()
+                .filter(move |(_, used_at, c, s)| {
+                    c == character
+                        && s == server
+                        && (*used_at <= chat_ts) != after_gain
+                        && (chat_ts - *used_at).num_seconds().abs() <= CHAT_BASIC_WINDOW_SECS
+                })
+                .map(|(use_id, _, _, _)| *use_id)
+        };
+        let basic_hit = basic_uses_in_window(false)
+            .next()
+            .or_else(|| basic_uses_in_window(true).next());
         if let Some(use_id) = basic_hit {
             return self.record_chat_attribution(
                 conn,
@@ -663,5 +673,87 @@ fn remember_bounded<T: PartialEq>(queue: &mut VecDeque<T>, value: T) {
     queue.push_back(value);
     while queue.len() > CHAT_STATE_CAP {
         queue.pop_front();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::migrations::run_migrations;
+    use rusqlite::Connection;
+
+    fn fresh_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        run_migrations(&conn, None).expect("run migrations");
+        conn
+    }
+
+    fn empty_aggregator() -> SurveySessionAggregator {
+        SurveySessionAggregator::new(std::sync::Arc::new(
+            tauri::async_runtime::RwLock::new(crate::game_data::GameData::empty()),
+        ))
+    }
+
+    fn record_basic(
+        agg: &mut SurveySessionAggregator,
+        conn: &Connection,
+        now_iso: &str,
+    ) -> i64 {
+        let (use_id, _) = agg
+            .record_manual_use(
+                conn,
+                ManualUse {
+                    character: "Zenith",
+                    server: "Dreva",
+                    area: None,
+                    map_internal_name: "MiningSurveySerbule1",
+                    kind: SurveyUseKind::Basic,
+                    now_iso,
+                },
+            )
+            .expect("record manual Basic use");
+        use_id
+    }
+
+    #[test]
+    fn delayed_gain_lands_on_preceding_use_not_newer_one() {
+        // Use A at 12:00:00, use B at 12:00:04; A's gain arrives after B
+        // was recorded. Newest-at-or-before wins (A) — a plain
+        // absolute-difference window would hand it to B (4s < 5s window).
+        let conn = fresh_db();
+        let mut agg = empty_aggregator();
+        let use_a = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+        let _use_b = record_basic(&mut agg, &conn, "2026-04-15 12:00:04");
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "Zenith",
+            "Dreva",
+            Some("IronOre"),
+            2,
+            "2026-04-15 12:00:00",
+        );
+        assert_eq!(hit, Some(use_a));
+        let stored = persistence::get_use(&conn, use_a)
+            .expect("read use")
+            .expect("use present");
+        assert_eq!(stored.loot_qty, 2);
+    }
+
+    #[test]
+    fn skewed_gain_before_use_still_matches_when_nothing_precedes() {
+        // Pipeline skew can stamp the gain just before the recorded use:
+        // with no preceding use in the window, the newer use still matches.
+        let conn = fresh_db();
+        let mut agg = empty_aggregator();
+        let use_id = record_basic(&mut agg, &conn, "2026-04-15 12:00:05");
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "Zenith",
+            "Dreva",
+            Some("IronOre"),
+            1,
+            "2026-04-15 12:00:04",
+        );
+        assert_eq!(hit, Some(use_id));
     }
 }

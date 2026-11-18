@@ -109,48 +109,61 @@ def check_wiring(path: Path, text: str) -> list[str]:
         m = OUTPUT_MAP_RE.match(line)
         if m and job == "changes" and in_outputs:
             changes_outputs.add(m.group(1))
-    # Pass 2: every needs deref against its reader's needs + changes map.
-    in_jobs = False
-    job = None
-    needs = set()
-    needs_block = False
+    # Pass 2: per-job segments. Each job's `needs:` is collected before any
+    # of its derefs are checked — YAML key order is insignificant, so `if:`
+    # may precede `needs:` and a single streaming pass would false-positive.
+    segments: list[tuple[str, list[tuple[int, str]]]] = []
+    seg_job: str | None = None
+    seg_lines: list[tuple[int, str]] = []
+    seg_in_jobs = False
     for i, line in enumerate(text.splitlines(), start=1):
         if re.match(r"^jobs:\s*$", line):
-            in_jobs = True
+            seg_in_jobs = True
             continue
-        if not in_jobs:
+        if not seg_in_jobs:
             continue
         m = JOB_RE.match(line)
         if m:
-            job = m.group(1)
-            needs = set()
-            needs_block = False
+            if seg_job is not None:
+                segments.append((seg_job, seg_lines))
+            seg_job = m.group(1)
+            seg_lines = []
             continue
-        if job is None:
+        if seg_job is None:
             continue
-        if re.match(r"^    needs:\s*$", line):
-            needs_block = True  # block form: unparseable by regex, skip job
+        seg_lines.append((i, line))
+    if seg_job is not None:
+        segments.append((seg_job, seg_lines))
+    for job, lines in segments:
+        needs = set()
+        needs_block = False
+        for _, line in lines:
+            if re.match(r"^    needs:\s*$", line):
+                needs_block = True  # block form: unparseable by regex, skip job
+                break
+            m = NEEDS_LIST_RE.match(line)
+            if m:
+                needs = {n.strip() for n in m.group(1).split(",") if n.strip()}
+                break
+        if needs_block:
             continue
-        m = NEEDS_LIST_RE.match(line)
-        if m:
-            needs = {n.strip() for n in m.group(1).split(",") if n.strip()}
-            continue
-        for d in NEEDS_DEREF_RE.finditer(line):
-            dep, name = d.group(1), d.group(2)
-            if dep not in needs and not needs_block:
-                findings.append(
-                    f"workflow-expressions: {path.name}:{i}: "
-                    f"`needs.{dep}.outputs.*` dereferenced without "
-                    f"`{dep}` in this job's `needs:` — steps gate false "
-                    "on PRs (add the need, don't just silence the step)"
-                )
-            elif dep == "changes" and name not in changes_outputs:
-                findings.append(
-                    f"workflow-expressions: {path.name}:{i}: "
-                    f"`needs.changes.outputs.{name}` has no `changes` "
-                    "outputs mapping — the gate never runs on PRs "
-                    "(re-add the mapping, don't just silence the step)"
-                )
+        for i, line in lines:
+            for d in NEEDS_DEREF_RE.finditer(line):
+                dep, name = d.group(1), d.group(2)
+                if dep not in needs:
+                    findings.append(
+                        f"workflow-expressions: {path.name}:{i}: "
+                        f"`needs.{dep}.outputs.*` dereferenced without "
+                        f"`{dep}` in this job's `needs:` — steps gate false "
+                        "on PRs (add the need, don't just silence the step)"
+                    )
+                elif dep == "changes" and name not in changes_outputs:
+                    findings.append(
+                        f"workflow-expressions: {path.name}:{i}: "
+                        f"`needs.changes.outputs.{name}` has no `changes` "
+                        "outputs mapping — the gate never runs on PRs "
+                        "(re-add the mapping, don't just silence the step)"
+                    )
     return findings
 
 
