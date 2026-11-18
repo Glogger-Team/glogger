@@ -23,21 +23,26 @@ FINDING_LET_DISCARD = (
     " \u2014 propagate with ? (v81 lesson)"
 )
 # A silenced DB Result outside migrations: `let _ =` on a pool/connection
-# call or a db-verb helper (insert_/record_/link_/...) drops write/link
-# failures with no log and no retry (kill-loot link lesson, PR #202 — the
-# line sat one inch below the rescan guard and never healed). Emits, fs
-# ops, and test cleanup are deliberately out of scope: this gate owns the
-# write path only. Sanctioned shape (like the migration gate's EXISTS
-# guards): ROLLBACK cleanup in an already-failing path — the real error
-# is propagated either way, so only the compensation can fail silently.
+# call, on a db-verb helper (insert_/record_/link_/...), or on any call
+# taking the connection as an argument drops write/link failures with no
+# log and no retry (kill-loot link lesson, PR #202 — the line sat one inch
+# below the rescan guard and never healed). The conn-arg branch is the
+# class rule: any discarded call receiving `conn`/`tx` is a write-path
+# silence regardless of verb (add_/set_/tighten_ all slipped a verb list
+# once — B round, PR #202). Emits, fs ops, and test cleanup are
+# deliberately out of scope: this gate owns the write path only.
+# Sanctioned shape (like the migration gate's EXISTS guards): ROLLBACK
+# cleanup in an already-failing path — the real error is propagated
+# either way, so only the compensation can fail silently.
 DB_SILENCE_RE = re.compile(
     r"let\s+_\s*=\s*(?!.*\bROLLBACK\b)"
     r"(?:"
     r".*\b(?:conn|tx|stmt)\s*\.\s*"
     r"(?:execute|execute_batch|query_row|query_map|query|transaction|prepare|commit)\b"
     r"|(?:(?:crate|super|self|db|[a-z_][a-z0-9_]*)::)*"
-    r"(?:link|insert|record|persist|upsert|import|delete|update|backfill|reconcile|claim|attach|tag)"
+    r"(?:link|insert|record|persist|upsert|import|delete|update|backfill|reconcile|claim|attach|tag|add|set|tighten)"
     r"_[a-z0-9_]*\s*\("
+    r"|\b[a-z_][a-z0-9_:]*\s*\([^;()]*\b(?:conn|tx)\b[^;()]*\)"
     r")"
 )
 MOD_TESTS_RE = re.compile(r"^\s*mod\s+tests\s*\{")

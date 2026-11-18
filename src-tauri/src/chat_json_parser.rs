@@ -422,6 +422,8 @@ mod tests {
             "26-11-17 08:52:00\t[JSON:AddItem] {\"Name\":\"Toxic Sludge\", \"Stack\": 0}\n",
             "26-11-17 08:52:00\t[JSON:AddItem] {\"Stack\": 3}\n",
             "26-11-17 08:52:00\t[JSON:ParagonXP] {\"Skill\":\"Sword\", \"XP\": 53}\n",
+            "26-11-17 08:52:00\t[JSON:ParagonXP] {\"Skill\":\"Sword\", \"XP\": 0, \"OldLevel\": 4, \"NewLevel\": 5}\n",
+            "26-11-17 08:52:00\t[JSON:ParagonXP] {\"XP\": 53, \"OldLevel\": 4, \"NewLevel\": 5}\n",
             "26-11-17 08:52:00\t[JSON:EntityReport] {\"Title\":\"Eveline Rastin\"}\n",
             "26-11-17 08:52:00\t[JSON:EntityReport] {\"Body\":\"tip\"}\n",
         ] {
