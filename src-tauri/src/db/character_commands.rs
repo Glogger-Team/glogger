@@ -885,8 +885,9 @@ fn seed_game_state_from_snapshot(
         }
     }
 
-    // Seed NPC favor — snapshot provides tier names; preserve existing cumulative_delta
-    // (snapshots only have tier names, not point totals, so zeroing delta destroys tracked gifting progress)
+    // Seed NPC favor tiers — snapshots provide tier names; per-line deltas live
+    // in favor_events (session sums by query) and point totals stay in
+    // character_npc_favor.favor. Nothing here touches either.
     let mut favor_stmt = conn.prepare(
         "INSERT INTO game_state_favor (character_name, server_name, npc_key, npc_name, favor_tier, cumulative_delta, last_confirmed_at, source)
          VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, 'snapshot')

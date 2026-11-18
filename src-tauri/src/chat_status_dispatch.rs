@@ -885,17 +885,17 @@ fn dispatch_json_event(
                     // missed real gift is worse than a spurious gift row.
                     .unwrap_or_else(|| (npc.clone(), true));
                 if let Ok(conn) = ctx.db.get_write() {
-                    // Rescan guard: favor accrual is additive and gift rows are
-                    // plain inserts, so neither is naturally idempotent. The
-                    // marker makes the second application a no-op; the scan
-                    // path replays the same lines on every backfill.
+                    // Event log: one row per observed line. `INSERT OR IGNORE`
+                    // makes rescans and scan replays no-ops; session sums and
+                    // gift detection derive from this table by query, so there
+                    // is no running total to keep consistent.
                     // Known limit: the key is (npc, second, delta), so two
                     // genuinely distinct same-second same-delta gifts collapse
                     // into one — accepted (second-granularity logs give no
                     // finer key; rapid same-item gifting is rare).
                     let fresh = conn
                         .execute(
-                            "INSERT OR IGNORE INTO json_favor_processed
+                            "INSERT OR IGNORE INTO favor_events
                                 (character_name, server_name, npc_key, timestamp, delta)
                              VALUES (?1, ?2, ?3, ?4, ?5)",
                             rusqlite::params![id.character, id.server, npc, timestamp, *delta],
@@ -905,16 +905,16 @@ fn dispatch_json_event(
                     if !fresh {
                         return;
                     }
-                    // Same additive favor accrual as the old `FavorChanged` arm.
+                    // Tier/name touch-up so log-only NPCs (no report row yet)
+                    // still render. Snapshot tiers are never overwritten with
+                    // NULL — the upsert only fills name and recency.
                     conn.execute(
-                        "INSERT INTO game_state_favor (character_name, server_name, npc_key, npc_name, cumulative_delta, last_confirmed_at, source)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'log')
+                        "INSERT INTO game_state_favor (character_name, server_name, npc_key, npc_name, favor_tier, last_confirmed_at, source)
+                         VALUES (?1, ?2, ?3, ?4, NULL, ?5, 'log')
                          ON CONFLICT(character_name, server_name, npc_key) DO UPDATE SET
-                            cumulative_delta = game_state_favor.cumulative_delta + excluded.cumulative_delta,
                             npc_name = excluded.npc_name,
-                            last_confirmed_at = excluded.last_confirmed_at,
-                            source = CASE WHEN game_state_favor.source = 'snapshot' THEN 'both' ELSE 'log' END",
-                        rusqlite::params![id.character, id.server, npc, display_name, *delta, timestamp],
+                            last_confirmed_at = excluded.last_confirmed_at",
+                        rusqlite::params![id.character, id.server, npc, display_name, timestamp],
                     )
                     .ok();
                     // Gift row unless the game's own signals say "not a gift":
@@ -1974,24 +1974,34 @@ mod tests {
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
-        
         let ts = "26-11-17 08:32:34";
         let json = json_msg("DeltaFavor", "{\"Npc\":\"NPC_Elune\", \"Delta\": 18.06948}", ts);
         let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out1 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         let mut st = state(&mut arena, &mut rez, &mut dmg);
-        dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        let out2 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert!(out1.domains.iter().any(|d| d == "favor"));
+        assert!(out2.domains.iter().all(|d| d != "favor"));
         let conn = pool.get().unwrap();
-        let cumulative: f64 = conn
+        // One event row for two identical applications — the log, not a total.
+        let events: i64 = conn
             .query_row(
-                "SELECT cumulative_delta FROM game_state_favor
+                "SELECT COUNT(*) FROM favor_events
                  WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert!((cumulative - 18.06948).abs() < 1e-9);
+        assert_eq!(events, 1);
+        let delta: f64 = conn
+            .query_row(
+                "SELECT delta FROM favor_events
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!((delta - 18.06948).abs() < 1e-9);
         let gifts: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM game_state_gift_log
@@ -2016,16 +2026,16 @@ mod tests {
         let mut st = state(&mut arena, &mut rez, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         let conn = pool.get().unwrap();
-        // Favor loss is real and accrues negative.
-        let cumulative: f64 = conn
+        // Favor loss is real and kept as an event (session sums go negative).
+        let delta: f64 = conn
             .query_row(
-                "SELECT cumulative_delta FROM game_state_favor
+                "SELECT delta FROM favor_events
                  WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert!((cumulative + 52.65).abs() < 1e-9);
+        assert!((delta + 52.65).abs() < 1e-9);
         // But a loss is never a gift, even for a giftable NPC.
         let gifts: i64 = conn
             .query_row("SELECT COUNT(*) FROM game_state_gift_log", [], |r| r.get(0))
@@ -2054,7 +2064,13 @@ mod tests {
             dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         }
         let conn = pool.get().unwrap();
-        // Favor accrues in every case — it is real favor either way.
+        // Both deltas are retained as events — including the Statehelm one.
+        // Session sums cover capped NPCs; only gift *detection* excludes them.
+        let n_events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM favor_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n_events, 2);
+        // Favor rows exist for name/tier display in both cases.
         let n_favor: i64 = conn
             .query_row("SELECT COUNT(*) FROM game_state_favor", [], |r| r.get(0))
             .unwrap();

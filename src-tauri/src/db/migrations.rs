@@ -501,6 +501,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         migration_v93_npc_gifts_this_week(conn)?;
         super::record_migration(conn, 93)?;
     }
+
+    if current_version < 94 {
+        migration_v94_favor_events_replaces_marker(conn)?;
+        super::record_migration(conn, 94)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1370,14 +1375,12 @@ fn migration_v91_item_transaction_entity(conn: &Connection) -> Result<()> {
 
 /// Migration V92: processed-marker for VIP JSON `DeltaFavor` lines.
 ///
-/// Favor accrual is additive (`cumulative_delta + delta`) and gift rows are
-/// plain inserts — neither is naturally idempotent, unlike the ledger and
-/// skill upserts. `Player.log` deltas never needed a guard (no rescan path
-/// existed), but JSON lines flow through `run_scan_dispatch`, so a re-scan
-/// would double-count. One exact row per processed line; `INSERT OR IGNORE`
-/// makes the second application a no-op. Same-second distinct deltas stay
-/// distinct (delta is in the key); byte-identical same-second rescan lines
-/// collapse, which is the point.
+/// Superseded by V94: the marker stored every processed line, i.e. it was a
+/// full delta log wearing a guard's name. V94 promotes it to `favor_events`
+/// (session sums computed at read time) and drops the marker, the
+/// `cumulative_delta` integral, and the `source` state machine. The
+/// rescan-safety argument below still holds — it just lives in the events
+/// table's PRIMARY KEY now instead of a separate marker.
 fn migration_v92_json_favor_processed(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS json_favor_processed (
@@ -1414,6 +1417,57 @@ fn migration_v93_npc_gifts_this_week(conn: &Connection) -> Result<()> {
         "ALTER TABLE character_npc_favor ADD COLUMN gifts_this_week INTEGER",
         [],
     )?;
+    Ok(())
+}
+
+/// Migration V94: `favor_events` replaces the `json_favor_processed` marker.
+///
+/// The marker stored every processed (character, server, npc, timestamp,
+/// delta) — a full delta log wearing a guard's name. V94 promotes it to its
+/// real job: the event log that session sums and gift detection derive from
+/// by query. The running integral (`game_state_favor.cumulative_delta`) and
+/// its `source` state machine retire with it — rows are zeroed below because
+/// a login reset already made them session-scoped, and the label they fed is
+/// now computed at read time. Report `favor` absolutes (snapshot path) and
+/// the Statehelm weekly counts are untouched.
+fn migration_v94_favor_events_replaces_marker(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS favor_events (
+            character_name TEXT NOT NULL,
+            server_name TEXT NOT NULL,
+            npc_key TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            delta REAL NOT NULL,
+            PRIMARY KEY (character_name, server_name, npc_key, timestamp, delta)
+        )",
+        [],
+    )?;
+    let has_marker: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'json_favor_processed')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if has_marker {
+        conn.execute(
+            "INSERT OR IGNORE INTO favor_events
+             SELECT character_name, server_name, npc_key, timestamp, delta
+             FROM json_favor_processed",
+            [],
+        )?;
+        conn.execute("DROP TABLE json_favor_processed", [])?;
+    }
+    let has_favor: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'game_state_favor')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if has_favor {
+        conn.execute("UPDATE game_state_favor SET cumulative_delta = 0", [])?;
+    }
     Ok(())
 }
 
@@ -3337,7 +3391,7 @@ fn migration_v1_unified_schema(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX idx_gs_equipment_char ON game_state_equipment(character_name, server_name);
 
-        -- NPC Favor: cumulative deltas from log + tier from snapshots
+        -- NPC Favor: per-line deltas in favor_events (session sums by query) + tier from snapshots
         CREATE TABLE game_state_favor (
             character_name TEXT NOT NULL,
             server_name TEXT NOT NULL,
@@ -4671,13 +4725,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            93,
+            94,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 93);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 94);
     }
 
     #[test]
@@ -4800,13 +4854,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 93) plus the purge itself on the three aggregate source tables.
+        // 94) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 93, "migration chain head");
+        assert_eq!(head, 94, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -4852,8 +4906,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 93 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 item-transaction entity + v92 JSON favor marker + v93 NPC gifts-this-week). Repair: a
+        // Chain wiring: full run_migrations head must be 94 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 item-transaction entity + v92 JSON favor marker + v93 NPC gifts-this-week + v94 favor events). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -4861,7 +4915,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 93, "migration chain head");
+        assert_eq!(head, 94, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -5465,6 +5519,47 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kept, "Kept", "surviving child belongs to the Real parent");
+    }
+
+    #[test]
+    fn migration_v94_promotes_marker_to_events_and_zeroes_integral() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE json_favor_processed (
+                character_name TEXT NOT NULL,
+                server_name TEXT NOT NULL,
+                npc_key TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                delta REAL NOT NULL,
+                PRIMARY KEY (character_name, server_name, npc_key, timestamp, delta)
+            );
+            CREATE TABLE game_state_favor (
+                character_name TEXT NOT NULL,
+                server_name TEXT NOT NULL,
+                npc_key TEXT NOT NULL,
+                cumulative_delta REAL NOT NULL DEFAULT 0
+            );
+            INSERT INTO json_favor_processed VALUES ('Alice', 'Dreva', 'NPC_Elune', '2026-11-17 08:32:34', 18.06948);
+            INSERT INTO game_state_favor VALUES ('Alice', 'Dreva', 'NPC_Elune', 999.0);",
+        )
+        .unwrap();
+        migration_v94_favor_events_replaces_marker(&c).unwrap();
+        let delta: f64 = c
+            .query_row("SELECT delta FROM favor_events", [], |r| r.get(0))
+            .unwrap();
+        assert!((delta - 18.06948).abs() < 1e-9);
+        let marker: bool = c
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'json_favor_processed')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!marker);
+        let zeroed: f64 = c
+            .query_row("SELECT cumulative_delta FROM game_state_favor", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(zeroed, 0.0);
     }
 }
 

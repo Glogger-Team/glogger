@@ -1,4 +1,4 @@
-use super::DbPool;
+use super::{DbPool, DbRead};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 /// Tauri commands for querying persisted game state
@@ -99,7 +99,7 @@ pub struct GameStateEquipmentSlot {
 pub struct GameStateFavor {
     pub npc_key: String,
     pub npc_name: String,
-    pub cumulative_delta: f64,
+    pub session_delta: f64,
     pub favor_tier: Option<String>,
     pub last_confirmed_at: String,
     pub source: String,
@@ -404,9 +404,10 @@ pub fn get_game_state_favor(
     server_name: String,
 ) -> Result<Vec<GameStateFavor>, String> {
     let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let session = session_favor_sums(&conn, &character_name, &server_name)?;
     let mut stmt = conn
         .prepare(
-            "SELECT npc_key, npc_name, cumulative_delta, favor_tier, last_confirmed_at, source
+            "SELECT npc_key, npc_name, favor_tier, last_confirmed_at, source
          FROM game_state_favor WHERE character_name = ?1 AND server_name = ?2
          ORDER BY npc_name",
         )
@@ -414,18 +415,71 @@ pub fn get_game_state_favor(
 
     let rows = stmt
         .query_map(rusqlite::params![character_name, server_name], |row| {
+            let npc_key: String = row.get(0)?;
             Ok(GameStateFavor {
-                npc_key: row.get(0)?,
+                session_delta: session.get(&npc_key).copied().unwrap_or(0.0),
+                npc_key,
                 npc_name: row.get(1)?,
-                cumulative_delta: row.get(2)?,
-                favor_tier: row.get(3)?,
-                last_confirmed_at: row.get(4)?,
-                source: row.get(5)?,
+                favor_tier: row.get(2)?,
+                last_confirmed_at: row.get(3)?,
+                source: row.get(4)?,
             })
         })
         .map_err(|e| format!("Query error: {e}"))?;
 
     rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Row error: {e}"))
+}
+
+/// Session favor sums: per-NPC total of `favor_events` deltas since the
+/// active session started. The session singleton stores `last_login_at` in
+/// UTC while event timestamps are local wall-clock, so the boundary converts
+/// with `datetime(..., 'localtime')` (box tz == log tz). No session row, a
+/// row for a different character (viewing a non-active character), or a
+/// missing events table (minimal fixtures) → empty map, i.e. all zeros.
+/// Covers capped (Statehelm) and uncapped NPCs alike — it sums every delta,
+/// while gift *detection* stays exclusions-aware at write time.
+pub fn session_favor_sums(
+    conn: &impl DbRead,
+    character_name: &str,
+    server_name: &str,
+) -> Result<std::collections::HashMap<String, f64>, String> {
+    let has_events: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'favor_events')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_events {
+        return Ok(std::collections::HashMap::new());
+    }
+    let start: Option<String> = conn
+        .query_row(
+            "SELECT datetime(last_login_at, 'localtime') FROM game_state_session
+             WHERE id = 1 AND character_name = ?1 AND server_name = ?2",
+            rusqlite::params![character_name, server_name],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Query error: {e}"))?;
+    let Some(start) = start else {
+        return Ok(std::collections::HashMap::new());
+    };
+    let mut stmt = conn
+        .prepare(
+            "SELECT npc_key, SUM(delta) FROM favor_events
+             WHERE character_name = ?1 AND server_name = ?2 AND timestamp >= ?3
+             GROUP BY npc_key",
+        )
+        .map_err(|e| format!("Query error: {e}"))?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![character_name, server_name, start],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?)),
+        )
+        .map_err(|e| format!("Query error: {e}"))?;
+    rows.collect::<Result<std::collections::HashMap<_, _>, _>>()
         .map_err(|e| format!("Row error: {e}"))
 }
 
@@ -2526,5 +2580,33 @@ mod tests {
             })
             .unwrap();
         assert_eq!(snap, 1);
+    }
+
+    #[test]
+    fn session_favor_sums_ranges_by_login_and_covers_capped() {
+        let conn = setup();
+        // Session started 2026-11-16 12:00 UTC: local equivalent lands on
+        // 11-16 for every real timezone, so the 11-17 lines below are in
+        // session and the 11-15 line is out — no box-tz dependence.
+        conn.execute(
+            "INSERT INTO game_state_session (id, character_name, server_name, last_login_at, updated_at)
+             VALUES (1, 'Alice', 'Dreva', '2026-11-16 12:00:00', '2026-11-16 12:00:00')",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO favor_events (character_name, server_name, npc_key, timestamp, delta) VALUES
+             ('Alice', 'Dreva', 'NPC_Elune', '2026-11-17 08:32:34', 18.06948),
+             ('Alice', 'Dreva', 'NPC_Elune', '2026-11-15 08:00:00', -52.65),
+             ('Alice', 'Dreva', 'NPC_Goss', '2026-11-17 08:33:00', 5.0),
+             ('Bob', 'Dreva', 'NPC_Elune', '2026-11-17 08:32:34', 100.0)",
+        )
+        .unwrap();
+        let sums = session_favor_sums(&conn, "Alice", "Dreva").unwrap();
+        assert!((sums["NPC_Elune"] - 18.06948).abs() < 1e-9);
+        // Capped (Statehelm) deltas count — only gift *detection* excludes them.
+        assert!((sums["NPC_Goss"] - 5.0).abs() < 1e-9);
+        // A session row for another character is no session at all.
+        assert!(session_favor_sums(&conn, "Bob", "Dreva").unwrap().is_empty());
     }
 }

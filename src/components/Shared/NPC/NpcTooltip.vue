@@ -132,7 +132,7 @@ const favorProgressPercent = computed(() => {
   if (!favorTier.value || favorTier.value === 'SoulMates') return null;
   const needed = pointsToNextTier(favorTier.value);
   if (!needed) return null;
-  const delta = gamestateFavor.value?.cumulative_delta ?? 0;
+  const delta = gamestateFavor.value?.session_delta ?? 0;
   if (delta <= 0) return 0;
   return Math.min(100, Math.round((delta / needed) * 100));
 });

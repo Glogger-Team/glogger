@@ -89,7 +89,7 @@
     <DomainTable
       title="Favor"
       :count="gameState.favor.length"
-      :columns="['npc_key', 'npc_name', 'cumulative_delta', 'favor_tier', 'source', 'last_confirmed_at']"
+      :columns="['npc_key', 'npc_name', 'session_delta', 'favor_tier', 'source', 'last_confirmed_at']"
       :rows="gameState.favor"
     />
 

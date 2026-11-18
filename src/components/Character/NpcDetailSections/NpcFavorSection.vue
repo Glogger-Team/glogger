@@ -17,8 +17,8 @@
       <span v-if="snapshotFavorPoints != null" class="text-[10px] text-text-dim">
         {{ snapshotFavorPoints.toLocaleString() }} favor (report)
       </span>
-      <span v-if="gamestateFavor?.cumulative_delta" class="text-[10px] text-text-dim">
-        Session: <span class="text-accent-gold">{{ gamestateFavor.cumulative_delta > 0 ? '+' : '' }}{{ gamestateFavor.cumulative_delta.toFixed(1) }}</span> favor
+      <span v-if="gamestateFavor?.session_delta" class="text-[10px] text-text-dim">
+        Session: <span class="text-accent-gold">{{ gamestateFavor.session_delta > 0 ? '+' : '' }}{{ gamestateFavor.session_delta.toFixed(1) }}</span> favor
       </span>
     </div>
 
@@ -198,12 +198,12 @@ function servicesUnlockedAt(tier: string): string[] {
   return servicesByUnlockTier.value[tier] ?? []
 }
 
-/** Estimated progress within current tier based on cumulative delta */
+/** Estimated progress within current tier based on this session's favor */
 const progressPercent = computed(() => {
-  if (!props.gamestateFavor?.cumulative_delta) return null
+  if (!props.gamestateFavor?.session_delta) return null
   const needed = pointsToNextTier(effectiveTier.value)
   if (!needed) return null
-  const delta = props.gamestateFavor.cumulative_delta
+  const delta = props.gamestateFavor.session_delta
   if (delta <= 0) return 0
   return Math.min(100, Math.round((delta / needed) * 100))
 })

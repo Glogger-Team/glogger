@@ -145,11 +145,9 @@ impl GameStateManager {
                     rusqlite::params![name, server],
                 )?;
 
-                // Reset favor deltas — new session starts accumulating from scratch
-                tx.execute(
-                    "UPDATE game_state_favor SET cumulative_delta = 0, source = CASE WHEN favor_tier IS NOT NULL THEN 'snapshot' ELSE source END WHERE character_name = ?1 AND server_name = ?2",
-                    rusqlite::params![name, server],
-                )?;
+                // Favor needs no reset: the session label is a timestamp-filtered
+                // sum over favor_events at read time, so a new login naturally
+                // starts from zero without destroying anything.
             }
             Ok(())
         })();
