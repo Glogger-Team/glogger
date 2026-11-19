@@ -49,8 +49,8 @@ pub struct CoordinatorStatus {
 /// per line — not the drain-final identity), except a mid-session resume
 /// (`None` tag), which falls back to the drain identity. Applied to the player
 /// rows via `GameStateManager::correct_stack_for_session` just before the
-/// live flip, because the Player.log drain already wrote fallback `stack_size
-/// = 1` rows before the chat drain ran.
+/// live flip, because the snapshot slice already holds the rows (prior
+/// report imports) before the chat drain ran.
 /// Which VIP report a `ReportSaved` chat line points at, by the game's own
 /// filename convention (mirrors `setup_commands.rs` `Character_*.json` and
 /// `*_items_*.json` scans). Matched on the file name only — plus a `Reports/`
@@ -315,8 +315,8 @@ impl DataIngestCoordinator {
 
     /// Apply chat stack gains staged during catch-up to their own sessions.
     /// Runs once, as the last step of the catch-up window (after the chat
-    /// drain, before `set_live_mode`): the Player.log drain already wrote the
-    /// rows, and the staged keys name the login session that produced each gain
+    /// drain, before `set_live_mode`): the snapshot slice already holds the
+    /// rows from prior report imports, and the staged keys name the login
     /// (mid-session resume gains excepted — see `StagedChatGain`).
     fn apply_staged_chat_corrections(&mut self) {
         let staged = std::mem::take(&mut self.staged_chat_gains);
@@ -1055,9 +1055,9 @@ impl DataIngestCoordinator {
                                 self.app_handle.emit("game-state-updated", &corrected).ok();
                             }
                         } else if let Some(id) = identity.as_ref() {
-                            // Catch-up: the Player.log drain already wrote
-                            // fallback rows — stage session-keyed for
-                            // `apply_staged_chat_corrections`.
+                            // Catch-up: the snapshot slice already holds the
+                            // rows from prior report imports — stage
+                            // session-keyed for `apply_staged_chat_corrections`.
                             self.staged_chat_gains.push(StagedChatGain {
                                 character: id.character.clone(),
                                 server: id.server.clone(),
