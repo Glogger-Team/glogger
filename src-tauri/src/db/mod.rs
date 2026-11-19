@@ -78,6 +78,12 @@ impl ReadConn {
     {
         self.0.query_row(sql, params, f)
     }
+
+    /// Begin a (deferred) read transaction on the underlying connection so
+    /// multiple statements share one SQLite snapshot.
+    pub fn transaction(&self) -> Result<rusqlite::Transaction<'_>, rusqlite::Error> {
+        rusqlite::Transaction::new_unchecked(&self.0, rusqlite::TransactionBehavior::Deferred)
+    }
 }
 
 impl<'conn> ReadStatement<'conn> {

@@ -24,11 +24,11 @@ Line shape: `YY-MM-DD HH:MM:SS\t[JSON:Type] {single-line JSON}` — no sender pr
 
 ## Twin rule (idempotency across the pair)
 
-English line always precedes its JSON twin, but the rule is order-independent.
-Identity key stays `(timestamp, character, server, item, qty, context, source='chat_status')`
-— `from_name`/`from_entity_id` are enrichment, not identity:
+English-twin identity key stays `(timestamp, character, server, item, qty, context, source='chat_status')`
+— the English guard never sees entities. The JSON guard is entity-aware: exact-entity `EXISTS` first,
+then a single-row unstamped-twin claim (`from_name`/`from_entity_id` enrichment, `MIN(rowid)`):
 
-- JSON second (usual): guard hits → `UPDATE` the row's `from_name`/`from_entity_id` (V91) instead of skipping. Exactly one row, with entity. Survey columns are never touched — enrichment is identity-adjacent, not attribution.
+- JSON second (usual): exact-entity hit → no write; miss → stamp one genuinely unstamped twin. Exactly one row, with entity. Survey columns are never touched — enrichment is identity-adjacent, not attribution.
 - JSON first: JSON inserts with entity; English twin guard-hits → skip without nulling enrichment.
 - Rescan: both twins re-fire → guard-hit → no new rows (entity re-stamped, harmless).
 - Schema: V91 adds `item_transactions.from_name/from_entity_id` (looted-from entity), the `favor_events` per-line log (one row per line — the log IS the guard; the `cumulative_delta` integral is retired, session sums by query), and `character_npc_favor.gifts_this_week`.

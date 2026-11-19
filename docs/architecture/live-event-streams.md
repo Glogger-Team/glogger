@@ -55,7 +55,7 @@ Both watchers are polled on the same coordinator tick (every 500ms — `spawn_po
 3. **Game state switches to live mode** after the first poll (catch-up replay complete) — i.e. after both drains: the chat login marker's `set_active_character` clears transient state when live, and that must not land on rows the replay just built
 4. **Watcher positions saved** to database
 
-This ordering means a Player.log login/area line always lands before the corresponding chat messages for the same game action. Features that correlate across streams can rely on this.
+This ordering describes the drain sequence within one poll tick, not a delivery guarantee: the two files can become readable on different ticks, and during catch-up a later area transition can process before an earlier chat message. Features must not use poll order to infer which area or session produced a chat event.
 
 ## Event Streams Reference
 
@@ -96,9 +96,9 @@ Full details: [`game-state.md`](game-state.md)
 
 **Source:** [`SurveySessionAggregator`](../../src-tauri/src/survey/aggregator.rs) driven by chat loot gains (`attribute_chat_gain`) and manual sessions.
 
-Downstream consumer of chat loot gains. The aggregator is **stateful** — it tracks survey sessions, stitches survey attribution, and manages open multihit nodes (persisted to DB).
+Downstream consumer of chat loot gains. The aggregator is **stateful** — it tracks survey sessions and stitches survey attribution (persisted to DB).
 
-Events emitted: `survey-tracker-session-started`, `survey-tracker-session-ended`, `survey-tracker-use-recorded`, `survey-tracker-use-completed`, `survey-tracker-multihit-opened`, `survey-tracker-multihit-closed`.
+Events emitted: `survey-tracker-session-started`, `survey-tracker-session-ended`, `survey-tracker-use-recorded`, `survey-tracker-use-completed`.
 
 Full details: [`economics-surveying.md`](../features/screens/economics/economics-surveying.md)
 
@@ -167,7 +167,7 @@ The coordinator performs **automatic inventory stack correction** by correlating
 2. Chat.log `[Status] Item x5 added to inventory.` carries the real quantity for a gain: the coordinator calls `GameStateManager::correct_stack_for_session()` with the gain's session identity (tag-preferred, active fallback), which resolves the chat display name to an internal name via CDN data and updates the most recent `stack_size = 1, source = 'log'` placeholder row (Player.log-era leftovers). Snapshot rows are never overwritten by correction.
 3. A `"game-state-updated"` event is emitted so the frontend refreshes.
 
-Chat gains also write to the `item_transactions` ledger table with `source = 'chat_status'`. When the coordinator attributes a gain to a survey use it stamps `source_kind = 'survey_chat'` plus `survey_use_id` in `source_details` — the `source` stays `'chat_status'`, so a query filtering `source = 'player_log'` misses these rows. The survey tracker additionally writes its own `source = 'player_log'` rows for map-use loot; that source no longer means a Player.log parser wrote the row.
+Chat gains also write to the `item_transactions` ledger table with `source = 'chat_status'`. When the coordinator attributes a gain to a survey use it stamps `source_kind = 'survey_chat'` plus `survey_use_id` in `source_details` — the `source` stays `'chat_status'`, so a query filtering `source = 'player_log'` misses these rows. The survey tracker does not write its own `source = 'player_log'` rows: the manual path inserts session/use rows and tags `chat_status` rows, so no `player_log`-sourced row producer exists on that path.
 
 #### Frontend cross-stream example
 

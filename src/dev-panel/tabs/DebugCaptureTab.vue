@@ -161,7 +161,7 @@
         <div class="grid grid-cols-2 gap-3 text-xs">
           <div class="bg-surface-elevated rounded p-2">
             <div class="text-text-muted mb-1">Lines Replayed</div>
-            <div class="text-text-primary text-sm">{{ replayResult.total_lines.toLocaleString() }}</div>
+            <div class="text-text-primary text-sm">{{ replayResult.chat_lines.toLocaleString() }}</div>
           </div>
           <div class="bg-surface-elevated rounded p-2">
             <div class="text-text-muted mb-1">Kills Detected</div>

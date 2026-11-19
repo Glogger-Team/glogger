@@ -1543,13 +1543,15 @@ fn relative_to(
             }
         };
         if let Some(n) = num.take() {
-            secs += n * mult;
+            let add = n.checked_mul(mult)?;
+            secs = secs.checked_add(add)?;
         }
     }
     if secs <= 0 {
         return None;
     }
-    Some((*base + chrono::Duration::seconds(secs)).format("%Y-%m-%d %H:%M:%S").to_string())
+    let dt = base.checked_add_signed(chrono::Duration::seconds(secs))?;
+    Some(dt.format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
 /// Replace a character's garden snapshot from an almanac body and append the
@@ -1562,6 +1564,11 @@ pub fn import_garden_almanac(
     body: &str,
     captured_at: &str,
 ) -> Result<usize, String> {
+    // A truncated (unclosed) <h2> means a partial parse — refuse to replace
+    // the existing snapshot (no-op, Ok(0)) rather than deleting omitted seasons.
+    if body.rfind("<h2>").map(|h| !body[h..].contains("</h2>")).unwrap_or(false) {
+        return Ok(0);
+    }
     let seasons = parse_garden_almanac_body(body, captured_at);
     if seasons.is_empty() {
         // Never wipe a good snapshot on an unparseable body. Tradeoff: a
@@ -2769,6 +2776,42 @@ mod tests {
             })
             .unwrap();
         assert_eq!(snap, 1);
+    }
+    #[test]
+    fn garden_almanac_import_truncated_body_preserves_snapshot() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run_migrations(&conn, None).unwrap();
+        // Seed a good snapshot, then feed one complete season followed by an
+        // unclosed <h2>: the partial parse must not replace the snapshot.
+        conn.execute(
+            "INSERT INTO garden_almanac
+                (character_name, server_name, crop_name, zone_name, event_start, event_end, is_current, captured_at)
+             VALUES ('T', 'Dreva', 'OldCrop', 'OldZone', NULL, NULL, 1, '2026-11-17 16:47:31')",
+            [],
+        )
+        .unwrap();
+        let body = "Upcoming Gardening Events:<h2>Barley Season in Gazluk</h2><i>Ends in 6 hours 12 minutes</i><h2>Carrot Season in";
+        let n = import_garden_almanac(&conn, "T", "Dreva", body, "2026-11-17 16:47:31").unwrap();
+        assert_eq!(n, 0);
+        let kept: String = conn
+            .query_row("SELECT crop_name FROM garden_almanac WHERE character_name = 'T'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(kept, "OldCrop");
+    }
+
+    #[test]
+    fn relative_to_rejects_absurd_durations_without_panic() {
+        let base = chrono::NaiveDateTime::parse_from_str("2026-11-17 16:47:31", "%Y-%m-%d %H:%M:%S");
+        // Valid duration still resolves.
+        assert_eq!(
+            relative_to(&base, "1 day 6 hours").as_deref(),
+            Some("2026-11-18 22:47:31")
+        );
+        // Absurd inputs return None instead of panicking on overflow.
+        assert_eq!(relative_to(&base, "1000000000 days"), None);
+        assert_eq!(relative_to(&base, "999999999999 hours"), None);
     }
 
     #[test]

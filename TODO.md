@@ -128,6 +128,30 @@ WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history.
 - [ ] `check-review-patterns.py` mini-parser edge cases (PR #202 round-3, all Minor, no in-tree trigger — gate-hardening): (1) `_CHAR_RE` strips lifetime-adjacent quoted spans (e.g. `'a, '` in generics), corrupting brace counts — restrict char-literal recognition to true literals; (2) `let _ = f(tx, g())` with nested-call args matches no branch, so a discarded tx-result is accepted — inspect the complete call expression; (3) continuation collector consumes past the first complete statement, letting a later `ROLLBACK` suppress a real finding — stop after the first statement. Verify each against the script before fixing; add regression cases.
   - **Effort: Small | Impact: Low** (no reachable false-negative in tree today)
   - **Suspects:** `scripts/check-review-patterns.py` (`_CHAR_RE`, `code_braces`, discard-detection branches, continuation scan)
+- [ ] D5-47 coordinator file-switch is not retryable (PR #202 round-5, Major): structured dispatch applies first, raw-message batch insert fails with `?` before the new watcher starts — consumed bytes are never replayed, next poll advances past the unprocessed tail. Needs a pending-switch / unfinished-batch state carried across polls.
+  - **Effort: Medium (heavy lift) | Impact: Medium (catch-up data loss on raw-insert failure)**
+  - **Suspects:** `src-tauri/src/coordinator.rs:549` (switch), `:1381-1382` (dispatch-before-raw order)
+- [ ] D5-48 leading untagged lines misattributed after login reorder (PR #202 round-5, Major): poll emits B's login before A's gain; the `None`-tag fallback reads live identity (now B's) and writes A's gain under B. Needs preceding-session carry or reorder-aware tagging.
+  - **Effort: Medium (heavy lift) | Impact: Medium (cross-character misattribution on shared-PC polls)**
+  - **Suspects:** `src-tauri/src/coordinator.rs:966-983`, `src-tauri/src/log_watchers.rs:608`, `src-tauri/src/chat_parser.rs:291-310`
+- [ ] D5-50 chat XP award carries snapshot base across level-up (PR #202 round-5, Major): `xp = stored + award` blends the report-seeded within-level balance into the new level (4900 + 192 → 5092). Needs a separate chat-award tally or unknown-marking on level cross until the next snapshot re-anchors.
+  - **Effort: Medium (heavy lift) | Impact: Low-Medium (XP display across dings)**
+  - **Suspects:** `src-tauri/src/db/game_state_commands.rs:794`
+- [ ] D5-55 kill-side relink steals receipts from newer kills (PR #202 round-5, Major): `link_kill_loot_for_kill` links all DISTINCT (item,qty) in [kill, kill+30min] with no newer-kill check; rescan-heal re-runs it per recorded kill. Needs one rule: each receipt resolves to the latest eligible kill, from both sides.
+  - **Effort: Medium (heavy lift) | Impact: Medium (double-linked loot on replay)**
+  - **Suspects:** `src-tauri/src/db/kill_tracking_commands.rs:339-367` vs `:402`
+- [ ] D5-56 loot deduped by (item, qty) instead of receipt identity (PR #202 round-5, Major): two same-item receipts from one kill collapse to one `enemy_kill_loot` row; `enemy_kill_loot` carries no receipt ref. Needs receipt-identity link or documented one-row-per-(kill,item,qty) semantics.
+  - **Effort: Medium (heavy lift) | Impact: Low (drop totals undercount)**
+  - **Suspects:** `src-tauri/src/db/kill_tracking_commands.rs:384,434`, `chat_status_dispatch.rs:582`
+- [ ] D5-51 `milking_timers` has readers but zero writers (PR #202 round-5, Major): `get_milking_timers` still serves the table; `record_cow_milk`/`record_cow_cooldown_bound` and chat callers are gone (only `record_milking_event` → `player_milking_log` remains). Product call: remove the dead command + widget surface, or rewire writers. Do not leave a stale-timer read path.
+  - **Effort: Small-Medium | Impact: Low (dead surface)**
+  - **Suspects:** `src-tauri/src/db/game_state_commands.rs:1078,1222`, `chat_commands.rs:306,320`
+- [ ] D5 survey/code minors batch (PR #202 round-5 overflow, all Minor, verified valid): replay `character-login` triggers report auto-imports (preview writes DB); roulette V91 fixture justification; report-stat rows lack observation-time freshness; speed-bonus analytics report measured 0% on chat-only data (no unavailable state); retro-claim admits NULL-internal_name crafted maps when CDN is down; FirstUse session commits outside the use tx (orphan session); closed-session loot bounds go stale; NpcTooltip session-delta bar credits previous-tier gains. Fix individually with tests; replay-import and stat-freshness need design first.
+  - **Effort: Small each, Medium for replay-import/stat-freshness | Impact: Low-Medium**
+  - **Suspects:** `replay.rs:282-287`, `roulette_commands.rs:320`, `coordinator.rs:1277,1993`, `survey/commands.rs:1584`, `survey/persistence.rs:296`, `survey/aggregator.rs:174,252,566`, `NpcTooltip.vue:135`
+- [ ] D5 gate-script minors (PR #202 round-5 overflow, all Minor, no in-tree trigger — gate-hardening): `check-review-patterns.py` ignores trailing `?` on discarded DB calls; `check-doc-orphans.py` counts test-module fns as live definitions. Verify each against the script with regression cases before fixing.
+  - **Effort: Small | Impact: Low**
+  - **Suspects:** `scripts/check-review-patterns.py:55`, `scripts/check-doc-orphans.py:286`
 
 ---
 

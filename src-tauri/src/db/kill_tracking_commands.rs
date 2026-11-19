@@ -455,15 +455,18 @@ pub fn get_enemy_kill_stats(
     let conn = db
         .get()
         .map_err(|e| format!("Database connection error: {e}"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Database connection error: {e}"))?;
     let zf = ZoneFilter::from_opt(zone.as_deref());
     let lf = LoadoutFilter::from_opt(combat_skills.as_deref());
 
     let total_kills = match scope.as_str() {
-        "mine" => mine_total_kills(&conn, &enemy_name, &zf, &lf)?,
-        "imported" => imported_total_kills(&conn, &enemy_name, &zf, &lf)?,
+        "mine" => mine_total_kills(&*tx, &enemy_name, &zf, &lf)?,
+        "imported" => imported_total_kills(&*tx, &enemy_name, &zf, &lf)?,
         _ => {
-            mine_total_kills(&conn, &enemy_name, &zf, &lf)?
-                + imported_total_kills(&conn, &enemy_name, &zf, &lf)?
+            mine_total_kills(&*tx, &enemy_name, &zf, &lf)?
+                + imported_total_kills(&*tx, &enemy_name, &zf, &lf)?
         }
     };
 
@@ -476,11 +479,11 @@ pub fn get_enemy_kill_stats(
     }
 
     let loot_rows = match scope.as_str() {
-        "mine" => mine_loot_rows(&conn, &enemy_name, &zf, &lf)?,
-        "imported" => imported_loot_rows(&conn, &enemy_name, &zf, &lf)?,
+        "mine" => mine_loot_rows(&*tx, &enemy_name, &zf, &lf)?,
+        "imported" => imported_loot_rows(&*tx, &enemy_name, &zf, &lf)?,
         _ => combine_loot_rows(
-            mine_loot_rows(&conn, &enemy_name, &zf, &lf)?,
-            imported_loot_rows(&conn, &enemy_name, &zf, &lf)?,
+            mine_loot_rows(&*tx, &enemy_name, &zf, &lf)?,
+            imported_loot_rows(&*tx, &enemy_name, &zf, &lf)?,
         ),
     };
 
@@ -692,6 +695,9 @@ pub fn search_database_enemies(
     let conn = db
         .get()
         .map_err(|e| format!("Database connection error: {e}"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Database connection error: {e}"))?;
     let lf = LoadoutFilter::from_opt(combat_skills.as_deref());
     let lf_binds = || -> Vec<rusqlite::types::Value> { lf.bind().into_iter().collect() };
 
@@ -712,7 +718,7 @@ pub fn search_database_enemies(
             ){} GROUP BY enemy_name, zone",
             lf.sql("k.combat_skills"),
         );
-        let mut kill_stmt = conn
+        let mut kill_stmt = tx
             .prepare(&sql)
             .map_err(|e| format!("Failed to prepare query: {e}"))?;
         let rows = kill_stmt
@@ -734,7 +740,7 @@ pub fn search_database_enemies(
              FROM enemy_kill_loot l JOIN enemy_kills k ON l.kill_id = k.id{}",
             lf.where_clause("k.combat_skills")
         );
-        let mut loot_stmt = conn
+        let mut loot_stmt = tx
             .prepare(&sql)
             .map_err(|e| format!("Failed to prepare loot query: {e}"))?;
         let rows = loot_stmt
@@ -760,7 +766,7 @@ pub fn search_database_enemies(
             "SELECT enemy_name, zone, COALESCE(SUM(total_kills), 0) FROM imported_enemy_kills_agg{} GROUP BY enemy_name, zone",
             lf.where_clause("combat_skills")
         );
-        let mut kill_stmt = conn
+        let mut kill_stmt = tx
             .prepare(&sql)
             .map_err(|e| format!("Failed to prepare imported query: {e}"))?;
         let rows = kill_stmt
@@ -781,7 +787,7 @@ pub fn search_database_enemies(
             "SELECT DISTINCT enemy_name, zone, item_name FROM imported_enemy_kill_loot_agg{}",
             lf.where_clause("combat_skills")
         );
-        let mut loot_stmt = conn
+        let mut loot_stmt = tx
             .prepare(&sql)
             .map_err(|e| format!("Failed to prepare imported loot query: {e}"))?;
         let rows = loot_stmt
