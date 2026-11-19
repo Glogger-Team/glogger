@@ -161,14 +161,13 @@ Some data appears in both streams with different levels of detail. The pattern i
 
 #### Backend cross-stream correlation
 
-The coordinator performs **automatic inventory stack correction** by correlating chat status events with Player.log data:
+The coordinator performs **automatic inventory stack correction** by correlating chat status events with stored rows:
 
-1. Player.log `ProcessAddItem` records items with `stack_size = 1` in `game_state_inventory` / `game_state_storage`
-2. Chat.log `[Status] Item x5 added to inventory.` provides the real quantity
-3. The coordinator calls `GameStateManager::correct_stack_for_session()` with the gain's session identity (tag-preferred, active fallback) which resolves the chat display name to a Player.log internal name via CDN data, finds recent `stack_size=1` rows, and updates them
-4. A `"game-state-updated"` event is emitted so the frontend refreshes
+1. Report imports (`Reports/*_items_*.json` via `import_inventory_report`) replace the whole snapshot slice for the character/server (`DELETE` + re-insert with `source = 'snapshot'`); those quantities are authoritative.
+2. Chat.log `[Status] Item x5 added to inventory.` carries the real quantity for a gain: the coordinator calls `GameStateManager::correct_stack_for_session()` with the gain's session identity (tag-preferred, active fallback), which resolves the chat display name to an internal name via CDN data and updates the most recent `stack_size = 1, source = 'log'` placeholder row (Player.log-era leftovers). Snapshot rows are never overwritten by correction.
+3. A `"game-state-updated"` event is emitted so the frontend refreshes.
 
-Both sources also write to the `item_transactions` ledger table (v15 migration) — Player.log events with `source = 'player_log'` and chat events with `source = 'chat_status'`.
+Chat gains also write to the `item_transactions` ledger table — `source = 'chat_status'` for ordinary gains, `source = 'player_log'` for gains the survey tracker attributes to a map use. The `player_log` source no longer means a Player.log parser wrote the row.
 
 #### Frontend cross-stream example
 
