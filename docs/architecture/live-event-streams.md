@@ -167,7 +167,7 @@ The coordinator performs **automatic inventory stack correction** by correlating
 2. Chat.log `[Status] Item x5 added to inventory.` carries the real quantity for a gain: the coordinator calls `GameStateManager::correct_stack_for_session()` with the gain's session identity (tag-preferred, active fallback), which resolves the chat display name to an internal name via CDN data and updates the most recent `stack_size = 1, source = 'log'` placeholder row (Player.log-era leftovers). Snapshot rows are never overwritten by correction.
 3. A `"game-state-updated"` event is emitted so the frontend refreshes.
 
-Chat gains also write to the `item_transactions` ledger table — `source = 'chat_status'` for ordinary gains, `source = 'player_log'` for gains the survey tracker attributes to a map use. The `player_log` source no longer means a Player.log parser wrote the row.
+Chat gains also write to the `item_transactions` ledger table with `source = 'chat_status'`. When the coordinator attributes a gain to a survey use it stamps `source_kind = 'survey_chat'` plus `survey_use_id` in `source_details` — the `source` stays `'chat_status'`, so a query filtering `source = 'player_log'` misses these rows. The survey tracker additionally writes its own `source = 'player_log'` rows for map-use loot; that source no longer means a Player.log parser wrote the row.
 
 #### Frontend cross-stream example
 

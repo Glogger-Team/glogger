@@ -125,6 +125,9 @@ WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history.
 - [ ] Retired-noun doc sweep has no gate: `check-doc-orphans.py` scans only `.rs` minus-lines in the changed set, so a symbol deleted before the check existed (or docs edited without touching code) leaves stale claims tree-wide — the Player.log item parser outlived its deletion across 13 doc files (PR #202, 2026-11). Options: whole-tree audit mode for the orphan script (all docs vs all live definitions, CI-scheduled not per-commit), or a curated retired-nouns list the gate greps.
   - **Effort: Small-Medium | Impact: Low-Medium** (docs accuracy; the cost is reviewer rounds like PR #202's)
   - **Suspects:** `scripts/check-doc-orphans.py`, `scripts/lint-markdown-changed.py` (scope model)
+- [ ] `check-review-patterns.py` mini-parser edge cases (PR #202 round-3, all Minor, no in-tree trigger — gate-hardening): (1) `_CHAR_RE` strips lifetime-adjacent quoted spans (e.g. `'a, '` in generics), corrupting brace counts — restrict char-literal recognition to true literals; (2) `let _ = f(tx, g())` with nested-call args matches no branch, so a discarded tx-result is accepted — inspect the complete call expression; (3) continuation collector consumes past the first complete statement, letting a later `ROLLBACK` suppress a real finding — stop after the first statement. Verify each against the script before fixing; add regression cases.
+  - **Effort: Small | Impact: Low** (no reachable false-negative in tree today)
+  - **Suspects:** `scripts/check-review-patterns.py` (`_CHAR_RE`, `code_braces`, discard-detection branches, continuation scan)
 
 ---
 
