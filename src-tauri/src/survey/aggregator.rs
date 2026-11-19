@@ -896,7 +896,8 @@ mod tests {
             &conn,
             "AltB",
             "Legacy",
-            Some("IronOre"),
+            None, // unidentified gain: the identity fallback cannot fire, so
+            // a match proves the queue entry survived invalidation.
             1,
             "2026-04-15 12:00:04",
             None,

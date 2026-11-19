@@ -8,7 +8,7 @@ The solver is a backend service — multiple frontend features feed stops into i
 
 ## Architecture
 
-```
+```text
 Frontend feature           Tauri command       Rust solver
 (WO tab, Projects, etc.) → plan_trip() ───→ trip_router::plan_route()
                                                   │
@@ -23,18 +23,19 @@ Frontend feature           Tauri command       Rust solver
 | [src-tauri/src/zone_graph.rs](../../src-tauri/src/zone_graph.rs) | Zone connectivity graph, BFS distance matrix, sub-zone resolution, friendly name resolution |
 | [src-tauri/src/trip_router.rs](../../src-tauri/src/trip_router.rs) | Route solver, travel method selection, Tauri command |
 | [src-tauri/src/db/migrations.rs](../../src-tauri/src/db/migrations.rs) | v39: `game_state_teleportation` table |
-| [src-tauri/src/coordinator.rs](../../src-tauri/src/coordinator.rs) | `ingest_teleportation_binds()` — parses bind locations from SkillReport books |
+| [src-tauri/src/coordinator.rs](../../src-tauri/src/coordinator.rs) | `ingest_teleportation_binds(at, …)` — parses bind locations from SkillReport books; `captured_at` recency gate drops stale replays |
 | [src-tauri/src/db/game_state_commands.rs](../../src-tauri/src/db/game_state_commands.rs) | `get_teleportation_binds`, `set_mushroom_circles` commands |
 
 ## Zone Connectivity Graph
 
 The CDN `areas.json` only provides zone names — no connectivity. The zone adjacency graph is **hardcoded** in `zone_graph.rs` as a static edge list, sourced from:
-- https://wiki.projectgorgon.com/wiki/Zones
-- https://wiki.projectgorgon.com/wiki/Dungeons
+
+- <https://wiki.projectgorgon.com/wiki/Zones>
+- <https://wiki.projectgorgon.com/wiki/Dungeons>
 
 ### Overworld Zones (15 nodes)
 
-```
+```text
 Anagoge Island ─── Serbule ─── Serbule Hills
                       │
                    Eltibule ─── Red Wing Casino ─┬─ Rahu
@@ -72,31 +73,41 @@ Both edges (Casino↔Rahu and Casino↔Statehelm) are in the static graph. `plan
 Bind locations from the game use friendly names ("Red Wing Casino", "Caves Beneath Gazluk", "Dungeons Beneath Eltibule") while the graph uses CDN area keys. `ZoneGraph::resolve_friendly_name()` handles the mapping. Supported names include all overworld zones (including Phantom Ilmari Desert / `AreaDesert2`) plus common sub-zone names that appear in teleportation status reports.
 
 Unrecognized names in `TravelConfig` are kept as-is and logged (`eprintln!`) at resolution; the solver then fails the plan with an "Unknown zone" error naming the zone rather than silently dropping the stop.
+
 ## How to Modify the Zone Graph
 
 ### Adding a new zone
 
 1. Add a CDN key constant in `zone_graph.rs`:
+
    ```rust
    pub const AREA_NEW_ZONE: &str = "AreaNewZone";
    ```
+
 2. Add edges to `OVERWORLD_EDGES`:
+
    ```rust
    (AREA_EXISTING_ZONE, AREA_NEW_ZONE),
    ```
+
 3. Add a friendly name mapping in `resolve_friendly_name()`:
+
    ```rust
    "New Zone" | "New Zone Name" => AREA_NEW_ZONE,
    ```
+
 4. Add a display name in `trip_router.rs` `friendly_zone_name()`:
+
    ```rust
    "AreaNewZone" => "New Zone",
    ```
+
 5. Update the `test_graph_builds` assertion for the new zone count.
 
 ### Adding a new dungeon / sub-zone
 
 Add an entry to `SUBZONE_PARENTS`:
+
 ```rust
 (AREA_NEW_DUNGEON, AREA_PARENT_ZONE),
 ```
@@ -124,13 +135,13 @@ Selection logic is in `best_travel_method()`. Walking is only used when it's che
 
 **Bind pad locations** are auto-parsed from Player.log when the player opens their Teleportation skill info page in-game:
 
-```
+```text
 ProcessBook("Skill Info", "Teleportation Status:\n\n\n
 Primary Bind Location: Red Wing Casino\n
 Secondary Bind Location: Caves Beneath Gazluk\n...", "SkillReport", ...)
 ```
 
-The coordinator intercepts this `BookOpened` event, extracts "Primary Bind Location" and "Secondary Bind Location", and persists them to the `game_state_teleportation` table.
+The coordinator extracts "Primary Bind Location" and "Secondary Bind Location" on the live JSON `Book` arm (and the Books-watcher backfill mirrors it), and persists them to the `game_state_teleportation` table.
 
 **Mushroom circle attunements** cannot be parsed from logs. They must be manually configured by the user via the `set_mushroom_circles` command. The table supports two circle slots.
 
@@ -171,6 +182,7 @@ invoke('plan_trip', {
 ```
 
 **Response:**
+
 ```typescript
 {
   steps: [
@@ -245,6 +257,7 @@ Wire the solver into consumer features that generate stop lists:
 ### Crafting Station Awareness
 
 Routing needs to know which zones have which crafting stations to direct "craft X" stops correctly. The CDN has **no structured station field** on recipes — requirements appear only in `Description` text using two patterns:
+
 - `"Requires a <station>"` — mostly Cooking recipes
 - `"Must be near a <station>"` — Armorsmithing, Leatherworking, etc.
 

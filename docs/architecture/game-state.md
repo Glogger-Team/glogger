@@ -64,7 +64,7 @@ The game-state tables (the `game_state_*` and `character_*` families) live in th
 | `game_state_inventory` | (character_name, instance_id) | item_name, item_type_id, stack_size, slot_index, source |
 | `game_state_recipes` | (character_name, recipe_id) | completion_count, source |
 | `game_state_equipment` | (character_name, slot) | appearance_key |
-| `game_state_favor` | (character_name, npc_name) | npc_id, session_delta, favor_tier, source |
+| `game_state_favor` | (character_name, server_name, npc_key) | npc_key, npc_name, favor_tier, last_confirmed_at, source, cumulative_delta (legacy, V91-zeroed) — `session_delta` is NOT a column; computed at read from `favor_events` |
 | `game_state_currencies` | (character_name, currency_name) | amount, source |
 | `game_state_effects` | (character_name, effect_instance_id) | effect_name, source_entity_id |
 | `game_state_storage` | (character_name, server_name, vault_key, instance_id) | item_name, item_type_id, stack_size, slot_index, source |
@@ -205,7 +205,7 @@ These are not persisted to DB — they reset on login/session restart.
 | Inventory | `game_state_inventory` | `ItemAdded`/`Changed`/`Deleted` | Storage report |
 | Recipes | `game_state_recipes` | `RecipeUpdated` | Character report |
 | Equipment | `game_state_equipment` | `EquipmentChanged` | — |
-| NPC Favor | `game_state_favor` | `FavorChanged` | Character report (tier) |
+| NPC Favor | `game_state_favor` | `game-state-updated` (`favor` domain) | Character report (tier) |
 | Currencies | `game_state_currencies` | *(none — report only)* | Character report |
 | Effects | `game_state_effects` | `EffectsAdded`/`Removed`/`NameUpdated` | — |
 | Storage | `game_state_storage` | `StorageDeposit`/`Withdrawal` | Storage report (vault items) |
@@ -224,7 +224,7 @@ These are not persisted to DB — they reset on login/session restart.
 
 ### NPC Favor
 
-Log events only provide **deltas** (`ProcessDeltaFavor`), not absolute values. `session_delta` tracks the running sum since last report. `favor_tier` comes from reports (e.g., `"BestFriends"`). Delta resets to 0 on login.
+Log events only provide **deltas** (`ProcessDeltaFavor`), not absolute values. `session_delta` is computed at read: `SUM(delta)` over `favor_events` since `last_login_at` (`session_favor_sums` in `game_state_commands.rs`). `favor_tier` comes from reports (e.g., `"BestFriends"`). V91 zeroed the old stored `cumulative_delta` integral once at migration; nothing resets per login.
 
 ### Currencies
 

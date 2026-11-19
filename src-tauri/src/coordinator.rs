@@ -1253,7 +1253,7 @@ impl DataIngestCoordinator {
                         if book_type == "SkillReport"
                             && body.contains("Primary Bind Location:")
                         {
-                            self.ingest_teleportation_binds(&body, character, server);
+                            self.ingest_teleportation_binds(&at, &body, character, server);
                         }
                         if title == "Gardening Almanac" {
                             // Title-only is the whole gate: `json_book` is
@@ -1476,18 +1476,23 @@ impl DataIngestCoordinator {
     /// Last Used Location: Statehelm\n
     /// Most Common Destination: Serbule\n
     /// ```
-    fn ingest_teleportation_binds(&self, content: &str, character: &str, server: &str) {
+    fn ingest_teleportation_binds(&self, at: &str, content: &str, character: &str, server: &str) {
         // Live ProcessBook content carries escaped newlines; the file path
         // carries real ones. Normalize once here so `extract_bind_field`
         // sees real line breaks on both paths (historically the live path
         // silently matched no fields).
         let content = normalize_book_content(content);
+        // The book's own observation time is the freshness signal: a stale
+        // replay must not clobber a newer bind (unparsable `at` degrades to
+        // untimestamped, which only fills an empty table).
+        let captured_at = chrono::NaiveDateTime::parse_from_str(at, "%Y-%m-%d %H:%M:%S").ok();
         if let Err(e) = ingest_teleport_binds_content(
             &self.db_pool,
             &self.app_handle,
             character,
             server,
             &content,
+            captured_at,
         ) {
             eprintln!("[coordinator] Teleportation binds failed: {e}");
         }
@@ -2021,12 +2026,40 @@ pub(crate) fn extract_bind_field(content: &str, field: &str) -> Option<String> {
 /// Parse teleportation bind locations from a "Skill Info" SkillReport book
 /// and persist them to `game_state_teleportation`. Shared by the live
 /// coordinator and the Books-directory watcher.
+///
+/// Recency gate: `captured_at` is the book's own observation time (live book
+/// `at`, or the watcher's `SkillReport_YYMMDD_HHMMSS` filename suffix). An
+/// older capture replayed at startup must not clobber a newer bind, so a
+/// capture older than the stored row is skipped silently. `None`
+/// (untimestamped source) only fills an empty table. Free function so the
+/// gate is unit-testable without an `AppHandle`.
+fn bind_capture_is_fresh(
+    stored_last_updated: Option<&str>,
+    captured_at: Option<chrono::NaiveDateTime>,
+) -> bool {
+    let Some(captured) = captured_at else {
+        return stored_last_updated.is_none();
+    };
+    let Some(stored) = stored_last_updated else {
+        return true;
+    };
+    // Stored stamps are RFC3339 (this writer); parse flexibly so a legacy
+    // row never blocks a write it can't be compared against.
+    let stored_dt = chrono::DateTime::parse_from_rfc3339(stored)
+        .map(|d| d.naive_utc())
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(stored, "%Y-%m-%d %H:%M:%S"));
+    match stored_dt {
+        Ok(s) => captured >= s,
+        Err(_) => true,
+    }
+}
 pub fn ingest_teleport_binds_content(
     db: &DbPool,
     app_handle: &AppHandle,
     character: &str,
     server: &str,
     content: &str,
+    captured_at: Option<chrono::NaiveDateTime>,
 ) -> Result<(), String> {
     let primary = extract_bind_field(content, "Primary Bind Location:");
     let secondary = extract_bind_field(content, "Secondary Bind Location:");
@@ -2036,7 +2069,21 @@ pub fn ingest_teleport_binds_content(
     // update (execute failure swallowed by `.ok()`).
     let conn = db.get_write().map_err(|e| format!("Database error: {e}"))?;
 
-    let dt = chrono::Utc::now().to_rfc3339();
+    // Stale-capture veto (see `bind_capture_is_fresh`): a read error here
+    // degrades to "no stored row" and the upsert below surfaces it.
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT last_updated FROM game_state_teleportation WHERE character_name = ?1 AND server_name = ?2",
+            rusqlite::params![character, server],
+            |r| r.get(0),
+        )
+        .ok();
+    if !bind_capture_is_fresh(stored.as_deref(), captured_at) {
+        return Ok(());
+    }
+    let dt = captured_at
+        .map(|c| c.and_utc().to_rfc3339())
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
     conn.execute(
         "INSERT INTO game_state_teleportation
             (character_name, server_name, primary_bind, secondary_bind, last_updated)
@@ -2843,5 +2890,49 @@ mod session_identity_tests {
 
         drop(pool);
         let _ = std::fs::remove_file(&db_path);
+    }
+}
+
+#[cfg(test)]
+mod bind_freshness_tests {
+    use super::bind_capture_is_fresh;
+    use chrono::NaiveDateTime;
+
+    fn dt(s: &str) -> Option<NaiveDateTime> {
+        NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").ok()
+    }
+
+    #[test]
+    fn older_capture_does_not_clobber_newer_bind() {
+        // Stored bind observed 12:10; replayed book from 12:00 loses.
+        assert!(!bind_capture_is_fresh(
+            Some("2026-11-18T12:10:00+00:00"),
+            dt("2026-11-18 12:00:00"),
+        ));
+    }
+
+    #[test]
+    fn newer_capture_overwrites_and_empty_table_fills() {
+        assert!(bind_capture_is_fresh(
+            Some("2026-11-18T12:00:00+00:00"),
+            dt("2026-11-18 12:10:00"),
+        ));
+        assert!(bind_capture_is_fresh(None, dt("2026-11-18 12:10:00")));
+        // Same-instant re-capture is idempotent, not a clobber.
+        assert!(bind_capture_is_fresh(
+            Some("2026-11-18T12:10:00+00:00"),
+            dt("2026-11-18 12:10:00"),
+        ));
+    }
+
+    #[test]
+    fn untimestamped_source_only_fills_empty_table() {
+        assert!(bind_capture_is_fresh(None, None));
+        assert!(!bind_capture_is_fresh(Some("2026-11-18T12:10:00+00:00"), None));
+    }
+
+    #[test]
+    fn unparseable_stored_stamp_never_blocks() {
+        assert!(bind_capture_is_fresh(Some("not-a-timestamp"), dt("2026-11-18 12:00:00")));
     }
 }

@@ -242,6 +242,19 @@ def main() -> int:
 
     # Untracked files have no minus lines (nothing to extract).
 
+    # A removed `fn` line is not a removed symbol: renames and signature
+    # edits trip the extractor while the name still lives in the tree.
+    # Only identifiers with no live definition can orphan a doc.
+    defined: set[str] = set()
+    for rs in (ROOT / "src-tauri" / "src").rglob("*.rs"):
+        try:
+            text = rs.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for m in re.finditer(r"\b(?:fn|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)", text):
+            defined.add(m.group(1))
+    idents -= defined
+
     # Grep docs/
     docs_root = ROOT / "docs"
     findings: list[str] = []

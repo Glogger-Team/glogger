@@ -9,23 +9,28 @@ Tracks cow milking activity across three categories: NPC cow cooldown timers, pl
 ## Features
 
 ### Timers Tab (NPC Cows)
+
 - **Cooldown tracking:** Shows 1-hour countdown timers for each NPC cow milked, with "Ready!" when cooldown expires. When the milk time is genuinely unknown (see the backfill below) the timer says `≤ 45m` instead — an upper bound that is certain at zero, rather than a fabricated countdown.
 - **Grouped by zone:** Cows are organized under their zone, sorted alphabetically.
 - **Current zone first:** The player's current zone is highlighted and floated to the top.
 - **Cooldown backfill:** If the player tries to milk a cow that's still on cooldown, the error is detected and a *bound* is recorded (see "NPC Cow Cooldown Backfill").
 
 ### Players Milked Tab
+
 - **Leaderboard:** Ranked list of other players milked by this character, sorted by count descending.
 
 ### Milked By Tab
+
 - **Leaderboard:** Ranked list of players who have milked this character, sorted by count descending.
 
 ### Self-Milked Counter
+
 - **Inline counter:** A single line above the tabs showing the total self-milk count. Only visible when count > 0.
 
 ## Detection & Data Flow
 
 ### NPC Cow Milking
+
 1. Player interacts with an NPC cow (e.g., `Cow_Homer`)
 2. `PlayerEventParser` emits `InteractionStarted` with an `npc_name` starting with `Cow_`
 3. Coordinator stores `pending_cow_interaction`
@@ -34,6 +39,7 @@ Tracks cow milking activity across three categories: NPC cow cooldown timers, pl
 6. Cow name and zone are persisted to `milking_timers` table (UPSERT)
 
 ### NPC Cow Cooldown Backfill
+
 1. Player tries to milk a cow still on cooldown
 2. `ProcessScreenText(ErrorMessage, "You've already milked Homer in the past hour.")` is detected
 3. Coordinator records a **bound**, not a milk time: `cooldown_unknown = 1` with `last_milked_at` = the error line's own timestamp (the earliest attempt seen wins — each accepted attempt tightens the bound)
@@ -41,17 +47,20 @@ Tracks cow milking activity across three categories: NPC cow cooldown timers, pl
 The error only says the milk happened somewhere in `(attempt - 1h, attempt]`, so the widget's remaining time is `expiry ≤ attempt + 1h` and it renders `≤ Xm`; at zero the cow is certainly ready. A real milk (`record_cow_milk`) clears the flag and stores the true event time, and a bound can never overwrite a known time (only a previously-unknown row's bound is tightened). Rows that predate migration v73 hold the old "59 minutes ago" fabrication and are treated as known — they age out at that cow's next milk.
 
 ### Player-to-Player Milking (Milking Another Player)
+
 1. Player milks another player in cow form
 2. `ProcessScreenText(GeneralInfo, "You obtain fresh milk from PlayerName.")` is detected
 3. Recorded as direction `milked` in `player_milking_log`
 
 ### Player-to-Player Milking (Being Milked)
+
 1. Another player milks this character
 2. Chat `[Status] PlayerName has milked you.` is detected via `chat_status_parser::try_milked_by` — this is the live producer (28 events observed in Chat logs Jun–Oct 2026; e.g. `26-10-24 22:07:13 [Status] Azyima has milked you.`)
 3. The legacy `ProcessScreenText(ImportantInfo, "PlayerName has milked you.")` Player.log path records the same event if present (unobserved in current logs — `Player.log` carries no `ScreenText` lines in recent builds; kept as fallback). Both paths share `strip_milked_by_suffix` so names normalize identically (the `player_milking_log` dedup key includes `other_player`)
 4. Recorded as direction `milked_by` in `player_milking_log`
 
 ### Self-Milking (Cow Player Milks Themselves)
+
 1. A player in cow form uses Collect Milk on themselves
 2. Combat chat `[Combat] PlayerName: Collect Milk on PlayerName!` is detected (no entity ID, matching active character as both source and target) via `chat_combat_parser::parse_self_ability_line(…, "Collect Milk")`, matched against the **sender-split** `message` — never against the raw line, which still carries `"PlayerName: "` (see the gotcha in [chat-parser.md](../../chat-parser.md))
 3. Recorded as direction `self_milked` in `player_milking_log` (the v38 CHECK constraint allows the direction)
@@ -103,7 +112,7 @@ blank one. The widget additionally de-duplicates by `cow_name` as a safeguard.
 | direction | TEXT | `milked`, `milked_by`, or `self_milked` |
 | milked_at | TEXT | RFC3339 UTC **event time** (not ingest time) |
 
-`milked_at` is derived from the event itself by `coordinator::milking_event_timestamp`:
+`milked_at` is derived from the event itself by `chat_status_dispatch::utc_naive_to_rfc3339`:
 
 | Source | Time handed in |
 |---|---|
@@ -112,7 +121,7 @@ blank one. The widget additionally de-duplicates by `cow_name` as a safeguard.
 
 A missing/unparseable event time falls back to `Utc::now()` so a milking is never dropped.
 
-Fixed 2026-10: `record_player_milk` previously ignored the event timestamp and wrote `Utc::now()` (ingest time), so `milked`/`milked_by` rows read during a catch-up replay were stamped with the read time instead of the log's — a backfill would have dated an entire archive "today". (The `self_milked` arm additionally could not fire at all before the sender-split matcher fix.) The timestamp *format* is pinned by `coordinator::milking_timestamp_tests`; the call-site wiring was verified live against record 2026-10-13T01:14:16+00:00 for a 20:14:16 local self-milk.
+Fixed 2026-10: `record_player_milk` previously ignored the event timestamp and wrote `Utc::now()` (ingest time), so `milked`/`milked_by` rows read during a catch-up replay were stamped with the read time instead of the log's — a backfill would have dated an entire archive "today". (The `self_milked` arm additionally could not fire at all before the sender-split matcher fix.) The timestamp *format* is pinned by `utc_naive_to_rfc3339_converts_and_falls_back`; the call-site wiring was verified live against record 2026-10-13T01:14:16+00:00 for a 20:14:16 local self-milk.
 
 The backfill converts with each log's **own** offset rather than today's setting, because the instant is half of the dedup key: re-running after a DST flip or a changed `manual_timezone_override` must re-derive the same string, not insert a twin row.
 

@@ -448,8 +448,16 @@ mod tests {
         let domains = manager.correct_stack_for_session("OtherAlt", "Dreva", "Fluorite", 5, &pool);
         assert!(domains.contains(&"inventory"));
         assert_eq!(stack("OtherAlt", "log"), 5, "staged session corrected");
-        assert_eq!(stack("TestPlayer", "log"), 1, "other session untouched");
         assert_eq!(stack("TestPlayer", "snapshot"), 1, "report row never a target");
+
+        // Same-character correction: TestPlayer's own log row corrects
+        // 1→5 while its report-backed snapshot row stays 1 (the filter
+        // under test), and OtherAlt's corrected row is untouched.
+        let domains = manager.correct_stack_for_session("TestPlayer", "Dreva", "Fluorite", 5, &pool);
+        assert!(domains.contains(&"inventory"));
+        assert_eq!(stack("TestPlayer", "log"), 5, "target slice corrects");
+        assert_eq!(stack("TestPlayer", "snapshot"), 1, "report row never a target");
+        assert_eq!(stack("OtherAlt", "log"), 5, "other session untouched");
 
         // Drop the pool first: Windows won't delete a file with an open handle.
         drop(pool);

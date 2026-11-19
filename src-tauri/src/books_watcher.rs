@@ -23,6 +23,7 @@ use crate::db::stall_tracker_commands::{insert_stall_events, StallEventInput};
 use crate::db::DbPool;
 use crate::settings::SettingsManager;
 use crate::shop_log_parser::parse_shop_log;
+use chrono::NaiveDateTime;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -536,6 +537,26 @@ pub(crate) fn classify_book_file(stem: &str) -> (String, BookKind) {
         other => (other.to_string(), BookKind::BookOnly),
     }
 }
+/// Game timestamp from a `SkillReport_YYMMDD_HHMMSS` filename stem.
+/// `None` for untimestamped files — those sort first (= oldest), and the
+/// bind writer treats `None` as oldest too, so an untimestamped backfill
+/// fills an empty table but never overwrites a timestamped bind.
+fn skill_report_capture_at(stem: &str) -> Option<NaiveDateTime> {
+    let groups: Vec<&str> = stem.split('_').collect();
+    if groups.len() < 2 {
+        return None;
+    }
+    let (d, t) = (groups[groups.len() - 2], groups[groups.len() - 1]);
+    if d.len() != 6
+        || t.len() != 6
+        || !d.chars().all(|c| c.is_ascii_digit())
+        || !t.chars().all(|c| c.is_ascii_digit())
+    {
+        return None;
+    }
+    // No century in the name; the game launched in 2018, so 2000+YY holds.
+    NaiveDateTime::parse_from_str(&format!("20{d}{t}"), "%Y%m%d%H%M%S").ok()
+}
 
 /// Ingest one book file. `content` may be raw file text (real newlines) —
 /// normalization to the shared live-path shape happens here, once.
@@ -595,7 +616,11 @@ pub(crate) fn process_book_file(
                 }
             }
             if content.contains("Primary Bind Location:") {
-                ingest_teleport_binds_content(db, app, character, server, &content)
+                // Filename suffix is the authoritative game time (mtime is
+                // unreliable across copy/restore); untimestamped files sort
+                // first and fill only an empty table.
+                let captured_at = skill_report_capture_at(&title);
+                ingest_teleport_binds_content(db, app, character, server, &content, captured_at)
                     .map_err(|e| format!("teleportation binds failed: {e}"))?;
                 notes.push("binds updated".to_string());
             }
@@ -1248,5 +1273,23 @@ mod tests {
             .collect();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0], "CrudBurst's Hammer of Thumping");
+    }
+
+    // ── bind capture time (SkillReport_YYMMDD_HHMMSS suffix) ─────────
+
+    #[test]
+    fn skill_report_suffix_parses_game_time() {
+        let at = skill_report_capture_at("SkillReport_261118_121000");
+        assert_eq!(
+            at.map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()),
+            Some("2026-11-18 12:10:00".to_string())
+        );
+    }
+
+    #[test]
+    fn skill_report_suffix_rejects_untimestamped() {
+        assert_eq!(skill_report_capture_at("SkillReport"), None);
+        assert_eq!(skill_report_capture_at("SkillReport_notes"), None);
+        assert_eq!(skill_report_capture_at("SkillReport_26118_12100"), None);
     }
 }
