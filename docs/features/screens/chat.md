@@ -113,7 +113,7 @@ Parses message text to detect `[Item: ItemName]` patterns and renders them as `I
 - `get_watch_rule_messages(rule_id, limit, offset) → Vec<ChatMessage>` — messages matching a watchword rule
 - `get_chat_stats() → ChatStats` — overall statistics
 - `get_poems() → Vec<PoemRow>` — all recorded poems (global, newest first); searching/filtering is done on the frontend
-- `scan_player_log_for_poems() → usize` — one-time backfill: scans the entire current Player.log for past `Poem by X` recitals and inserts them (deduped). Exposed as the "Scan Player.log" button on the Poems tab, since the live watcher only sees poems recited after it starts tailing.
+- `scan_player_log_for_poems() → usize` — backfill: scans the entire current Player.log for past `Poem by X` recitals and inserts them (deduped). Exposed as the "Scan Player.log" button on the Poems tab. No live watcher records poems; the startup backfill and this scan are the only writers.
 
 ### Maintenance
 

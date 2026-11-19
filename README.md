@@ -181,6 +181,7 @@ glogger tails Project: Gorgon's `Player.log` and `Chat.log` files in real time. 
 ```text
 Player.log ──→ session signals (login/path/area) ──┐
 Chat.log ────→ ChatStatusParser ───────────────────┤
+Chat.log ────→ chat_json_parser (JSON signals) ────┤
 Reports/*.json → snapshot imports ─────────────────┤
                                                    ▼
                                     Feature Coordinators → SQLite → Vue Frontend

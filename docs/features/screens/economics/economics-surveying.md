@@ -108,11 +108,11 @@ Data sources:
 - Center-pane views read from `survey_tracker_analytics()`, which already carries per-zone and per-type item breakdowns.
 - The calculator reads from `survey_tracker_item_cost_analysis()`, a dedicated command that returns one row per (item, survey type, zone) with primary/bonus splits and the per-type average survey duration.
 
-All metrics derive from the `item_transactions` ↔ `survey_uses` join. Speed-bonus rates and bonus-item totals come from the `is_speed_bonus` flag in `source_details`, set when a `(speed bonus!)` ScreenText marker arrives after the gain rows are written.
+All metrics derive from the `item_transactions` ↔ `survey_uses` join. Speed-bonus rates and bonus-item totals would come from the `is_speed_bonus` flag in `source_details` — but no production writer sets that flag today (only test fixtures do), so bonus metrics read zero on real data. The designed producer is a `(speed bonus!)` ScreenText handler in `chat_status_dispatch` — not yet implemented.
 
 ### Speed-bonus attribution
 
-Basic surveys can grant bonus drops; the game signals this with a ScreenText line like `"Blue Spinel collected! Also found Rubywall Crystal x2 (speed bonus!)"` that arrives after the gain rows are staged. The ScreenText handler in `chat_status_dispatch` looks up the most recent Basic `survey_use_id` and patches `item_transactions.source_details` for each bonus-item row to set `is_speed_bonus: true`. Analytics queries read the flag via `json_extract`, giving per-zone / per-type bonus rates and primary/bonus splits for free — no separate tables needed.
+Basic surveys can grant bonus drops; the game signals this with a ScreenText line like `"Blue Spinel collected! Also found Rubywall Crystal x2 (speed bonus!)"` that arrives after the gain rows are staged. The designed consumer is a ScreenText handler in `chat_status_dispatch` that would look up the most recent Basic `survey_use_id` and patch `item_transactions.source_details` for each bonus-item row to set `is_speed_bonus: true` — that handler does not exist yet, so the flag is never set in production and the analytics below read zero on real data. `mark_speed_bonus` in `survey/commands.rs` is a test helper, not a producer.
 
 ## Economics
 
@@ -120,7 +120,7 @@ Each session carries a precomputed `SessionEconomics` rollup that both the Sessi
 
 - **Cost** — sum of `survey_types.crafting_cost` for each consumed map. The CDN ingestion step populates `crafting_cost` using nominal vendor-buy pricing of fully-consumed recipe ingredients (see `cdn_persistence::insert_survey_types`).
 - **Revenue** — `Σ(item_transactions.quantity × market_values.market_value)` over this session's gains, left-joined so unpriced items contribute zero and the UI can flag the gap.
-- **Bonus revenue** — same sum but restricted to rows where `source_details.is_speed_bonus = true`. Lets the UI show how much of the profit came from bonus drops.
+- **Bonus revenue** — same sum but restricted to rows where `source_details.is_speed_bonus = true`. Currently zero on real data (no producer sets the flag); it will show how much of the profit came from bonus drops once the ScreenText handler lands.
 - **Profit** = revenue − cost.
 - **Priced / unpriced counts** — surfaced in the UI so users know how much of the revenue estimate is tentative.
 
