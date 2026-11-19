@@ -159,6 +159,63 @@ def parse_minus_lines(diff_text: str, old_text: str | None) -> list[str]:
     return filtered
 
 
+_RAW_STR_RE = re.compile(r"r(#+)?\"")
+_CHAR_LIT_RE = re.compile(r"'(?:[^'\\]|\\.)'")
+
+
+def code_only(
+    line: str, in_block: bool, raw_closer: str | None
+) -> tuple[str, bool, str | None]:
+    """Blank Rust string/char literals and comments; lifetimes are kept.
+
+    Only real code tokens reach the identifier regexes: JSON wire-field
+    prose inside string literals (`"FromEntityId"`) and `//` comments never
+    fires the gate (PR #202 full-review round — the hit came from a removed
+    prose comment, not a symbol). String-literal extraction still runs on
+    the original line.
+    """
+    out: list[str] = []
+    i, n = 0, len(line)
+    while i < n:
+        if raw_closer is not None:
+            end = line.find(raw_closer, i)
+            if end == -1:
+                return "".join(out), in_block, raw_closer
+            i = end + len(raw_closer)
+            raw_closer = None
+            continue
+        if in_block:
+            end = line.find("*/", i)
+            if end == -1:
+                return "".join(out), True, None
+            i = end + 2
+            in_block = False
+            continue
+        if line.startswith("//", i):
+            break
+        if line.startswith("/*", i):
+            in_block = True
+            i += 2
+            continue
+        m = _STR_RE.match(line, i)
+        if m:
+            i = m.end()
+            continue
+        m = _RAW_STR_RE.match(line, i)
+        if m and (i == 0 or not (line[i - 1].isalnum() or line[i - 1] == "_")):
+            hashes = m.group(1) or ""
+            raw_closer = '"' + "#" * len(hashes)
+            i = m.end()
+            continue
+        m = _CHAR_LIT_RE.match(line, i)
+        if m:
+            i = m.end()
+            continue
+        out.append(line[i])
+        i += 1
+    return "".join(out), in_block, raw_closer
+
+
 PAIR_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]*)::([A-Z][A-Za-z0-9_]*)\b")
 
 
@@ -167,8 +224,17 @@ def extract_identifiers(
 ) -> tuple[set[str], set[str]]:
     """Candidate doc-orphan names + `Enum::Variant` pairs from removed lines."""
     idents: set[str] = set()
-    # fn/struct/enum definition names
+    # Code-only view: string literals, char literals, and comments are
+    # blanked so prose never poses as a symbol. Block-comment and raw-string
+    # state threads across lines.
+    cleaned: list[str] = []
+    in_block = False
+    raw_closer: str | None = None
     for line in removed_lines:
+        code, in_block, raw_closer = code_only(line, in_block, raw_closer)
+        cleaned.append(code)
+    # fn/struct/enum definition names
+    for line in cleaned:
         for m in re.finditer(
             r"\b(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?"
             r"(?:fn|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)",
@@ -179,7 +245,7 @@ def extract_identifiers(
                 idents.add(name)
     # CamelCase tokens (enum-variant-ish, multi-word). Single-word
     # variants are covered by string-literal PascalCase when quoted.
-    for line in removed_lines:
+    for line in cleaned:
         for m in re.finditer(r"\b[A-Z][a-z]+[A-Z][A-Za-z0-9]*\b", line):
             name = m.group(0)
             if len(name) >= 4 and name.lower() not in STOPWORDS:
@@ -188,10 +254,11 @@ def extract_identifiers(
     # `Enum::Variant` uses on removed arms (a removed match arm is not a
     # removed variant while the pair still occurs in the tree).
     pairs: set[str] = set()
-    for line in removed_lines:
+    for line in cleaned:
         for m in PAIR_RE.finditer(line):
             pairs.add(m.group(0))
-    # String literals: kebab-case or PascalCase
+    # String literals: kebab-case or PascalCase (original lines — the
+    # code-only view blanks these).
     for line in removed_lines:
         for m in re.finditer(r'"([^"]*)"', line):
             s = m.group(1)

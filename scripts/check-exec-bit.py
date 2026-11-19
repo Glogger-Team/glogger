@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gate: new scripts in the worktree must carry the owner-exec bit.
+"""Gate: scripts in the worktree must carry the owner-exec bit.
 
 Scope: files new to the worktree (untracked + staged-added). Only *.py and
 *.sh are considered (the repo's script languages; CI invokes via
@@ -79,6 +79,41 @@ def new_files(base: str | None) -> list[str]:
     return out
 
 
+def parse_raw_modes(raw_text: str) -> dict[str, tuple[str, str]]:
+    """Index/worktree `:oldmode newmode ... status\\tpath` lines keyed by path."""
+    modes: dict[str, tuple[str, str]] = {}
+    for ln in raw_text.splitlines():
+        if not ln.startswith(":"):
+            continue
+        meta, _, path = ln[1:].partition("\t")
+        parts = meta.split(" ")
+        if len(parts) < 5:
+            continue
+        # Rename/copy lines carry two paths; the new path decides.
+        modes[path.split("\t")[-1]] = (parts[0], parts[1])
+    return modes
+
+
+def lost_exec_flips() -> list[str]:
+    """Tracked scripts flipped 755->644 in the staged or unstaged diff."""
+    flips: dict[str, str] = {}
+    staged = parse_raw_modes(
+        run_git("diff", "--cached", "--raw", "--diff-filter=MR").stdout
+    )
+    unstaged = parse_raw_modes(run_git("diff", "--raw", "--diff-filter=MR").stdout)
+    for path, (old, new) in staged.items():
+        if old == "100755" and new == "100644":
+            flips[path] = f"staged {old}->{new}"
+    for path, (old, new) in unstaged.items():
+        if old == "100755" and new == "100644" and path not in flips:
+            flips[path] = f"unstaged {old}->{new}"
+    return [
+        f"{path}: executable bit lost ({how}) - fix: git update-index --chmod=+x {path}"
+        for path, how in sorted(flips.items())
+        if Path(path).suffix in SCRIPT_EXTS
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -113,6 +148,7 @@ def main() -> int:
                 )
         elif not os.access(ROOT / f, os.X_OK):
             findings.append(f"{f}: missing exec bit - fix: chmod +x {f}")
+    findings += lost_exec_flips()
     for finding in findings:
         print(finding)
     return 1 if findings else 0
