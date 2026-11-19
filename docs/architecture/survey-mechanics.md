@@ -16,10 +16,12 @@ Tracking, attribution, and UX vary by kind:
 ### Basic Survey
 
 **Use behavior:**
+
 - Out of target area → 2 distance numbers (N/S, E/W), target area highlighted on the map.
 - In target area → all rewards drop immediately. **Speed bonus rewards** are appended if collected within X seconds of the prior survey use.
 
 **Loot pattern in logs:**
+
 - One `[Status] X added to inventory` per item (primary + each speed-bonus item as separate lines).
 - One `ProcessScreenText(ImportantInfo, "X collected! Also found Y …")` per use.
 - Survey map is consumed (`ProcessDeleteItem`) on successful collection.
@@ -36,12 +38,14 @@ Tracking, attribution, and UX vary by kind:
 ### Motherlode Survey
 
 **Use behavior:**
+
 - Out of target area → 1 distance number (pure linear distance), target area **not** highlighted on the map. Location must be **triangulated** by using the map from multiple positions.
 - In target area → spawns a minable **motherlode node**. Node disappears after a single mining hit.
 - **No speed bonus** mechanic. Loot pattern is typically primary reward + bonus reward but neither is guaranteed.
 
 **Loot pattern in logs:**
-- Mining hit produces 1–2 `[Status] X added to inventory` lines and corresponding `ProcessAddItem`/`ProcessUpdateItemCode` events under the `Mining` activity context (see [player-event-parser.md](player-event-parser.md#activity-context-stack)).
+
+- Mining hit produces 1–2 `[Status] X added to inventory` lines; the corresponding `ProcessAddItem`/`ProcessUpdateItemCode` Player.log lines are no longer parsed (item parser retired 2026-11).
 - The survey map itself is consumed on the use that spawns the node, not on the mining hit.
 - Node removal is implicit (no log line specific to "node despawned"); the next interaction with that entity_id will fail or produce a new entity entirely.
 
@@ -56,11 +60,13 @@ Tracking, attribution, and UX vary by kind:
 ### Multihit Survey
 
 **Use behavior:**
+
 - Out of target area → 2 distance numbers (N/S, E/W), target area highlighted on the map (same as Basic).
 - In target area → spawns a minable node. Node persists across multiple mining hits — observed range is **>2 and <20** swings before depletion. Hit count varies per node.
 - **No speed bonus** mechanic.
 
 **Loot pattern in logs:**
+
 - Each mining hit produces its own batch of `[Status] X added to inventory` + `ProcessAddItem`/`ProcessUpdateItemCode` events under a fresh `Mining` activity context (each hit is its own `ProcessDoDelayLoop` cycle).
 - The survey map is consumed when the node spawns, not on individual hits.
 - The node depleting is implicit (same as motherlode).

@@ -73,14 +73,17 @@ impv: faster item tooltip loading with cached lookups
 - **Layout**: Screen components use `PaneLayout` as the root element.
 - **Entity references**: Use shared inline components (`ItemInline`, `NpcInline`, etc.) for game entities.
 - **State**: Backend-owned. Game state lives in Rust + SQLite, not in Vue components.
-- **Log parsing**: All Player.log parsing goes through `PlayerEventParser` — never parse raw log lines in feature code.
+- **Log parsing**: Chat.log status lines go through `ChatStatusParser` in feature dispatch — never parse raw log lines in feature code. Player.log carries session signals only (login, chat-log path, area).
 
 ## Architecture Overview
 
-glogger tails Project: Gorgon's `Player.log` in real time, parsing events through a Rust pipeline:
+glogger tails Project: Gorgon's `Player.log` and `Chat.log` files in real time, parsing events through a Rust pipeline:
 
 ```text
-Player.log → PlayerEventParser → Feature Coordinators → SQLite → Vue Frontend
+Player.log ──→ session signals (login/path/area) ──┐
+Chat.log ────→ ChatStatusParser ───────────────────┤
+                                                   ▼
+                                    Feature Coordinators → SQLite → Vue Frontend
 ```
 
 The [architecture docs](docs/architecture/) cover the event pipeline, data flow, database schema, and UI patterns in detail.

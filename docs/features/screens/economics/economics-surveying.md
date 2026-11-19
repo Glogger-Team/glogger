@@ -3,6 +3,7 @@
 Survey tracker built on the provenance pipeline. Three sub-tabs (Session, Session History, Analytics), all read-only views over `survey_sessions` + `survey_uses` + `item_transactions`. Backend owns session state; the frontend is a thin reader.
 
 For the full design rationale and history of the rewrite, see:
+
 - [item-provenance-overhaul.md](../../../archive/plans/item-provenance-overhaul.md) — parent plan (completed)
 - [survey-tracker-rewrite.md](../../../archive/plans/survey-tracker-rewrite.md) — Phase 5 plan (completed)
 - [survey-mechanics.md](../../../architecture/survey-mechanics.md) — Basic / Motherlode / Multihit behavior
@@ -12,7 +13,8 @@ For the full design rationale and history of the rewrite, see:
 ### Files
 
 **Backend (`src-tauri/src/survey/`):**
-- `aggregator.rs` — `SurveySessionAggregator`; subscribes to `PlayerEventParsed` events in the coordinator, stitches `SurveyMapUse` → `Mining` attribution, manages sessions
+
+- `aggregator.rs` — `SurveySessionAggregator`; attributes chat loot gains to survey uses (`attribute_chat_gain`, identity + recency window), records manual uses, manages sessions
 - `persistence.rs` — CRUD for `survey_sessions` and `survey_uses`
 - `multihit_state.rs` — DB-backed open multihit nodes (survives restart)
 - `commands.rs` — all `survey_tracker_*` Tauri commands (status, start/end, detail, historical, analytics, notes, delete)
@@ -20,6 +22,7 @@ For the full design rationale and history of the rewrite, see:
 - `replay_tests.rs` — integration tests against paired log datasets
 
 **Frontend:**
+
 - `src/stores/surveyTrackerStore.ts` — reads/caches backend state; subscribes to events
 - `src/components/Economics/EconomicsSurveyView.vue` — three-tab container (Session / Session History / Analytics)
 - `src/components/Surveying/SurveyTrackerView.vue` — Session tab (PaneLayout: recent sessions / live detail / selected session)
@@ -31,16 +34,17 @@ For the full design rationale and history of the rewrite, see:
 
 ### Data flow
 
-```
-Player.log ──► PlayerEventParser ──► PlayerEvent { provenance } ──┐
-                                                                   ├──► coordinator ──► SurveySessionAggregator
-Chat.log ────► ChatStatusParser ────────────────────────────────┘                            │
-                                                                                              ▼
-                                                                             survey_sessions, survey_uses,
-                                                                             open_multihit_nodes, item_transactions
-                                                                                              │
-                                                                                              ▼
-                                                                               Tauri commands ──► frontend (read-only)
+```text
+Chat.log ──► ChatStatusParser ──► chat gains ──┐
+                                              ├──► coordinator ──► SurveySessionAggregator
+Manual use ──► record_manual_use ──────────────┘
+                              │
+                              ▼
+             survey_sessions, survey_uses,
+             open_multihit_nodes, item_transactions
+                              │
+                              ▼
+               Tauri commands ──► frontend (read-only)
 ```
 
 Live updates emit as `survey-tracker-session-started/ended`, `survey-tracker-use-recorded/completed`, `survey-tracker-multihit-opened/closed`. The frontend subscribes and refreshes affected views.
@@ -100,14 +104,15 @@ New backend columns (migration v29) support the richer session data: `name`, `us
 - **Right pane** (`ItemCostCalculator.vue`): picks an item, desired quantity, sell price, and a sort mode (Cost / Time / Profit/hr); ranks the survey types that drop the item accordingly. The best row is highlighted with a gold border + "BEST" badge. Footer lines show the primary/bonus breakdown per row.
 
 Data sources:
+
 - Center-pane views read from `survey_tracker_analytics()`, which already carries per-zone and per-type item breakdowns.
 - The calculator reads from `survey_tracker_item_cost_analysis()`, a dedicated command that returns one row per (item, survey type, zone) with primary/bonus splits and the per-type average survey duration.
 
-All metrics derive from the `item_transactions` ↔ `survey_uses` join. Speed-bonus rates and bonus-item totals come from the `is_speed_bonus` flag in `source_details`, which the aggregator sets when a `ProcessScreenText` "(speed bonus!)" marker arrives after the gain rows are written.
+All metrics derive from the `item_transactions` ↔ `survey_uses` join. Speed-bonus rates and bonus-item totals come from the `is_speed_bonus` flag in `source_details`, set when a `(speed bonus!)` ScreenText marker arrives after the gain rows are written.
 
 ### Speed-bonus attribution
 
-Basic surveys can grant bonus drops; the game signals this with a ScreenText line like `"Blue Spinel collected! Also found Rubywall Crystal x2 (speed bonus!)"` that arrives after the `ProcessAddItem` events. The aggregator's ScreenText handler parses this line with `parsers::parse_loot_items`, looks up the most recent Basic `survey_use_id`, and patches `item_transactions.source_details` for each bonus-item row to set `is_speed_bonus: true`. Analytics queries read the flag via `json_extract`, giving per-zone / per-type bonus rates and primary/bonus splits for free — no separate tables needed.
+Basic surveys can grant bonus drops; the game signals this with a ScreenText line like `"Blue Spinel collected! Also found Rubywall Crystal x2 (speed bonus!)"` that arrives after the gain rows are staged. The ScreenText handler in `chat_status_dispatch` looks up the most recent Basic `survey_use_id` and patches `item_transactions.source_details` for each bonus-item row to set `is_speed_bonus: true`. Analytics queries read the flag via `json_extract`, giving per-zone / per-type bonus rates and primary/bonus splits for free — no separate tables needed.
 
 ## Economics
 
@@ -128,11 +133,13 @@ For the History rollup, `survey_tracker_historical_sessions` runs the same econo
 The left pane includes a `GstLauncher.vue` widget that manages [GorgonSurveyTracker](https://github.com/kaeus/GorgonSurveyTracker) — a third-party survey overlay tool.
 
 **Backend** (`src-tauri/src/gst_manager.rs`):
+
 - `gst_check_status` — reports the current platform, checks whether `GorgonSurveyTracker.exe` exists in the app data `gst/` subfolder (Windows only), reads the locally stored version tag, and fetches the latest release from the GitHub API to detect updates.
 - `gst_download` — (Windows only) downloads the latest release asset to `<app_data>/gst/GorgonSurveyTracker.exe` (via a temp file + rename) and writes a `gst_version.txt` sidecar for version tracking.
 - `gst_launch` — (Windows only) spawns the exe as a detached process.
 
 **Frontend** (`src/components/Surveying/GstLauncher.vue`):
+
 - **Windows**: shows Download/Launch/Update buttons with version info.
 - **macOS/Linux**: shows a note that Python 3.8+ is required with a pointer to the GST page for platform-specific setup steps (PyQt5, pynput, plus pyobjc-framework-Cocoa on macOS or python-xlib on Linux X11).
 - **All platforms**: shows a "GST Homepage & Instructions" link that opens the GitHub repo page in the user's browser.
@@ -151,6 +158,7 @@ Follows the app-wide conventions in [time.md](../../../architecture/time.md). Al
 `started_at` and `ended_at` on `survey_sessions` are not sampled from `Utc::now()` at start/end time. Instead, when a session closes (manual end, auto-end on crafting-count match, or the dual-log replay equivalent), the aggregator calls `recompute_session_bounds_and_end()` — this re-derives both bounds from the first and last event timestamps actually attributed to the session via `survey_uses.used_at` and `item_transactions.timestamp` (joined by `source_details->>'survey_use_id'`). The wall-clock moment of the end event is only used as a fallback when a session had no uses at all.
 
 This matters for two cases:
+
 - **Live**: bounds are slightly tighter — they reflect when real activity started/stopped rather than when the user clicked the button.
 - **Replay / old-log reparse**: `Utc::now()` is meaningless, so the recompute is what produces correct historical bounds. The replay path additionally sets a `base_date` override on `GameStateManager` and `SurveySessionAggregator` so `HH:MM:SS` Player.log times get stamped with the replayed date during event ingestion. The auto-end path now passes the current event's timestamp (derived from the log via `to_utc`) as the fallback instead of wall-clock `Utc::now()`, preventing multi-day gaps when replaying old logs.
 

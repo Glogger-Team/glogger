@@ -176,10 +176,14 @@ mise x yamllint -- yamllint .github/             # YAML / workflows (full table 
 
 ## How It Works
 
-glogger tails Project: Gorgon's `Player.log` and `Chat.log` files in real time. A Rust event parser processes raw log lines into structured events, which flow through feature-specific coordinators into a SQLite database. The Vue frontend renders live dashboards from that data.
+glogger tails Project: Gorgon's `Player.log` and `Chat.log` files in real time. Rust parsers turn raw log lines into structured events — session signals (login, chat-log path, area) from Player.log, status and combat lines from Chat.log — which flow through feature-specific coordinators into a SQLite database. Report JSONs (`Character_*.json`, `*_items_*.json`) seed snapshots of the same tables. The Vue frontend renders live dashboards from that data.
 
 ```text
-Player.log → PlayerEventParser → Feature Coordinators → SQLite → Vue Frontend
+Player.log ──→ session signals (login/path/area) ──┐
+Chat.log ────→ ChatStatusParser ───────────────────┤
+Reports/*.json → snapshot imports ─────────────────┤
+                                                   ▼
+                                    Feature Coordinators → SQLite → Vue Frontend
 ```
 
 Game reference data (items, skills, recipes, etc.) is downloaded from the public Project: Gorgon CDN and cached locally.

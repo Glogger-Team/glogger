@@ -1,11 +1,12 @@
 # Glogger Pipeline Structure
 
+> **Historical note (2026-11):** this doc is early design musing, not current architecture. The Player.log item parser (`PlayerEventParser`, `feed_chat_gain`, `player-events-batch`) was removed — Player.log now yields session signals only (login, chat-log path, area). Chat.log parsing and report snapshot imports are the live producers; see `live-event-streams.md` and `game-state.md`.
 
 ## CDN Data
 
 Does this need to be complicated? I feel like this is all we need, structurally. Pretty sure this is basically what we have
 
-```
+```text
 CDN JSONs
   |
   V
@@ -29,7 +30,7 @@ CDN SQLite Database
 - gamestate comprised of 4 buckets: server-scoped data, account-scoped data, character-scoped data, session-scoped data
   - server-scoped: stuff that transcends a single session, but isn't tied to the account. garden growing seasons are an example of this.
   - account-scoped: things that are account wide (duh) like transfer chest storage contents, and information about what characters are on the account. maybe other stuff?
-  - character-scoped: stuff specific to the character. the majority of our data. skill levels, xp, most inventories, etc. 
+  - character-scoped: stuff specific to the character. the majority of our data. skill levels, xp, most inventories, etc.
   - session-scoped: stuff that is agnostic to the player, but we're detecting via logs like current zone, current weather, etc
 - sources of data:
   - player.log
@@ -47,17 +48,18 @@ CDN SQLite Database
   - be performant and responsive even when we're getting hit with tons of log messages every second
   - resuming previous sessions, etc. even though files may have changed, been replaced by newer versions, date rollovers, etc.
   - probably rely as little on system time as we can? the files have timestamps and those will help us the most probably?
-- features should be able to consume events to update the gamestate. 
+- features should be able to consume events to update the gamestate.
   - this could be single line update triggers, or starting/closing event collection windows, etc. survey tracker is a good example of this kind of thing.
   - features should try their damnedest to use rust to manage their interactions with the gamestate and db writes/reads. this is just more performant, I assume, and lets us build more unified ways of doing this. also i assume. maybe i'm wrong.
   - does this mean we have a handle of pinia stores that manage all the coodination between the rust layer and the frontend layer? does that make sense? could certainly help standardize how we interact with the gamestate.
-  - typescript/vue should be used to leverage how flexible, modular, sharable, and easy its interface building is. 
+  - typescript/vue should be used to leverage how flexible, modular, sharable, and easy its interface building is.
 - how do we preserve historical? gamestate should always reflect the "what is now" - we will want was to see "what was" for some features. like a set of historical tables.
 - how do we not overwhelm the windows message queue? how do we handle playback of existing log data? is this method testable and scalable? how future proof is it?
 
 > **Claude's thoughts on the above:**
 >
 > **The 4-bucket scoping is solid and already implemented.** Looking at what's actually built, the scoping works like this in practice:
+>
 > - **Server-scoped:** `market_values`, vendor gold tracking, survey data — keyed by `(server_name)`. Garden seasons would fit here too.
 > - **Account-scoped:** Currently implicit — everything lives in one SQLite file per user. There's no explicit multi-account table structure yet, but the single-DB-per-user approach means account scope is "the whole database." Transfer chest contents would be interesting here — right now storage is character-scoped via `(character_name, server_name)` composite keys, so if transfer chests are truly account-wide, that's a gap.
 > - **Character-scoped:** This is the bulk of it. All `game_state_*` tables use `(character_name, server_name)` composite PKs. Skills, inventory, equipment, favor, recipes, effects, attributes, currencies — all character-scoped.
@@ -73,9 +75,9 @@ CDN SQLite Database
 >
 > **On not overwhelming the message queue:** The 1.5s polling interval is the main throttle. Each poll cycle processes a batch of lines, produces a `Vec<PlayerEvent>`, and emits a single `player-events-batch` Tauri event to the frontend. That batching is key — you're not firing an event per log line. For playback of existing log data (catching up on a large log file), the same batch processing applies, it just runs more batches. The risk would be if a huge log file produces thousands of events in rapid succession — the frontend stores would be hammering reactive updates. If that becomes a problem, a debounce/coalesce layer on the frontend side (e.g., "only refresh the UI at most every 200ms during catch-up") would help without changing the backend architecture.
 
-```
+```text
 DataIngestCoordinator
-    ├── PlayerLogWatcher (1.5s poll) ──→ PlayerEventParser ──→ GameStateManager ──→ SQLite
+    ├── PlayerLogWatcher (1.5s poll) ──→ session signals (login/path/area) ──→ GameStateManager ──→ SQLite
     ├── ChatLogWatcher (1.5s poll) ──→ ChatStatusParser ──→ item_transactions/skills
     ├── CharacterJSON import ──→ seed_game_state_from_snapshot ──→ game_state_*
     └── InventoryJSON import ──→ game_state_inventory/storage
@@ -89,6 +91,7 @@ DataIngestCoordinator
                                         │
                                 Vue/Pinia Stores ──→ UI Components
 ```
+
 ## Ideal way to build this
 
 [something smart goes here]

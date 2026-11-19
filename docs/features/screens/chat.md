@@ -4,19 +4,21 @@
 
 A full chat log browser that imports, indexes, and displays all in-game chat with full-text search, per-channel filtering, item link detection, and configurable watchword alerts. Chat data is parsed from the game's chat log files and stored in SQLite with FTS indexing.
 
-The screen also hosts a **Poems** tab — a browsable, searchable collection of poems recited by other players at poetry podiums. Unlike the other tabs (which come from `Chat-*.log`), poems are sourced from `Player.log` `ProcessTalkScreen` events and stored globally (not per-character).
+The screen also hosts a **Poems** tab — a browsable, searchable collection of poems recited by other players at poetry podiums. Unlike the other tabs (which come from `Chat-*.log`), poems are parsed from log text (`parse_poems_from_path` over the live logs plus the player-log archive backfill) and stored globally (not per-character).
 
 ## Architecture
 
 ### Files
 
 **Backend (Rust):**
+
 - `src-tauri/src/chat_parser.rs` — chat log file parsing
 - `src-tauri/src/chat_status_parser.rs` — status channel event parsing
 - `src-tauri/src/chat_commands.rs` — Tauri command handlers
 - `src-tauri/src/db/chat_commands.rs` — database query layer
 
 **Frontend (Vue/TS):**
+
 - `src/components/Chat/ChatView.vue` — 10-tab container
 - `src/components/Chat/ChatMessageList.vue` — shared paginated message renderer
 - `src/components/Chat/ChatSearchView.vue` — unified search; results open in the day's real log
@@ -28,17 +30,18 @@ The screen also hosts a **Poems** tab — a browsable, searchable collection of 
 - `src/components/Chat/PoemsView.vue` — recorded-poems browser (list + full-poem viewer with prev/next)
 
 **Poems pipeline (Rust):**
-- `src-tauri/src/player_event_parser.rs` — `handle_talk_screen` detects `Poem by X` talk screens and emits `PlayerEvent::PoemRecorded` (`parse_poem_body` strips the intro/outro review blurbs and pulls out the bold title)
-- `src-tauri/src/game_state.rs` — persists `PoemRecorded` into the `poems` table (`INSERT OR IGNORE` for dedup)
+
+- `src-tauri/src/db/poem_commands.rs` — `parse_poems_from_path` scans the live logs plus the player-log archive backfill and persists into the `poems` table (`INSERT OR IGNORE` for dedup)
 - `src-tauri/src/db/poem_commands.rs` — `get_poems` query command
 
 **Stores:**
+
 - `chatStore` — tailing state management
 - `settingsStore` — watchword rule persistence
 
 ### Component Hierarchy
 
-```
+```text
 ChatView.vue                        — 9-tab container
 ├── ChatSearchView.vue              — unified search (default tab)
 ├── ChannelView.vue                 — public/custom channels with sidebar
@@ -69,6 +72,7 @@ Shared:
 ### ChatMessageList
 
 Generic message list renderer used by all tabs:
+
 - **Standard layout** — timestamp, channel badge (optional), sender name, message body
 - **Tell/bubble layout** — chat bubbles with player messages on right, others on left
 - **Day toolbar** — day dropdown (display-timezone days + counts), date picker, ◀/▶ day stepping, Back to Live, and the ascending/descending sort toggle (kept in the toolbar so it stays reachable once a day runs several pages)
@@ -93,11 +97,13 @@ Parses message text to detect `[Item: ItemName]` patterns and renders them as `I
 ## Tauri Commands
 
 ### Import & Tailing
+
 - `scan_chat_logs(path) → ScanResult` — bulk import all chat logs from directory
 - `scan_chat_log_file(path) → ScanResult` — import single file
 - `tail_chat_log(chat_log_file) → Vec<ChatMessage>` — continuous import of active log
 
 ### Query
+
 - `get_chat_messages(ChatFilter) → Vec<ChatMessage>` — filtered message query (day windows are ordinary `startTime`/`endTime` bounds on this query)
 - `count_chat_messages(ChatFilter) → number` — count matching the same filter semantics
 - `get_chat_days(offsetSeconds?) → Vec<ChatDayRow>` — every day that has messages with its count, newest first, bucketed in the viewer's display timezone
@@ -110,6 +116,7 @@ Parses message text to detect `[Item: ItemName]` patterns and renders them as `I
 - `scan_player_log_for_poems() → usize` — one-time backfill: scans the entire current Player.log for past `Poem by X` recitals and inserts them (deduped). Exposed as the "Scan Player.log" button on the Poems tab, since the live watcher only sees poems recited after it starts tailing.
 
 ### Maintenance
+
 - `purge_chat_messages(days) → usize` — delete messages older than N days
 - `delete_all_chat_messages() → usize` — wipe all chat data
 

@@ -298,9 +298,6 @@ cd src-tauri
 # All tests
 cargo test
 
-# Player event parser tests
-cargo test player_event_parser
-
 # Chat status parser tests
 cargo test chat_status_parser
 
