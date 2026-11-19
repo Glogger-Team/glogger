@@ -1966,6 +1966,146 @@ mod tests {
         conn
     }
 
+    fn record_test_kill(conn: &Connection, character: &str, server: &str, entity: &str, ts: &str) -> Option<i64> {
+        record_enemy_kill(conn, character, server, "City Slime", entity, "Claw 9", 1822, 7, Some("Serbule"), ts).unwrap()
+    }
+
+    #[test]
+    fn kill_identity_distinguishes_character_server_entity_and_timestamp() {
+        let conn = setup();
+        let ts = "2026-11-17 12:00:00";
+        let first = record_test_kill(&conn, "T", "Dreva", "42", ts).unwrap();
+        assert_eq!(record_test_kill(&conn, "T", "Dreva", "42", ts), None);
+        for (character, server, entity, timestamp) in [
+            ("Other", "Dreva", "42", ts),
+            ("T", "Other", "42", ts),
+            ("T", "Dreva", "43", ts),
+            ("T", "Dreva", "42", "2026-11-17 12:00:01"),
+        ] {
+            assert_ne!(record_test_kill(&conn, character, server, entity, timestamp).unwrap(), first);
+        }
+        let row: (String, String, i64, i64, Option<String>, Option<String>) = conn.query_row(
+            "SELECT enemy_name, killing_ability, health_damage, armor_damage, zone, combat_skills FROM enemy_kills WHERE id = ?1",
+            [first],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        ).unwrap();
+        assert_eq!(row, ("City Slime".into(), "Claw 9".into(), 1822, 7, Some("Serbule".into()), None));
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM enemy_kills", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn loot_link_window_includes_endpoints_but_excludes_future_and_expired_kills() {
+        let conn = setup();
+        let kill = record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
+        for (receipt_ts, expected) in [
+            ("2026-11-17 11:59:59", false),
+            ("2026-11-17 12:00:00", true),
+            ("2026-11-17 12:30:00", true),
+            ("2026-11-17 12:30:01", false),
+        ] {
+            assert_eq!(link_kill_loot(&conn, "T", "Dreva", "42", receipt_ts, receipt_ts, 1).unwrap(), expected, "receipt at {receipt_ts}");
+        }
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM enemy_kill_loot WHERE kill_id = ?1", [kill], |r| r.get(0)).unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn loot_uses_latest_matching_kill_and_replays_are_silent() {
+        let conn = setup();
+        record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
+        let latest = record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:10:00").unwrap();
+        // More recent rows belonging to another identity/entity must not win.
+        for (character, server, entity) in [("Other", "Dreva", "42"), ("T", "Other", "42"), ("T", "Dreva", "43")] {
+            record_test_kill(&conn, character, server, entity, "2026-11-17 12:11:00").unwrap();
+        }
+        assert!(link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:12:00", "Salad", 2).unwrap());
+        assert!(!link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:12:00", "Salad", 2).unwrap());
+        let rows: Vec<(i64, String, i64)> = conn.prepare("SELECT kill_id, item_name, quantity FROM enemy_kill_loot").unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
+            .collect::<Result<_, _>>().unwrap();
+        assert_eq!(rows, vec![(latest, "Salad".into(), 2)]);
+    }
+
+    fn insert_test_receipt(conn: &Connection, character: &str, server: &str, entity: &str, ts: &str, item: &str) {
+        conn.execute(
+            "INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, quantity, context, source, from_entity_id)
+             VALUES (?1, ?2, ?3, ?4, 2, 'inventory', 'chat_status', ?5)",
+            rusqlite::params![ts, character, server, item, entity],
+        ).unwrap();
+    }
+
+    #[test]
+    fn kill_backlinks_only_matching_receipts_in_inclusive_window() {
+        let conn = setup();
+        for (character, server, entity, ts, item) in [
+            ("T", "Dreva", "42", "2026-11-17 12:00:00", "Immediate"),
+            ("T", "Dreva", "42", "2026-11-17 12:30:00", "At limit"),
+            ("T", "Dreva", "42", "2026-11-17 11:59:59", "Before"),
+            ("T", "Dreva", "42", "2026-11-17 12:30:01", "Expired"),
+            ("Other", "Dreva", "42", "2026-11-17 12:01:00", "Other character"),
+            ("T", "Other", "42", "2026-11-17 12:01:00", "Other server"),
+            ("T", "Dreva", "43", "2026-11-17 12:01:00", "Other entity"),
+        ] {
+            insert_test_receipt(&conn, character, server, entity, ts, item);
+        }
+        let kill = record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
+        let rows: Vec<(String, i64)> = conn.prepare("SELECT item_name, quantity FROM enemy_kill_loot WHERE kill_id = ?1 ORDER BY item_name").unwrap()
+            .query_map([kill], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+            .collect::<Result<_, _>>().unwrap();
+        assert_eq!(rows, vec![("At limit".into(), 2), ("Immediate".into(), 2)]);
+        assert_eq!(link_kill_loot_for_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap(), 0);
+    }
+
+    #[test]
+    fn kill_replay_heals_late_receipts_without_emitting_a_new_kill() {
+        let conn = setup();
+        let ts = "2026-11-17 12:00:00";
+        let kill = record_test_kill(&conn, "T", "Dreva", "42", ts).unwrap();
+        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad");
+        assert_eq!(record_test_kill(&conn, "T", "Dreva", "42", ts), None);
+        assert_eq!(record_test_kill(&conn, "T", "Dreva", "42", ts), None);
+        let row: (i64, String, i64) = conn.query_row(
+            "SELECT kill_id, item_name, quantity FROM enemy_kill_loot", [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert_eq!(row, (kill, "Salad".into(), 2));
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM enemy_kill_loot", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn loot_link_distinguishes_no_match_from_database_error() {
+        let conn = setup();
+        assert!(!link_kill_loot(&conn, "T", "Dreva", "missing", "2026-11-17 12:00:00", "Salad", 1).unwrap());
+        assert_eq!(link_kill_loot_for_kill(&conn, "T", "Dreva", "missing", "2026-11-17 12:00:00").unwrap(), 0);
+        let empty = Connection::open_in_memory().unwrap();
+        assert!(link_kill_loot(&empty, "T", "Dreva", "42", "2026-11-17 12:00:00", "Salad", 1).is_err());
+        assert!(link_kill_loot_for_kill(&empty, "T", "Dreva", "42", "2026-11-17 12:00:00").is_err());
+        assert!(record_enemy_kill(&empty, "T", "Dreva", "Slime", "42", "Claw", 1, 0, None, "2026-11-17 12:00:00").is_err());
+    }
+
+    #[test]
+    fn death_veto_is_forward_only_inclusive_and_identity_scoped() {
+        for (character, server, died_at, expected) in [
+            ("T", "Dreva", "2026-11-17 11:59:59", 1),
+            ("T", "Dreva", "2026-11-17 12:00:00", 0),
+            ("T", "Dreva", "2026-11-17 12:05:00", 0),
+            ("T", "Dreva", "2026-11-17 12:05:01", 1),
+            ("Other", "Dreva", "2026-11-17 12:00:01", 1),
+            ("T", "Other", "2026-11-17 12:00:01", 1),
+        ] {
+            let conn = setup();
+            record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
+            conn.execute(
+                "INSERT INTO character_deaths (character_name, server_name, died_at, killer_name, killing_ability, health_damage)
+                 VALUES (?1, ?2, ?3, 'Rat', 'Bite', 1)",
+                rusqlite::params![character, server, died_at],
+            ).unwrap();
+            assert_eq!(mine_total_kills(&conn, "City Slime", &ZoneFilter::All, &LoadoutFilter::All).unwrap(), expected, "death for {character}/{server} at {died_at}");
+        }
+    }
+
     /// Died-before-looting veto (live 2026-11-17): City Slime #488970 killed
     /// 17:08:21, player died 17:08:22, no receipt — the lootless kill must not
     /// dilute the denominator, while a looted kill near a death still counts.
