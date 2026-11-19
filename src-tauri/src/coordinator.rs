@@ -2284,18 +2284,21 @@ fn apply_catch_up_login(
     };
     if let Some(server) = server {
         game_state.set_active_server_name(&server);
-        // The adopted session rebuilds its own inventory (report imports),
-        // so start it from an empty slice — otherwise rows from an earlier
-        // session pollute this one. Equipment/combat/mount/favor are
-        // deliberately untouched: equipment self-heals via its full-dump
-        // reinsert, and the rest have no repopulating source.
+        // The adopted session rebuilds its own inventory from report imports
+        // (which delete-then-reinsert the snapshot slice), so only obsolete
+        // log-derived rows are cleared here. Saved snapshot rows survive the
+        // adopt: no production writer creates 'log' inventory rows anymore,
+        // and deleting the snapshot on every login emptied inventory until
+        // the next fresh import. Equipment/combat/mount/favor are deliberately
+        // untouched: equipment self-heals via its full-dump reinsert, and the
+        // rest have no repopulating source.
         if clear_inventory
             && let (Some(character), Ok(conn)) = (
                 game_state.get_active_character().map(str::to_string),
                 db.get_write(),
             )
                 && let Err(e) = conn.execute(
-                    "DELETE FROM game_state_inventory WHERE character_name = ?1 AND server_name = ?2",
+                    "DELETE FROM game_state_inventory WHERE character_name = ?1 AND server_name = ?2 AND source = 'log'",
                     rusqlite::params![character, server],
                 ) {
                     startup_log!("[coordinator] clear-on-adopt inventory delete failed: {e}");
@@ -2848,6 +2851,45 @@ mod session_identity_tests {
         assert_eq!(count, 1, "other character untouched");
 
         // Drop the pool first: Windows won't delete a file with an open handle.
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
+    }
+    #[test]
+    fn catch_up_login_preserves_snapshot_inventory() {
+        let (pool, db_path) = seed_pool(PICKER_ROW);
+        let mut gs = game_state("TestPlayer", "Dreva");
+
+        // Same slice, two provenances: an obsolete log-derived row and a
+        // saved snapshot row (what report imports write).
+        for (instance_id, source) in [(1, "log"), (2, "snapshot")] {
+            pool.get_write()
+                .unwrap()
+                .execute(
+                    "INSERT INTO game_state_inventory
+                     (character_name, server_name, instance_id, item_name, stack_size, last_confirmed_at, source)
+                     VALUES ('OtherAlt', 'Dreva', ?1, 'Fluorite', 1, '2026-10-19 12:00:00', ?2)",
+                    rusqlite::params![instance_id, source],
+                )
+                .unwrap();
+        }
+
+        let map = std::collections::HashMap::from([("OtherAlt".to_string(), "Dreva".to_string())]);
+        apply_catch_up_login(&mut gs, &pool, &map, "OtherAlt", true);
+
+        let remaining: Vec<String> = pool
+            .get()
+            .unwrap()
+            .prepare(
+                "SELECT source FROM game_state_inventory
+                 WHERE character_name = 'OtherAlt' AND server_name = 'Dreva'",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(remaining, vec!["snapshot".to_string()], "snapshot survives adopt");
+
         drop(pool);
         let _ = std::fs::remove_file(&db_path);
     }
