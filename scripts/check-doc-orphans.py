@@ -128,11 +128,13 @@ def test_module_lines(text: str) -> set[int]:
     return out
 
 
-def parse_minus_lines(diff_text: str, old_text: str | None) -> list[str]:
-    """Return removed source lines (without leading '-') with test-module
-    lines filtered out using old-file line numbers."""
+def parse_minus_lines(diff_text: str, old_text: str | None) -> list[tuple[int, str]]:
+    """Return (old-file line number, removed source line) pairs, with
+    test-module lines filtered out using old-file line numbers. Numbers let
+    the caller lex the complete old source (correct block-comment state)
+    and select only the removed lines."""
     skip = test_module_lines(old_text) if old_text is not None else set()
-    filtered: list[str] = []
+    filtered: list[tuple[int, str]] = []
     old_lineno = 0
     in_hunk = False
     for raw in diff_text.splitlines():
@@ -150,13 +152,25 @@ def parse_minus_lines(diff_text: str, old_text: str | None) -> list[str]:
             continue
         if raw.startswith("-"):
             if not (old_lineno and old_lineno in skip):
-                filtered.append(raw[1:])
+                filtered.append((old_lineno, raw[1:]))
             old_lineno += 1
         elif raw.startswith("+"):
             pass
         else:
             old_lineno += 1
     return filtered
+
+
+def lex_source(text: str) -> list[str]:
+    """Code-only view of every line of a complete source file, threading
+    block-comment and raw-string state across lines in file order."""
+    out: list[str] = []
+    in_block = False
+    raw_closer: str | None = None
+    for line in text.splitlines():
+        code, in_block, raw_closer = code_only(line, in_block, raw_closer)
+        out.append(code)
+    return out
 
 
 _RAW_STR_RE = re.compile(r"r(#+)?\"")
@@ -220,19 +234,20 @@ PAIR_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]*)::([A-Z][A-Za-z0-9_]*)\b")
 
 
 def extract_identifiers(
-    removed_lines: list[str],
+    numbered: list[tuple[int, str]],
+    cleaned_full: list[str],
 ) -> tuple[set[str], set[str]]:
-    """Candidate doc-orphan names + `Enum::Variant` pairs from removed lines."""
+    """Candidate doc-orphan names + `Enum::Variant` pairs from removed lines.
+
+    `numbered` is (old-file line number, removed text) pairs;
+    `cleaned_full` is the code-only view of the COMPLETE old source
+    (`lex_source`), so block-comment/raw-string state at each removed line
+    reflects the real file — lexing disconnected removals alone would
+    misread state when delimiters sit on unchanged lines.
+    """
     idents: set[str] = set()
-    # Code-only view: string literals, char literals, and comments are
-    # blanked so prose never poses as a symbol. Block-comment and raw-string
-    # state threads across lines.
-    cleaned: list[str] = []
-    in_block = False
-    raw_closer: str | None = None
-    for line in removed_lines:
-        code, in_block, raw_closer = code_only(line, in_block, raw_closer)
-        cleaned.append(code)
+    removed_lines = [text for _, text in numbered]
+    cleaned = [cleaned_full[n - 1] for n, _ in numbered if 1 <= n <= len(cleaned_full)]
     # fn/struct/enum definition names
     for line in cleaned:
         for m in re.finditer(
@@ -353,7 +368,9 @@ def main() -> int:
             except subprocess.CalledProcessError:
                 diff = ""
             old = old_content_for(path, "HEAD")
-            names, pairs = extract_identifiers(parse_minus_lines(diff, old))
+            numbered = parse_minus_lines(diff, old)
+            cleaned_full = lex_source(old) if old is not None else []
+            names, pairs = extract_identifiers(numbered, cleaned_full)
             idents |= names
             removed_pairs |= pairs
 
@@ -371,7 +388,9 @@ def main() -> int:
             except subprocess.CalledProcessError:
                 diff = ""
             old = old_content_for(path, base)
-            names, pairs = extract_identifiers(parse_minus_lines(diff, old))
+            numbered = parse_minus_lines(diff, old)
+            cleaned_full = lex_source(old) if old is not None else []
+            names, pairs = extract_identifiers(numbered, cleaned_full)
             idents |= names
             removed_pairs |= pairs
 

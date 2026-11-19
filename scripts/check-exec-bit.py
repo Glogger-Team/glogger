@@ -79,18 +79,45 @@ def new_files(base: str | None) -> list[str]:
     return out
 
 
+def git_check_stdout(*args: str) -> str:
+    """run_git that fails closed: exit 2 on inspection failure so a broken
+    git call can never parse as an empty (clean) result."""
+    proc = run_git(*args)
+    if proc.returncode != 0:
+        print(
+            f"check-exec-bit: git {' '.join(args)} failed: {proc.stderr.strip()}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
+    return proc.stdout
+
+
 def parse_raw_modes(raw_text: str) -> dict[str, tuple[str, str]]:
-    """Index/worktree `:oldmode newmode ... status\\tpath` lines keyed by path."""
+    """NUL-delimited raw-diff entries (`-z`, never quoted) keyed by path.
+
+    Layout: `:oldmode newmode oldsha newsha status` NUL `old-path`
+    [NUL `new-path` for renames/copies] — the destination (last) decides.
+    Splits on NUL, never on lines: quoted pathnames (`core.quotePath`)
+    would otherwise keep their quotes and defeat the suffix check.
+    """
     modes: dict[str, tuple[str, str]] = {}
-    for ln in raw_text.splitlines():
-        if not ln.startswith(":"):
+    parts = raw_text.split("\0")
+    i = 0
+    while i < len(parts):
+        meta = parts[i]
+        i += 1
+        if not meta.startswith(":"):
             continue
-        meta, _, path = ln[1:].partition("\t")
-        parts = meta.split(" ")
-        if len(parts) < 5:
+        fields = meta[1:].split(" ")
+        if len(fields) < 5:
             continue
-        # Rename/copy lines carry two paths; the new path decides.
-        modes[path.split("\t")[-1]] = (parts[0], parts[1])
+        status = fields[4]
+        take = 2 if status[:1] in ("R", "C") else 1
+        paths = parts[i : i + take]
+        i += take
+        dest = paths[-1] if paths else ""
+        if dest:
+            modes[dest] = (fields[0], fields[1])
     return modes
 
 
@@ -98,9 +125,11 @@ def lost_exec_flips() -> list[str]:
     """Tracked scripts flipped 755->644 in the staged or unstaged diff."""
     flips: dict[str, str] = {}
     staged = parse_raw_modes(
-        run_git("diff", "--cached", "--raw", "--diff-filter=MR").stdout
+        git_check_stdout("diff", "--cached", "--raw", "-z", "--diff-filter=MR")
     )
-    unstaged = parse_raw_modes(run_git("diff", "--raw", "--diff-filter=MR").stdout)
+    unstaged = parse_raw_modes(
+        git_check_stdout("diff", "--raw", "-z", "--diff-filter=MR")
+    )
     for path, (old, new) in staged.items():
         if old == "100755" and new == "100644":
             flips[path] = f"staged {old}->{new}"
