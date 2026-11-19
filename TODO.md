@@ -122,6 +122,9 @@ WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history.
 - [ ] UI/UX standardization: Table sweep done — **36 instances across 31 files** (`ux-standards.md` checklist owns it; was 35 — batch-1 removed the MarketView stall-observations table and the orphan LiveInventoryTab table; stall inventory rework removed the Recently Sold Out table; +1 Farming Sources report; +3 Combat view tables). Remaining: heading-class standardization (`typography-audit.md`); color Tier 3 leftovers DONE 2026-11-09 except the `text-[10px]` scale decision — chart tooltip chrome reads theme tokens at runtime now (phase 1), so this is static-audit residue on inline color styles.
   - **Effort: Medium (iterative) | Impact: Medium**
   - **Suspects:** `docs/architecture/ux-standards.md` (checklist), `src/composables/useChartTheme.ts`, `scripts/check-grid-standards.py`.
+- [ ] Retired-noun doc sweep has no gate: `check-doc-orphans.py` scans only `.rs` minus-lines in the changed set, so a symbol deleted before the check existed (or docs edited without touching code) leaves stale claims tree-wide — the Player.log item parser outlived its deletion across 13 doc files (PR #202, 2026-11). Options: whole-tree audit mode for the orphan script (all docs vs all live definitions, CI-scheduled not per-commit), or a curated retired-nouns list the gate greps.
+  - **Effort: Small-Medium | Impact: Low-Medium** (docs accuracy; the cost is reviewer rounds like PR #202's)
+  - **Suspects:** `scripts/check-doc-orphans.py`, `scripts/lint-markdown-changed.py` (scope model)
 
 ---
 
