@@ -143,8 +143,16 @@ impl SurveySessionAggregator {
         // otherwise a stale id would keep routing new uses into the closed
         // session until the next invalidation.
         self.cached_active_session = Some((character.to_string(), server.to_string(), None));
-        persistence::recompute_session_bounds_and_end(conn, s.id, now_iso)
-            .map_err(|e| e.to_string())?;
+        if let Err(e) = persistence::recompute_session_bounds_and_end(conn, s.id, now_iso) {
+            // The caller runs this inside its own transaction: on error it
+            // exits before COMMIT, so the close rolls back and the session is
+            // open again in the DB. Forget the key entirely (outer None)
+            // rather than "no active" — the next lookup must re-read the
+            // database after either commit or rollback, never trust the
+            // cached absence of a rolled-back close.
+            self.cached_active_session = None;
+            return Err(e.to_string());
+        }
         Ok(Some(s.id))
     }
 

@@ -51,8 +51,12 @@ STOPWORDS = {
     # appears in docs as ordinary English (PR #202 H1 fix removed two such
     # lines while the fallback still lives in tree).
     "unknown",
+    # VIP JSON wire-field names (`FromName`/`FromEntityId`) occur in .rs
+    # only inside JSON string literals and comments, and in docs only inside
+    # JSON examples (the Rust fields are snake_case) — never code symbols.
+    "fromname",
+    "fromentityid",
 }
-
 MOD_TESTS_RE = re.compile(r"^\s*(?:pub\s+)?mod\s+\w*tests?\b")
 
 

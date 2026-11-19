@@ -1115,12 +1115,17 @@ impl DataIngestCoordinator {
                                     Some(use_id) => use_id,
                                     None => continue,
                                 };
-                                let source_details =
-                                    format!("{{\"survey_use_id\":{use_id}}}");
+                                // Merge into source_details (never overwrite):
+                                // JSON receipts carry a `json_twin` provenance
+                                // marker that the twin-claim guard relies on —
+                                // replacing the blob would drop the marker and
+                                // re-open the unsourced-first duplicate hole.
                                 let tag_rows = match tx.execute(
                                     "UPDATE item_transactions
                                         SET source_kind = 'survey_chat',
-                                            source_details = ?1
+                                            source_details = json_set(
+                                                COALESCE(source_details, '{}'),
+                                                '$.survey_use_id', ?1)
                                       WHERE rowid = (
                                         SELECT rowid FROM item_transactions
                                          WHERE timestamp = ?2
@@ -1137,7 +1142,7 @@ impl DataIngestCoordinator {
                                          ORDER BY rowid DESC LIMIT 1
                                       )",
                                     rusqlite::params![
-                                        source_details,
+                                        use_id,
                                         ts_utc,
                                         id.character,
                                         id.server,
