@@ -183,6 +183,10 @@ WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history.
   - **Report-gated remainder:** (c) repeatable completion timestamps + (d) Statehelm quests wait on Character-export completion records (see "Blocked on VIP export fields"). Work orders + active quests shipped from exports. Plan §1/§3 log-parsing steps are dead — rewrite against the report when fields land.
   - **Suspects:** `src-tauri/src/db/crafting_commands.rs:836` (`get_work_orders_from_snapshot`), `src/components/Character/QuestsScreen.vue`, `docs/plans/quest-tracking.md`.
 
+- [ ] Dataset-scale chat replay guard (successor to deleted `survey/replay_tests.rs` + `test_data/surveyLogs/`, retired in `89c92b2`/`c6027e3`): no end-to-end accumulation check on the chat path — slice fixtures + unit tests cover arm shape but not session-scale totals drift (receipt↔tally gaps, cross-session double-count). Rebuild chat-only: capture a fresh full-session modern `Chat.log` + hand-recorded ground-truth totals (do NOT resurrect `surveyLogs` — stale pre-VIP formats, and the old harness drove the dead `PlayerEvent` pipeline), replay through the current chat dispatch (`insert_json_receipt_guarded`), diff tallies vs ground truth — the modern equivalent of the deleted `replay_dataset_chat_only` + `loot_gap_report`.
+  - **Effort: Medium (fixture capture + one harness test) | Impact: Medium-High (only session-scale guard on the surviving ingestion path)**
+  - **Suspects:** `src-tauri/src/chat_status_dispatch.rs:582` (`insert_json_receipt_guarded`), `test_data/vip_json/` (fixture home; slice-only today), deleted reference `git show 89c92b2^:src-tauri/src/survey/replay_tests.rs:194-378` (chat-only replay + gap-report shape to re-home).
+
 - [ ] Interactive zone maps — see `docs/plans/interactive-maps.md`
   - No code exists yet (no map dependency, component, or assets); the plan is an unstarted spec. Point at an external branch/PR if one exists.
   - **Suspects:** `docs/plans/interactive-maps.md` (spec; no code exists yet).
