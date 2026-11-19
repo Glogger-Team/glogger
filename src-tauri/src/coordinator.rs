@@ -855,8 +855,16 @@ impl DataIngestCoordinator {
                             );
                             let mut settings = self.settings.get();
                             settings.active_character_name = Some(character_name.clone());
+                            // Player.log login lines carry no server: a stale
+                            // ambient server (previous session, shared PC)
+                            // would key every tagless line to the wrong
+                            // server until the chat marker fires. Fail closed
+                            // (lines skip dispatch without identity) rather
+                            // than persist a guess.
+                            settings.active_server_name = None;
                             self.settings.update(settings).ok();
                             self.game_state.set_active_character_name(&character_name);
+                            self.game_state.clear_active_server_name();
                         }
                         continue;
                     }
@@ -1323,14 +1331,22 @@ impl DataIngestCoordinator {
                     // Emit to frontend
                     self.app_handle.emit("server-detected", &server_name).ok();
                 }
-                LogEvent::CharacterLogin { character_name, timestamp, .. } => {
+                LogEvent::CharacterLogin { character_name, server_name, timestamp, .. } => {
                     // Chat log also detects character login — update active character
                     // and emit so player_watcher can stay in sync
                     self.app_handle
                         .emit("character-login", &character_name)
                         .ok();
 
-                    // Auto-register character with current server
+                    // Prefer the server from the login line itself: the chat
+                    // marker declares it, and ambient active_server may still
+                    // hold the previous session (shared PC) or a stale boot
+                    // value. Persisting that guess poisons every future
+                    // session_server_for lookup for this character.
+                    let login_server = server_name.clone().or_else(|| {
+                        self.settings.get().active_server_name.clone()
+                    });
+                    // Auto-register character with login server
                     if let Ok(conn) = self.db_pool.get_write() {
                         conn.execute(
                             "INSERT INTO user_characters (character_name, server_name, source, last_login_time)
@@ -1340,7 +1356,7 @@ impl DataIngestCoordinator {
                                 updated_at = CURRENT_TIMESTAMP",
                             rusqlite::params![
                                 character_name,
-                                self.settings.get().active_server_name,
+                                login_server.clone(),
                             ],
                         ).ok();
                     }
@@ -1348,10 +1364,7 @@ impl DataIngestCoordinator {
                     // Update active character in settings
                     let mut settings = self.settings.get();
                     settings.active_character_name = Some(character_name.clone());
-                    let server = settings
-                        .active_server_name
-                        .clone()
-                        .unwrap_or_else(|| "Unknown".to_string());
+                    let server = login_server.unwrap_or_else(|| "Unknown".to_string());
                     self.settings.update(settings).ok();
 
                     self.game_state

@@ -73,6 +73,13 @@ impl GameStateManager {
     pub fn set_active_server_name(&mut self, server: &str) {
         self.active_server = Some(server.to_string());
     }
+    /// Clear the server half of the ingest identity. Used by the Player.log
+    /// re-arm path, which knows the character but not the server: tagless
+    /// lines skip dispatch without identity rather than keying to a stale
+    /// server until the chat marker fires.
+    pub fn clear_active_server_name(&mut self) {
+        self.active_server = None;
+    }
 
     /// Update the active character.
     /// During live mode, clears transient state so the login burst can repopulate.

@@ -47,6 +47,10 @@ STOPWORDS = {
     "default",
     "result",
     "error",
+    # String-literal prose, not a symbol: the 'Unknown' server fallback
+    # appears in docs as ordinary English (PR #202 H1 fix removed two such
+    # lines while the fallback still lives in tree).
+    "unknown",
 }
 
 MOD_TESTS_RE = re.compile(r"^\s*(?:pub\s+)?mod\s+\w*tests?\b")
