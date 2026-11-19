@@ -3,8 +3,9 @@
 
 Scope: files new to the worktree (untracked + staged-added). Only *.py and
 *.sh are considered (the repo's script languages; CI invokes via
-interpreters so the bit is conventional). A file without os.access X_OK is
-a finding.
+interpreters so the bit is conventional). For staged-added files the git
+index mode is authoritative (on core.fileMode=false boxes the worktree bit
+is decorative); untracked files fall back to os.access.
 """
 
 from __future__ import annotations
@@ -59,12 +60,24 @@ def main() -> int:
     for f in new_files():
         if Path(f).suffix in SCRIPT_EXTS and os.path.isfile(ROOT / f):
             scoped.append(f)
+    # Index modes look like `100755 <sha> 0\\t<path>`. Staged-added files
+    # are in the index, so the recorded mode decides; untracked files are
+    # absent and keep the os.access fallback.
+    indexed: dict[str, str] = {}
+    for ln in git_lines("ls-files", "-s"):
+        left, _, path = ln.partition("	")
+        indexed[path] = left.split(" ", 1)[0]
     findings: list[str] = []
     for f in scoped:
-        if not os.access(ROOT / f, os.X_OK):
-            findings.append(
-                f"{f}: missing exec bit - fix: git update-index --chmod=+x {f}"
-            )
+        mode = indexed.get(f)
+        if mode is not None:
+            if mode != "100755":
+                findings.append(
+                    f"{f}: staged with index mode {mode}, not executable"
+                    f" - fix: git update-index --chmod=+x {f}"
+                )
+        elif not os.access(ROOT / f, os.X_OK):
+            findings.append(f"{f}: missing exec bit - fix: chmod +x {f}")
     for finding in findings:
         print(finding)
     return 1 if findings else 0

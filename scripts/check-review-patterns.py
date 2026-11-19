@@ -5,6 +5,17 @@ import re
 import sys
 from pathlib import Path
 
+_STR_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+_CHAR_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
+
+
+def code_braces(line: str) -> tuple[int, int]:
+    """(opens, closes) ignoring string/char literals and // comments."""
+    no_strings = _CHAR_RE.sub("", _STR_RE.sub("", line))
+    code = no_strings.split("//", 1)[0]
+    return code.count("{"), code.count("}")
+
+
 FILTER_MAP_RE = re.compile(
     r"filter_map\(\s*Result::ok\s*\)"
     r"|filter_map\(\s*\|\s*[A-Za-z_][A-Za-z0-9_]*\s*\|\s*[A-Za-z_][A-Za-z0-9_]*\.ok\(\)\s*\)"
@@ -28,10 +39,10 @@ FINDING_LET_DISCARD = (
 # method name is a SQL op (execute/.../commit) — those only exist on
 # rusqlite types, so a discarded call is a DB silence by definition (any
 # receiver, incl. pool.get_write().unwrap()); on a db-verb helper
-# (insert_/record_/link_/...); or on any call taking `conn` as an arg
-# (conn-arg branch is the class rule). `tx`-only args no longer trip
-# branch 3; read-verb callees (get/fetch/...) are excluded. Multi-line
-# rustfmt-wrapped writes are joined (cap 5) before matching. Test modules
+# (insert_/record_/link_/...); or on any call taking `conn`/`tx` as an arg
+# (the class rule — AGENTS documents `conn`/`tx`/`stmt` handles, so `tx`-only
+# args trip branch 3 too). Read-verb callees (get/fetch/...) are excluded.
+# Multi-line rustfmt-wrapped writes are joined (cap 5) before matching. Test modules
 # (`mod \w*tests?`, cfg(test) mod blocks) are skipped. Drops write/link
 # failures with no log and no retry (kill-loot link lesson, PR #202).
 # Emits, fs ops, and test cleanup are deliberately out of scope.
@@ -48,7 +59,7 @@ DB_SILENCE_RE = re.compile(
     r"_[a-z0-9_]*\s*\("
     r"|\b(?:[a-z_][a-z0-9_]*::)*+"
     r"(?!(?:get|fetch|load|read|find|search|list|check|exists|count|lookup|validate)(?:_|\b))"
-    r"[a-z_][a-z0-9_]*\s*\([^;()]*\bconn\b[^;()]*\)"
+    r"[a-z_][a-z0-9_]*\s*\([^;()]*\b(?:conn|tx)\b[^;()]*\)"
     r")"
 )
 MOD_TESTS_RE = re.compile(r"^\s*(?:pub\s+)?mod\s+\w*tests?\b")
@@ -78,8 +89,9 @@ def code_lines(path: Path) -> list[tuple[int, str]]:
     skip_depth = 0
     prev_sig = ""
     for i, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        opens, closes = code_braces(raw)
         if skip_depth:
-            skip_depth = max(0, skip_depth + raw.count("{") - raw.count("}"))
+            skip_depth = max(0, skip_depth + opens - closes)
             continue
         stripped = raw.strip()
         is_test_mod = (
@@ -94,7 +106,7 @@ def code_lines(path: Path) -> list[tuple[int, str]]:
             )
         )
         if is_test_mod:
-            skip_depth = raw.count("{") - raw.count("}")
+            skip_depth = opens - closes
             if stripped:
                 prev_sig = stripped
             continue
@@ -118,6 +130,11 @@ def findings_for_tree(root: Path) -> list[str]:
             consumed = 1
             if "let _" in code and "=" in code:
                 opens = code.count("(") - code.count(")")
+                # rustfmt may wrap before the call's opening paren
+                # (`let _ =` / `call(` on separate lines): join the
+                # continuation in that case too.
+                if opens <= 0 and code.rstrip().endswith("="):
+                    opens = 1
                 if opens > 0:
                     cur = code
                     while opens > 0 and consumed < 5 and i + consumed < n:

@@ -2081,9 +2081,13 @@ pub fn ingest_teleport_binds_content(
     if !bind_capture_is_fresh(stored.as_deref(), captured_at) {
         return Ok(());
     }
+    // Untimestamped backfill carries no observation time: stamp the oldest
+    // representable instant so any genuine capture supersedes it. A
+    // wall-clock `now()` here would beat every real older book and wedge
+    // the row (the watcher sorts untimestamped files first).
     let dt = captured_at
         .map(|c| c.and_utc().to_rfc3339())
-        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        .unwrap_or_else(|| "0001-01-01T00:00:00+00:00".to_string());
     conn.execute(
         "INSERT INTO game_state_teleportation
             (character_name, server_name, primary_bind, secondary_bind, last_updated)

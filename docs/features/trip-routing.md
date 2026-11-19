@@ -133,12 +133,10 @@ Selection logic is in `best_travel_method()`. Walking is only used when it's che
 
 ### Teleportation Data Sources
 
-**Bind pad locations** are auto-parsed from Player.log when the player opens their Teleportation skill info page in-game:
+**Bind pad locations** are auto-parsed when the player opens their Teleportation skill info page in-game — from the live JSON `Book` event or a `SkillReport_*` book file in `<game_data>/Books/`:
 
 ```text
-ProcessBook("Skill Info", "Teleportation Status:\n\n\n
-Primary Bind Location: Red Wing Casino\n
-Secondary Bind Location: Caves Beneath Gazluk\n...", "SkillReport", ...)
+[JSON:Book] {"Title":"Skill Info","Body":"Primary Bind Location: Red Wing Casino\nSecondary Bind Location: ..."}
 ```
 
 The coordinator extracts "Primary Bind Location" and "Secondary Bind Location" on the live JSON `Book` arm (and the Books-watcher backfill mirrors it), and persists them to the `game_state_teleportation` table.

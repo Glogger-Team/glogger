@@ -68,14 +68,26 @@ def unpushed_base() -> str | None:
     return None
 
 
+_STR_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+_CHAR_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
+
+
+def code_braces(line: str) -> tuple[int, int]:
+    """(opens, closes) ignoring string/char literals and // comments."""
+    no_strings = _CHAR_RE.sub("", _STR_RE.sub("", line))
+    code = no_strings.split("//", 1)[0]
+    return code.count("{"), code.count("}")
+
+
 def test_module_lines(text: str) -> set[int]:
     """1-based line numbers that fall inside a `mod tests` / cfg(test) block."""
     out: set[int] = set()
     skip_depth = 0
     prev_sig = ""
     for i, raw in enumerate(text.splitlines(), 1):
+        opens, closes = code_braces(raw)
         if skip_depth:
-            skip_depth = max(0, skip_depth + raw.count("{") - raw.count("}"))
+            skip_depth = max(0, skip_depth + opens - closes)
             out.add(i)
             continue
         stripped = raw.strip()
@@ -91,7 +103,7 @@ def test_module_lines(text: str) -> set[int]:
             )
         )
         if is_test_mod:
-            skip_depth = raw.count("{") - raw.count("}")
+            skip_depth = opens - closes
             out.add(i)
             if stripped:
                 prev_sig = stripped
@@ -132,7 +144,13 @@ def parse_minus_lines(diff_text: str, old_text: str | None) -> list[str]:
     return filtered
 
 
-def extract_identifiers(removed_lines: list[str]) -> set[str]:
+PAIR_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]*)::([A-Z][A-Za-z0-9_]*)\b")
+
+
+def extract_identifiers(
+    removed_lines: list[str],
+) -> tuple[set[str], set[str]]:
+    """Candidate doc-orphan names + `Enum::Variant` pairs from removed lines."""
     idents: set[str] = set()
     # fn/struct/enum definition names
     for line in removed_lines:
@@ -152,6 +170,12 @@ def extract_identifiers(removed_lines: list[str]) -> set[str]:
             if len(name) >= 4 and name.lower() not in STOPWORDS:
                 idents.add(name)
         # also catch all-caps? no.
+    # `Enum::Variant` uses on removed arms (a removed match arm is not a
+    # removed variant while the pair still occurs in the tree).
+    pairs: set[str] = set()
+    for line in removed_lines:
+        for m in PAIR_RE.finditer(line):
+            pairs.add(m.group(0))
     # String literals: kebab-case or PascalCase
     for line in removed_lines:
         for m in re.finditer(r'"([^"]*)"', line):
@@ -164,7 +188,7 @@ def extract_identifiers(removed_lines: list[str]) -> set[str]:
             is_pascal = bool(re.fullmatch(r"[A-Z][A-Za-z0-9]*", s))
             if (is_kebab or is_pascal) and s.lower() not in STOPWORDS:
                 idents.add(s)
-    return idents
+    return idents, pairs
 
 
 def old_content_for(path: str, ref: str) -> str | None:
@@ -209,6 +233,7 @@ def main() -> int:
     os.chdir(ROOT)
     changed = collect_changed_rs()
     idents: set[str] = set()
+    removed_pairs: set[str] = set()
 
     # Worktree diff (staged + unstaged) against HEAD
     for path in changed:
@@ -222,7 +247,9 @@ def main() -> int:
         except subprocess.CalledProcessError:
             diff = ""
         old = old_content_for(path, "HEAD")
-        idents |= extract_identifiers(parse_minus_lines(diff, old))
+        names, pairs = extract_identifiers(parse_minus_lines(diff, old))
+        idents |= names
+        removed_pairs |= pairs
 
     # Unpushed commits
     base = unpushed_base()
@@ -238,14 +265,19 @@ def main() -> int:
             except subprocess.CalledProcessError:
                 diff = ""
             old = old_content_for(path, base)
-            idents |= extract_identifiers(parse_minus_lines(diff, old))
+            names, pairs = extract_identifiers(parse_minus_lines(diff, old))
+            idents |= names
+            removed_pairs |= pairs
 
     # Untracked files have no minus lines (nothing to extract).
 
     # A removed `fn` line is not a removed symbol: renames and signature
     # edits trip the extractor while the name still lives in the tree.
-    # Only identifiers with no live definition can orphan a doc.
+    # Only identifiers with no live definition can orphan a doc. Same for
+    # `Enum::Variant` uses on removed arms: the variant survives while the
+    # pair still occurs anywhere in the tree.
     defined: set[str] = set()
+    live_pairs: set[str] = set()
     for rs in (ROOT / "src-tauri" / "src").rglob("*.rs"):
         try:
             text = rs.read_text(encoding="utf-8")
@@ -253,7 +285,11 @@ def main() -> int:
             continue
         for m in re.finditer(r"\b(?:fn|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)", text):
             defined.add(m.group(1))
+        for m in PAIR_RE.finditer(text):
+            live_pairs.add(m.group(0))
     idents -= defined
+    for pair in removed_pairs & live_pairs:
+        idents.discard(pair.split("::", 1)[1])
 
     # Grep docs/
     docs_root = ROOT / "docs"

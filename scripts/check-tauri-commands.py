@@ -59,13 +59,21 @@ def collect_defined() -> list[tuple[Path, int, str]]:
         n = len(lines)
         while i < n:
             if ATTR_RE.search(lines[i]):
-                # Attribute may sit 1-2 lines above the fn.
-                for j in range(i + 1, min(i + 3, n)):
+                # The fn may sit below doc comments or extra attributes:
+                # skip blank/attribute/doc/comment lines (bounded) and
+                # require the fn on the landing line.
+                j = i + 1
+                while j < n and j < i + 9:
+                    s = lines[j].strip()
+                    if not s or s.startswith(("#[", "///", "//!", "//")):
+                        j += 1
+                        continue
+                    break
+                if j < n:
                     m = FN_RE.search(lines[j])
                     if m:
                         out.append((path, j + 1, m.group(1)))
                         i = j
-                        break
             i += 1
     return out
 
@@ -75,6 +83,33 @@ def collect_registered() -> set[str] | None:
     if not LIB_RS.is_file():
         return None
     text = LIB_RS.read_text(encoding="utf-8")
+    # Strip line comments first (string-aware): a comment like
+    # `// Slots [0, capacity)` must not unbalance the bracket depth.
+    cleaned_chars: list[str] = []
+    in_string = False
+    escape = False
+    k = 0
+    while k < len(text):
+        c = text[k]
+        if in_string:
+            cleaned_chars.append(c)
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_string = False
+        elif c == '"':
+            in_string = True
+            cleaned_chars.append(c)
+        elif c == "/" and k + 1 < len(text) and text[k + 1] == "/":
+            while k < len(text) and text[k] != "\n":
+                k += 1
+            continue
+        else:
+            cleaned_chars.append(c)
+        k += 1
+    text = "".join(cleaned_chars)
     start = text.find(HANDLER_OPEN)
     if start < 0:
         return None
@@ -95,14 +130,8 @@ def collect_registered() -> set[str] | None:
     if end < 0:
         return None
     inner = text[bracket + 1 : end]
-    # Strip line comments.
-    cleaned_lines = []
-    for line in inner.splitlines():
-        idx = line.find("//")
-        if idx >= 0:
-            line = line[:idx]
-        cleaned_lines.append(line)
-    inner = "\n".join(cleaned_lines)
+    # Line comments were already stripped (string-aware) before the
+    # bracket scan above; entries split on commas from here.
     names: set[str] = set()
     for entry in inner.split(","):
         entry = entry.strip()

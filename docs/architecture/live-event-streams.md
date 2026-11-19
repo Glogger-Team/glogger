@@ -174,7 +174,7 @@ Both sources also write to the `item_transactions` ledger table (v15 migration) 
 
 ```typescript
 // Example: track items with correct quantities
-listen<string[]>('game-state-updated', (event) => {
+listen<string[]>('game-state-updated', async (event) => {
   if (event.payload.includes('inventory')) {
     // Reload item rows from the DB — quantities already corrected
     await refreshInventory()
