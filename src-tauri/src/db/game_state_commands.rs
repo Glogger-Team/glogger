@@ -1550,7 +1550,7 @@ fn relative_to(
     if secs <= 0 {
         return None;
     }
-    let dt = base.checked_add_signed(chrono::Duration::seconds(secs))?;
+    let dt = base.checked_add_signed(chrono::Duration::try_seconds(secs)?)?;
     Some(dt.format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
@@ -2812,6 +2812,9 @@ mod tests {
         // Absurd inputs return None instead of panicking on overflow.
         assert_eq!(relative_to(&base, "1000000000 days"), None);
         assert_eq!(relative_to(&base, "999999999999 hours"), None);
+        // chrono stores millis: 7.8e17 s passes i64 seconds math but exceeds
+        // i64::MAX/1000, so Duration::seconds would panic — try_seconds wins.
+        assert_eq!(relative_to(&base, "9000000000000 days"), None);
     }
 
     #[test]
