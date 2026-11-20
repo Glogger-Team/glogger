@@ -24,8 +24,10 @@ SRC = ROOT / "src-tauri" / "src"
 
 # Table-valued functions from extensions (CLI-only), not stdlib sqlite3.
 EXTENSION_TVFS = ("rarray",)
-# format! placeholders look like {name} / {?} / {:x}; '{}' is a JSON literal.
-FORMAT_PH_RE = re.compile(r"\{[^{}']+\}")
+# format! placeholders look like {name} / {?} / {:x} and never contain a
+# double-quote; '{"k":…}' object literals always do. '{}' (empty braces)
+# is handled by the lookbehind below, not this regex.
+FORMAT_PH_RE = re.compile(r"\{[^{}'\"]+\}")
 DML_RE = re.compile(r"^\s*(SELECT|WITH|VALUES|UPDATE|INSERT|DELETE|REPLACE|EXPLAIN)\b")
 DDL_RE = re.compile(
     r"^\s*(CREATE\s+(?:UNIQUE\s+|VIRTUAL\s+|TEMP(?:ORARY)?\s+)?"
@@ -477,6 +479,16 @@ def self_test() -> int:
         check("empty-brace format skipped via lookbehind", len(got) == 1)
     finally:
         tmp.unlink()
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".rs", delete=False, encoding="utf-8"
+    ) as f:
+        f.write('conn.execute("INSERT INTO t1 (name) VALUES (\'{\\"a\\":1}\')", [])')
+        tmp = Path(f.name)
+    try:
+        got = statements_in(tmp)
+        check("non-empty JSON literal is kept, not skipped", len(got) == 1)
+    finally:
+        tmp.unlink()
     check(
         "backslash continuation lexes",
         lex_strings('"SELECT a \\\n     FROM t1"')[0][1] == "SELECT a FROM t1",
@@ -528,6 +540,7 @@ def self_test() -> int:
         "split shape detected",
         columns_of_create("CREATE TABLE t (a INTEGER, c TEXT)", "t") != {"a", "b"},
     )
+    return 1 if failures else 0
 
 
 CREATE_TABLE_RE = re.compile(
