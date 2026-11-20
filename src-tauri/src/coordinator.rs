@@ -1947,7 +1947,7 @@ pub fn persist_book_content(
     let conn = db
         .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
-    conn.execute(
+    let n = conn.execute(
         "INSERT INTO game_state_books (character_name, server_name, book_type, title, content, captured_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(character_name, server_name, book_type, title) DO UPDATE SET
@@ -1957,7 +1957,12 @@ pub fn persist_book_content(
         rusqlite::params![character, server, book_type, title, content, dt],
     )
     .map_err(|e| format!("Failed to persist book: {e}"))?;
-    app_handle.emit("game-state-updated", vec!["books"]).ok();
+    // Same convention as the `E::Book` dispatch arm: a stale write can match
+    // the conflict target yet change zero rows via the WHERE guard — refresh
+    // the UI only when a row actually landed.
+    if n > 0 {
+        app_handle.emit("game-state-updated", vec!["books"]).ok();
+    }
     Ok(())
 }
 
