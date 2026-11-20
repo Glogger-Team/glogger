@@ -11,6 +11,7 @@
         <GuildView v-else-if="activeTab === 'guild'" />
         <SystemView v-else-if="activeTab === 'system'" />
         <AllMessagesView v-else-if="activeTab === 'all'" />
+        <JsonView v-else-if="activeTab === 'json'" />
         <WatchwordsView v-else-if="activeTab === 'watchwords'" />
         <PoemsView v-else-if="activeTab === 'poems'" />
       </div>
@@ -28,6 +29,7 @@ import NearbyView from './NearbyView.vue'
 import GuildView from './GuildView.vue'
 import SystemView from './SystemView.vue'
 import AllMessagesView from './AllMessagesView.vue'
+import JsonView from './JsonView.vue'
 import WatchwordsView from './WatchwordsView.vue'
 import PoemsView from './PoemsView.vue'
 

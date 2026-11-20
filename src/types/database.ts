@@ -287,6 +287,7 @@ export interface ChatFilter extends Record<string, unknown> {
   limit?: number;
   offset?: number;
   sortOrder?: 'asc' | 'desc';
+  jsonScope?: 'only' | 'exclude';
 }
 
 export interface ScanResult {

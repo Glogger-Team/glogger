@@ -104,6 +104,7 @@ async function loadMessages() {
   try {
     const filter: ChatFilter = {
       ...dateNav.filterParams(),
+      jsonScope: 'exclude',
       tellPartner: selectedConversation.value,
       limit: LIMIT,
       offset: offset.value,

@@ -850,6 +850,19 @@ pub async fn scan_chat_log_file(
     })
 }
 
+/// Map the frontend `jsonScope` string to the backend filter. `None` keeps
+/// the legacy behavior (no scoping); anything else is a caller bug.
+fn parse_json_scope(
+    scope: Option<String>,
+) -> Result<Option<chat_commands::JsonScope>, String> {
+    match scope.as_deref() {
+        None => Ok(None),
+        Some("only") => Ok(Some(chat_commands::JsonScope::Only)),
+        Some("exclude") => Ok(Some(chat_commands::JsonScope::Exclude)),
+        Some(other) => Err(format!("Unknown jsonScope: {other}")),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command(rename_all = "camelCase")]
 pub async fn get_chat_messages(
@@ -861,6 +874,7 @@ pub async fn get_chat_messages(
     has_item_links: Option<bool>,
     item_name: Option<String>,
     tell_partner: Option<String>,
+    json_scope: Option<String>,
     limit: Option<i64>,
     offset: Option<i64>,
     sort_order: Option<String>,
@@ -877,6 +891,7 @@ pub async fn get_chat_messages(
         has_item_links,
         item_name,
         tell_partner,
+        json_scope: parse_json_scope(json_scope)?,
         limit: limit.unwrap_or(100),
         offset: offset.unwrap_or(0),
         sort_order: sort_order.unwrap_or_else(|| "desc".to_string()),
@@ -910,6 +925,7 @@ pub async fn count_chat_messages(
     has_item_links: Option<bool>,
     item_name: Option<String>,
     tell_partner: Option<String>,
+    json_scope: Option<String>,
     db_pool: State<'_, DbPool>,
 ) -> Result<i64, String> {
     let conn = db_pool.get().map_err(|e| format!("Database error: {e}"))?;
@@ -923,6 +939,7 @@ pub async fn count_chat_messages(
         has_item_links,
         item_name,
         tell_partner,
+        json_scope: parse_json_scope(json_scope)?,
         ..Default::default()
     };
 

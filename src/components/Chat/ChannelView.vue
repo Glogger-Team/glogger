@@ -118,6 +118,7 @@ async function loadMessages() {
   try {
     const filter: ChatFilter = {
       ...dateNav.filterParams(),
+      jsonScope: 'exclude',
       channel: selectedChannel.value,
       searchText: searchText.value || undefined,
       limit: LIMIT,

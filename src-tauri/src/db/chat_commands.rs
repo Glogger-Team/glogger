@@ -73,6 +73,15 @@ pub fn insert_chat_messages(
     Ok(inserted)
 }
 
+/// Scope of `JSON:<Type>` raw lines in a message query. `Search` never sets
+/// this (raw lines stay searchable); every other chat view excludes them and
+/// the JSON tab selects only them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonScope {
+    Only,
+    Exclude,
+}
+
 /// Get chat messages with optional filters
 #[derive(Debug, Clone)]
 pub struct ChatMessageFilter {
@@ -84,6 +93,7 @@ pub struct ChatMessageFilter {
     pub has_item_links: Option<bool>,
     pub item_name: Option<String>,
     pub tell_partner: Option<String>,
+    pub json_scope: Option<JsonScope>,
     pub limit: i64,
     pub offset: i64,
     /// "asc" for oldest-first, "desc" (default) for newest-first
@@ -101,6 +111,7 @@ impl Default for ChatMessageFilter {
             has_item_links: None,
             item_name: None,
             tell_partner: None,
+            json_scope: None,
             limit: 100,
             offset: 0,
             sort_order: "desc".to_string(),
@@ -244,6 +255,16 @@ fn build_chat_where(filter: &ChatMessageFilter) -> (Vec<String>, Vec<Box<dyn rus
         }
     }
 
+    // Raw `JSON:<Type>` lines live in their own tab. `Search` sets no scope
+    // and keeps them; every other view excludes them; the JSON tab takes
+    // only them. Static patterns: no params, prepare-gate safe.
+    match filter.json_scope {
+        Some(JsonScope::Only) => conditions.push("cm.channel LIKE 'JSON:%'".to_string()),
+        Some(JsonScope::Exclude) => conditions.push(
+            "(cm.channel IS NULL OR cm.channel NOT LIKE 'JSON:%')".to_string(),
+        ),
+        None => {}
+    }
     if let Some(start_time) = &filter.start_time {
         conditions.push(format!("cm.timestamp >= ?{}", param_idx));
         params.push(Box::new(start_time.clone()));
@@ -539,7 +560,7 @@ pub fn get_channel_stats<C: DbRead + ?Sized>(conn: &C) -> Result<Vec<(String, i6
     let mut stmt = conn.prepare(
         "SELECT channel, COUNT(*) as count
          FROM chat_messages
-         WHERE channel IS NOT NULL
+         WHERE channel IS NOT NULL AND channel NOT LIKE 'JSON:%'
          GROUP BY channel
          ORDER BY count DESC",
     )?;
@@ -741,6 +762,8 @@ pub fn get_watch_rule_messages<C: DbRead + ?Sized>(
         }
     }
 
+    // Watchwords is a chat view, not Search: raw JSON lines never match.
+    conditions.push("(cm.channel IS NULL OR cm.channel NOT LIKE 'JSON:%')".to_string());
     // Join watch conditions with AND or OR based on match_mode
     if !watch_conditions.is_empty() {
         let joiner = match rule.match_mode {
@@ -1042,6 +1065,51 @@ mod tests {
         let messages = get_chat_messages(&*conn, &filter).unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].channel.as_deref().unwrap(), "Trade");
+    }
+
+    #[test]
+    fn json_scope_only_and_exclude() {
+        let conn = setup();
+        msg_with(&conn, "2026-11-19 21:48:19", "JSON:Tip", "", "raw tip body");
+        msg_with(&conn, "2026-11-19 21:48:20", "Guild", "Truffle", "hello");
+        msg_with(&conn, "2026-11-19 21:48:21", "", "Pip", "no channel");
+        conn.execute(
+            "INSERT INTO chat_messages (timestamp, channel, sender, message, is_system, log_file, from_player)
+             VALUES ('2026-11-19 21:48:22', NULL, 'Sys', 'null channel', 0, 'Chat-test.log', 0)",
+            [],
+        )
+        .unwrap();
+
+        let only = ChatMessageFilter {
+            json_scope: Some(JsonScope::Only),
+            ..Default::default()
+        };
+        let rows = get_chat_messages(&*conn, &only).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].channel.as_deref(), Some("JSON:Tip"));
+
+        let exclude = ChatMessageFilter {
+            json_scope: Some(JsonScope::Exclude),
+            ..Default::default()
+        };
+        let rows = get_chat_messages(&*conn, &exclude).unwrap();
+        // NULL and empty channels survive the exclusion: only JSON: goes.
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|r| r.channel.as_deref() != Some("JSON:Tip")));
+
+        let rows = get_chat_messages(&*conn, &ChatMessageFilter::default()).unwrap();
+        assert_eq!(rows.len(), 4);
+    }
+
+    #[test]
+    fn channel_stats_skip_json_channels() {
+        let conn = setup();
+        msg_with(&conn, "2026-11-19 21:48:19", "JSON:Tip", "", "raw tip body");
+        msg_with(&conn, "2026-11-19 21:48:20", "Guild", "Truffle", "hello");
+
+        let stats = get_channel_stats(&*conn).unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].0, "Guild");
     }
 
     #[test]
