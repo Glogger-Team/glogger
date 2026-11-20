@@ -86,30 +86,28 @@ fn clear_cdn_data(tx: &Transaction) -> Result<()> {
          DELETE FROM achievements;
          DELETE FROM foods;
          DROP TABLE IF EXISTS survey_types;
-         CREATE TABLE survey_types (
-             item_id          INTEGER PRIMARY KEY,
-             internal_name    TEXT NOT NULL,
-             name             TEXT NOT NULL,
-             zone             TEXT,
-             icon_id          INTEGER,
-             survey_category  TEXT NOT NULL,
-             is_motherlode    BOOLEAN NOT NULL DEFAULT 0,
-             -- Canonical kind, set from ItemInfo::survey_kind() during CDN persist.
-             -- One of 'basic' | 'motherlode' | 'multihit'. Prefer this over
-             -- is_motherlode for new code; is_motherlode kept for back-compat.
-             kind             TEXT NOT NULL DEFAULT 'basic',
-             skill_req_name   TEXT,
-             skill_req_level  INTEGER,
-             survey_skill_req INTEGER,
-             recipe_id        INTEGER,
-             survey_xp        REAL,
-             survey_xp_first_time REAL,
-             crafting_cost    REAL
-         );
-         CREATE INDEX idx_survey_types_zone ON survey_types(zone);
-         CREATE INDEX idx_survey_types_category ON survey_types(survey_category);
-         CREATE INDEX idx_survey_types_kind ON survey_types(kind);
-         CREATE INDEX idx_survey_types_name ON survey_types(name COLLATE NOCASE);",
+        CREATE TABLE survey_types (
+            item_id          INTEGER PRIMARY KEY,
+            internal_name    TEXT NOT NULL,
+            name             TEXT NOT NULL,
+            zone             TEXT,
+            icon_id          INTEGER,
+            survey_category  TEXT NOT NULL,
+            is_motherlode    BOOLEAN NOT NULL DEFAULT 0,
+            -- NOTE: no `kind` column (matches the migrated schema — see
+            -- insert_survey_types). If a consumer needs the survey Kind,
+            -- add it in a new migration first, then restore it here.
+            skill_req_name   TEXT,
+            skill_req_level  INTEGER,
+            survey_skill_req INTEGER,
+            recipe_id        INTEGER,
+            survey_xp        REAL,
+            survey_xp_first_time REAL,
+            crafting_cost    REAL
+        );
+        CREATE INDEX idx_survey_types_zone ON survey_types(zone);
+        CREATE INDEX idx_survey_types_category ON survey_types(survey_category);
+        CREATE INDEX idx_survey_types_name ON survey_types(name COLLATE NOCASE);",
     )?;
     Ok(())
 }
@@ -712,10 +710,11 @@ fn insert_survey_types(
         let survey_category = if is_mineral { "mineral" } else { "mining" };
         let is_motherlode = item.keywords.contains(&"MotherlodeMap".to_string());
         // NOTE: the survey Kind classifier output ("basic"/"motherlode"/
-        // "multihit") is deliberately NOT persisted — survey_types has no
-        // kind column, and referencing one fails the whole CDN persist
-        // (prepare error rolls back the transaction). If a consumer ever
-        // needs multihit-ness, add the column in a new migration first:
+        // "multihit") is deliberately NOT persisted — no reader selects it,
+        // and keeping one definition of survey_types avoids the split where
+        // clear_cdn_data recreated the table WITH kind while migrations
+        // never had it (unified 2026-11). If a consumer ever needs
+        // multihit-ness, add the column in a new migration first:
         // scripts/check-sql-prepare.py enforces insert/schema agreement.
 
         // Extract skill requirement — Geology for mineral surveys, Mining for mining surveys

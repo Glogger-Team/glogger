@@ -26,8 +26,6 @@ SRC = ROOT / "src-tauri" / "src"
 EXTENSION_TVFS = ("rarray",)
 # format! placeholders look like {name} / {?} / {:x}; '{}' is a JSON literal.
 FORMAT_PH_RE = re.compile(r"\{[^{}']+\}")
-# Rust string literal: "..." (escapes) or r#"..."# (any hash depth).
-STR_RE = re.compile(r'r(#+)"(.*?)"\1|"(?:[^"\\]|\\.)*"', re.DOTALL)
 DML_RE = re.compile(r"^\s*(SELECT|WITH|VALUES|UPDATE|INSERT|DELETE|REPLACE|EXPLAIN)\b")
 DDL_RE = re.compile(
     r"^\s*(CREATE\s+(?:UNIQUE\s+|VIRTUAL\s+|TEMP(?:ORARY)?\s+)?"
@@ -37,7 +35,6 @@ DDL_RE = re.compile(
 ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "\\": "\\", '"': '"', "0": "\0"}
 
 
-ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "\\": "\\", '"': '"', "0": "\0"}
 _RAW_OPEN_RE = re.compile(r"r(#+)?\"")
 _CHAR_LIT_RE = re.compile(r"'(?:[^'\\]|\\.)'")
 
@@ -118,12 +115,6 @@ def literals(text: str) -> list[tuple[int, str]]:
     return [
         (text.count("\n", 0, off) + 1, content) for off, content in lex_strings(text)
     ]
-
-
-def strip_comments(text: str) -> str:
-    """Identity helper kept for call-site shape: extraction is comment-aware
-    at the lexer, so no pre-stripping is needed."""
-    return text
 
 
 def split_statements(sql: str) -> list[str]:
@@ -471,10 +462,89 @@ def self_test() -> int:
         lex_strings('"SELECT a \\\n     FROM t1"')[0][1] == "SELECT a FROM t1",
     )
     check(
-        "trigger with BEGIN/END splits sanely",
-        len(split_statements("DELETE FROM a; DELETE FROM b;")) == 2,
+        "columns_of_create reads schema",
+        columns_of_create("CREATE TABLE t (a INTEGER, b TEXT)", "t") == {"a", "b"},
     )
-    return 1 if failures else 0
+    check(
+        "columns_of_create fails closed",
+        columns_of_create("CREATE TABLE t (", "t") is None,
+    )
+    check(
+        "split shape detected",
+        columns_of_create("CREATE TABLE t (a INTEGER, c TEXT)", "t") != {"a", "b"},
+    )
+
+
+CREATE_TABLE_RE = re.compile(
+    r"\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)",
+    re.IGNORECASE,
+)
+
+
+def in_test_range(ranges: list[tuple[int, int]], lineno0: int) -> bool:
+    return any(a <= lineno0 <= b for a, b in ranges)
+
+
+def app_table_defs() -> list[tuple[str, str, str, int]]:
+    """(table, create_sql, path, lineno) for CREATE TABLE in non-test app
+    code (migrations excluded — they own the canonical schema)."""
+    out: list[tuple[str, str, str, int]] = []
+    for path in sorted(SRC.rglob("*.rs")):
+        if path.name == "migrations.rs":
+            continue
+        text = path.read_text(encoding="utf-8")
+        tested = test_ranges(text)
+        for (lineno, lit), (off, _content) in zip(literals(text), lex_strings(text)):
+            if in_test_range(tested, lineno - 1):
+                continue
+            for stmt in split_statements(lit):
+                m = CREATE_TABLE_RE.match(stmt)
+                if m:
+                    out.append((m.group(1), stmt, path.as_posix(), lineno))
+    return out
+
+
+def table_columns(conn: sqlite3.Connection, table: str) -> set[str] | None:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except sqlite3.Error:
+        return None
+    return {r[1] for r in rows} or None
+
+
+def check_splits(conn: sqlite3.Connection) -> list[str]:
+    """Same table defined differently in app DDL vs the migrated schema
+    (the survey_types split: clear_cdn_data recreated it WITH kind while
+    migrations never had it — two live schemas for one table)."""
+    findings: list[str] = []
+    reported: set[str] = set()
+    for table, sql, path, lineno in app_table_defs():
+        if table in reported:
+            continue
+        base = table_columns(conn, table)
+        if base is None:
+            continue  # temp/export-only table, no canonical schema to split from
+        other = columns_of_create(sql, table)
+        if other is None:
+            continue  # unbuildable in isolation (depends on migration state) — skip
+        if other != base:
+            reported.add(table)
+            findings.append(
+                f"{path}:{lineno}: schema split: app DDL for {table} has columns"
+                f" {sorted(other)} but migrations have {sorted(base)} — unify them"
+            )
+
+    return findings
+
+
+def columns_of_create(sql: str, table: str) -> set[str] | None:
+    """Column names of a standalone CREATE TABLE (isolated scratch DB)."""
+    scratch = sqlite3.connect(":memory:")
+    try:
+        scratch.executescript(sql)
+    except sqlite3.Error:
+        return None
+    return table_columns(scratch, table)
 
 
 def main() -> int:
@@ -485,6 +555,7 @@ def main() -> int:
     }
     print(f"sql-prepare: schema has {len(tables)} tables", file=sys.stderr)
     findings: list[str] = []
+    findings += check_splits(conn)
     for path in sorted(SRC.rglob("*.rs")):
         if path.name == "migrations.rs":
             continue
