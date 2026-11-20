@@ -549,6 +549,7 @@ fn run_scan_dispatch(
                 msg: utc_msg,
                 local_ts: &local_ts,
                 watch_rules,
+                is_scan: true,
             },
             None,
             &mut dstate,

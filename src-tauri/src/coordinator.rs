@@ -1022,6 +1022,7 @@ impl DataIngestCoordinator {
                                 msg: &msg,
                                 local_ts: &local_ts,
                                 watch_rules: &self.settings.get().watch_rules,
+                                is_scan: false,
                             },
                             None,
                             &mut dstate,
