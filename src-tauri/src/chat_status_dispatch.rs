@@ -1176,7 +1176,7 @@ pub fn record_cow_milk_session(
     zone: &str,
     timestamp: &str,
 ) -> bool {
-    let milked_at = milking_event_timestamp(timestamp);
+    let milked_at = utc_naive_to_rfc3339(timestamp);
     let Ok(conn) = db.get_write() else {
         return false;
     };
