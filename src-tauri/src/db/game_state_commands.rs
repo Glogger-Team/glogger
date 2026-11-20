@@ -2323,6 +2323,128 @@ mod tests {
         assert!(err.is_err(), "CHECK violation must surface, got {err:?}");
     }
     #[test]
+    fn collect_milk_arm_records_named_cow_and_leaves_other_cows_alone() {
+        // The Collect Milk arm takes &DbPool, so this drives the dispatch
+        // path with a temp-file pool instead of the in-memory `setup()`
+        // conn. Unique path per call: parallel tests share the temp dir.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "glogger_cow_milk_test_{}_{n}.db",
+            std::process::id()
+        ));
+        let pool = crate::db::init_pool(path.clone(), Some(0)).expect("init pool");
+
+        // A second cow with an approximated (unknown-cooldown) bound: milking
+        // Daisy must not touch Bessie's row.
+        pool.get_write()
+            .unwrap()
+            .execute(
+                "INSERT INTO milking_timers
+                     (character_name, server_name, cow_name, zone, last_milked_at, cooldown_unknown)
+                 VALUES ('Alice', 'Dreva', 'Bessie', 'Serbule', '2026-04-01T05:00:00+00:00', 1)",
+                [],
+            )
+            .unwrap();
+
+        let game_data: crate::cdn_commands::GameDataState = std::sync::Arc::new(
+            tauri::async_runtime::RwLock::new(crate::game_data::GameData::empty()),
+        );
+        let identity = crate::chat_status_dispatch::DispatchIdentity {
+            character: "Alice".to_string(),
+            server: "Dreva".to_string(),
+        };
+        let mut arena = crate::arena_parser::ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg: Vec<crate::chat_combat_parser::ChatCombatEvent> = Vec::new();
+        let mut milk = |cow: &str, ts: &str, area: Option<&str>| {
+            let line = format!("[Combat] Alice: Collect Milk on {cow}!");
+            let line = format!("{ts}\t{line}");
+            let msg = crate::chat_parser::parse_chat_line(&line).unwrap();
+            let mut st = crate::chat_status_dispatch::DispatchState {
+                arena_tracker: &mut arena,
+                last_rez_dedup: &mut rez,
+                recent_damage: &mut dmg,
+                current_area: area.map(|s| s.to_string()),
+                count_currency: true,
+            };
+            crate::chat_status_dispatch::dispatch_chat_message(
+                crate::chat_status_dispatch::DispatchCtx {
+                    db: &pool,
+                    game_data: &game_data,
+                    identity: Some(&identity),
+                    msg: &msg,
+                    local_ts: "2026-04-01 05:30:53",
+                    watch_rules: &[],
+                },
+                None,
+                &mut st,
+            )
+        };
+        let row = |cow: &str| -> (String, i64, String) {
+            pool.get_write()
+                .unwrap()
+                .query_row(
+                    "SELECT last_milked_at, cooldown_unknown, zone FROM milking_timers
+                     WHERE character_name = 'Alice' AND server_name = 'Dreva' AND cow_name = ?1",
+                    rusqlite::params![cow],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap()
+        };
+
+        // Fresh milk for Daisy in an unknown area: sets the stamp, clears
+        // the unknown flag, keeps the blank zone — and reports `milking`.
+        let out = milk("Daisy", "26-04-01 05:30:53", None);
+        assert!(out.domains.contains(&"milking".to_string()));
+        assert_eq!(
+            row("Daisy"),
+            (
+                "2026-04-01T05:30:53+00:00".to_string(),
+                0,
+                String::new()
+            )
+        );
+        // Bessie's approximated bound is untouched.
+        assert_eq!(
+            row("Bessie"),
+            (
+                "2026-04-01T05:00:00+00:00".to_string(),
+                1,
+                "Serbule".to_string()
+            )
+        );
+
+        // An older replay with a now-known area must not move the stamp
+        // backwards (MAX newer-wins) while the zone merge still learns it.
+        milk("Daisy", "26-03-01 05:30:53", Some("Serbule"));
+        assert_eq!(
+            row("Daisy"),
+            (
+                "2026-04-01T05:30:53+00:00".to_string(),
+                0,
+                "Serbule".to_string()
+            )
+        );
+
+        // A newer milk with an unknown area advances the stamp without
+        // clobbering the learned zone.
+        milk("Daisy", "26-05-01 05:30:53", None);
+        assert_eq!(
+            row("Daisy"),
+            (
+                "2026-05-01T05:30:53+00:00".to_string(),
+                0,
+                "Serbule".to_string()
+            )
+        );
+
+        // Drop the pool first: Windows won't delete a file with an open handle.
+        drop(pool);
+        let _ = std::fs::remove_file(&path);
+    }
+    #[test]
     fn chat_level_up_inserts_new_row() {
         let conn = setup();
 

@@ -475,4 +475,85 @@ mod tests {
         drop(pool);
         let _ = std::fs::remove_file(&db_path);
     }
+
+    /// The login-event timestamp (not wall-clock now) opens the session: a
+    /// favor gain stamped after the login event counts toward the new
+    /// session's sums. Regression pin for threading the CharacterLogin
+    /// timestamp into `set_active_character`.
+    #[test]
+    fn set_active_character_login_event_time_includes_later_favor_gain() {
+        use std::sync::Arc;
+
+        let db_path = unique_temp_db("glogger_session_login_include_test");
+        let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
+
+        let mut manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
+            crate::game_data::GameData::empty(),
+        )));
+
+        // Favor gain lands 2s after the login event.
+        pool.get_write()
+            .unwrap()
+            .execute(
+                "INSERT INTO favor_events (character_name, server_name, npc_key, timestamp, delta)
+                 VALUES ('Alice', 'Dreva', 'NPC_Test', '2026-11-16 12:00:02', 7.5)",
+                [],
+            )
+            .unwrap();
+
+        // Login-event timestamp — not now.
+        manager.set_active_character("Alice", "Dreva", &pool, Some("2026-11-16 12:00:00"));
+
+        let conn = pool.get().unwrap();
+        let session_at: String = conn
+            .query_row("SELECT last_login_at FROM game_state_session WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(session_at, "2026-11-16 12:00:00");
+
+        let sums =
+            crate::db::game_state_commands::session_favor_sums(&conn, "Alice", "Dreva").unwrap();
+        assert!((sums["NPC_Test"] - 7.5).abs() < 1e-9);
+
+        // Drop the pool first: Windows won't delete a file with an open handle.
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// A gain from the previous session (before the login event) stays out
+    /// of the new session's sums once the login boundary is the event time.
+    #[test]
+    fn set_active_character_login_event_time_excludes_prior_session_favor() {
+        use std::sync::Arc;
+
+        let db_path = unique_temp_db("glogger_session_login_exclude_test");
+        let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
+
+        let mut manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
+            crate::game_data::GameData::empty(),
+        )));
+
+        // One gain from the previous session, one from the new session.
+        pool.get_write()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO favor_events (character_name, server_name, npc_key, timestamp, delta) VALUES
+                 ('Alice', 'Dreva', 'NPC_Test', '2026-11-16 11:59:58', 100.0),
+                 ('Alice', 'Dreva', 'NPC_Test', '2026-11-16 12:00:02', 7.5)",
+            )
+            .unwrap();
+
+        manager.set_active_character("Alice", "Dreva", &pool, Some("2026-11-16 12:00:00"));
+
+        let conn = pool.get().unwrap();
+        let sums =
+            crate::db::game_state_commands::session_favor_sums(&conn, "Alice", "Dreva").unwrap();
+        assert_eq!(sums.len(), 1);
+        assert!((sums["NPC_Test"] - 7.5).abs() < 1e-9);
+
+        // Drop the pool first: Windows won't delete a file with an open handle.
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
+    }
 }
