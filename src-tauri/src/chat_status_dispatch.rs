@@ -875,6 +875,7 @@ fn dispatch_json_event(
                         // Identical re-read: advance the observation time so
                         // this row stays the newest observation. No domain,
                         // no imports — rescan stays silent.
+                        // Swallowed intentionally: this identical row already persisted, so a failed bump only leaves captured_at stale — nothing downstream to fail.
                         conn.execute(
                             "UPDATE game_state_books SET captured_at = ?5
                              WHERE character_name = ?1 AND server_name = ?2

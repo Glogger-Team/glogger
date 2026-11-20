@@ -7,8 +7,9 @@
 # gated job/step ends with an always-run note printing `<scope> scope: ran
 # | skipped (no <paths> changed)` — skips exit 0 with a note, never a
 # job-level `if:` (checks stay visible, never missing). Always-run set:
-# commit-msg self-test, lint-parity drift guard (unconditional in the yaml
-# job), game-interaction constraints. Per-slice scopes: ruff on
+# commit-msg self-test, author-discipline gates (unconditional `authoring`
+# job), lint-parity drift guard (unconditional in the yaml job),
+# game-interaction constraints. Per-slice scopes: ruff on
 # scripts/**; yamllint on repo-wide **/*.yml|yaml; zizmor+pinact+pre-commit
 # on .github/**; markdown on **/*.md (changed-files script); frontend build
 # on src/** + manifests; grids on src/**/*.vue; review-patterns on
@@ -237,6 +238,34 @@ jobs:
         # Same `mise run lint:commit` slice the pre-commit hook runs.
         # The hook is scripts/check-commit-msg.py (warning-only).
         run: mise run lint:commit
+  authoring:
+    name: Author-discipline gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install mise and tools
+        # No third-party action (org allowlist): official installer script.
+        run: |
+          set -euo pipefail
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          mise install
+
+      - name: Author-discipline gates
+        # Same `mise run lint:authoring` slice the pre-commit hook runs (via
+        # `mise run lint:fast`): command registration, store HMR, exec bit,
+        # doc orphans. Unconditional: seconds-scale greps guarding authorship
+        # itself (no scope to gate on — the checkers span rust, frontend,
+        # and docs).
+        run: mise run lint:authoring
 
   version-sync:
     name: Version sync guard

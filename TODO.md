@@ -192,7 +192,7 @@ WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history.
 - [ ] Reevaluate test suite
   - Think about what tests make sense, what isn't giving value, and how to harden against future failures.
   - need to figure out if we can build some sample data or something that makes sense for tests.
-  - **Audit: re-scoped — the sample-data ask is done; only hardening remains.** The `surveyLogs/` replay datasets were retired with the Player.log pipeline (PR #202): `survey/replay_tests.rs` deleted (dual-pipeline interleave un-portable; chat-only harness dropped — the map-use signal lived in Player.log, so rebuilding it would be synthesis, not replay), `test_data/surveyLogs/` removed, `survey-test` script removed. Census: **676 `#[test]` across 61 files, 2 `#[ignore]`** (chat-log backfill + character-report import); no integration dir, no JS tests. (Counts match `AGENTS.md`; `cargo test --lib` reports 674 passed + 2 ignored.)
+  - **Audit: re-scoped — the sample-data ask is done; only hardening remains.** The `surveyLogs/` replay datasets were retired with the Player.log pipeline (PR #202): `survey/replay_tests.rs` deleted (dual-pipeline interleave un-portable; chat-only harness dropped — the map-use signal lived in Player.log, so rebuilding it would be synthesis, not replay), `test_data/surveyLogs/` removed, `survey-test` script removed. Census: **692 `#[test]` across 61 files, 2 `#[ignore]`** (chat-log backfill + character-report import); no integration dir, no JS tests. (Counts match `AGENTS.md`; `cargo test --lib` reports 690 passed + 2 ignored.)
   - **Effort: Large | Impact: Medium (reliability/confidence)**
   - **Suspects:** `src-tauri/src/db/migrations.rs` (v74/v81 test patterns).
 
