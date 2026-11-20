@@ -446,5 +446,61 @@ def main() -> int:
     return 1 if findings else 0
 
 
+def self_test() -> int:
+    """Adversarial fixtures for the code-only lexer (the D-minor lessons:
+    disconnected removals misread state; lifetimes must survive; gates ship
+    with probes, version-sync precedent)."""
+    failures = 0
+
+    def check(name: str, cond: bool) -> None:
+        nonlocal failures
+        print(("PASS " if cond else "FAIL ") + name)
+        if not cond:
+            failures += 1
+
+    cases = [
+        ("    // Presence of FromEntityId locates the twin", "    "),
+        ('    x = "a // b"; // FromName here', "    x = ; "),
+        ("    /* FromEntityId */ let a = 1;", "     let a = 1;"),
+        (
+            "    fn f<'a>(x: &'a str) -> &'a str {",
+            "    fn f<'a>(x: &'a str) -> &'a str {",
+        ),
+        ("    let c = 'a';", "    let c = ;"),
+        ('    let s = r#"{"FromName": 1}"#;', "    let s = ;"),
+        ('    let u = "http://x";', "    let u = ;"),
+        ("    /* open block", "    "),
+        ("    still FromEntityId comment", ""),
+        ("    end */ let B = 1;", " let B = 1;"),
+    ]
+    in_block, raw = False, None
+    for src, want in cases:
+        out, in_block, raw = code_only(src, in_block, raw)
+        check(f"strip {src.strip()[:40]!r}", out == want)
+    check("block state closed", (in_block, raw) == (False, None))
+
+    # Removal inside a block comment (delimiters on unchanged lines) stays
+    # hidden; a def after the closed block stays visible.
+    old = "/* heading\nstill comment\ndef FakeThing():\n    pass\n*/\nreal_code = 1\n"
+    full = lex_source(old)
+    check("comment-hidden line blank", full[2] == "")
+    check("post-block line kept", full[5] == "real_code = 1")
+    idents, _ = extract_identifiers(
+        [(3, "def FakeThing():"), (6, "real_code = 1")], full
+    )
+    check("comment-hidden def suppressed", "FakeThing" not in idents)
+
+    old2 = "/* c */\npub struct VisibleWidget {\n}\n"
+    idents2, _ = extract_identifiers(
+        [(2, "pub struct VisibleWidget {")], lex_source(old2)
+    )
+    check("post-block def fires", "VisibleWidget" in idents2)
+    idents3, _ = extract_identifiers([(1, "    // FromEntityId retired")], ["    "])
+    check("prose comment silent", not idents3)
+    return 1 if failures else 0
+
+
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        sys.exit(self_test())
     sys.exit(main())

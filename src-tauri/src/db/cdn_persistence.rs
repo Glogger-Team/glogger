@@ -1,6 +1,6 @@
 use crate::game_data::{
     AbilityInfo, AchievementInfo, AreaInfo, GameData, ItemInfo, ItemUseInfo, QuestInfo, RecipeInfo,
-    SkillInfo, SurveyKind, TsysClientInfo, XpTableInfo,
+    SkillInfo, TsysClientInfo, XpTableInfo,
 };
 use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};
 
@@ -690,10 +690,10 @@ fn insert_survey_types(
     friendly_to_key.sort_by_key(|a| std::cmp::Reverse(a.0.len()));
     let mut stmt = tx.prepare(
         "INSERT INTO survey_types (item_id, internal_name, name, zone, icon_id,
-                                   survey_category, is_motherlode, kind, skill_req_name,
+                                   survey_category, is_motherlode, skill_req_name,
                                    skill_req_level, survey_skill_req, recipe_id,
                                    survey_xp, survey_xp_first_time, crafting_cost)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
     )?;
 
     for (id, item) in items {
@@ -711,14 +711,12 @@ fn insert_survey_types(
 
         let survey_category = if is_mineral { "mineral" } else { "mining" };
         let is_motherlode = item.keywords.contains(&"MotherlodeMap".to_string());
-        // Canonical kind via the ItemInfo classifier. Falls back to "basic"
-        // if the keyword check above passed but the classifier disagrees
-        // (shouldn't happen given the predicate, but defensive).
-        let kind = match item.survey_kind() {
-            Some(SurveyKind::Motherlode) => "motherlode",
-            Some(SurveyKind::Multihit) => "multihit",
-            Some(SurveyKind::Basic) | None => "basic",
-        };
+        // NOTE: the survey Kind classifier output ("basic"/"motherlode"/
+        // "multihit") is deliberately NOT persisted — survey_types has no
+        // kind column, and referencing one fails the whole CDN persist
+        // (prepare error rolls back the transaction). If a consumer ever
+        // needs multihit-ness, add the column in a new migration first:
+        // scripts/check-sql-prepare.py enforces insert/schema agreement.
 
         // Extract skill requirement — Geology for mineral surveys, Mining for mining surveys
         let (skill_req_name, skill_req_level) = if is_mineral {
@@ -805,7 +803,6 @@ fn insert_survey_types(
             item.icon_id,
             survey_category,
             is_motherlode,
-            kind,
             skill_req_name,
             skill_req_level,
             survey_skill_req,
@@ -916,5 +913,58 @@ mod tests {
     fn malformed_food_descs_are_rejected() {
         assert_eq!(parse_food_desc("Instant Snack"), None);
         assert_eq!(parse_food_desc("Level X Meal"), None);
+    }
+
+    /// The survey-types INSERT once referenced a `kind` column that does not
+    /// exist, failing the whole CDN persist at prepare time (every persist,
+    /// deterministically — the error rolled back the transaction and only a
+    /// startup-log line marked the loss). The static gate
+    /// (scripts/check-sql-prepare.py) covers the shape; this pins the
+    /// runtime path against the migrated schema.
+    #[test]
+    fn insert_survey_types_matches_migrated_schema() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run_migrations(&conn, None).unwrap();
+        let tx = conn.transaction().unwrap();
+        let mut items = std::collections::HashMap::new();
+        items.insert(
+            1,
+            ItemInfo {
+                id: 1,
+                name: "Mineral Survey".to_string(),
+                description: None,
+                icon_id: None,
+                value: None,
+                max_stack_size: None,
+                keywords: vec!["MineralSurvey".to_string()],
+                effect_descs: vec![],
+                internal_name: Some("Mineral_Survey".to_string()),
+                food_desc: None,
+                equip_slot: None,
+                num_uses: None,
+                skill_reqs: None,
+                behaviors: None,
+                bestow_recipes: None,
+                bestow_ability: None,
+                bestow_quest: None,
+                bestow_title: None,
+                craft_points: None,
+                crafting_target_level: None,
+                tsys_profile: None,
+                raw_json: serde_json::Value::Null,
+            },
+        );
+        insert_survey_types(
+            &tx,
+            &items,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM survey_types", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
     }
 }

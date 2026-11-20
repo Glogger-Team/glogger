@@ -183,5 +183,46 @@ def main() -> int:
     return 1 if findings else 0
 
 
+def self_test() -> int:
+    """Adversarial fixtures: NUL layout, rename order, weird names, and the
+    fail-closed git helper (the D-minor lessons — gates ship with probes)."""
+    failures = 0
+
+    def check(name: str, cond: bool) -> None:
+        nonlocal failures
+        print(("PASS " if cond else "FAIL ") + name)
+        if not cond:
+            failures += 1
+
+    raw = (
+        ":100755 100644 aaa bbb M\0scripts/foo.py\0"
+        ":100644 100644 a b M\0src/x.rs\0"
+        ":100755 100644 a b R100\0scripts/old.sh\0scripts/new.sh\0"
+    )
+    check(
+        "nul flip+rename parse",
+        parse_raw_modes(raw)
+        == {
+            "scripts/foo.py": ("100755", "100644"),
+            "src/x.rs": ("100644", "100644"),
+            "scripts/new.sh": ("100755", "100644"),
+        },
+    )
+    check("empty diff clean", parse_raw_modes("") == {})
+    check(
+        "embedded quote harmless",
+        parse_raw_modes(':100755 100644 a b M\0scripts/we"ird.py\0')
+        == {'scripts/we"ird.py': ("100755", "100644")},
+    )
+    try:
+        git_check_stdout("diff", "--raw", "--invalid-flag-xyz")
+        check("bad git exits 2", False)
+    except SystemExit as e:
+        check("bad git exits 2", e.code == 2)
+    return 1 if failures else 0
+
+
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        sys.exit(self_test())
     sys.exit(main())
