@@ -26,6 +26,9 @@
         <template #cell-timestamp="{ value }">
           {{ formatTs(value as string) }}
         </template>
+        <template #cell-twin="{ row }">
+          {{ twinLabel(row as unknown as UnknownSourceRow) }}
+        </template>
       </DataTable>
     </div>
     <div v-if="error" class="text-[#c87e7e] text-sm">{{ error }}</div>
@@ -52,6 +55,8 @@ interface UnknownSourceRow {
   source: string
   source_kind: string | null
   source_details: string | null
+  from_name: string | null
+  from_entity_id: number | null
 }
 
 const settingsStore = useSettingsStore()
@@ -69,14 +74,19 @@ const characterLabel = computed(() => {
   return c ? `${c}${s ? ` (${s})` : ''}` : 'active character'
 })
 
+function twinLabel(row: UnknownSourceRow): string {
+  if (row.from_entity_id != null) return `Linked: ${row.from_name ?? 'kill'}`
+  if ((row.source_details ?? '').indexOf('json_twin') !== -1) return 'Twin, no entity'
+  return 'No twin'
+}
+
  const columns: ColumnDef[] = [
    { key: 'timestamp', label: 'When' },
    { key: 'item_name', label: 'Item' },
    { key: 'quantity', label: 'Qty', align: 'right', numeric: true },
    { key: 'context', label: 'Context' },
    { key: 'source', label: 'Path' },
-   { key: 'source_kind', label: 'Kind' },
-   { key: 'source_details', label: 'Details', cellClass: 'max-w-0 truncate' },
+  { key: 'twin', label: 'Twin' },
  ]
 
 async function load() {

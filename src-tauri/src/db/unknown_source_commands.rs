@@ -5,6 +5,8 @@ use tauri::State;
 /// One item gain whose provenance is unresolved: `source_kind` is
 /// `'unknown'` / `'uncertain'` (Player.log path couldn't attribute it) or
 /// NULL (Chat.log path, never tagged — e.g. a survey hook that didn't fire).
+/// Kill-linked rows (JSON twin carried `FromEntityId`) are excluded — the
+/// corpse is a known source even when no economic pipeline claimed the gain.
 #[derive(Debug, Clone, Serialize)]
 pub struct UnknownSourceTransaction {
     pub id: i64,
@@ -15,6 +17,8 @@ pub struct UnknownSourceTransaction {
     pub source: String,
     pub source_kind: Option<String>,
     pub source_details: Option<String>,
+    pub from_name: Option<String>,
+    pub from_entity_id: Option<i64>,
 }
 
 fn query_unknown_source(
@@ -25,10 +29,11 @@ fn query_unknown_source(
 ) -> Result<Vec<UnknownSourceTransaction>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, timestamp, item_name, quantity, context, source, source_kind, source_details
+            "SELECT id, timestamp, item_name, quantity, context, source, source_kind, source_details, from_name, from_entity_id
              FROM item_transactions
              WHERE character_name = ?1 AND server_name = ?2
                AND (source_kind = 'unknown' OR source_kind = 'uncertain' OR source_kind IS NULL)
+               AND from_entity_id IS NULL
                AND quantity > 0 AND context != 'storage_deposit'
              ORDER BY timestamp DESC
              LIMIT ?3",
@@ -46,6 +51,8 @@ fn query_unknown_source(
                 source: row.get(5)?,
                 source_kind: row.get(6)?,
                 source_details: row.get(7)?,
+                from_name: row.get(8)?,
+                from_entity_id: row.get(9)?,
             })
         })
         .map_err(|e| format!("Query failed: {e}"))?;
