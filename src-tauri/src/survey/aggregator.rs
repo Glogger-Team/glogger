@@ -851,11 +851,16 @@ mod tests {
 
     #[test]
     fn delete_invalidate_keeps_other_identities_attribution() {
-        // Scoped invalidation drops only the deleted session's use ids:
-        // an unrelated identity keeps attributing (via its retained
-        // window entry), and the deleted use's queued gain no longer
-        // resolves (queue dropped) — the identity fallback cannot rescue
-        // it because the gain carries no survey-yield item.
+        // Scoped invalidation drops only the deleted session's use ids.
+        // The retained identity's gain is stamped just BEFORE its Basic
+        // use (pipeline clock skew): it can only attribute via the
+        // tier-1 after_gain queue arm, because the identity fallback's
+        // `latest_use_for_session` requires `used_at <= gain` and the
+        // only use postdates the gain. Under a global queue clear this
+        // gain would return None — so `Some` here discriminates scoped
+        // retain from global clear. The deleted use's queued gain no
+        // longer resolves (queue dropped) — the identity fallback
+        // cannot rescue it because the gain carries no survey-yield item.
         let conn = fresh_db();
         let mut agg = seeded_aggregator();
         let use_a = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
@@ -868,19 +873,21 @@ mod tests {
                     area: None,
                     map_internal_name: "MiningSurveySerbule1",
                     kind: SurveyUseKind::Basic,
-                    now_iso: "2026-04-15 12:00:00",
+                    now_iso: "2026-04-15 12:00:05",
                 },
             )
             .expect("record manual Basic use");
         agg.invalidate_session_cache(&[use_a]);
 
+        // Gain stamped 1s before the retained use: tier-1 after_gain arm
+        // only. The fallback cannot rescue it (use_b postdates the gain).
         let hit = agg.attribute_chat_gain(
             &conn,
             "AltB",
             "Legacy",
             Some("IronOre"),
             1,
-            "2026-04-15 12:00:01",
+            "2026-04-15 12:00:04",
             None,
         );
         assert_eq!(hit, Some(use_b));
