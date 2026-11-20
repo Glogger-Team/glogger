@@ -2,7 +2,7 @@
   <div class="flex flex-col gap-2 h-full overflow-hidden">
     <div class="text-xs text-text-muted">
       {{ rows.length }} unattributed gain{{ rows.length === 1 ? '' : 's' }} for
-      {{ characterLabel }} — loot the pipeline couldn't attribute to a source.
+      {{ characterLabel }} — loot with no identifiable source (no survey session, no kill info from the game).
     </div>
     <div class="flex-1 min-h-0 overflow-y-auto -mr-1 pr-1">
       <DataTable
@@ -25,9 +25,6 @@
         </template>
         <template #cell-timestamp="{ value }">
           {{ formatTs(value as string) }}
-        </template>
-        <template #cell-twin="{ row }">
-          {{ twinLabel(row as unknown as UnknownSourceRow) }}
         </template>
       </DataTable>
     </div>
@@ -55,8 +52,6 @@ interface UnknownSourceRow {
   source: string
   source_kind: string | null
   source_details: string | null
-  from_name: string | null
-  from_entity_id: number | null
 }
 
 const settingsStore = useSettingsStore()
@@ -74,19 +69,12 @@ const characterLabel = computed(() => {
   return c ? `${c}${s ? ` (${s})` : ''}` : 'active character'
 })
 
-function twinLabel(row: UnknownSourceRow): string {
-  if (row.from_entity_id != null) return `Linked: ${row.from_name ?? 'kill'}`
-  if ((row.source_details ?? '').indexOf('json_twin') !== -1) return 'Twin, no entity'
-  return 'No twin'
-}
-
  const columns: ColumnDef[] = [
    { key: 'timestamp', label: 'When' },
    { key: 'item_name', label: 'Item' },
    { key: 'quantity', label: 'Qty', align: 'right', numeric: true },
    { key: 'context', label: 'Context' },
    { key: 'source', label: 'Path' },
-  { key: 'twin', label: 'Twin' },
  ]
 
 async function load() {
