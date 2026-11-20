@@ -791,7 +791,8 @@ pub(crate) fn apply_chat_level_up(l: &ChatLevelUp<'_>) -> Result<bool, String> {
          ON CONFLICT(character_name, server_name, skill_id) DO UPDATE SET
             skill_name = excluded.skill_name,
             level = excluded.level,
-            xp = game_state_skills.xp + excluded.xp,
+            xp = CASE WHEN excluded.level > game_state_skills.level THEN excluded.xp
+                      ELSE game_state_skills.xp + excluded.xp END,
             last_confirmed_at = CASE WHEN excluded.last_confirmed_at > game_state_skills.last_confirmed_at THEN excluded.last_confirmed_at ELSE game_state_skills.last_confirmed_at END,
             source = excluded.source
          WHERE (excluded.last_confirmed_at > game_state_skills.last_confirmed_at AND excluded.level >= game_state_skills.level)
@@ -2528,6 +2529,33 @@ mod tests {
     }
 
     #[test]
+    fn chat_level_up_resets_within_level_progress() {
+        // A report-seeded within-level balance plus a later level-up award
+        // must not sum into the new level: the award is the whole story.
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO game_state_skills
+                 (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
+             VALUES ('TestPlayer','Dreva',106,'Cartography',86,86,0,4900,0,0,'2026-04-16 12:00:00','report')",
+            [],
+        )
+        .unwrap();
+        let changed =
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 192, confirmed_at: "2026-04-16 14:23:16" })
+                .expect("apply level-up");
+        assert!(changed);
+        let (level, xp): (i64, i64) = conn
+            .query_row(
+                "SELECT level, xp FROM game_state_skills
+                 WHERE character_name = 'TestPlayer' AND server_name = 'Dreva' AND skill_id = 106",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("row exists");
+        assert_eq!((level, xp), (87, 192));
+    }
+
+    #[test]
     fn chat_level_up_preserves_unknown_columns() {
         let conn = setup();
 
@@ -2552,7 +2580,7 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)),
             )
             .expect("row exists");
-        assert_eq!((level, xp), (87, 292));
+        assert_eq!((level, xp), (87, 192));
         assert_eq!(source, "chat");
         assert_eq!(ts, "2026-04-16 14:23:16");
         assert_eq!((base_level, bonus, tnl, max), (80, 3, 5000, 100));
@@ -2648,7 +2676,7 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .expect("row exists");
-        assert_eq!((level, xp), (88, 202));
+        assert_eq!((level, xp), (88, 10));
         assert_eq!(ts, "2026-04-16 15:00:00");
 
         // A stale replay that would have won against the rewound clock is now

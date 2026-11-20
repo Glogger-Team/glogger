@@ -772,11 +772,14 @@ fn insert_json_receipt_guarded(
 /// never persisted, and `Player.log` skill snapshots are gone.
 /// `xp` here is an AWARDED INCREMENT, not a total (proven by the live
 /// fixture: Riding 250 → 350 → 300 across three lines — totals cannot fall).
-/// Identical resends (same timestamp) are no-ops; newer lines accumulate.
-/// A second award in the same second is dropped, as is an older award
-/// arriving after a newer one — second-granularity logs give no key that
-/// separates either from its own replay. (Per-award reconciliation against
-/// snapshot anchors would need a per-award ledger; see TODO.)
+/// Identical resends (same timestamp) are no-ops; newer lines accumulate —
+/// but only within a level. An award that raises the level stores just the
+/// award: the previous level's within-level progress must not carry forward
+/// (a snapshot-seeded balance plus a later award would otherwise sum into
+/// the new level). A second award in the same second is dropped, as is an
+/// older award arriving after a newer one — second-granularity logs give no
+/// key that separates either from its own replay. (Per-award reconciliation
+/// against snapshot anchors would need a per-award ledger; see TODO.)
 #[allow(clippy::too_many_arguments)]
 fn upsert_chat_xp(
     conn: &rusqlite::Connection,
@@ -795,7 +798,8 @@ fn upsert_chat_xp(
          ON CONFLICT(character_name, server_name, skill_id) DO UPDATE SET
             skill_name = excluded.skill_name,
             level = excluded.level,
-            xp = game_state_skills.xp + excluded.xp,
+            xp = CASE WHEN excluded.level > game_state_skills.level THEN excluded.xp
+                      ELSE game_state_skills.xp + excluded.xp END,
             last_confirmed_at = CASE WHEN excluded.last_confirmed_at > game_state_skills.last_confirmed_at THEN excluded.last_confirmed_at ELSE game_state_skills.last_confirmed_at END,
             source = excluded.source
          WHERE (excluded.last_confirmed_at > game_state_skills.last_confirmed_at AND excluded.level >= game_state_skills.level)
@@ -2605,7 +2609,33 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!((level, xp), (6, 110));
+        // Level change stores just the award: the old level-5 progress (100)
+        // must not carry into level 6.
+        assert_eq!((level, xp), (6, 10));
+    }
+
+    #[test]
+    fn upsert_chat_xp_same_level_awards_accumulate() {
+        let (pool, _guard) = test_pool();
+        let conn = pool.get_write().unwrap();
+        conn.execute(
+            "INSERT INTO game_state_skills
+                (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
+             VALUES ('Alice', 'Dreva', 7, 'Sword', 5, 5, 0, 100, 0, 0, '2026-11-17 10:00:00', 'snapshot')",
+            [],
+        )
+        .unwrap();
+        let changed = upsert_chat_xp(&conn, "Alice", "Dreva", 7, "Sword", 5, 50, "2026-11-17 11:00:00");
+        assert!(changed);
+        let (level, xp): (i64, i64) = conn
+            .query_row(
+                "SELECT level, xp FROM game_state_skills
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND skill_id = 7",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((level, xp), (5, 150));
     }
 
     #[test]
