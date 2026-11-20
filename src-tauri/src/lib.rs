@@ -596,6 +596,13 @@ pub fn run() {
                         }
                         Err(e) => eprintln!("Words of Power usage backfill failed: {e}"),
                     }
+                    match db::unknown_source_commands::sweep_unlinked_gains(&dbp) {
+                        Ok(0) => {}
+                        Ok(n) => {
+                            startup_log!("Unlinked-gain sweep: {} row(s) purged", n);
+                        }
+                        Err(e) => eprintln!("Unlinked-gain sweep failed: {e}"),
+                    }
                 });
 
             }
@@ -892,7 +899,7 @@ pub fn run() {
             survey::commands::survey_tracker_delete_session,
             survey::commands::survey_tracker_analytics,
             survey::commands::survey_tracker_item_cost_analysis,
-            db::unknown_source_commands::get_unknown_source_transactions,
+
             // Character import
             import_character_report,
             get_characters,

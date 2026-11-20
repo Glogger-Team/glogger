@@ -17,10 +17,10 @@ Frozen since the 10/21 game client: the client stopped writing the verbose `Loca
 
 - `src/types/farming.ts` — frozen aliases kept so historic readers compile; live-session shape intentionally not rebuilt
 - `src/stores/farmingStore.ts` — trimmed to `fetchEnemyStats` + cache (currently unreferenced; readers invoke `get_enemy_kill_stats` directly)
-- `src/components/Economics/EconomicsFarmingView.vue` — 3-tab shell (Session History / Database / Sources)
+- `src/components/Economics/EconomicsFarmingView.vue` — 2-tab shell (Session History / Database)
 - `src/components/Farming/HistoricalTab.vue` — past sessions from DB
 - `src/components/Farming/DatabaseTab.vue` — historic + imported drop-rate database (export/import, no scan)
-- `src/components/Farming/UnknownSourceTab.vue` — unattributed-gain reader
+- Kill-only ledger: `sweep_unlinked_gains` (`db/unknown_source_commands.rs`) purges gains with no source of any kind after 24h (startup + every scan/tail dispatch). The unattributed-gains tab and its command are deleted.
 - `src/components/Farming/ItemDropBreakdownTable.vue`, `EnemyDropTable.vue`, `ExtractDetailTable.vue` — table variants reading backend commands directly
 
 Deleted with the freeze: `FarmingView.vue` (legacy wrapper), `FarmingSessionCard.vue` (live session display), `FarmingLog.vue` (live activity feed), `ItemDropBreakdown.vue` (session-hover popover). The Combat view (`src/components/Combat/CombatView.vue` + `src/stores/combatStore.ts`) covers live kills/deaths/XP/Wisdom.

@@ -650,6 +650,14 @@ fn run_scan_dispatch(
         && let Some(app) = app {
             app.emit("game-state-updated", &domains).ok();
         }
+    // Kill-only ledger: drop unattributed gains whose link-up window has
+    // closed (older than UNLINKED_GAIN_RETENTION_HOURS). Log-and-continue —
+    // a sweep failure must never fail the dispatch.
+    match crate::db::unknown_source_commands::sweep_unlinked_gains(db_pool) {
+        Ok(0) => {}
+        Ok(n) => eprintln!("[run_scan_dispatch] Swept {n} unlinked gain(s)"),
+        Err(e) => eprintln!("[run_scan_dispatch] Unlinked-gain sweep failed: {e}"),
+    }
     domains
 }
 

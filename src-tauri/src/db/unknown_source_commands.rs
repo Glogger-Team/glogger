@@ -1,78 +1,31 @@
 use super::DbPool;
-use serde::Serialize;
-use tauri::State;
 
-/// One item gain whose provenance is unresolved: `source_kind` is
-/// `'unknown'` / `'uncertain'` (Player.log path couldn't attribute it) or
-/// NULL (Chat.log path, never tagged — e.g. a survey hook that didn't fire).
-/// Kill-linked rows (JSON twin carried `FromEntityId`) are excluded — the
-/// corpse is a known source even when no economic pipeline claimed the gain.
-#[derive(Debug, Clone, Serialize)]
-pub struct UnknownSourceTransaction {
-    pub id: i64,
-    pub timestamp: String,
-    pub item_name: String,
-    pub quantity: i64,
-    pub context: String,
-    pub source: String,
-    pub source_kind: Option<String>,
-    pub source_details: Option<String>,
-}
+/// Retention for unattributed gains, in hours. Rows older than this with no
+/// source of any kind are provisional data whose link-up window has closed —
+/// survey retro-claims look back seconds, kill links 30 minutes — so they
+/// can never attribute and are purged. Kill-linked rows (`from_entity_id`),
+/// survey/economic rows (`source_kind`), spends and vault moves are never
+/// touched; neither are the legacy 'unknown'/'uncertain' classifications
+/// (deliberate history, not provisional data).
+pub const UNLINKED_GAIN_RETENTION_HOURS: i64 = 24;
 
-fn query_unknown_source(
-    conn: &impl crate::db::DbRead,
-    character_name: &str,
-    server_name: &str,
-    limit: i64,
-) -> Result<Vec<UnknownSourceTransaction>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, timestamp, item_name, quantity, context, source, source_kind, source_details
-             FROM item_transactions
-             WHERE character_name = ?1 AND server_name = ?2
-               AND (source_kind = 'unknown' OR source_kind = 'uncertain' OR source_kind IS NULL)
+/// Purge unattributed gains older than [`UNLINKED_GAIN_RETENTION_HOURS`].
+/// Runs at startup and after every scan/tail dispatch; log-and-continue on
+/// failure, never fatal. Returns rows deleted.
+pub fn sweep_unlinked_gains(db_pool: &DbPool) -> Result<usize, String> {
+    let conn = db_pool
+        .get_write()
+        .map_err(|e| format!("Database error: {e}"))?;
+    let deleted = conn
+        .execute(
+            "DELETE FROM item_transactions
+             WHERE source_kind IS NULL
                AND from_entity_id IS NULL
-               AND quantity > 0 AND context != 'storage_deposit'
-             ORDER BY timestamp DESC
-             LIMIT ?3",
+               AND quantity > 0
+               AND context != 'storage_deposit'
+               AND timestamp < datetime('now', '-' || ?1 || ' hours')",
+            rusqlite::params![UNLINKED_GAIN_RETENTION_HOURS],
         )
-        .map_err(|e| format!("Failed to prepare query: {e}"))?;
-
-    let rows = stmt
-        .query_map(rusqlite::params![character_name, server_name, limit], |row| {
-            Ok(UnknownSourceTransaction {
-                id: row.get(0)?,
-                timestamp: row.get(1)?,
-                item_name: row.get(2)?,
-                quantity: row.get(3)?,
-                context: row.get(4)?,
-                source: row.get(5)?,
-                source_kind: row.get(6)?,
-                source_details: row.get(7)?,
-            })
-        })
-        .map_err(|e| format!("Query failed: {e}"))?;
-
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Failed to read results: {e}"))
-}
-
-/// Diagnostic report: every gain for this character/server whose source is
-/// unresolved, newest first. Gains-only: deletes/withdrawals (negative
-/// quantities) and storage deposits (vault moves, not loot) are excluded so
-/// they can't displace real loot from the capped result. Helps find drops the
-/// provenance pipeline missed (bad taxonomy, untagged chat loot) instead of
-/// silently lumping them.
-#[tauri::command]
-pub fn get_unknown_source_transactions(
-    db: State<'_, DbPool>,
-    character_name: String,
-    server_name: String,
-    limit: Option<i64>,
-) -> Result<Vec<UnknownSourceTransaction>, String> {
-    let conn = db
-        .get()
-        .map_err(|e| format!("Database connection error: {e}"))?;
-    let limit = limit.unwrap_or(100).clamp(1, 1000);
-    query_unknown_source(&conn, &character_name, &server_name, limit)
+        .map_err(|e| format!("Failed to sweep unlinked gains: {e}"))?;
+    Ok(deleted)
 }
