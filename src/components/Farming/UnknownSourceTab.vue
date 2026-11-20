@@ -23,6 +23,9 @@
         <template #cell-quantity="{ row }">
           <span class="text-accent-gold font-semibold">{{ (row.quantity as number).toLocaleString() }}</span>
         </template>
+        <template #cell-timestamp="{ value }">
+          {{ formatTs(value as string) }}
+        </template>
       </DataTable>
     </div>
     <div v-if="error" class="text-[#c87e7e] text-sm">{{ error }}</div>
@@ -38,6 +41,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { useSettingsStore } from '../../stores/settingsStore'
 import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 import ItemMinicard from '../Shared/Item/ItemMinicard.vue'
+import { formatDateTimeFull as formatTs } from '../../composables/useTimestamp'
 
 interface UnknownSourceRow {
   id: number
