@@ -39,9 +39,9 @@ Three paths feed the same `dispatch_chat_message`; each arm converges by constru
 
 | Path | Identity | Area | Domains | Events | Content triggers |
 |---|---|---|---|---|---|
-| Live drain | `LocalPlayer` session | live zone | on change only | on fresh write only | run (gourmand/hoplology/teleport/report-stats/garden) |
+| Live drain | login session (active character/server) | live zone | on change only | on fresh write only | run (gourmand/hoplology/teleport/report-stats/garden) |
 | Rescan (same lines re-read) | same | same | silent — every arm gates on changed rows (`favor_events` key, changed-row counts, `Option`/`bool` write results, book content compare) | silent — gated on the write result | re-run but each is a no-op on identical content |
-| Full-file scan (`scan_player_log_file`) | per-line file session (`Logged In As` opens, settings character fallback) | `None` — death/rez rows land with `NULL` area (accepted) | merged from every outcome (deduped) so backfills refresh the UI | forwarded identically (`enemy-killed`, `character-death`, …) | **never run** — backfilled books are historical; importing them as current would clobber live snapshots. Scan logs the skip per title instead |
+| Full-file scan (`scan_chat_log_file`) | per-line file session (`Logged In As` opens, settings character fallback) | `None` — death/rez rows land with `NULL` area (accepted) | merged from every outcome (deduped) so backfills refresh the UI | forwarded identically (`enemy-killed`, `character-death`, …) | **never run** — backfilled books are historical; importing them as current would clobber live snapshots. Scan logs the skip per title instead |
 
 Scan also never accrues currency (`count_currency: false` — no per-line accumulator memory, so re-scans would double-count) and never imports `ReportSaved` files (live-only; logged per path). Unknown skills, malformed JSON, and unobserved types are logged per line, never silent.
 
