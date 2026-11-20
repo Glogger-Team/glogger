@@ -33,7 +33,6 @@ pub mod stall_tracker_commands;
 // for the future Analytics rebuild. No active consumer right now since the
 // legacy survey screen was removed; allow dead_code until that work lands.
 pub mod hoplology_commands;
-pub mod statehelm_commands;
 #[allow(dead_code)]
 pub mod survey_commands;
 pub mod timer_commands;

@@ -433,25 +433,6 @@ pub fn backfill_words_of_power_usage(
     backfill_used_words_from_chat_logs(&settings, &db)
 }
 
-// ── Internal helper (called from coordinator, not a Tauri command) ──────────
-
-pub fn insert_word_of_power(
-    conn: &rusqlite::Connection,
-    character_name: &str,
-    server_name: &str,
-    word: &str,
-    power_name: &str,
-    description: Option<&str>,
-    discovered_at: &str,
-) -> Result<i64, rusqlite::Error> {
-    conn.execute(
-        "INSERT INTO words_of_power (character_name, server_name, word, power_name, description, discovered_at, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'auto')",
-        rusqlite::params![character_name, server_name, word, power_name, description, discovered_at],
-    )?;
-    Ok(conn.last_insert_rowid())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,6 +457,22 @@ mod tests {
         conn
     }
 
+    fn seed_word(
+        conn: &Connection,
+        character: &str,
+        server: &str,
+        word: &str,
+        power: &str,
+        discovered_at: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO words_of_power (character_name, server_name, word, power_name, description, discovered_at, source)
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5, 'auto')",
+            rusqlite::params![character, server, word, power, discovered_at],
+        )
+        .unwrap();
+    }
+
     fn count(conn: &Connection) -> i64 {
         conn.query_row("SELECT COUNT(*) FROM words_of_power", [], |r| r.get(0))
             .unwrap()
@@ -485,36 +482,9 @@ mod tests {
     fn test_delete_words_by_word_removes_all_characters_copies() {
         let conn = setup();
         // Same word saved by two characters, plus an unrelated word.
-        insert_word_of_power(
-            &conn,
-            "Alt",
-            "Dreva",
-            "ABCWORD",
-            "Haste",
-            None,
-            "2026-07-01T00:00:00Z",
-        )
-        .unwrap();
-        insert_word_of_power(
-            &conn,
-            "Main",
-            "Dreva",
-            "ABCWORD",
-            "Haste",
-            None,
-            "2026-07-01T00:00:00Z",
-        )
-        .unwrap();
-        insert_word_of_power(
-            &conn,
-            "Main",
-            "Dreva",
-            "OTHERWORD",
-            "Luck",
-            None,
-            "2026-07-02T00:00:00Z",
-        )
-        .unwrap();
+        seed_word(&conn, "Alt", "Dreva", "ABCWORD", "Haste", "2026-07-01T00:00:00Z");
+        seed_word(&conn, "Main", "Dreva", "ABCWORD", "Haste", "2026-07-01T00:00:00Z");
+        seed_word(&conn, "Main", "Dreva", "OTHERWORD", "Luck", "2026-07-02T00:00:00Z");
 
         let n = delete_words_by_word(&conn, "ABCWORD").unwrap();
         assert_eq!(n, 2);
@@ -525,16 +495,7 @@ mod tests {
     fn test_delete_words_by_word_case_and_whitespace_insensitive() {
         let conn = setup();
         // Manual entries may be lowercased or carry stray whitespace.
-        insert_word_of_power(
-            &conn,
-            "Main",
-            "Dreva",
-            " abcword ",
-            "Haste",
-            None,
-            "2026-07-01T00:00:00Z",
-        )
-        .unwrap();
+        seed_word(&conn, "Main", "Dreva", " abcword ", "Haste", "2026-07-01T00:00:00Z");
 
         let n = delete_words_by_word(&conn, "ABCWORD").unwrap();
         assert_eq!(n, 1);
@@ -544,16 +505,7 @@ mod tests {
     #[test]
     fn test_delete_words_by_word_unknown_word_is_noop() {
         let conn = setup();
-        insert_word_of_power(
-            &conn,
-            "Main",
-            "Dreva",
-            "ABCWORD",
-            "Haste",
-            None,
-            "2026-07-01T00:00:00Z",
-        )
-        .unwrap();
+        seed_word(&conn, "Main", "Dreva", "ABCWORD", "Haste", "2026-07-01T00:00:00Z");
 
         let n = delete_words_by_word(&conn, "NEVERSPOKEN").unwrap();
         assert_eq!(n, 0);

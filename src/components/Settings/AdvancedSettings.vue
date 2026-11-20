@@ -104,45 +104,14 @@
 
     <template v-if="devMode">
     <div class="settings-section">
-      <h3>Player.log Upload</h3>
-
-      <div class="mb-4">
-        <button
-          @click="browseAndParsePlayerLog"
-          :disabled="props.parsing"
-          class="btn btn-secondary">
-          {{ props.parsing ? "Parsing..." : "Upload Player.log File" }}
-        </button>
-
-        <p class="mt-2 text-text-muted text-xs leading-relaxed">
-          Upload a Player.log file for manual parsing. Use this if you have test data or
-          historical log files you want to process (e.g., from another machine or a backup).
-        </p>
-
-        <div v-if="parseResult" class="success-box">{{ parseResult }}</div>
-        <div v-if="parseError" class="error-box">{{ parseError }}</div>
-      </div>
-    </div>
-
-    <div class="settings-section">
-      <h3>Dual-Log Replay</h3>
+      <h3>Chat-Log Replay</h3>
 
       <p class="mb-3 text-text-muted text-xs leading-relaxed">
-        Replay a Player.log and Chat.log together, interleaved by timestamp. This simulates
-        live tailing with full cross-referencing — survey loot quantities get corrected from
-        Chat.log Status messages, game state is persisted to the DB, etc.
+        Replay a Chat.log through the live dispatch pipeline for backfills and
+        debugging. Progress and parsed status events stream back while it runs.
       </p>
 
       <div class="flex gap-2 mb-3">
-        <div class="flex-1">
-          <label class="text-xs text-text-secondary mb-1 block">Player.log</label>
-          <button
-            @click="pickPlayerLogForReplay"
-            :disabled="replaying"
-            class="btn btn-secondary text-xs w-full truncate">
-            {{ replayPlayerPath ? replayPlayerPath.split(/[\\/]/).pop() : "Select Player.log..." }}
-          </button>
-        </div>
         <div class="flex-1">
           <label class="text-xs text-text-secondary mb-1 block">Chat.log</label>
           <button
@@ -156,9 +125,9 @@
 
       <button
         @click="startReplay"
-        :disabled="replaying || !replayPlayerPath || !replayChatPath"
+        :disabled="replaying || !replayChatPath"
         class="btn btn-primary mb-3">
-        {{ replaying ? "Replaying..." : "Start Dual Replay" }}
+        {{ replaying ? "Replaying..." : "Start Replay" }}
       </button>
 
       <div v-if="replayProgress" class="mb-2 text-xs text-text-secondary">
@@ -188,12 +157,6 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useCharacterStore } from "../../stores/characterStore";
 import { useDataBrowserStore } from "../../stores/dataBrowserStore";
-
-const props = defineProps<{
-  parsing: boolean;
-  error: string;
-  onParseLog: () => void;
-}>();
 
 const settingsStore = useSettingsStore();
 const characterStore = useCharacterStore();
@@ -248,32 +211,7 @@ function saveReportWatchSettings() {
   }
 }
 
-// Player.log upload
-const parseResult = ref<string | null>(null);
-const parseError = ref<string | null>(null);
-
-async function browseAndParsePlayerLog() {
-  const selected = await open({
-    multiple: false,
-    defaultPath: settingsStore.settings.logFilePath || settingsStore.settings.gameDataPath || undefined,
-    filters: [{ name: "Log Files", extensions: ["log", "txt"] }],
-  });
-  if (selected) {
-    parseResult.value = null;
-    parseError.value = null;
-
-    // Update the log file path and trigger parsing
-    settingsStore.updateLogFilePath(selected);
-    try {
-      props.onParseLog();
-      parseResult.value = `Parsing Player.log: ${selected}`;
-    } catch (e: any) {
-      parseError.value = e.toString();
-    }
-  }
-}
-
-// ── Dual-Log Replay ──────────────────────────────────────────────────────────
+// ── Chat-Log Replay ──────────────────────────────────────────────────────────
 
 interface ReplayProgressEvent {
   phase: string;
@@ -282,7 +220,6 @@ interface ReplayProgressEvent {
   detail: string;
 }
 
-const replayPlayerPath = ref<string | null>(null);
 const replayChatPath = ref<string | null>(null);
 const replaying = ref(false);
 const replayProgress = ref<ReplayProgressEvent | null>(null);
@@ -290,17 +227,6 @@ const replayResultText = ref<string | null>(null);
 const replayError = ref<string | null>(null);
 
 let unlistenProgress: UnlistenFn | null = null;
-
-async function pickPlayerLogForReplay() {
-  const selected = await open({
-    multiple: false,
-    defaultPath: settingsStore.settings.logFilePath || settingsStore.settings.gameDataPath || undefined,
-    filters: [{ name: "Log Files", extensions: ["log", "txt"] }],
-  });
-  if (selected) {
-    replayPlayerPath.value = selected;
-  }
-}
 
 async function pickChatLogForReplay() {
   const selected = await open({
@@ -314,7 +240,7 @@ async function pickChatLogForReplay() {
 }
 
 async function startReplay() {
-  if (!replayPlayerPath.value || !replayChatPath.value) return;
+  if (!replayChatPath.value) return;
 
   replaying.value = true;
   replayProgress.value = null;
@@ -328,23 +254,13 @@ async function startReplay() {
 
   try {
     const result = await invoke<{
-      player_lines_processed: number;
       chat_messages_processed: number;
-      player_events_emitted: number;
-      survey_events_emitted: number;
       chat_status_events_emitted: number;
-      loot_corrections_applied: number;
-    }>("replay_dual_logs", {
-      playerLogPath: replayPlayerPath.value,
+    }>("replay_chat_log", {
       chatLogPath: replayChatPath.value,
     });
 
-    replayResultText.value = [
-      `Player: ${result.player_events_emitted} events from ${result.player_lines_processed} lines`,
-      `Chat: ${result.chat_messages_processed} messages, ${result.chat_status_events_emitted} status events`,
-      `Survey: ${result.survey_events_emitted} events`,
-      `Loot corrections: ${result.loot_corrections_applied}`,
-    ].join(" · ");
+    replayResultText.value = `Chat: ${result.chat_messages_processed} messages, ${result.chat_status_events_emitted} status events`;
   } catch (e: any) {
     replayError.value = e.toString();
   } finally {

@@ -361,6 +361,7 @@ const SCOPED_TABLES: &[&str] = &[
     "corpse_extracts",
     "currency_estimate",
     "enemy_kills",
+    "favor_events",
     "garden_almanac",
     "garden_almanac_history",
     "harvest_almanac",
@@ -1360,6 +1361,11 @@ mod tests {
         )
         .unwrap();
         conn.execute(
+            "INSERT INTO favor_events (character_name,server_name,npc_key,timestamp,delta) VALUES (?1,?2,'npc','2026-01-01',1.0)",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
             "INSERT INTO garden_almanac VALUES (?1,?2,'Wheat','Serbule',NULL,NULL,0,'2026-01-01')",
             rusqlite::params![who, SERVER],
         )
@@ -1510,6 +1516,7 @@ mod tests {
         "corpse_extracts",
         "currency_estimate",
         "enemy_kills",
+        "favor_events",
         "garden_almanac",
         "garden_almanac_history",
         "harvest_almanac",

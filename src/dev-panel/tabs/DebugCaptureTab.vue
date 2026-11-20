@@ -143,7 +143,7 @@
     <section class="border border-border-default rounded p-4 space-y-4">
       <h4 class="text-text-secondary text-sm mb-3 mt-0">Replay Capture File</h4>
       <p class="text-text-muted text-xs">
-        Replay a saved capture file through the parser and inspect loot attribution.
+        Replay a saved capture file through the chat parser and inspect detected kills.
         No database interaction — just validates what the parser would emit.
       </p>
 
@@ -158,7 +158,7 @@
       </div>
 
       <template v-if="replayResult">
-        <div class="grid grid-cols-3 gap-3 text-xs">
+        <div class="grid grid-cols-2 gap-3 text-xs">
           <div class="bg-surface-elevated rounded p-2">
             <div class="text-text-muted mb-1">Lines Replayed</div>
             <div class="text-text-primary text-sm">{{ replayResult.total_lines.toLocaleString() }}</div>
@@ -166,10 +166,6 @@
           <div class="bg-surface-elevated rounded p-2">
             <div class="text-text-muted mb-1">Kills Detected</div>
             <div class="text-[#e87e7e] text-sm">{{ replayResult.kills.length }}</div>
-          </div>
-          <div class="bg-surface-elevated rounded p-2">
-            <div class="text-text-muted mb-1">Loot Events</div>
-            <div class="text-value-positive text-sm">{{ replayResult.loot_events.length }}</div>
           </div>
         </div>
 
@@ -187,33 +183,8 @@
           </div>
         </div>
 
-        <!-- Loot Attribution -->
-        <div v-if="replayResult.loot_events.length" class="space-y-1">
-          <div class="text-[0.65rem] uppercase tracking-widest text-value-positive font-bold">Loot Attribution</div>
-          <div
-            v-for="(loot, i) in replayResult.loot_events"
-            :key="i"
-            class="flex gap-3 items-center text-xs px-2 py-1 bg-surface-elevated rounded"
-            :class="{ 'border-l-2 border-l-value-negative': !loot.item_name || !loot.corpse_name }">
-            <span class="text-text-dim font-mono shrink-0">{{ loot.timestamp.slice(11, 19) }}</span>
-            <span class="text-text-primary">{{ loot.item_name ?? '???' }}</span>
-            <span class="text-text-dim">x{{ loot.quantity }}</span>
-            <span class="text-text-muted">&larr;</span>
-            <span class="text-entity-enemy">{{ loot.corpse_name ?? 'no context' }}</span>
-            <span
-              class="text-[0.6rem] px-1 rounded ml-auto shrink-0"
-              :class="{
-                'bg-green-900/40 text-green-400': loot.resolution === 'direct',
-                'bg-yellow-900/40 text-yellow-400': loot.resolution === 'fallback',
-                'bg-red-900/40 text-red-400': loot.resolution === 'unresolved',
-              }">
-              {{ loot.resolution }}
-            </span>
-          </div>
-        </div>
-
-        <div v-if="replayResult.loot_events.length === 0 && replayResult.kills.length === 0" class="text-text-dim text-xs italic">
-          No kills or loot events found in this capture.
+        <div v-if="replayResult.kills.length === 0" class="text-text-dim text-xs italic">
+          No kills found in this capture.
         </div>
       </template>
     </section>
@@ -345,6 +316,9 @@ async function discardCapture() {
 
 // ── Capture Replay ──────────────────────────────────────────────────────
 
+// Loot attribution replay was retired with the Player.log pipeline: the
+// backend still returns `player_lines: 0` and an empty `loot_events`, so the
+// panel only renders kills. Fields kept in the type for shape parity.
 interface ReplayLootEvent {
   timestamp: string;
   item_name: string | null;

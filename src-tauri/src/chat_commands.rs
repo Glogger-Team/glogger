@@ -500,7 +500,7 @@ fn milked_by_events_in_messages(
 #[allow(clippy::too_many_arguments)]
 fn run_scan_dispatch(
     db_pool: &DbPool,
-    settings: &crate::settings::SettingsManager,
+    _settings: &crate::settings::SettingsManager,
     game_data: &GameDataState,
     app: Option<&AppHandle>,
     utc_messages: &[chat_parser::ChatMessage],
@@ -513,7 +513,6 @@ fn run_scan_dispatch(
     let mut arena = crate::arena_parser::ArenaTracker::new();
     let mut last_rez_dedup = std::collections::HashMap::new();
     let mut recent_damage: Vec<crate::chat_combat_parser::ChatCombatEvent> = Vec::new();
-    let mut pending_cow: Option<String> = None;
     let mut domains: Vec<String> = Vec::new();
     for (idx, (utc_msg, local_msg)) in utc_messages.iter().zip(local_messages.iter()).enumerate() {
         let identity: Option<DispatchIdentity> = match session_at_line.get(idx).and_then(|s| s.clone()) {
@@ -536,7 +535,6 @@ fn run_scan_dispatch(
             arena_tracker: &mut arena,
             last_rez_dedup: &mut last_rez_dedup,
             recent_damage: &mut recent_damage,
-            pending_cow_interaction: &mut pending_cow,
             current_area: None,
             // Scan paths never accrue: the accumulator has no per-line
             // memory, so re-scanning lines the live drain already counted
@@ -555,6 +553,15 @@ fn run_scan_dispatch(
             None,
             &mut dstate,
         );
+        // Structured domains (skills, favor, recipes, kills, books, ...) must
+        // refresh the UI after a scan exactly like the live drain: merge the
+        // dispatch outcome into the accumulated set (deduped). Without this,
+        // backfilled rows stay invisible until an unrelated live line fires.
+        for d in std::mem::take(&mut outcome.domains) {
+            if !domains.contains(&d) {
+                domains.push(d);
+            }
+        }
         // Session-keyed stack correction (see `DispatchOutcome::staged_gains`
         // docs): the Player.log drain wrote fallback `stack_size = 1` rows,
         // and the chat line carries the real quantity. Correct inline per
@@ -591,34 +598,6 @@ fn run_scan_dispatch(
                     }
                 }
         }
-        let had_arena = outcome.domains.iter().any(|d| d == "arena");
-        for d in std::mem::take(&mut outcome.domains) {
-            if !domains.contains(&d) {
-                domains.push(d);
-            }
-        }
-        // Arena bet rescan on a fresh resolution (mirrors the live drain):
-        // the idempotent Player.log rescan resolves bets against the new
-        // match. Same retain/drop rule — drop `arena` when the rescan found
-        // nothing and the match arm didn't claim it.
-        if outcome.arena_resolved {
-            let mut changed = true;
-            match crate::db::arena_commands::backfill_bets_from_player_logs(settings, db_pool) {
-                Ok(n) if n > 0 => {}
-                Ok(_) => changed = had_arena,
-                Err(e) => {
-                    eprintln!("[run_scan_dispatch] Arena bet rescan failed: {e}");
-                    changed = had_arena;
-                }
-            }
-            if changed {
-                if !domains.iter().any(|x| x == "arena") {
-                    domains.push("arena".to_string());
-                }
-            } else {
-                domains.retain(|d| d != "arena");
-            }
-        }
         // Forward the same structured events the live drain emits so a scan
         // refreshes open widgets identically (death/rez feeds, chat-status
         // listeners, watch toasts).
@@ -648,6 +627,23 @@ fn run_scan_dispatch(
         }
         for skill in std::mem::take(&mut outcome.unknown_skills) {
             eprintln!("[run_scan_dispatch] Skipping scan chat level-up for unresolvable skill: {skill}");
+        }
+
+        for t in std::mem::take(&mut outcome.malformed_json) {
+            eprintln!("[run_scan_dispatch] Skipping malformed JSON chat line of type: {t}");
+        }
+
+        for t in std::mem::take(&mut outcome.unknown_json) {
+            eprintln!("[run_scan_dispatch] Unobserved JSON chat line of type: {t} (raw row kept)");
+        }
+
+        // Scan never runs book content triggers (gourmand/hoplology/
+        // teleports/report-stats/garden): the tables they fill are
+        // current-state, and backfilled books are historical — importing a
+        // months-old almanac or bind list as current would clobber live
+        // state. Re-open the book live to populate. Logged, not silent.
+        if let Some((_, title, _, _)) = outcome.json_book.take() {
+            eprintln!("[run_scan_dispatch] Skipping scan JSON book content import (re-open live): {title}");
         }
     }
     if !domains.is_empty()

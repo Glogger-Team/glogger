@@ -26,6 +26,10 @@ pub struct ChatMessage {
     pub is_system: bool,
     pub from_player: Option<bool>, // For Tell messages: true if sent by player, false if received
     pub item_links: Vec<ItemLink>,
+    /// Set when `channel` is `JSON:<Type>`: the Type string and the raw JSON body.
+    /// `None` for every other line — raw `chat_messages` storage is unchanged.
+    pub json_type: Option<String>,
+    pub json_body: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +96,31 @@ pub fn parse_chat_line(line: &str) -> Option<ChatMessage> {
 
         let remaining = content[channel_end + 1..].trim();
 
+        // VIP JSON logging: `[JSON:Type] {json}` carries structured game data.
+        // `channel` stays verbatim for raw storage; the parsed parts ride along.
+        if let Some(t) = channel.strip_prefix("JSON:").map(|s: &str| s.to_owned()) {
+            let mut body = remaining.to_string();
+            // Defensive: strip a stray `Sender:` prefix so the body starts at the object.
+            if !body.starts_with('{')
+                && let Some(brace) = body.find('{')
+            {
+                body = body[brace..].to_string();
+            }
+            let item_links = extract_item_links(&body);
+            return Some(ChatMessage {
+                timestamp,
+                channel: Some(channel),
+                sender: None,
+                message: body.clone(),
+                is_system: true,
+                from_player: None,
+                item_links,
+                json_type: Some(t),
+                json_body: Some(body),
+            });
+        }
+
+
         // Special handling for Tell messages: [Tell] Sender->Recipient: Message
         if channel == "Tell" {
             if let Some(arrow_pos) = remaining.find("->") {
@@ -117,6 +146,8 @@ pub fn parse_chat_line(line: &str) -> Option<ChatMessage> {
                         is_system: false,
                         from_player: Some(is_outgoing),
                         item_links,
+                        json_type: None,
+                        json_body: None,
                     })
                 } else {
                     None
@@ -135,6 +166,8 @@ pub fn parse_chat_line(line: &str) -> Option<ChatMessage> {
                     is_system: true,
                     from_player: None,
                     item_links,
+                    json_type: None,
+                    json_body: None,
                 })
             }
         } else if let Some(colon_pos) = remaining.find(':') {
@@ -157,6 +190,8 @@ pub fn parse_chat_line(line: &str) -> Option<ChatMessage> {
                     is_system: true,
                     from_player: None,
                     item_links,
+                    json_type: None,
+                    json_body: None,
                 })
             } else {
                 // Player message with sender
@@ -172,6 +207,8 @@ pub fn parse_chat_line(line: &str) -> Option<ChatMessage> {
                     is_system: false,
                     from_player: None,
                     item_links,
+                    json_type: None,
+                    json_body: None,
                 })
             }
         } else {
@@ -186,6 +223,8 @@ pub fn parse_chat_line(line: &str) -> Option<ChatMessage> {
                 is_system: true,
                 from_player: None,
                 item_links,
+                json_type: None,
+                json_body: None,
             })
         }
     } else {
@@ -200,6 +239,8 @@ pub fn parse_chat_line(line: &str) -> Option<ChatMessage> {
             is_system: true,
             from_player: None,
             item_links,
+            json_type: None,
+            json_body: None,
         })
     }
 }

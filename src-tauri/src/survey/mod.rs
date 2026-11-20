@@ -13,9 +13,9 @@
 //! - [`persistence`] — All DB I/O. Pure CRUD, no business logic.
 //! - [`multihit_state`] — DB-backed open-multihit-node tracking. State must
 //!   survive app restart (the 30-minute window can outlive a session crash).
-//! - [`aggregator`] — Subscribes to `PlayerEvent`s, stitches survey-use ↔
-//!   mining-context attribution, drives session lifecycle and writes to
-//!   the persistence layer.
+//! - [`aggregator`] — Chat-authoritative survey-use ↔ mining-context
+//!   attribution, drives session lifecycle and writes to the persistence
+//!   layer.
 //! - [`commands`] — Tauri commands the frontend calls.
 
 pub mod aggregator;
@@ -24,9 +24,6 @@ pub mod commands;
 pub mod multihit_state;
 pub mod persistence;
 pub mod types;
-
-#[cfg(test)]
-mod replay_tests;
 
 #[allow(unused_imports)] // re-exports surface the public types for callers
 pub use types::{SessionStartTrigger, SurveySession, SurveyUse, SurveyUseKind, SurveyUseStatus};

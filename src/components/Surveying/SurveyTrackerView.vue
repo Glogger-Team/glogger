@@ -29,17 +29,6 @@
           </button>
           <div v-if="store.sessionError" class="text-[11px] text-accent-red px-1">{{ store.sessionError }}</div>
 
-          <label class="flex items-center gap-2 text-xs text-text-secondary cursor-pointer px-1"
-            title="Automatic detection needs Player.log survey events, which the current game client no longer writes. Manual start always works.">
-            <input
-              type="checkbox"
-              class="accent-accent-gold"
-              :checked="settingsStore.settings.autoStartSurveySessions"
-              @change="toggleAutoStart"
-            />
-            Auto-start sessions
-          </label>
-
           <div class="border-t border-border-default pt-2 flex flex-col gap-1.5">
             <div
               class="text-[10px] uppercase tracking-wider text-text-secondary font-semibold px-1"
@@ -379,13 +368,11 @@ import {
   type HistoricalSessionRow,
   type SurveySessionDetail,
 } from '../../stores/surveyTrackerStore'
-import { useSettingsStore } from '../../stores/settingsStore'
 import { useViewPrefs } from '../../composables/useViewPrefs'
 import { formatGold } from '../../composables/useRecipeCost'
 import { liveEnrichedRows, liveRevenue, liveProfit as computeLiveProfit } from '../../composables/useLiveValuation'
 
 const store = useSurveyTrackerStore()
-const settingsStore = useSettingsStore()
 
 interface SurveyTypeEntry {
   internal_name: string
@@ -611,11 +598,6 @@ async function onEnd() {
   if (selectedSessionId.value !== null) {
     void selectSession(selectedSessionId.value)
   }
-}
-
-function toggleAutoStart(e: Event) {
-  const checked = (e.target as HTMLInputElement).checked
-  settingsStore.updateSettings({ autoStartSurveySessions: checked })
 }
 
 function onNameBlur(e: FocusEvent, sessionId: number) {

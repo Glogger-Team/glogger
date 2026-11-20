@@ -63,6 +63,10 @@ pub struct NpcFavorData {
     /// Vendor reset time, if a reset timer is active. New; older omit.
     #[serde(default)]
     pub vendor_reset_time: Option<String>,
+    /// Weekly gift counter from VIP report exports (`GiftsThisWeek`).
+    /// Observed in VIP exports; older exports omit it, hence `default`.
+    #[serde(default)]
+    pub gifts_this_week: Option<i64>,
     /// Player notes for this NPC (entered via the game GUI). New; older omit.
     #[serde(default)]
     pub player_notes: Option<String>,
@@ -118,6 +122,7 @@ pub struct SnapshotNpcFavor {
     pub councils_spent_at_vendor: Option<i64>,
     pub vendor_reset_time: Option<String>,
     pub player_notes: Option<String>,
+    pub gifts_this_week: Option<i64>,
     /// Owning snapshot's game timestamp — lets consumers compare snapshot
     /// freshness against live `last_confirmed_at`.
     pub snapshot_timestamp: Option<String>,
@@ -305,8 +310,8 @@ pub fn import_character_report_internal(
         // 8. Batch insert NPC favor
         let mut npc_stmt = conn
             .prepare(
-                "INSERT INTO character_npc_favor (snapshot_id, npc_key, favor_level, favor, councils_spent_at_vendor, vendor_reset_time, player_notes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO character_npc_favor (snapshot_id, npc_key, favor_level, favor, councils_spent_at_vendor, vendor_reset_time, player_notes, gifts_this_week)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )
             .map_err(|e| format!("Failed to prepare NPC insert: {e}"))?;
 
@@ -320,6 +325,7 @@ pub fn import_character_report_internal(
                     npc_data.councils_spent,
                     npc_data.vendor_reset_time,
                     npc_data.player_notes,
+                    npc_data.gifts_this_week,
                 ])
                 .map_err(|e| format!("Failed to insert NPC {npc_key}: {e}"))?;
         }
@@ -598,7 +604,7 @@ pub fn get_snapshot_npc_favor(
     let mut stmt = conn
         .prepare(
             "SELECT cnf.npc_key, cnf.favor_level, cnf.favor, cnf.councils_spent_at_vendor,
-                    cnf.vendor_reset_time, cnf.player_notes, cs.snapshot_timestamp
+                    cnf.vendor_reset_time, cnf.player_notes, cnf.gifts_this_week, cs.snapshot_timestamp
              FROM character_npc_favor cnf
              JOIN character_snapshots cs ON cnf.snapshot_id = cs.id
              WHERE cnf.snapshot_id = ?1
@@ -615,7 +621,8 @@ pub fn get_snapshot_npc_favor(
                 councils_spent_at_vendor: row.get(3)?,
                 vendor_reset_time: row.get(4)?,
                 player_notes: row.get(5)?,
-                snapshot_timestamp: row.get(6)?,
+                gifts_this_week: row.get(6)?,
+                snapshot_timestamp: row.get(7)?,
             })
         })
         .map_err(|e| format!("Query failed: {e}"))?;
@@ -878,8 +885,9 @@ fn seed_game_state_from_snapshot(
         }
     }
 
-    // Seed NPC favor — snapshot provides tier names; preserve existing cumulative_delta
-    // (snapshots only have tier names, not point totals, so zeroing delta destroys tracked gifting progress)
+    // Seed NPC favor tiers — snapshots provide tier names; per-line deltas live
+    // in favor_events (session sums by query) and point totals stay in
+    // character_npc_favor.favor. Nothing here touches either.
     let mut favor_stmt = conn.prepare(
         "INSERT INTO game_state_favor (character_name, server_name, npc_key, npc_name, favor_tier, cumulative_delta, last_confirmed_at, source)
          VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, 'snapshot')
@@ -1290,7 +1298,8 @@ mod tests {
                         "Favor": 1234.0,
                         "CouncilsSpent": 5000,
                         "VendorResetTime": "2026-10-21 00:00:00Z",
-                        "PlayerNotes": "sells cheap cheese"
+                        "PlayerNotes": "sells cheap cheese",
+                        "GiftsThisWeek": 5
                     }
                 }
             })
@@ -1312,10 +1321,20 @@ mod tests {
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .expect("probe npc row");
+            let gifts: Option<i64> = conn
+                .query_row(
+                    "SELECT gifts_this_week FROM character_npc_favor
+                     WHERE snapshot_id = (SELECT id FROM character_snapshots WHERE character_name = 'VipProbe')
+                       AND npc_key = 'TestVendor'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("probe gifts row");
             assert_eq!(favor, Some(1234.0));
             assert_eq!(councils, Some(5000));
             assert_eq!(reset.as_deref(), Some("2026-10-21 00:00:00Z"));
             assert_eq!(notes.as_deref(), Some("sells cheap cheese"));
+            assert_eq!(gifts, Some(5));
         }
         std::fs::remove_dir_all(&dir).ok();
     }

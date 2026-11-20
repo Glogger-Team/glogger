@@ -133,6 +133,17 @@ fn drop_binds(
     binds
 }
 
+/// Player's own kill count for drop-rate denominators. Excludes the
+/// died-before-looting shape: a lootless kill followed by a recorded player
+/// death within 5 minutes (live: City Slime #488970 killed 17:08:21, player
+/// died 17:08:22, no receipt) — the player never got to loot, so it must not
+/// dilute the denominator. Looted kills are never vetoed (loot proves the
+/// corpse was reached). Legacy rows with no character keep old behavior.
+/// Forward-only on purpose: a death *before* the kill means the player rezzed
+/// and killed afterwards, so a later lootless kill is a real denominator row.
+/// Residual skew (an unrelated death inside the window over-vetoing a
+/// genuinely unlooted kill) is accepted — the window covers loot lag, and
+/// over-vetoing one denominator row beats counting an unlootable kill.
 fn mine_total_kills<C: DbRead + ?Sized>(
     conn: &C,
     enemy_name: &str,
@@ -140,9 +151,15 @@ fn mine_total_kills<C: DbRead + ?Sized>(
     lf: &LoadoutFilter,
 ) -> Result<i64, String> {
     let sql = format!(
-        "SELECT COUNT(*) FROM enemy_kills WHERE enemy_name = ?{}{}",
-        zf.sql("zone"),
-        lf.sql("combat_skills")
+        "SELECT COUNT(*) FROM enemy_kills k WHERE k.enemy_name = ?{zf}
+         AND NOT EXISTS (
+            SELECT 1 FROM character_deaths d
+             WHERE d.character_name = k.character_name AND d.server_name = k.server_name
+               AND d.died_at >= k.killed_at AND d.died_at <= datetime(k.killed_at, '+5 minutes')
+               AND NOT EXISTS (SELECT 1 FROM enemy_kill_loot l WHERE l.kill_id = k.id)
+         ){lf}",
+        zf = zf.sql("k.zone"),
+        lf = lf.sql("k.combat_skills")
     );
     let binds = drop_binds(enemy_name, zf, lf);
     conn.query_row(&sql, rusqlite::params_from_iter(binds.iter()), |row| {
@@ -252,6 +269,96 @@ fn combine_loot_rows(
         .into_iter()
         .map(|(item, (qty, dropped))| (item, qty, dropped))
         .collect()
+}
+
+/// Record a player-landed FATALITY as a kill row. Rescan-safe: the same
+/// (character, server, entity, killed_at) line replays to the existing row.
+/// Returns the new row's id, or `None` when the row already existed — callers
+/// gate domains/events on `Some` so replays stay silent.
+#[allow(clippy::too_many_arguments)]
+pub fn record_enemy_kill(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    enemy_name: &str,
+    enemy_entity_id: &str,
+    killing_ability: &str,
+    health_damage: i64,
+    armor_damage: i64,
+    killed_at: &str,
+) -> Result<Option<i64>, String> {
+    let inserted = conn
+        .execute(
+            "INSERT INTO enemy_kills
+                (enemy_name, enemy_entity_id, killing_ability, health_damage, armor_damage,
+                 killed_at, character_name, server_name)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+             WHERE NOT EXISTS (
+                SELECT 1 FROM enemy_kills
+                 WHERE character_name = ?7 AND server_name = ?8
+                   AND enemy_entity_id = ?2 AND killed_at = ?6
+             )",
+            rusqlite::params![
+                enemy_name, enemy_entity_id, killing_ability, health_damage, armor_damage,
+                killed_at, character, server
+            ],
+        )
+        .map_err(|e| format!("Failed to record enemy kill: {e}"))?;
+    if inserted == 0 {
+        return Ok(None);
+    }
+    conn.query_row(
+        "SELECT id FROM enemy_kills
+          WHERE character_name = ?1 AND server_name = ?2
+            AND enemy_entity_id = ?3 AND killed_at = ?4",
+        rusqlite::params![character, server, enemy_entity_id, killed_at],
+        |row| row.get(0),
+    )
+    .map(Some)
+    .map_err(|e| format!("Failed to read back kill id: {e}"))
+}
+
+/// Attach a loot receipt to its kill via the looted-from entity id. Finds the
+/// latest kill for (character, server, entity) at or before the receipt
+/// (30-minute window — corpse search/loot lag, never future kills) and links
+/// the item row, rescan-safe on (kill_id, item, quantity). Returns `false`
+/// when no kill matches (unlooted kill, or the kill line never reached us).
+pub fn link_kill_loot(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    enemy_entity_id: &str,
+    receipt_ts: &str,
+    item_name: &str,
+    quantity: i64,
+) -> Result<bool, String> {
+    let kill_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM enemy_kills
+              WHERE character_name = ?1 AND server_name = ?2
+                AND enemy_entity_id = ?3
+                AND killed_at <= ?4
+                AND killed_at >= datetime(?4, '-30 minutes')
+              ORDER BY killed_at DESC LIMIT 1",
+            rusqlite::params![character, server, enemy_entity_id, receipt_ts],
+            |row| row.get(0),
+        )
+        .ok();
+    let Some(kill_id) = kill_id else {
+        return Ok(false);
+    };
+    let rows = conn
+        .execute(
+            "INSERT INTO enemy_kill_loot (kill_id, item_name, quantity)
+             SELECT ?1, ?2, ?3
+             WHERE NOT EXISTS (
+                SELECT 1 FROM enemy_kill_loot
+                 WHERE kill_id = ?1 AND item_name = ?2 AND quantity = ?3
+             )",
+            rusqlite::params![kill_id, item_name, quantity],
+        )
+        .map_err(|e| format!("Failed to link kill loot: {e}"))?;
+    Ok(rows > 0)
 }
 
 /// All-time kill/loot stats for a monster. `zone` scopes the stats by area:
@@ -513,9 +620,17 @@ pub fn search_database_enemies(
     let mut agg: EnemyAgg = HashMap::new();
 
     if scope == "mine" || scope == "combined" {
+        // Same died-before-looting veto as `mine_total_kills`: lootless kills
+        // followed by a player death within 5 minutes never got looted, so
+        // they must not inflate these totals either.
         let sql = format!(
-            "SELECT enemy_name, zone, COUNT(*) FROM enemy_kills{} GROUP BY enemy_name, zone",
-            lf.where_clause("combat_skills")
+            "SELECT enemy_name, zone, COUNT(*) FROM enemy_kills k WHERE NOT EXISTS (
+                SELECT 1 FROM character_deaths d
+                 WHERE d.character_name = k.character_name AND d.server_name = k.server_name
+                   AND d.died_at >= k.killed_at AND d.died_at <= datetime(k.killed_at, '+5 minutes')
+                   AND NOT EXISTS (SELECT 1 FROM enemy_kill_loot l WHERE l.kill_id = k.id)
+            ){} GROUP BY enemy_name, zone",
+            lf.sql("k.combat_skills"),
         );
         let mut kill_stmt = conn
             .prepare(&sql)
@@ -1759,6 +1874,7 @@ pub fn get_enemy_harvest_stats(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::db::migrations::run_migrations;
     use rusqlite::Connection;
 
@@ -1768,6 +1884,28 @@ mod tests {
         conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
         run_migrations(&conn, None).unwrap();
         conn
+    }
+
+    /// Died-before-looting veto (live 2026-11-17): City Slime #488970 killed
+    /// 17:08:21, player died 17:08:22, no receipt — the lootless kill must not
+    /// dilute the denominator, while a looted kill near a death still counts.
+    #[test]
+    fn mine_total_kills_vetoes_lootless_kill_before_death() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO enemy_kills (enemy_name, enemy_entity_id, killing_ability, killed_at, character_name, server_name) VALUES
+                ('City Slime', '488976', 'Smell Fear 8', '2026-11-17 17:06:36', 'T', 'Dreva'),
+                ('City Slime', '488970', 'Pack Attack 7', '2026-11-17 17:08:21', 'T', 'Dreva');
+             INSERT INTO enemy_kill_loot (kill_id, item_name, quantity) VALUES
+                ((SELECT id FROM enemy_kills WHERE enemy_entity_id = '488976'), 'Support Local Fauna Initiative', 1);
+             INSERT INTO character_deaths (character_name, server_name, died_at, killer_name, killing_ability, health_damage) VALUES
+                ('T', 'Dreva', '2026-11-17 17:08:22', 'Ratkin Mugger', 'Pound', 35);",
+        )
+        .unwrap();
+        let total =
+            mine_total_kills(&conn, "City Slime", &ZoneFilter::All, &LoadoutFilter::All).unwrap();
+        // Looted kill counts; the lootless kill 1s before death is vetoed.
+        assert_eq!(total, 1);
     }
 
     /// After migration v53, removing an entry from the Imported Sources list

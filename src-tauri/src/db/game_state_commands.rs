@@ -1,4 +1,4 @@
-use super::DbPool;
+use super::{DbPool, DbRead};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 /// Tauri commands for querying persisted game state
@@ -99,7 +99,7 @@ pub struct GameStateEquipmentSlot {
 pub struct GameStateFavor {
     pub npc_key: String,
     pub npc_name: String,
-    pub cumulative_delta: f64,
+    pub session_delta: f64,
     pub favor_tier: Option<String>,
     pub last_confirmed_at: String,
     pub source: String,
@@ -404,9 +404,10 @@ pub fn get_game_state_favor(
     server_name: String,
 ) -> Result<Vec<GameStateFavor>, String> {
     let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let session = session_favor_sums(&conn, &character_name, &server_name)?;
     let mut stmt = conn
         .prepare(
-            "SELECT npc_key, npc_name, cumulative_delta, favor_tier, last_confirmed_at, source
+            "SELECT npc_key, npc_name, favor_tier, last_confirmed_at, source
          FROM game_state_favor WHERE character_name = ?1 AND server_name = ?2
          ORDER BY npc_name",
         )
@@ -414,18 +415,72 @@ pub fn get_game_state_favor(
 
     let rows = stmt
         .query_map(rusqlite::params![character_name, server_name], |row| {
+            let npc_key: String = row.get(0)?;
             Ok(GameStateFavor {
-                npc_key: row.get(0)?,
+                session_delta: session.get(&npc_key).copied().unwrap_or(0.0),
+                npc_key,
                 npc_name: row.get(1)?,
-                cumulative_delta: row.get(2)?,
-                favor_tier: row.get(3)?,
-                last_confirmed_at: row.get(4)?,
-                source: row.get(5)?,
+                favor_tier: row.get(2)?,
+                last_confirmed_at: row.get(3)?,
+                source: row.get(4)?,
             })
         })
         .map_err(|e| format!("Query error: {e}"))?;
 
     rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Row error: {e}"))
+}
+
+/// Session favor sums: per-NPC total of `favor_events` deltas since the
+/// active session started. Both sides are UTC: the live drain converts Chat
+/// timestamps before dispatch and the scan path passes UTC messages, while
+/// the session singleton stores `Utc::now()` — so the boundary binds
+/// directly with no frame conversion. No session row, a row for a different
+/// character (viewing a non-active character), or a missing events table
+/// (minimal fixtures) → empty map, i.e. all zeros.
+/// Covers capped (Statehelm) and uncapped NPCs alike — it sums every delta,
+/// while gift *detection* stays exclusions-aware at write time.
+pub fn session_favor_sums(
+    conn: &impl DbRead,
+    character_name: &str,
+    server_name: &str,
+) -> Result<std::collections::HashMap<String, f64>, String> {
+    let has_events: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'favor_events')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_events {
+        return Ok(std::collections::HashMap::new());
+    }
+    let start: Option<String> = conn
+        .query_row(
+            "SELECT last_login_at FROM game_state_session
+             WHERE id = 1 AND character_name = ?1 AND server_name = ?2",
+            rusqlite::params![character_name, server_name],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Query error: {e}"))?;
+    let Some(start) = start else {
+        return Ok(std::collections::HashMap::new());
+    };
+    let mut stmt = conn
+        .prepare(
+            "SELECT npc_key, SUM(delta) FROM favor_events
+             WHERE character_name = ?1 AND server_name = ?2 AND timestamp >= ?3
+             GROUP BY npc_key",
+        )
+        .map_err(|e| format!("Query error: {e}"))?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![character_name, server_name, start],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?)),
+        )
+        .map_err(|e| format!("Query error: {e}"))?;
+    rows.collect::<Result<std::collections::HashMap<_, _>, _>>()
         .map_err(|e| format!("Row error: {e}"))
 }
 
@@ -670,72 +725,6 @@ pub fn set_tracked_skills(
     conn.commit()
         .map_err(|e| format!("Failed to commit transaction: {e}"))?;
     Ok(())
-}
-
-// ── Gift Log ────────────────────────────────────────────────────────────────
-
-/// Reconcile the `week_start`-onward gift-log rows for one NPC to `target`
-/// (the game's authoritative weekly count). Adds rows stamped `at` (favor 0)
-/// when short, trims the newest extras when long. Returns true when the row
-/// count changed. Same semantics as the live `GiftCountObserved` arm.
-/// Inputs for [`reconcile_gift_count`]; groups the args so the fn stays
-/// under the arity lint.
-pub(crate) struct GiftReconcile<'a> {
-    pub conn: &'a rusqlite::Connection,
-    pub character: &'a str,
-    pub server: &'a str,
-    pub npc_key: &'a str,
-    pub npc_name: &'a str,
-    pub at: &'a str,
-    pub target: u32,
-    pub week_start: &'a str,
-}
-
-pub(crate) fn reconcile_gift_count(g: &GiftReconcile<'_>) -> Result<bool, rusqlite::Error> {
-    let GiftReconcile {
-        conn,
-        character,
-        server,
-        npc_key,
-        npc_name,
-        at,
-        target,
-        week_start,
-    } = *g;
-    let target = target as i64;
-    // `replace(gifted_at, 'T', ' ')`: rows written by the manual `+` button (and
-    // older builds) carry ISO `YYYY-MM-DDTHH:MM:SSZ` stamps, and 'T' sorts after
-    // ' ', so an untrimmed comparison counts an early-Monday gift into the new
-    // week. The live/backfill rows are already in this format.
-    let existing: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM game_state_gift_log
-         WHERE character_name = ?1 AND server_name = ?2 AND npc_key = ?3
-           AND replace(gifted_at, 'T', ' ') >= ?4",
-        rusqlite::params![character, server, npc_key, week_start],
-        |row| row.get(0),
-    )?;
-
-    if target > existing {
-        for _ in 0..(target - existing) {
-            conn.execute(
-                "INSERT INTO game_state_gift_log (character_name, server_name, npc_key, npc_name, gifted_at, favor_delta)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
-                rusqlite::params![character, server, npc_key, npc_name, at],
-            )?;
-        }
-    } else if target < existing {
-        // Trim the newest extras (e.g. a manual over-count) down to the game's value.
-        conn.execute(
-            "DELETE FROM game_state_gift_log WHERE id IN (
-                SELECT id FROM game_state_gift_log
-                WHERE character_name = ?1 AND server_name = ?2 AND npc_key = ?3
-                  AND replace(gifted_at, 'T', ' ') >= ?4
-                ORDER BY replace(gifted_at, 'T', ' ') DESC, id DESC LIMIT ?5)",
-            rusqlite::params![character, server, npc_key, week_start, existing - target],
-        )?;
-    }
-
-    Ok(target != existing)
 }
 
 // ── Chat Level-Ups ────────────────────────────────────────────────────────────
@@ -1046,6 +1035,34 @@ pub fn get_game_state_books(
     }
 }
 
+/// Record a **known** cow milk: the cooldown starts at `milked_at` (the milk
+/// event's own UTC time) and the "unknown" flag is cleared, because this is the
+/// truth the bound was only approximating.
+///
+/// The stamp only ever moves forward (`MAX`), so replaying an old chat log can't
+/// hand out a fresh hour; the zone merge still learns a previously-unknown area.
+pub fn record_cow_milk(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    cow_name: &str,
+    zone: &str,
+    milked_at: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO milking_timers
+             (character_name, server_name, cow_name, zone, last_milked_at, cooldown_unknown)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0)
+         ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
+            last_milked_at = MAX(excluded.last_milked_at, milking_timers.last_milked_at),
+            cooldown_unknown = 0,
+            zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END",
+        rusqlite::params![character, server, cow_name, zone, milked_at],
+    )
+    .map_err(|e| format!("Failed to record cow milk: {e}"))?;
+    Ok(())
+}
+
 // ── Milking timers ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1054,7 +1071,7 @@ pub struct MilkingTimer {
     pub zone: String,
     /// For a known milk: when it happened. For `cooldown_unknown` rows: the
     /// **earliest observed failed attempt**, which is what bounds the cooldown
-    /// (`expiry ≤ last_milked_at + 1h`) — see `record_cow_cooldown_bound`.
+    /// (`expiry ≤ last_milked_at + 1h`).
     pub last_milked_at: String,
     /// The game only said "milked within the past hour", so this cow's exact
     /// milk time is unknown: the widget must render an upper bound, not a countdown.
@@ -1099,73 +1116,6 @@ pub fn get_milking_timers_for<C: crate::db::DbRead + ?Sized>(
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Row error: {e}"))
-}
-
-/// Record a **known** cow milk: the cooldown starts at `milked_at` (the milk
-/// event's own UTC time) and the "unknown" flag is cleared, because this is the
-/// truth the bound was only approximating.
-///
-/// The stamp only ever moves forward (`MAX`), so replaying an old chat log can't
-/// hand out a fresh hour; the zone merge still learns a previously-unknown area.
-/// Lives here rather than inline in the coordinator so the statement is testable.
-pub fn record_cow_milk(
-    conn: &rusqlite::Connection,
-    character: &str,
-    server: &str,
-    cow_name: &str,
-    zone: &str,
-    milked_at: &str,
-) -> Result<(), String> {
-    conn.execute(
-        "INSERT INTO milking_timers
-             (character_name, server_name, cow_name, zone, last_milked_at, cooldown_unknown)
-         VALUES (?1, ?2, ?3, ?4, ?5, 0)
-         ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
-            last_milked_at = MAX(excluded.last_milked_at, milking_timers.last_milked_at),
-            cooldown_unknown = 0,
-            zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END",
-        rusqlite::params![character, server, cow_name, zone, milked_at],
-    )
-    .map_err(|e| format!("Failed to record cow milk: {e}"))?;
-    Ok(())
-}
-
-/// Record that a cow was milked *somewhere within the hour before `attempt_at`
-/// (the game's "You've already milked X in the past hour." error).
-///
-/// The exact milk time is unknowable, so the row keeps a **bound** instead of a
-/// fabricated stamp: `last_milked_at` = the *earliest* observed failed attempt
-/// (each accepted attempt can only tighten it, hence `MIN`), which makes the
-/// cooldown expiry `≤ last_milked_at + 1h` — an upper bound the widget renders as
-/// "≤ Xm" and which becomes a certain "Ready!" at zero.
-///
-/// A row that already holds a *known* milk time is never degraded by this: its
-/// stamp and flag are left alone (a real time is strictly better information),
-/// only the zone merge still applies.
-pub fn record_cow_cooldown_bound(
-    conn: &rusqlite::Connection,
-    character: &str,
-    server: &str,
-    cow_name: &str,
-    zone: &str,
-    attempt_at: &str,
-) -> Result<(), String> {
-    conn.execute(
-        "INSERT INTO milking_timers
-             (character_name, server_name, cow_name, zone, last_milked_at, cooldown_unknown)
-         VALUES (?1, ?2, ?3, ?4, ?5, 1)
-         ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
-            last_milked_at = CASE
-                WHEN milking_timers.cooldown_unknown = 1
-                  THEN MIN(excluded.last_milked_at, milking_timers.last_milked_at)
-                ELSE milking_timers.last_milked_at
-            END,
-            cooldown_unknown = milking_timers.cooldown_unknown,
-            zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END",
-        rusqlite::params![character, server, cow_name, zone, attempt_at],
-    )
-    .map_err(|e| format!("Failed to record cow cooldown bound: {e}"))?;
-    Ok(())
 }
 
 // ── Character stats ─────────────────────────────────────────────
@@ -1466,6 +1416,209 @@ pub fn get_harvest_almanac(
         .map_err(|e| format!("Row error: {e}"))
 }
 
+
+/// One gardening season parsed from a Gardening Almanac body.
+pub struct GardenSeason {
+    pub crop: String,
+    pub zone: String,
+    pub is_current: bool,
+    pub event_start: Option<String>,
+    pub event_end: Option<String>,
+}
+
+/// Snapshot-comparison key for one garden season row.
+type GardenSeasonKey = (String, String, i64, Option<String>, Option<String>);
+
+/// Parse a Gardening Almanac `JSON:Book` body (observed 2026-11-17) into
+/// per-crop seasons. Current/upcoming split comes from the section headers;
+/// `event_start`/`event_end` are absolute (`%Y-%m-%d %H:%M:%S`) computed from
+/// `captured_at` plus the relative text (NULL when unparseable).
+pub fn parse_garden_almanac_body(body: &str, captured_at: &str) -> Vec<GardenSeason> {
+    let upcoming_at = body.find("Upcoming Gardening Events:").unwrap_or(usize::MAX);
+    let base = chrono::NaiveDateTime::parse_from_str(captured_at, "%Y-%m-%d %H:%M:%S");
+    let mut out = Vec::new();
+    let mut search_from = 0usize;
+    while let Some(rel) = body[search_from..].find("<h2>") {
+        let h2 = search_from + rel;
+        let title_start = h2 + "<h2>".len();
+        let Some(end_rel) = body[title_start..].find("</h2>") else {
+            break;
+        };
+        let title = &body[title_start..title_start + end_rel];
+        let rest_start = title_start + end_rel + "</h2>".len();
+        // Next <h2> (or end of body) bounds this event's block.
+        let block_end = body[rest_start..]
+            .find("<h2>")
+            .map(|r| rest_start + r)
+            .unwrap_or(body.len());
+        let block = &body[rest_start..block_end];
+        search_from = block_end;
+        let Some((crop, zone)) = title.split_once(" Season in ") else {
+            continue;
+        };
+        let timing = block
+            .find("<i>")
+            .and_then(|s| {
+                block[s + "<i>".len()..]
+                    .find("</i>")
+                    .map(|e| block[s + "<i>".len()..s + "<i>".len() + e].trim().to_string())
+            })
+            .filter(|s| !s.is_empty());
+        let is_current = h2 < upcoming_at;
+        let (event_start, event_end) = match timing.as_deref() {
+            Some(t) if t.starts_with("Starts in ") => (
+                relative_to(&base, t.trim_start_matches("Starts in ")),
+                None,
+            ),
+            Some(t) if t.starts_with("Ends in ") => (
+                None,
+                relative_to(&base, t.trim_start_matches("Ends in ")),
+            ),
+            _ => (None, None),
+        };
+        out.push(GardenSeason {
+            crop: crop.trim().to_string(),
+            zone: zone.trim().to_string(),
+            is_current,
+            event_start,
+            event_end,
+        });
+    }
+    out
+}
+
+/// Add a parsed relative duration ("6 hours 12 minutes", "1 day 6 hours")
+/// to a base timestamp. Returns `None` when either side is unparseable.
+fn relative_to(
+    base: &Result<chrono::NaiveDateTime, chrono::ParseError>,
+    rel: &str,
+) -> Option<String> {
+    let base = base.as_ref().ok()?;
+    let mut secs: i64 = 0;
+    let mut num: Option<i64> = None;
+    for tok in rel.split_whitespace() {
+        if let Ok(n) = tok.parse::<i64>() {
+            num = Some(n);
+            continue;
+        }
+        let unit = tok.trim_end_matches('s');
+        let mult = match unit {
+            "day" => 86_400,
+            "hour" => 3_600,
+            "minute" => 60,
+            _ => {
+                num = None;
+                continue;
+            }
+        };
+        if let Some(n) = num.take() {
+            secs += n * mult;
+        }
+    }
+    if secs <= 0 {
+        return None;
+    }
+    Some((*base + chrono::Duration::seconds(secs)).format("%Y-%m-%d %H:%M:%S").to_string())
+}
+
+/// Replace a character's garden snapshot from an almanac body and append the
+/// rows to history. Returns the number of rows written: identical re-imports
+/// (rescans) and unparseable bodies are pure no-ops returning 0.
+pub fn import_garden_almanac(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    body: &str,
+    captured_at: &str,
+) -> Result<usize, String> {
+    let seasons = parse_garden_almanac_body(body, captured_at);
+    if seasons.is_empty() {
+        // Never wipe a good snapshot on an unparseable body. Tradeoff: a
+        // genuinely empty almanac (never observed) would also no-op instead
+        // of clearing — clearing needs a distinct parsed-empty signal.
+        return Ok(0);
+    }
+    // Identical re-import (rescan) is a pure no-op: no snapshot churn, no
+    // duplicate history rows.
+    let current: Vec<GardenSeasonKey> = conn
+        .prepare(
+            "SELECT crop_name, zone_name, is_current, event_start, event_end
+             FROM garden_almanac WHERE character_name = ?1 AND server_name = ?2 ORDER BY crop_name, zone_name",
+        )
+        .map_err(|e| format!("Failed to read garden snapshot: {e}"))?
+        .query_map(rusqlite::params![character, server], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+        })
+        .map_err(|e| format!("Failed to read garden snapshot: {e}"))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("Failed to read garden snapshot: {e}"))?;
+    let mut fresh: Vec<GardenSeasonKey> = seasons
+        .iter()
+        .map(|s| {
+            (
+                s.crop.clone(),
+                s.zone.clone(),
+                s.is_current as i64,
+                s.event_start.clone(),
+                s.event_end.clone(),
+            )
+        })
+        .collect();
+    fresh.sort();
+    if current == fresh {
+        return Ok(0);
+    }
+    // One transaction: a crash or error mid-replace must not leave a partial
+    // snapshot (the pool is the only lock, so BEGIN IMMEDIATE is enough).
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| format!("Failed to begin garden import: {e}"))?;
+    let replaced = (|| -> Result<usize, String> {
+        conn.execute(
+            "DELETE FROM garden_almanac WHERE character_name = ?1 AND server_name = ?2",
+            rusqlite::params![character, server],
+        )
+        .map_err(|e| format!("Failed to clear garden snapshot: {e}"))?;
+        let mut n = 0;
+        for s in &seasons {
+            conn.execute(
+                "INSERT INTO garden_almanac
+                    (character_name, server_name, crop_name, zone_name, event_start, event_end, is_current, captured_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    character, server, s.crop, s.zone, s.event_start, s.event_end,
+                    s.is_current as i64, captured_at
+                ],
+            )
+            .map_err(|e| format!("Failed to insert garden season: {e}"))?;
+            conn.execute(
+                "INSERT INTO garden_almanac_history
+                    (character_name, server_name, crop_name, zone_name, event_start, event_end, captured_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    character, server, s.crop, s.zone, s.event_start, s.event_end, captured_at
+                ],
+            )
+            .map_err(|e| format!("Failed to insert garden history: {e}"))?;
+            n += 1;
+        }
+        Ok(n)
+    })();
+    match replaced {
+        Ok(n) => conn
+            .execute_batch("COMMIT")
+            .map_err(|e| {
+                // A failed COMMIT leaves the transaction active; roll back
+                // deterministically instead of relying on connection teardown.
+                let _ = conn.execute_batch("ROLLBACK");
+                format!("Failed to commit garden import: {e}")
+            })
+            .map(|_| n),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
 // ── Garden Almanac ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -2084,101 +2237,6 @@ mod tests {
     }
 
     #[test]
-    fn cow_cooldown_bound_is_honest_and_real_milk_wins() {
-        let conn = setup();
-
-        // A failed attempt records a *bound*: the flag is set and the stamp is the
-        // attempt itself, so the widget can show "expiry ≤ attempt + 1h".
-        record_cow_cooldown_bound(
-            &conn,
-            "Zen",
-            "Dreva",
-            "Homer",
-            "Serbule",
-            "2026-10-13T01:00:00+00:00",
-        )
-        .unwrap();
-        let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
-        assert_eq!(timers.len(), 1);
-        assert!(timers[0].cooldown_unknown);
-        assert_eq!(timers[0].last_milked_at, "2026-10-13T01:00:00+00:00");
-        assert_eq!(timers[0].zone, "Serbule");
-
-        // Later attempts keep the flag and tighten the bound to the *earliest*
-        // attempt seen (a stricter statement about when the milk happened) — a
-        // chronological replay therefore converges instead of drifting.
-        record_cow_cooldown_bound(
-            &conn,
-            "Zen",
-            "Dreva",
-            "Homer",
-            "Serbule",
-            "2026-10-13T01:30:00+00:00",
-        )
-        .unwrap();
-        record_cow_cooldown_bound(
-            &conn,
-            "Zen",
-            "Dreva",
-            "Homer",
-            "",
-            "2026-10-13T00:50:00+00:00",
-        )
-        .unwrap();
-        let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
-        assert!(timers[0].cooldown_unknown);
-        assert_eq!(timers[0].last_milked_at, "2026-10-13T00:50:00+00:00");
-        assert_eq!(
-            timers[0].zone, "Serbule",
-            "blank zone must not clobber a known one"
-        );
-
-        // A real milk is strictly better information: it clears the flag and
-        // installs the true time.
-        record_cow_milk(
-            &conn,
-            "Zen",
-            "Dreva",
-            "Homer",
-            "Serbule",
-            "2026-10-13T02:05:00+00:00",
-        )
-        .unwrap();
-        let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
-        assert!(!timers[0].cooldown_unknown);
-        assert_eq!(timers[0].last_milked_at, "2026-10-13T02:05:00+00:00");
-
-        // …and no later bound may degrade it (only the zone merge still applies).
-        record_cow_cooldown_bound(
-            &conn,
-            "Zen",
-            "Dreva",
-            "Homer",
-            "Eltibule",
-            "2026-10-13T02:20:00+00:00",
-        )
-        .unwrap();
-        let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
-        assert!(!timers[0].cooldown_unknown);
-        assert_eq!(timers[0].last_milked_at, "2026-10-13T02:05:00+00:00");
-        assert_eq!(timers[0].zone, "Eltibule");
-
-        // Replaying an older successful milk can't move the stamp back either.
-        record_cow_milk(
-            &conn,
-            "Zen",
-            "Dreva",
-            "Homer",
-            "",
-            "2026-10-13T01:00:00+00:00",
-        )
-        .unwrap();
-        let timers = get_milking_timers_for(&conn, "Zen", "Dreva").unwrap();
-        assert_eq!(timers[0].last_milked_at, "2026-10-13T02:05:00+00:00");
-        assert!(!timers[0].cooldown_unknown);
-    }
-
-    #[test]
     fn milking_events_dedup_on_the_v72_key_and_surface_bad_directions() {
         let conn = setup();
 
@@ -2263,6 +2321,128 @@ mod tests {
             "2026-10-13T01:14:18+00:00",
         );
         assert!(err.is_err(), "CHECK violation must surface, got {err:?}");
+    }
+    #[test]
+    fn collect_milk_arm_records_named_cow_and_leaves_other_cows_alone() {
+        // The Collect Milk arm takes &DbPool, so this drives the dispatch
+        // path with a temp-file pool instead of the in-memory `setup()`
+        // conn. Unique path per call: parallel tests share the temp dir.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "glogger_cow_milk_test_{}_{n}.db",
+            std::process::id()
+        ));
+        let pool = crate::db::init_pool(path.clone(), Some(0)).expect("init pool");
+
+        // A second cow with an approximated (unknown-cooldown) bound: milking
+        // Daisy must not touch Bessie's row.
+        pool.get_write()
+            .unwrap()
+            .execute(
+                "INSERT INTO milking_timers
+                     (character_name, server_name, cow_name, zone, last_milked_at, cooldown_unknown)
+                 VALUES ('Alice', 'Dreva', 'Bessie', 'Serbule', '2026-04-01T05:00:00+00:00', 1)",
+                [],
+            )
+            .unwrap();
+
+        let game_data: crate::cdn_commands::GameDataState = std::sync::Arc::new(
+            tauri::async_runtime::RwLock::new(crate::game_data::GameData::empty()),
+        );
+        let identity = crate::chat_status_dispatch::DispatchIdentity {
+            character: "Alice".to_string(),
+            server: "Dreva".to_string(),
+        };
+        let mut arena = crate::arena_parser::ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg: Vec<crate::chat_combat_parser::ChatCombatEvent> = Vec::new();
+        let mut milk = |cow: &str, ts: &str, area: Option<&str>| {
+            let line = format!("[Combat] Alice: Collect Milk on {cow}!");
+            let line = format!("{ts}\t{line}");
+            let msg = crate::chat_parser::parse_chat_line(&line).unwrap();
+            let mut st = crate::chat_status_dispatch::DispatchState {
+                arena_tracker: &mut arena,
+                last_rez_dedup: &mut rez,
+                recent_damage: &mut dmg,
+                current_area: area.map(|s| s.to_string()),
+                count_currency: true,
+            };
+            crate::chat_status_dispatch::dispatch_chat_message(
+                crate::chat_status_dispatch::DispatchCtx {
+                    db: &pool,
+                    game_data: &game_data,
+                    identity: Some(&identity),
+                    msg: &msg,
+                    local_ts: "2026-04-01 05:30:53",
+                    watch_rules: &[],
+                },
+                None,
+                &mut st,
+            )
+        };
+        let row = |cow: &str| -> (String, i64, String) {
+            pool.get_write()
+                .unwrap()
+                .query_row(
+                    "SELECT last_milked_at, cooldown_unknown, zone FROM milking_timers
+                     WHERE character_name = 'Alice' AND server_name = 'Dreva' AND cow_name = ?1",
+                    rusqlite::params![cow],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap()
+        };
+
+        // Fresh milk for Daisy in an unknown area: sets the stamp, clears
+        // the unknown flag, keeps the blank zone — and reports `milking`.
+        let out = milk("Daisy", "26-04-01 05:30:53", None);
+        assert!(out.domains.contains(&"milking".to_string()));
+        assert_eq!(
+            row("Daisy"),
+            (
+                "2026-04-01T05:30:53+00:00".to_string(),
+                0,
+                String::new()
+            )
+        );
+        // Bessie's approximated bound is untouched.
+        assert_eq!(
+            row("Bessie"),
+            (
+                "2026-04-01T05:00:00+00:00".to_string(),
+                1,
+                "Serbule".to_string()
+            )
+        );
+
+        // An older replay with a now-known area must not move the stamp
+        // backwards (MAX newer-wins) while the zone merge still learns it.
+        milk("Daisy", "26-03-01 05:30:53", Some("Serbule"));
+        assert_eq!(
+            row("Daisy"),
+            (
+                "2026-04-01T05:30:53+00:00".to_string(),
+                0,
+                "Serbule".to_string()
+            )
+        );
+
+        // A newer milk with an unknown area advances the stamp without
+        // clobbering the learned zone.
+        milk("Daisy", "26-05-01 05:30:53", None);
+        assert_eq!(
+            row("Daisy"),
+            (
+                "2026-05-01T05:30:53+00:00".to_string(),
+                0,
+                "Serbule".to_string()
+            )
+        );
+
+        // Drop the pool first: Windows won't delete a file with an open handle.
+        drop(pool);
+        let _ = std::fs::remove_file(&path);
     }
     #[test]
     fn chat_level_up_inserts_new_row() {
@@ -2448,5 +2628,136 @@ mod tests {
         assert_eq!(e.anchor_at.as_deref(), Some("2026-10-26 12:00:00"));
         assert_eq!(e.estimated, 4680);
         assert!(get_currency_estimate_for(&conn, "Alt", "Dreva").unwrap().is_none());
+    }
+
+    #[test]
+    fn garden_almanac_body_parses_seasons() {
+        let body = include_str!("../../../test_data/vip_json/chat-book.log")
+            .lines()
+            .find(|l| l.contains("Gardening Almanac"))
+            .expect("almanac fixture line");
+        let json: serde_json::Value =
+            serde_json::from_str(body.split_once('\t').unwrap().1.trim_start_matches("[JSON:Book] ")).unwrap();
+        let seasons = parse_garden_almanac_body(
+            json["Body"].as_str().unwrap(),
+            "2026-11-17 16:47:31",
+        );
+        assert_eq!(seasons.len(), 5);
+        assert!(seasons.iter().filter(|s| s.is_current).count() == 2);
+        assert!(seasons.iter().filter(|s| !s.is_current).count() == 3);
+        let barley = seasons.iter().find(|s| s.crop == "Barley").unwrap();
+        assert_eq!(barley.zone, "Gazluk");
+        assert!(barley.is_current);
+        // 16:47:31 + 6h12m.
+        assert_eq!(barley.event_end.as_deref(), Some("2026-11-17 22:59:31"));
+        let carrot = seasons.iter().find(|s| s.crop == "Carrot").unwrap();
+        assert!(!carrot.is_current);
+        assert_eq!(carrot.event_start.as_deref(), Some("2026-11-17 22:59:31"));
+        let potato = seasons.iter().find(|s| s.crop == "Potato").unwrap();
+        // 16:47:31 + 1d6h.
+        assert_eq!(potato.event_start.as_deref(), Some("2026-11-18 22:47:31"));
+    }
+
+    #[test]
+    fn garden_almanac_import_replaces_snapshot_and_appends_history() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run_migrations(&conn, None).unwrap();
+        let body = include_str!("../../../test_data/vip_json/chat-book.log")
+            .lines()
+            .find(|l| l.contains("Gardening Almanac"))
+            .expect("almanac fixture line");
+        let json: serde_json::Value =
+            serde_json::from_str(body.split_once('\t').unwrap().1.trim_start_matches("[JSON:Book] ")).unwrap();
+        let n = import_garden_almanac(
+            &conn,
+            "T",
+            "Dreva",
+            json["Body"].as_str().unwrap(),
+            "2026-11-17 16:47:31",
+        )
+        .unwrap();
+        assert_eq!(n, 5);
+        let snap: i64 = conn
+            .query_row("SELECT COUNT(*) FROM garden_almanac WHERE character_name = 'T'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(snap, 5);
+        // Re-import (rescan): pure no-op — returns 0, snapshot still 5, no
+        // duplicate history. Returning 0 (not the parsed count) is what keeps
+        // the coordinator from re-emitting the `gardening` domain.
+        let n = import_garden_almanac(
+            &conn,
+            "T",
+            "Dreva",
+            json["Body"].as_str().unwrap(),
+            "2026-11-17 16:47:31",
+        )
+        .unwrap();
+        assert_eq!(n, 0);
+        let snap: i64 = conn
+            .query_row("SELECT COUNT(*) FROM garden_almanac WHERE character_name = 'T'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let hist: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM garden_almanac_history WHERE character_name = 'T'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((snap, hist), (5, 5));
+    }
+
+    #[test]
+    fn garden_almanac_import_empty_body_is_noop_and_returns_zero() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run_migrations(&conn, None).unwrap();
+        // Seed a good snapshot, then feed garbage: the snapshot must survive.
+        conn.execute(
+            "INSERT INTO garden_almanac
+                (character_name, server_name, crop_name, zone_name, event_start, event_end, is_current, captured_at)
+             VALUES ('T', 'Dreva', 'Barley', 'Gazluk', NULL, '2026-11-17 22:59:31', 1, '2026-11-17 16:47:31')",
+            [],
+        )
+        .unwrap();
+        let n = import_garden_almanac(&conn, "T", "Dreva", "not an almanac", "2026-11-17 16:47:31")
+            .unwrap();
+        assert_eq!(n, 0);
+        let snap: i64 = conn
+            .query_row("SELECT COUNT(*) FROM garden_almanac WHERE character_name = 'T'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(snap, 1);
+    }
+
+    #[test]
+    fn session_favor_sums_ranges_by_login_and_covers_capped() {
+        let conn = setup();
+        // Both sides UTC: session started 2026-11-16 12:00Z, so the 11-17
+        // lines below are in session and the 11-15 line is out — no frame
+        // conversion anywhere.
+        conn.execute(
+            "INSERT INTO game_state_session (id, character_name, server_name, last_login_at, updated_at)
+             VALUES (1, 'Alice', 'Dreva', '2026-11-16 12:00:00', '2026-11-16 12:00:00')",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO favor_events (character_name, server_name, npc_key, timestamp, delta) VALUES
+             ('Alice', 'Dreva', 'NPC_Elune', '2026-11-17 08:32:34', 18.06948),
+             ('Alice', 'Dreva', 'NPC_Elune', '2026-11-15 08:00:00', -52.65),
+             ('Alice', 'Dreva', 'NPC_Goss', '2026-11-17 08:33:00', 5.0),
+             ('Bob', 'Dreva', 'NPC_Elune', '2026-11-17 08:32:34', 100.0)",
+        )
+        .unwrap();
+        let sums = session_favor_sums(&conn, "Alice", "Dreva").unwrap();
+        assert!((sums["NPC_Elune"] - 18.06948).abs() < 1e-9);
+        // Capped (Statehelm) deltas count — only gift *detection* excludes them.
+        assert!((sums["NPC_Goss"] - 5.0).abs() < 1e-9);
+        // A session row for another character is no session at all.
+        assert!(session_favor_sums(&conn, "Bob", "Dreva").unwrap().is_empty());
     }
 }

@@ -91,7 +91,7 @@ export interface GameStateEquipmentSlot {
 export interface GameStateFavor {
   npc_key: string
   npc_name: string
-  cumulative_delta: number
+  session_delta: number
   favor_tier: string | null
   last_confirmed_at: string
   source: 'log' | 'snapshot' | 'both'

@@ -692,9 +692,10 @@ pub struct ReplayKillEvent {
     pub killing_ability: String,
 }
 
-/// Replay a debug capture JSON file through the parser and return all
-/// LootPickedUp events with their attributions. No database interaction —
-/// pure parser validation.
+/// Replay a debug capture JSON file through the chat parser and return the
+/// detected enemy kills. No database interaction — pure parser validation.
+/// Loot attribution replay retired with the Player.log pipeline:
+/// `player_lines` is always 0 and `loot_events` always empty.
 #[tauri::command]
 pub fn replay_capture_file(path: String) -> Result<CaptureReplayResult, String> {
     let content =
@@ -717,10 +718,7 @@ pub fn replay_capture_file(path: String) -> Result<CaptureReplayResult, String> 
         .unwrap_or("Unknown")
         .to_string();
 
-    let mut parser = crate::player_event_parser::PlayerEventParser::new();
-    let mut loot_events = Vec::new();
     let mut kills = Vec::new();
-    let mut player_lines = 0usize;
     let mut chat_lines = 0usize;
 
     for line_val in lines {
@@ -730,75 +728,35 @@ pub fn replay_capture_file(path: String) -> Result<CaptureReplayResult, String> 
             .unwrap_or("");
         let line = line_val.get("line").and_then(|v| v.as_str()).unwrap_or("");
 
-        match source {
-            "player" => {
-                player_lines += 1;
-                let events = parser.process_line(line);
-                for event in events {
-                    if let crate::player_event_parser::PlayerEvent::LootPickedUp {
-                        timestamp,
-                        instance_id,
-                        corpse_entity_id,
-                        corpse_name,
-                        item_name,
-                        item_type_id,
-                        quantity,
-                    } = event
-                    {
-                        let resolution = if item_name.is_some() {
-                            // Check if it was a direct registry match or fallback
-                            if parser.has_instance(instance_id) {
-                                "direct"
-                            } else {
-                                "fallback"
-                            }
-                        } else {
-                            "unresolved"
-                        };
-                        loot_events.push(ReplayLootEvent {
-                            timestamp,
-                            item_name,
-                            item_type_id,
-                            quantity,
-                            corpse_name,
-                            corpse_entity_id,
-                            instance_id,
-                            resolution: resolution.to_string(),
-                        });
-                    }
-                }
-            }
-            "chat" => {
-                chat_lines += 1;
-                // Parse chat combat for enemy kills
-                let combat_event = crate::chat_parser::parse_chat_line(line).and_then(|msg| {
-                    crate::chat_combat_parser::parse_combat_message(&msg, &character_name)
-                });
-                if let Some(crate::chat_combat_parser::ChatCombatEvent::EnemyKilled {
+        if source == "chat" {
+            chat_lines += 1;
+            // Parse chat combat for enemy kills
+            let combat_event = crate::chat_parser::parse_chat_line(line).and_then(|msg| {
+                crate::chat_combat_parser::parse_combat_message(&msg, &character_name)
+            });
+            if let Some(crate::chat_combat_parser::ChatCombatEvent::EnemyKilled {
+                timestamp,
+                enemy_name,
+                enemy_entity_id,
+                killing_ability,
+                ..
+            }) = combat_event
+            {
+                kills.push(ReplayKillEvent {
                     timestamp,
                     enemy_name,
                     enemy_entity_id,
                     killing_ability,
-                    ..
-                }) = combat_event
-                {
-                    kills.push(ReplayKillEvent {
-                        timestamp,
-                        enemy_name,
-                        enemy_entity_id,
-                        killing_ability,
-                    });
-                }
+                });
             }
-            _ => {}
         }
     }
 
     Ok(CaptureReplayResult {
         total_lines: lines.len(),
-        player_lines,
+        player_lines: 0,
         chat_lines,
-        loot_events,
+        loot_events: Vec::new(),
         kills,
     })
 }

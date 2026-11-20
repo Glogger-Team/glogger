@@ -15,6 +15,7 @@
 //! glogger was closed live only in the rotated/archived copies — scanning the
 //! live log alone misses them.
 use super::DbPool;
+use crate::parsers::parse_timestamp;
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, State};
@@ -70,7 +71,6 @@ pub fn get_poems(db: State<'_, DbPool>) -> Result<Vec<PoemRow>, String> {
 /// is unavailable. Pure CPU — holds no DB lock.
 fn parse_poems_from_path(path: &PathBuf) -> Vec<(String, String, String, String)> {
     use crate::parsers::to_utc_datetime_with_base;
-    use crate::player_event_parser::parse_poem_line;
 
     let base_date = std::fs::metadata(path)
         .and_then(|m| m.modified())
@@ -203,6 +203,169 @@ pub fn backfill_from_player_logs_with_emit(
         app.emit("game-state-updated", vec!["poems"]).ok();
     }
     Ok(inserted)
+}
+
+/// A poem parsed from a `Poem by X` talk-screen line.
+struct ParsedPoem {
+    /// Raw `HH:MM:SS` timestamp from the log line.
+    timestamp: String,
+    author: String,
+    title: String,
+    content: String,
+}
+
+/// Parse a single `Poem by X` talk-screen log line into a [`ParsedPoem`],
+/// or `None` if the line is not a poem recital. Used by the one-time
+/// Player.log poem backfill below.
+fn parse_poem_line(line: &str) -> Option<ParsedPoem> {
+    if !line.contains("ProcessTalkScreen(") {
+        return None;
+    }
+    let timestamp = parse_timestamp(line)?;
+
+    let args_start = line.find("ProcessTalkScreen(")? + "ProcessTalkScreen(".len();
+    let args = &line[args_start..];
+    let first_comma = args.find(',')?;
+    let rest = &args[first_comma + 1..];
+
+    // Title is the first quoted string. Poem titles are "Poem by <name>" and
+    // never contain escaped quotes, so the naive scan is safe here.
+    let q_start = rest.find('"')? + 1;
+    let q_end = rest[q_start..].find('"')? + q_start;
+    let title = &rest[q_start..q_end];
+    let author = title.strip_prefix("Poem by ")?.trim().to_string();
+
+    // Body is the next quoted string; it may contain `\"`-escaped quotes.
+    let after_title = &rest[q_end + 1..];
+    let raw_body = extract_quoted_escaped(after_title, 0)?;
+    let (poem_title, content) = parse_poem_body(&raw_body)?;
+
+    Some(ParsedPoem {
+        timestamp,
+        author,
+        title: poem_title,
+        content,
+    })
+}
+
+/// Parse the raw body of a `Poem by X` talk screen into `(title, content)`.
+///
+/// The body has the shape (all on one log line, with `\n` escapes):
+/// ```text
+/// <i>The following poem was spoken by NAME…</i>\n\n---\n\n<b>TITLE</b>\n\n<poem>\n\n\n---\n\n<i>What did you think…</i>
+/// ```
+/// The bold `<b>TITLE</b>` is pulled out as the poem's name, the intro/outro
+/// review blurbs (`<i>…</i>`) and the `---` fences are dropped, and the
+/// remaining stanzas are returned with real newlines. Returns `None` only when
+/// both the title and content come out empty.
+fn parse_poem_body(raw_body: &str) -> Option<(String, String)> {
+    // The bold tag holds the poem's name.
+    let title = raw_body
+        .find("<b>")
+        .and_then(|s| {
+            let inner = &raw_body[s + 3..];
+            inner.find("</b>").map(|e| inner[..e].trim().to_string())
+        })
+        .unwrap_or_default();
+
+    // Drop the leading intro blurb (everything up to and including its `</i>`)
+    // and the trailing outro blurb (from its opening `<i>` to the end). Player
+    // text is HTML-entity escaped by the game, so raw `<i>`/`</i>` only ever
+    // come from the game-generated blurbs.
+    let mut core = raw_body;
+    if let Some(p) = core.find("</i>") {
+        core = &core[p + "</i>".len()..];
+    }
+    if let Some(p) = core.rfind("<i>") {
+        core = &core[..p];
+    }
+
+    // Remove the bold title line — it's stored separately.
+    let core = if title.is_empty() {
+        core.to_string()
+    } else {
+        core.replacen(&format!("<b>{title}</b>"), "", 1)
+    };
+
+    // Resolve `\n` (and friends) to real characters, then drop the blank and
+    // `---` fence lines that bookend the poem, keeping interior lines intact.
+    let unescaped = unescape_log_string(&core);
+    let is_boundary = |line: &str| line.trim().is_empty() || line.trim().chars().all(|c| c == '-');
+    let lines: Vec<&str> = unescaped.lines().collect();
+    let mut start = 0;
+    let mut end = lines.len();
+    while start < end && is_boundary(lines[start]) {
+        start += 1;
+    }
+    while end > start && is_boundary(lines[end - 1]) {
+        end -= 1;
+    }
+    let content = lines[start..end].join("\n");
+
+    if title.is_empty() && content.is_empty() {
+        return None;
+    }
+    Some((title, content))
+}
+
+/// Extract the nth double-quoted string from `text`, honoring backslash escapes
+/// (`\"`, `\\`) so an escaped quote inside the string is not mistaken for its
+/// terminator. Returns the raw inner content with escapes left intact (use
+/// [`unescape_log_string`] to resolve them).
+fn extract_quoted_escaped(text: &str, n: usize) -> Option<String> {
+    let bytes = text.as_bytes();
+    let mut count = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() {
+                match bytes[j] {
+                    b'\\' => j += 2, // skip the escaped character
+                    b'"' => break,
+                    _ => j += 1,
+                }
+            }
+            if j >= bytes.len() {
+                return None; // unterminated string
+            }
+            if count == n {
+                return Some(text[start..j].to_string());
+            }
+            count += 1;
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Resolve the log's backslash escapes (`\n`, `\t`, `\r`, `\"`, `\\`) into their
+/// real characters. Unknown escapes are passed through verbatim.
+fn unescape_log_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some('"') => out.push('"'),
+                Some('\\') => out.push('\\'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 #[cfg(test)]

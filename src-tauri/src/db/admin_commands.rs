@@ -319,6 +319,31 @@ pub fn compact_database(db: State<'_, DbPool>) -> Result<CompactResult, String> 
         bytes_reclaimed: (bytes_before - bytes_after).max(0),
     })
 }
+/// Copy the live database to `path` (Settings → Backup). `VACUUM INTO`
+/// writes a compacted, transactionally-consistent snapshot; it runs on the
+/// write connection so it never races a migration or another writer.
+/// The `path` comes from the frontend save dialog — quote-escape it rather
+/// than interpolating it raw, and refuse NUL (SQLite would truncate there).
+#[tauri::command]
+pub fn backup_database(db: State<'_, DbPool>, path: String) -> Result<(), String> {
+    let conn = db
+        .get_write()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    backup_to_path(&conn, &path)
+}
+
+fn backup_to_path(conn: &rusqlite::Connection, path: &str) -> Result<(), String> {
+    if path.trim().is_empty() {
+        return Err("Backup path is empty".to_string());
+    }
+    if path.contains('\0') {
+        return Err("Backup path contains NUL".to_string());
+    }
+    let escaped = path.replace('\'', "''");
+    conn.execute_batch(&format!("VACUUM INTO '{escaped}'"))
+        .map_err(|e| format!("Backup to '{path}' failed: {e}"))?;
+    Ok(())
+}
 
 // ── Auto-Purge Settings ───────────────────────────────────────────────────────
 
@@ -451,5 +476,27 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM chat_messages", [], |r| r.get(0))
             .unwrap();
         assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn backup_to_path_writes_readable_snapshot() {
+        let c = setup();
+        let mut dest = std::env::temp_dir();
+        dest.push(format!("glogger-backup-test-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&dest);
+        backup_to_path(&c, dest.to_str().unwrap()).expect("backup succeeds");
+        let check = Connection::open(&dest).unwrap();
+        let n: i64 = check
+            .query_row("SELECT COUNT(*) FROM item_transactions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 3);
+        std::fs::remove_file(&dest).ok();
+    }
+
+    #[test]
+    fn backup_to_path_rejects_empty_and_nul_paths() {
+        let c = setup();
+        assert!(backup_to_path(&c, "   ").is_err());
+        assert!(backup_to_path(&c, "a\0b").is_err());
     }
 }

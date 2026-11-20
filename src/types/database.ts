@@ -373,6 +373,7 @@ export interface SnapshotNpcFavor {
   councils_spent_at_vendor: number | null
   vendor_reset_time: string | null
   player_notes: string | null
+  gifts_this_week: number | null
   snapshot_timestamp: string | null
 }
 

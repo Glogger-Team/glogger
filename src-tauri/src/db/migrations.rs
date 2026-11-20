@@ -486,6 +486,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         migration_v90_collapse_stall_same_batch_dupes(conn)?;
         super::record_migration(conn, 90)?;
     }
+
+    if current_version < 91 {
+        migration_v91_vip_json_logging(conn)?;
+        super::record_migration(conn, 91)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1317,6 +1322,94 @@ fn migration_v90_collapse_stall_same_batch_dupes(conn: &Connection) -> Result<()
          DROP TABLE stall_v90_samebatch;
          DROP TABLE stall_v90_calls;",
     )?;
+    Ok(())
+}
+
+/// Migration V91: VIP JSON logging schema (single migration for the batch).
+///
+/// One migration for the whole 2026-11-17 intake batch, which merges as one
+/// release: looted-from entity columns (`AddItem` twins), the weekly-gift
+/// counter (report snapshots), and the favor event log (`DeltaFavor`
+/// lines). An earlier draft split this into V91–V94 with a
+/// `json_favor_processed` marker in between — but that marker never shipped:
+/// it stored every processed line, i.e. it already was the event log, so
+/// the events shape won outright and the intermediate versions were
+/// squashed before merge instead of preserved as dead history. No shipped
+/// database ever carried versions 92–94.
+///
+/// VIP JSON `AddItem` lines carry `FromName`/`FromEntityId` (the corpse or
+/// entity looted); the English `[Status]` twin has no such data. Both orders
+/// converge on one row (see `insert_json_receipt_guarded`), stamped here.
+/// Nullable — pre-patch rows and non-loot gains stay NULL. Survey columns
+/// (`source_kind`/`source_details`) are untouched: entity is identity-adjacent
+/// enrichment, not attribution, so live survey tagging and the scan
+/// retro-claim keep working on the same row.
+///
+/// VIP character-report exports carry `GiftsThisWeek` per NPC (observed:
+/// `NPC_Elune → 1`, `NPC_Sulafa → 5`); older exports omit it, so the serde
+/// field defaults and the column stays NULL.
+///
+/// `favor_events` is the per-line log every `DeltaFavor` application writes
+/// (`INSERT OR IGNORE` on the full key — rescans collapse, no marker table).
+/// Session sums and gift detection derive from it by query. The
+/// `game_state_favor.cumulative_delta` integral retires with it — rows are
+/// zeroed below (main-line databases may carry stale accruals from the old
+/// arm; the label they fed is now computed at read time). Report `favor`
+/// absolutes (snapshot path) and the Statehelm weekly counts are untouched.
+fn migration_v91_vip_json_logging(conn: &Connection) -> Result<()> {
+    // Minimal test fixtures build only the tables they need — skip each arm
+    // when its table is absent (same shape as V79's milking-log guard).
+    let has_ledger: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'item_transactions')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if has_ledger {
+        conn.execute(
+            "ALTER TABLE item_transactions ADD COLUMN from_name TEXT",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE item_transactions ADD COLUMN from_entity_id INTEGER",
+            [],
+        )?;
+    }
+    let has_npc_favor: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'character_npc_favor')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if has_npc_favor {
+        conn.execute(
+            "ALTER TABLE character_npc_favor ADD COLUMN gifts_this_week INTEGER",
+            [],
+        )?;
+    }
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS favor_events (
+            character_name TEXT NOT NULL,
+            server_name TEXT NOT NULL,
+            npc_key TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            delta REAL NOT NULL,
+            PRIMARY KEY (character_name, server_name, npc_key, timestamp, delta)
+        )",
+        [],
+    )?;
+    let has_favor: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'game_state_favor')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if has_favor {
+        conn.execute("UPDATE game_state_favor SET cumulative_delta = 0", [])?;
+    }
     Ok(())
 }
 
@@ -3240,7 +3333,7 @@ fn migration_v1_unified_schema(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX idx_gs_equipment_char ON game_state_equipment(character_name, server_name);
 
-        -- NPC Favor: cumulative deltas from log + tier from snapshots
+        -- NPC Favor: per-line deltas in favor_events (session sums by query) + tier from snapshots
         CREATE TABLE game_state_favor (
             character_name TEXT NOT NULL,
             server_name TEXT NOT NULL,
@@ -4574,13 +4667,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            90,
+            91,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 90);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 91);
     }
 
     #[test]
@@ -4703,13 +4796,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 90) plus the purge itself on the three aggregate source tables.
+        // 91) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 90, "migration chain head");
+        assert_eq!(head, 91, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -4755,8 +4848,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 90 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse). Repair: a
+        // Chain wiring: full run_migrations head must be 91 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -4764,7 +4857,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 90, "migration chain head");
+        assert_eq!(head, 91, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -5368,6 +5461,37 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kept, "Kept", "surviving child belongs to the Real parent");
+    }
+
+    #[test]
+    fn migration_v91_vip_json_logging_batch() {
+        // Minimal fixtures: only the favor table exists (no ledger, no
+        // snapshots) — the guarded arms skip, the events table still lands,
+        // and the stale integral zeroes.
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE game_state_favor (
+                character_name TEXT NOT NULL,
+                server_name TEXT NOT NULL,
+                npc_key TEXT NOT NULL,
+                cumulative_delta REAL NOT NULL DEFAULT 0
+            );
+            INSERT INTO game_state_favor VALUES ('Alice', 'Dreva', 'NPC_Elune', 999.0);",
+        )
+        .unwrap();
+        migration_v91_vip_json_logging(&c).unwrap();
+        let events: bool = c
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'favor_events')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(events);
+        let zeroed: f64 = c
+            .query_row("SELECT cumulative_delta FROM game_state_favor", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(zeroed, 0.0);
     }
 }
 

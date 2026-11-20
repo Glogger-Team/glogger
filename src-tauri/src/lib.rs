@@ -5,11 +5,11 @@ mod cdn_commands;
 mod cdn_diff;
 mod chat_combat_parser;
 mod chat_commands;
+mod chat_json_parser;
 mod chat_parser;
 mod chat_resuscitate_parser;
 mod chat_status_dispatch;
 mod chat_status_parser;
-mod commands;
 mod coordinator;
 mod db;
 mod debug_capture;
@@ -19,7 +19,6 @@ mod game_state;
 mod gst_manager;
 mod log_watchers;
 mod parsers;
-mod player_event_parser;
 mod replay;
 mod report_stats;
 mod settings;
@@ -143,7 +142,6 @@ use chat_commands::{
     get_tell_conversations, get_watch_rule_messages, purge_chat_messages, scan_chat_log_file,
     scan_chat_logs, tail_chat_log,
 };
-use commands::{get_parse_log_status, parse_log, ParseLogJobs};
 use coordinator::{
     debug_capture_discard, debug_capture_save, debug_capture_start, debug_capture_status,
     debug_capture_stop, get_coordinator_status, poll_watchers, scan_player_log_for_poems,
@@ -152,7 +150,8 @@ use coordinator::{
     PollingHandle,
 };
 use db::admin_commands::{
-    compact_database, force_rebuild_cdn_tables, get_database_stats, purge_player_data,
+    backup_database, compact_database, force_rebuild_cdn_tables, get_database_stats,
+    purge_player_data,
 };
 use db::aggregate_commands::{
     get_aggregate_inventory, get_aggregate_skills, get_aggregate_vendor, get_aggregate_wealth,
@@ -226,7 +225,7 @@ use db::timer_commands::{delete_user_timer, get_user_timers, save_user_timer};
 use debug_capture::replay_capture_file;
 use external_fetch::{fetch_github_releases, fetch_pg_news};
 use gst_manager::{gst_check_status, gst_download, gst_launch};
-use replay::replay_dual_logs;
+use replay::replay_chat_log;
 use settings::{
     get_default_game_data_path_command, get_default_player_log_path_command, get_server_list,
     get_settings_file_path, load_settings, save_settings, SettingsManager,
@@ -582,13 +581,6 @@ pub fn run() {
                         }
                         Err(e) => eprintln!("Arena backfill failed: {e}"),
                     }
-                    // Personal betting history from Player.log + Player-prev.log.
-                    match db::arena_commands::backfill_bets_from_player_logs(&sm, &dbp) {
-                        Ok(n) => {
-                            startup_log!("Arena bet backfill: {} new bet(s)", n);
-                        }
-                        Err(e) => eprintln!("Arena bet backfill failed: {e}"),
-                    }
                     match db::poem_commands::backfill_from_player_logs_with_emit(&sm, &dbp, &ah) {
                         Ok(n) => {
                             startup_log!("Poem backfill: {} new poem(s)", n);
@@ -643,7 +635,6 @@ pub fn run() {
             app.manage(db_pool.clone());
             app.manage(coordinator.clone());
             app.manage(polling_handle.clone());
-            app.manage(ParseLogJobs(std::sync::Mutex::new(std::collections::HashMap::new())));
 
             startup_log!("Splash screen displayed (frontend rendering)");
 
@@ -686,29 +677,6 @@ pub fn run() {
 
                         // Notify the frontend that data is loaded
                         app_handle.emit("game-data-ready", data.version).ok();
-
-                        // Statehelm weekly gift counts, re-read from Player.log /
-                        // Player-prev.log / archived rotated copies. Deliberately
-                        // here and not in the Step 5d chain: the reconcile resolves
-                        // NPC display names against the `npcs` table, and the chain
-                        // and this CDN task are spawned independently, so from the
-                        // chain it silently no-opped on a fresh DB (empty `npcs`)
-                        // with no retry. Both branches above leave `npcs` populated.
-                        if let (Some(sm), Some(dbp)) = (
-                            app_handle.try_state::<Arc<crate::settings::SettingsManager>>(),
-                            app_handle.try_state::<db::DbPool>(),
-                        ) {
-                            match db::statehelm_commands::backfill_from_player_logs(
-                                &sm,
-                                &dbp,
-                                &app_handle,
-                            ) {
-                                // Emits `game-state-updated ["favor"]` and logs its
-                                // own progress line when it reconciles anything.
-                                Ok(_) => {}
-                                Err(e) => eprintln!("Statehelm gift backfill failed: {e}"),
-                            }
-                        }
                     }
                     Err(e) => {
                         startup_log!("Game data init FAILED: {e}");
@@ -722,10 +690,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Startup diagnostics
             log_startup,
-            // Log parsing (manual upload)
-            parse_log,
-            get_parse_log_status,
-            replay_dual_logs,
+            // Log replay (manual upload)
+            replay_chat_log,
             // Combat Wisdom tracking
             db::combat_wisdom_commands::get_combat_wisdom_monsters,
             db::combat_wisdom_commands::backfill_combat_wisdom_from_chat_logs,
@@ -733,7 +699,6 @@ pub fn run() {
             db::roulette_commands::backfill_roulette_from_chat_logs,
             db::arena_commands::get_arena_stats,
             db::arena_commands::backfill_arena_from_chat_logs,
-            db::arena_commands::backfill_arena_bets_from_player_logs,
             // CDN management
             get_cache_status,
             check_cdn_version,
@@ -856,6 +821,7 @@ pub fn run() {
             get_recent_events,
             // Database admin
             get_database_stats,
+            backup_database,
             compact_database,
             force_rebuild_cdn_tables,
             purge_player_data,
@@ -1028,7 +994,6 @@ pub fn run() {
             get_gift_log,
             add_manual_gift,
             remove_last_gift,
-            db::statehelm_commands::backfill_statehelm_gifts,
             get_game_state_currencies,
             get_currency_estimate,
             get_game_state_effects,

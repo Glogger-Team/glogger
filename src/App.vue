@@ -53,10 +53,7 @@
               <SearchView @navigate="handleSearchNavigate" />
             </div>
             <div v-if="visited.has('settings')" v-show="currentView === 'settings'" class="h-full">
-              <Settings
-                :parsing="parsing"
-                :error="error"
-                :onParseLog="parseLog" />
+              <Settings />
             </div>
           </div>
         </div>
@@ -118,13 +115,10 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onBeforeUnmount } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { useSettingsStore } from "./stores/settingsStore";
 import { useStartupStore } from "./stores/startupStore";
 import { useUpdateStore } from "./stores/updateStore";
 import { useGameDataStore } from "./stores/gameDataStore";
-import { useGameStateStore } from "./stores/gameStateStore";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { provideEntityNavigation } from "./composables/useEntityNavigation";
 import { useDataBrowserStore, entityTypeToTab } from "./stores/dataBrowserStore";
@@ -156,7 +150,6 @@ import { useToast } from "./composables/useToast";
 import { useViewPrefs } from "./composables/useViewPrefs";
 import type { SearchResult } from "./composables/useUnifiedSearch";
 
-const settingsStore = useSettingsStore();
 const toast = useToast();
 const startup = useStartupStore();
 const updateStore = useUpdateStore();
@@ -177,8 +170,6 @@ async function handleCdnRestart() {
   }
 }
 
-const error = ref("");
-const parsing = ref(false);
 const { prefs: appPrefs, update: updateAppPrefs } = useViewPrefs('app', { currentView: 'dashboard' as string });
 const currentView = ref<AppView>(appPrefs.value.currentView as AppView || "dashboard");
 const visited = reactive(new Set<AppView>([currentView.value]));
@@ -269,34 +260,6 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   unlistenDevToast?.();
 });
-
-async function parseLog() {
-  error.value = "";
-  const gameStateStore = useGameStateStore();
-  gameStateStore.resetSessionSkills();
-  parsing.value = true;
-  try {
-    const path = settingsStore.settings.logFilePath || settingsStore.getPlayerLogPath();
-    const jobId = await invoke<string>("parse_log", { path });
-    // parse_log returns immediately; poll the job registry for the outcome.
-    // Poll is bounded (~10 min): a stuck Running job must time out rather
-    // than spin parsing=true forever. A missing registry entry is a failure,
-    // not success (entry absent = evicted backend or lock failure).
-    let finished = false;
-    for (let i = 0; i < 1200; i++) {
-      await new Promise(r => setTimeout(r, 500));
-      const status = await invoke<{ state: string; error?: string } | null>("get_parse_log_status", { jobId });
-      if (!status) throw new Error("Log parse job not found — please retry");
-      if (status.state === "done") { finished = true; break; }
-      if (status.state === "failed") throw new Error(status.error ?? "Log parse failed");
-    }
-    if (!finished) throw new Error("Log parse timed out");
-  } catch (e) {
-    error.value = String(e);
-  } finally {
-    parsing.value = false;
-  }
-}
 
 function navigateToView(view: AppView) {
   visited.add(view);

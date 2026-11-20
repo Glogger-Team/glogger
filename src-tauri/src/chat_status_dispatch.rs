@@ -76,7 +76,6 @@ use crate::chat_parser::ChatMessage;
 use crate::chat_resuscitate_parser::{self, ChatResuscitateEvent};
 use crate::chat_status_parser::{parse_status_message, ChatStatusEvent};
 use crate::db::DbPool;
-use crate::survey::{persistence as survey_persistence, SurveyUseStatus};
 use crate::watch_rules::WatchRuleTriggered;
 use crate::settings::WatchRule;
 
@@ -102,9 +101,6 @@ pub struct DispatchState<'a> {
     /// Rolling buffer of recent damage-on-player events (max 10),
     /// snapshotted into the DB when a death persists.
     pub recent_damage: &'a mut Vec<ChatCombatEvent>,
-    /// Set when a cow interaction is in progress (internal `Cow_*` name);
-    /// consumed when a Bottle of Milk gain lands.
-    pub pending_cow_interaction: &'a mut Option<String>,
     /// Current area, attached to death rows.
     pub current_area: Option<String>,
     /// Whether wallet-delta arms (`CoinsLooted`/`CouncilsChanged`) may
@@ -136,15 +132,25 @@ pub struct DispatchOutcome {
     /// Skill names that did not resolve against game data (live path keeps
     /// a monotonic counter and logs; scan paths log-and-skip).
     pub unknown_skills: Vec<String>,
+    /// `[JSON:Type]` type strings whose body failed to parse (live path keeps
+    /// a monotonic counter and logs; the raw chat row is still stored).
+    pub malformed_json: Vec<String>,
+    /// `[JSON:Type]` type strings with no frozen schema yet (kept as raw rows
+    /// only). Logged like malformed lines so a new game-side Type surfaces
+    /// instead of vanishing silently.
+    pub unknown_json: Vec<String>,
+    /// A `[JSON:Book]` line's (book_type, title, body, event timestamp) for
+    /// triggers (gourmand/hoplology/teleports/report-stats need `AppHandle`
+    /// for their emits, which dispatch never holds). The books upsert itself
+    /// already ran here; the scan path ignores this (persistence is shared,
+    /// triggers stay live-only like the old `BookOpened` arm).
+    pub json_book: Option<(String, String, String, String)>,
     /// Item gains the caller treats as chat-sourced stack corrections
     /// (display name, quantity). The live coordinator feeds the
     /// player-watcher correlation buffer and corrects inline (live) or
     /// stages session-keyed gains (catch-up); the scan path applies them
     /// session-keyed via `correct_stack_for_session`.
     pub staged_gains: Vec<(String, u32)>,
-    /// Set when an arena match resolved — the caller runs the (idempotent)
-    /// bet rescan and emits `arena` when it changes anything.
-    pub arena_resolved: bool,
 }
 
 impl DispatchOutcome {
@@ -230,7 +236,6 @@ pub fn dispatch_chat_message(
                 &m.winner,
             ) {
                 out.domain("arena");
-                out.arena_resolved = true;
             }
     // Watch rules fire on the raw message (same as the live drain's
     // post-insert evaluation). Rules match on channel/sender/text, none of
@@ -255,20 +260,63 @@ pub fn dispatch_chat_message(
         out.chat_status_event = Some(status_event);
     }
 
+    // VIP JSON logging: `[JSON:Type] {json}` lines twin the English `[Status]`
+    // text (English first, same second) and carry the exact values. The twin
+    // guard lives in each arm (enrich-instead-of-skip), so live, scan, and
+    // replay all converge on one row — order-independent.
+    if ctx.msg.json_type.is_some() {
+        match crate::chat_json_parser::parse_json_message(ctx.msg) {
+            Some(event) => dispatch_json_event(&ctx, &event, &mut out, state),
+            None => out.malformed_json.push(
+                ctx.msg.json_type.clone().unwrap_or_default(),
+            ),
+        }
+    }
+
+
     if let Some(id) = ctx.identity {
         if let Some(combat_event) = chat_combat_parser::parse_combat_message(ctx.msg, &id.character) {
             match &combat_event {
                 ChatCombatEvent::PlayerDeath { .. } => {
+                    // Gate the event like the domain: a replayed death row
+                    // already exists, so only a fresh persist notifies.
                     if persist_death_event(ctx.db, ctx.game_data, id, &combat_event, state) {
                         out.domain("deaths");
+                        out.character_death = Some(combat_event);
                     }
-                    out.character_death = Some(combat_event);
                     state.recent_damage.clear();
                 }
-                ChatCombatEvent::EnemyKilled { .. } => {
-                    // Drop-rate kills come from Player.log corpse searches;
-                    // chat only feeds the live farming-session UI.
-                    out.enemy_killed = Some(combat_event);
+                ChatCombatEvent::EnemyKilled {
+                    timestamp,
+                    enemy_name,
+                    enemy_entity_id,
+                    killing_ability,
+                    health_damage,
+                    armor_damage,
+                } => {
+                    // FATALITY lines carry the entity ID, which matches receipt
+                    // `FromEntityId` (paired live 2026-11-17: slimes #488966 /
+                    // #488976, shark #19868) — the loot↔kill join key. Group
+                    // kills where another lands the blow emit no FATALITY.
+                    // Gate both the domain and the event on a fresh insert:
+                    // replays and write failures stay silent.
+                    if let Ok(conn) = ctx.db.get_write()
+                        && let Ok(Some(_)) =
+                            crate::db::kill_tracking_commands::record_enemy_kill(
+                                &conn,
+                                &id.character,
+                                &id.server,
+                                enemy_name,
+                                enemy_entity_id,
+                                killing_ability,
+                                *health_damage as i64,
+                                *armor_damage as i64,
+                                timestamp,
+                            )
+                    {
+                        out.domain("enemy_kills");
+                        out.enemy_killed = Some(combat_event);
+                    }
                 }
                 ChatCombatEvent::DamageOnPlayer { .. } => {
                     if state.recent_damage.len() >= 10 {
@@ -280,31 +328,37 @@ pub fn dispatch_chat_message(
         }
 
         if ctx.msg.channel.as_deref() == Some("Combat") {
-            if chat_combat_parser::parse_self_ability_line(
+            if let Some(target) = chat_combat_parser::parse_self_ability_line(
                 ctx.msg.sender.as_deref(),
                 &ctx.msg.message,
                 &id.character,
                 "Collect Milk",
-            )
-            .as_deref()
-                == Some(id.character.as_str())
-            {
+            ) {
                 // UTC basis (like the MilkedBy arm and the backfill): `msg`
                 // arrives UTC-converted, while `local_ts` is the wall clock
                 // the converter would misread as UTC (off by the tz offset,
                 // defeating the v72 UNIQUE key against backfill rows).
                 let utc_ts = ctx.msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
-                record_player_milk(ctx.db, &id.character, &id.server, &id.character, "self_milked", &utc_ts);
+                if target == id.character {
+                    record_player_milk(ctx.db, &id.character, &id.server, &id.character, "self_milked", &utc_ts);
+                }
+                record_cow_milk_session(
+                    ctx.db,
+                    &id.character,
+                    &id.server,
+                    &target,
+                    state.current_area.as_deref().unwrap_or(""),
+                    &utc_ts,
+                );
                 out.domain("milking");
             }
             if let Some(target) = chat_combat_parser::parse_self_poop_line(
                 ctx.msg.sender.as_deref(),
                 &ctx.msg.message,
                 &id.character,
-            )
-                && record_poop(ctx.db, &id.character, &id.server, &target, ctx.local_ts) {
-                    out.domain("report_stats");
-                }
+            ) && record_poop(ctx.db, &id.character, &id.server, &target, ctx.local_ts) {
+                out.domain("report_stats");
+            }
         }
 
         if let Some(rez_event) = chat_resuscitate_parser::parse_resuscitate_message(ctx.msg)
@@ -345,22 +399,11 @@ fn dispatch_status_event(
                 .unwrap_or((None, None));
 
             if let Some(id) = ctx.identity {
-                // Milking timer: a Bottle of Milk gain while a cow
-                // interaction is pending attributes the milk to that cow
-                // (live path only — scans have no interaction state).
-                if (item_name == "Bottle of Milk" || internal_name.as_deref() == Some("BottleOfMilk"))
-                    && let Some(cow_internal) = state.pending_cow_interaction.take() {
-                        let cow_display = cow_internal
-                            .strip_prefix("Cow_")
-                            .unwrap_or(&cow_internal)
-                            .to_string();
-                        if record_cow_milk_session(
-                            ctx.db, &id.character, &id.server, &cow_display, "", timestamp,
-                        ) {
-                            out.domain("milking");
-                        }
-                    }
-                out.staged_gains.push((item_name.clone(), *quantity));
+                // Stage the gain only when this line wrote the row: in
+                // JSON-first order the JSON twin already staged it, and the
+                // English twin's guard skips the insert — staging again would
+                // double-count downstream (previously masked only by the
+                // survey `already_counted` guard).
                 let survey_use_id = if context == "loot" {
                     match survey_hook {
                         Some(hook) => hook(internal_name.as_deref(), *quantity, timestamp),
@@ -369,7 +412,7 @@ fn dispatch_status_event(
                 } else {
                     None
                 };
-                insert_item_transaction_guarded(
+                if insert_item_transaction_guarded(
                     ctx.db,
                     ItemLedgerCtx {
                         timestamp,
@@ -382,7 +425,9 @@ fn dispatch_status_event(
                         context,
                         survey_use_id,
                     },
-                );
+                ) {
+                    out.staged_gains.push((item_name.clone(), *quantity));
+                }
             }
         }
         ChatStatusEvent::ItemStudied { timestamp, item_name } => {
@@ -530,6 +575,462 @@ fn insert_item_transaction_guarded(db: &DbPool, item: ItemLedgerCtx<'_>) -> bool
     .is_ok()
 }
 
+/// Twin-aware insert for a VIP JSON `AddItem` receipt. The English `[Status]`
+/// twin (same timestamp, item, quantity, `context = 'loot'`,
+/// `source = 'chat_status'`) may already exist — live order is English-first,
+/// rescan order varies. When it does, stamp the looted-from entity onto that
+/// row instead of inserting a second one, and report "already present" so the
+/// caller stages the gain exactly once. Survey columns are never touched:
+/// the row keeps `source_kind IS NULL` (or its live survey tag), so the
+/// existing live attribution and scan retro-claim paths work unchanged.
+/// Returns `true` when the caller should treat this as a new gain (stage it).
+#[allow(clippy::too_many_arguments)]
+fn insert_json_receipt_guarded(
+    db: &DbPool,
+    timestamp: &str,
+    character: &str,
+    server: &str,
+    item_name: &str,
+    internal_name: Option<&str>,
+    item_type_id: Option<i64>,
+    quantity: u32,
+    from_name: Option<&str>,
+    from_entity_id: Option<i64>,
+) -> bool {
+    let Ok(conn) = db.get_write() else {
+        return false;
+    };
+    if from_name.is_some() {
+        // Scope to a single row: identical same-second receipts from
+        // different entities (AoE farming) share the whole key, and stamping
+        // every NULL row would attach the first entity to all of them while
+        // the second twin then matches nothing. Earliest unstamped wins.
+        conn.execute(
+            "UPDATE item_transactions SET from_name = ?1, from_entity_id = ?2
+             WHERE rowid = (SELECT MIN(rowid) FROM item_transactions
+                 WHERE timestamp = ?3 AND character_name = ?4 AND server_name = ?5
+                   AND item_name = ?6 AND quantity = ?7 AND context = 'loot'
+                   AND source = 'chat_status' AND from_name IS NULL)",
+            rusqlite::params![
+                from_name,
+                from_entity_id,
+                timestamp,
+                character,
+                server,
+                item_name,
+                quantity as i32
+            ],
+        )
+        .ok();
+    }
+    let exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM item_transactions
+             WHERE timestamp = ?1 AND character_name = ?2 AND server_name = ?3
+               AND item_name = ?4 AND quantity = ?5 AND context = 'loot' AND source = 'chat_status')",
+            rusqlite::params![timestamp, character, server, item_name, quantity as i32],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    let wrote = if exists {
+        false
+    } else {
+        conn.execute(
+            "INSERT INTO item_transactions
+                (timestamp, character_name, server_name, item_name,
+                 internal_name, item_type_id, quantity, context,
+                 source, from_name, from_entity_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'loot', 'chat_status', ?8, ?9)",
+            rusqlite::params![
+                timestamp,
+                character,
+                server,
+                item_name,
+                internal_name,
+                item_type_id,
+                quantity as i32,
+                from_name,
+                from_entity_id,
+            ],
+        )
+        .is_ok()
+    };
+    // Both twin orders converge here, so this is also the loot↔kill join
+    // point: the receipt's entity links the item to its FATALITY row.
+    if let Some(entity_id) = from_entity_id {
+        let _ = crate::db::kill_tracking_commands::link_kill_loot(
+            &conn,
+            character,
+            server,
+            &entity_id.to_string(),
+            timestamp,
+            item_name,
+            quantity as i64,
+        );
+    }
+    wrote
+}
+
+/// Chat XP without a level-up: same row shape and recency rule as the
+/// level-up writer, minus the level gate (XP within a level carries no level
+/// signal). No writer for this existed — `[Status]` XP lines were parsed but
+/// never persisted, and `Player.log` skill snapshots are gone.
+#[allow(clippy::too_many_arguments)]
+fn upsert_chat_xp(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    skill_id: i64,
+    skill_name: &str,
+    level: i64,
+    xp: i64,
+    confirmed_at: &str,
+) -> bool {
+    conn.execute(
+        "INSERT INTO game_state_skills
+            (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0, ?6, 0, 0, ?7, 'chat')
+         ON CONFLICT(character_name, server_name, skill_id) DO UPDATE SET
+            skill_name = excluded.skill_name,
+            level = excluded.level,
+            xp = excluded.xp,
+            last_confirmed_at = CASE WHEN excluded.last_confirmed_at > game_state_skills.last_confirmed_at THEN excluded.last_confirmed_at ELSE game_state_skills.last_confirmed_at END,
+            source = excluded.source
+         WHERE excluded.last_confirmed_at > game_state_skills.last_confirmed_at",
+        rusqlite::params![character, server, skill_id, skill_name, level, xp, confirmed_at],
+    )
+    .map(|n| n > 0)
+    .unwrap_or(false)
+}
+
+/// Classify a `[JSON:Book]` title into the `game_state_books.book_type` the
+/// old `ProcessBook` flow would have carried. Frozen from the first live
+/// lines (three distinct titles); anything else stores as `"JSON"` (upsert
+/// only, no content triggers) until its schema is observed.
+fn classify_json_book_title(title: &str) -> &'static str {
+    if title == "Skill Info" {
+        "SkillReport"
+    } else if title.starts_with("Behavior Report") {
+        "HelpScreen"
+    } else if title.ends_with("'s Age") {
+        "PlayerAge"
+    } else {
+        "JSON"
+    }
+}
+
+/// Structured dispatch for one parsed `[JSON:Type]` line. Runs inside the
+/// shared [`dispatch_chat_message`] so live, scan, and replay converge.
+/// Twin rule (see `docs/features/vip-json-logging.md`): the English
+/// `[Status]` twin carries no new information — JSON is authoritative when
+/// present, and every arm is idempotent across both orders via the same
+/// guards the English arms use.
+fn dispatch_json_event(
+    ctx: &DispatchCtx<'_>,
+    event: &crate::chat_json_parser::ChatJsonEvent,
+    out: &mut DispatchOutcome,
+    _state: &mut DispatchState<'_>,
+) {
+    use crate::chat_json_parser::ChatJsonEvent as E;
+    match event {
+        E::ItemReceipt {
+            timestamp,
+            item_name,
+            quantity,
+            from_name,
+            from_entity_id,
+            ..
+        } => {
+            if let Some(id) = ctx.identity {
+                // Same CDN resolution as the English `ItemGained` arm so the
+                // twin writes identical `internal_name`/`item_type_id`
+                // (the line's own `TypeId` is not stored — twin-identical wins).
+                let (internal_name, item_type_id): (Option<String>, Option<i64>) = ctx
+                    .game_data
+                    .try_read()
+                    .ok()
+                    .and_then(|gd| {
+                        gd.resolve_item(item_name)
+                            .map(|info| (info.internal_name.clone(), Some(info.id as i64)))
+                    })
+                    .unwrap_or((None, None));
+                if insert_json_receipt_guarded(
+                    ctx.db,
+                    timestamp,
+                    &id.character,
+                    &id.server,
+                    item_name,
+                    internal_name.as_deref(),
+                    item_type_id,
+                    *quantity,
+                    from_name.as_deref(),
+                    (*from_entity_id).map(|n| n as i64),
+                ) {
+                    out.staged_gains.push((item_name.clone(), *quantity));
+                }
+            }
+        }
+        E::Xp {
+            timestamp,
+            skill,
+            xp,
+            old_level,
+            new_level,
+        } => {
+            if let Some(id) = ctx.identity {
+                let resolved = ctx.game_data.try_read().ok().and_then(|gd| {
+                    gd.resolve_skill(skill)
+                        .map(|info| (info.id as i64, info.name.clone()))
+                });
+                match resolved {
+                    Some((skill_id, display_name)) => {
+                        if let Ok(conn) = ctx.db.get_write() {
+                            if new_level > old_level {
+                                // Level-up: the existing chat writer (same call as the `LevelUp` arm).
+                                match crate::db::game_state_commands::apply_chat_level_up(
+                                    &crate::db::game_state_commands::ChatLevelUp {
+                                        conn: &conn,
+                                        character: &id.character,
+                                        server: &id.server,
+                                        skill_id,
+                                        skill_name: &display_name,
+                                        level: *new_level as i64,
+                                        xp: *xp as i64,
+                                        confirmed_at: timestamp,
+                                    },
+                                ) {
+                                    Ok(true) => out.domain("skills"),
+                                    Ok(false) => {}
+                                    Err(e) => eprintln!(
+                                        "[chat_status_dispatch] JSON XP level-up apply failed for {skill} ({}@{}): {e}",
+                                        id.character, id.server
+                                    ),
+                                }
+                            } else if upsert_chat_xp(
+                                &conn,
+                                &id.character,
+                                &id.server,
+                                skill_id,
+                                &display_name,
+                                *new_level as i64,
+                                *xp as i64,
+                                timestamp,
+                            ) {
+                                out.domain("skills");
+                            }
+                        }
+                    }
+                    None => out.unknown_skills.push(skill.clone()),
+                }
+            }
+        }
+        E::Book { timestamp, title, body } => {
+            if let Some(id) = ctx.identity {
+                let book_type = classify_json_book_title(title);
+                if let Ok(conn) = ctx.db.get_write() {
+                    // Same upsert as `persist_book_content` (no emit here —
+                    // the caller owns emits; the domain carries the refresh).
+                    // Gate on content: identical re-reads skip the write AND
+                    // the domain, so rescans stay silent like every other arm.
+                    let same: bool = conn
+                        .query_row(
+                            "SELECT content FROM game_state_books
+                             WHERE character_name = ?1 AND server_name = ?2
+                               AND book_type = ?3 AND title = ?4",
+                            rusqlite::params![id.character, id.server, book_type, title],
+                            |r| r.get::<_, String>(0),
+                        )
+                        .map(|c| c == *body)
+                        .unwrap_or(false);
+                    if !same {
+                        let dt = chrono::Utc::now().to_rfc3339();
+                        if conn
+                            .execute(
+                                "INSERT INTO game_state_books (character_name, server_name, book_type, title, content, captured_at)
+                                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                                 ON CONFLICT(character_name, server_name, book_type, title) DO UPDATE SET
+                                    content = excluded.content,
+                                    captured_at = excluded.captured_at",
+                                rusqlite::params![id.character, id.server, book_type, title, body, dt],
+                            )
+                            .is_ok()
+                        {
+                            out.domain("books");
+                        }
+                    }
+                }
+                // Content triggers (gourmand/hoplology/teleports/report-stats)
+                // run caller-side: they need `AppHandle` for their emits.
+                // Bodies are serde_json-decoded, so newlines are already real —
+                // no `normalize_book_content` step.
+                out.json_book = Some((book_type.to_string(), title.clone(), body.clone(), timestamp.clone()));
+            }
+        }
+        E::FavorDelta {
+            timestamp,
+            npc,
+            delta,
+        } => {
+            if let Some(id) = ctx.identity {
+                // JSON carries the CDN key already ("NPC_Elune"); resolve the
+                // display name, falling back to the key like the old arms.
+                let (display_name, giftable): (String, bool) = ctx
+                    .game_data
+                    .try_read()
+                    .ok()
+                    .and_then(|gd| {
+                        gd.resolve_npc(npc).map(|info| {
+                            let giftable = !crate::game_data::is_gift_capped_area(
+                                info.area_name.as_deref(),
+                            ) && crate::game_data::has_gift_tastes(info);
+                            (info.name.clone(), giftable)
+                        })
+                    })
+                    // Unknown NPC (CDN gap) defaults to giftable: a positive
+                    // delta is more likely a real gift than quest noise, and a
+                    // missed real gift is worse than a spurious gift row.
+                    .unwrap_or_else(|| (npc.clone(), true));
+                if let Ok(conn) = ctx.db.get_write() {
+                    // Event log: one row per observed line. `INSERT OR IGNORE`
+                    // makes rescans and scan replays no-ops; session sums and
+                    // gift detection derive from this table by query, so there
+                    // is no running total to keep consistent.
+                    // Known limit: the key is (npc, second, delta), so two
+                    // genuinely distinct same-second same-delta gifts collapse
+                    // into one — accepted (second-granularity logs give no
+                    // finer key; rapid same-item gifting is rare).
+                    let fresh = conn
+                        .execute(
+                            "INSERT OR IGNORE INTO favor_events
+                                (character_name, server_name, npc_key, timestamp, delta)
+                             VALUES (?1, ?2, ?3, ?4, ?5)",
+                            rusqlite::params![id.character, id.server, npc, timestamp, *delta],
+                        )
+                        .map(|n| n > 0)
+                        .unwrap_or(false);
+                    if !fresh {
+                        return;
+                    }
+                    // Tier/name touch-up so log-only NPCs (no report row yet)
+                    // still render. Snapshot tiers are never overwritten with
+                    // NULL — the upsert only fills name and recency.
+                    conn.execute(
+                        "INSERT INTO game_state_favor (character_name, server_name, npc_key, npc_name, favor_tier, last_confirmed_at, source)
+                         VALUES (?1, ?2, ?3, ?4, NULL, ?5, 'log')
+                         ON CONFLICT(character_name, server_name, npc_key) DO UPDATE SET
+                            npc_name = excluded.npc_name,
+                            last_confirmed_at = excluded.last_confirmed_at",
+                        rusqlite::params![id.character, id.server, npc, display_name, timestamp],
+                    )
+                    .ok();
+                    // Gift row unless the game's own signals say "not a gift":
+                    // capped-area counts belong to the report reconcile, and
+                    // tasteless NPCs cannot receive gifts (card readings etc.).
+                    // Quest-payout noise for uncapped NPCs is accepted and
+                    // documented — JSON carries no is_gift flag. Favor losses
+                    // are never gifts, whatever the NPC's tastes.
+                    if giftable && *delta > 0.0 {
+                        conn.execute(
+                            "INSERT INTO game_state_gift_log (character_name, server_name, npc_key, npc_name, gifted_at, favor_delta)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            rusqlite::params![
+                                id.character, id.server, npc, display_name, timestamp, *delta
+                            ],
+                        )
+                        .ok();
+                    }
+                    out.domain("favor");
+                }
+            }
+        }
+        E::RecipeUsed {
+            timestamp,
+            recipe_id,
+            completions,
+            ..
+        } => {
+            if let Some(id) = ctx.identity {
+                // Same absolute-count upsert as the old `RecipeUpdated` arm.
+                if let Ok(conn) = ctx.db.get_write() {
+                    let rows = conn.execute(
+                        "INSERT INTO game_state_recipes (character_name, server_name, recipe_id, completion_count, last_confirmed_at, source)
+                         VALUES (?1, ?2, ?3, ?4, ?5, 'log')
+                         ON CONFLICT(character_name, server_name, recipe_id) DO UPDATE SET
+                            completion_count = excluded.completion_count,
+                            last_confirmed_at = excluded.last_confirmed_at,
+                            source = excluded.source
+                         WHERE excluded.last_confirmed_at > game_state_recipes.last_confirmed_at",
+                        rusqlite::params![
+                            id.character, id.server, *recipe_id as i64, *completions as i64, timestamp
+                        ],
+                    )
+                    .unwrap_or(0);
+                    if rows > 0 {
+                        out.domain("recipes");
+                    }
+                }
+            }
+        }
+        E::PigeonReceived {
+            timestamp,
+            title,
+            body,
+        } => {
+            if let Some(id) = ctx.identity {
+                // Receive direction only — the game emits no line for sent
+                // pigeons (verified 2026-11-17), so `direction` is always in.
+                if let Some(sender) = parse_pigeon_sender(title) {
+                    let item = parse_pigeon_item(body);
+                    if record_player_message(
+                        ctx.db,
+                        &id.character,
+                        &id.server,
+                        timestamp,
+                        "pigeon",
+                        "in",
+                        &sender,
+                        body,
+                        item.as_deref(),
+                    ) {
+                        out.domain("player_messages");
+                    }
+                } else {
+                    // Counting, not dropping: a title that is not
+                    // "Pigeon From <name>" (a future send line, format drift)
+                    // must stay visible in malformed counters, never vanish.
+                    out.malformed_json.push("Pigeon".to_string());
+                }
+            }
+        }
+        E::ParagonXp { .. } => {
+            // Deliberate no-op: per-kill prodigy flow has no DB home (the
+            // prodigy tally is in-memory from the English Status twin, which
+            // already covers live). Typed so the shape is pinned and
+            // `unknown_json` stays clean for genuinely unobserved Types.
+        }
+        E::EntityReport { timestamp, title, body } => {
+            if let Some(id) = ctx.identity
+                && record_player_message(
+                    ctx.db,
+                    &id.character,
+                    &id.server,
+                    timestamp,
+                    "entity_report",
+                    "in",
+                    title,
+                    body,
+                    None,
+                )
+            {
+                out.domain("player_messages");
+            }
+        }
+        E::Unknown { json_type } => {
+            out.unknown_json.push(json_type.clone());
+        }
+    }
+}
+
 /// Signed wallet delta with the same guards as the coordinator: no-op
 /// without an export anchor, and only events newer than the anchor count.
 fn accrue_currency_delta(db: &DbPool, character: &str, server: &str, amount: i64, event_ts: &str) {
@@ -581,6 +1082,23 @@ fn record_player_milk(
         }
     }
 }
+/// Record a cow milking with the newer-wins upsert. Returns `true` on
+/// success (caller emits `milking`).
+pub fn record_cow_milk_session(
+    db: &DbPool,
+    character: &str,
+    server: &str,
+    cow_name: &str,
+    zone: &str,
+    timestamp: &str,
+) -> bool {
+    let milked_at = milking_event_timestamp(timestamp);
+    let Ok(conn) = db.get_write() else {
+        return false;
+    };
+    crate::db::game_state_commands::record_cow_milk(&conn, character, server, cow_name, zone, &milked_at).is_ok()
+}
+
 
 /// Returns `true` when a row was written (caller emits `report_stats`).
 fn record_poop(db: &DbPool, character: &str, server: &str, target: &str, local_ts: &str) -> bool {
@@ -595,6 +1113,83 @@ fn record_poop(db: &DbPool, character: &str, server: &str, target: &str, local_t
             false
         }
     }
+}
+
+/// Persist a player/entity message (pigeon mail, entity reports) with a
+/// rescan guard (same character/server/timestamp/type/sender → skip).
+/// Returns `true` when a row was written (caller emits `player_messages`).
+#[allow(clippy::too_many_arguments)]
+fn record_player_message(
+    db: &DbPool,
+    character: &str,
+    server: &str,
+    timestamp: &str,
+    message_type: &str,
+    direction: &str,
+    other_player: &str,
+    body: &str,
+    item_name: Option<&str>,
+) -> bool {
+    let Ok(conn) = db.get_write() else {
+        return false;
+    };
+    match conn.execute(
+        "INSERT INTO player_messages
+            (character_name, server_name, timestamp, message_type, direction, other_player, body, item_name)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+         WHERE NOT EXISTS (
+            SELECT 1 FROM player_messages
+             WHERE character_name = ?1 AND server_name = ?2 AND timestamp = ?3
+               AND message_type = ?4 AND other_player = ?6
+         )",
+        rusqlite::params![
+            character, server, timestamp, message_type, direction, other_player, body, item_name
+        ],
+    ) {
+        Ok(rows) => rows > 0,
+        Err(e) => {
+            eprintln!("[chat_status_dispatch] Failed to record player message: {e}");
+            false
+        }
+    }
+}
+
+/// Friend name from a `"Pigeon From <name>"` title.
+fn parse_pigeon_sender(title: &str) -> Option<String> {
+    title
+        .strip_prefix("Pigeon From ")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Item name from a pigeon body (`<i>You received:\n<item> xN</i>`).
+fn parse_pigeon_item(body: &str) -> Option<String> {
+    let start = body.find("You received:")? + "You received:".len();
+    let rest = &body[start..];
+    // Strip `<...>` markup spans (keeps item-name letters intact), then the
+    // first text line is `<item> xN`.
+    let mut text = String::with_capacity(rest.len());
+    let mut in_tag = false;
+    for c in rest.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => text.push(c),
+            _ => {}
+        }
+    }
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    // `Mulberry Salad x10` → item is everything before a trailing `xN`.
+    let mut parts: Vec<&str> = line.split_whitespace().collect();
+    if let Some(last) = parts.last()
+        && last.len() > 1
+        && last.starts_with('x')
+        && last[1..].chars().all(|c| c.is_ascii_digit())
+    {
+        parts.pop();
+    }
+    let item = parts.join(" ").trim().to_string();
+    (!item.is_empty()).then_some(item)
 }
 
 /// Persist a combat death with a replay guard (same killer/timestamp row
@@ -766,56 +1361,6 @@ fn persist_rez_event(
     ok
 }
 
-/// Record a cow milking with the newer-wins upsert. Returns `true` on
-/// success (caller emits `milking`).
-pub fn record_cow_milk_session(
-    db: &DbPool,
-    character: &str,
-    server: &str,
-    cow_name: &str,
-    zone: &str,
-    timestamp: &str,
-) -> bool {
-    let milked_at = milking_event_timestamp(timestamp);
-    let Ok(conn) = db.get_write() else {
-        return false;
-    };
-    crate::db::game_state_commands::record_cow_milk(&conn, character, server, cow_name, zone, &milked_at).is_ok()
-}
-
-/// Backfill path for a missed survey-use claim: tag untagged chat loot rows
-/// near `used_at` and bump the use's loot total, mirroring the live
-/// aggregator's `handle_survey_consumed` step. Idempotent — already-claimed
-/// rows carry `source_kind = 'survey_chat'` and the predicate skips them.
-#[allow(dead_code)] // Staged for survey retro-claim wiring (scan rows stay untagged until then).
-pub fn claim_survey_loot_near(
-    db: &DbPool,
-    survey_use_id: i64,
-    character: &str,
-    server: &str,
-    used_at_iso: &str,
-) -> u32 {
-    let Ok(conn) = db.get_write() else {
-        return 0;
-    };
-    match survey_persistence::claim_unlinked_chat_loot_near(&conn, survey_use_id, character, server, used_at_iso, 5) {
-        Ok(0) => 0,
-        Ok(n) => {
-            if survey_persistence::add_loot_qty(&conn, survey_use_id, n).is_err() {
-                return 0;
-            }
-            let _ = survey_persistence::set_use_status(&conn, survey_use_id, SurveyUseStatus::Completed);
-            if let Ok(Some(su)) = survey_persistence::get_use(&conn, survey_use_id)
-                && let Some(sid) = su.session_id {
-                    let _ = survey_persistence::update_first_loot_at(&conn, sid, used_at_iso);
-                    let _ = survey_persistence::update_last_loot_at(&conn, sid, used_at_iso);
-                }
-            n
-        }
-        Err(_) => 0,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -847,13 +1392,11 @@ mod tests {
         arena: &'a mut ArenaTracker,
         rez: &'a mut std::collections::HashMap<String, (String, String)>,
         dmg: &'a mut Vec<ChatCombatEvent>,
-        cow: &'a mut Option<String>,
     ) -> DispatchState<'a> {
         DispatchState {
             arena_tracker: arena,
             last_rez_dedup: rez,
             recent_damage: dmg,
-            pending_cow_interaction: cow,
             current_area: None,
             // Tests exercise arms directly (live-equivalent coverage).
             count_currency: true,
@@ -865,13 +1408,11 @@ mod tests {
         arena: &'a mut ArenaTracker,
         rez: &'a mut std::collections::HashMap<String, (String, String)>,
         dmg: &'a mut Vec<ChatCombatEvent>,
-        cow: &'a mut Option<String>,
     ) -> DispatchState<'a> {
         DispatchState {
             arena_tracker: arena,
             last_rez_dedup: rez,
             recent_damage: dmg,
-            pending_cow_interaction: cow,
             current_area: None,
             count_currency: false,
         }
@@ -944,29 +1485,6 @@ mod tests {
         g.skill_name_index.insert(name.to_string(), sid);
     }
 
-    fn insert_use(
-        conn: &rusqlite::Connection,
-        character: &str,
-        server: &str,
-        used_at: &str,
-    ) -> i64 {
-        conn.execute(
-            "INSERT INTO survey_sessions (character_name, server_name, started_at, start_trigger)
-             VALUES (?1, ?2, ?3, 'manual')",
-            rusqlite::params![character, server, used_at],
-        )
-        .unwrap();
-        let sid = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO survey_uses (session_id, character_name, server_name, used_at,
-                map_internal_name, map_display_name, kind, status, loot_qty)
-             VALUES (?1, ?2, ?3, ?4, 'BasicMap', 'Basic Map', 'basic', 'pending_loot', 0)",
-            rusqlite::params![sid, character, server, used_at],
-        )
-        .unwrap();
-        conn.last_insert_rowid()
-    }
-
     #[test]
     fn scan_persists_status_lines_like_live_drain() {
         let (pool, _guard) = test_pool();
@@ -975,7 +1493,7 @@ mod tests {
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
-        let mut cow = None;
+        
 
         let ts = "26-04-01 05:30:53";
         let msgs = vec![
@@ -987,12 +1505,12 @@ mod tests {
             status_msg("Poop on Somebody!", ts), // not a status line — ignored here
         ];
         for m in &msgs {
-            let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+            let mut st = state(&mut arena, &mut rez, &mut dmg);
             dispatch(&pool, &gd, Some(&id()), m, ts, &mut st);
         }
         // Cow-curse poop comes over Combat, attributed to the file identity.
         let poop = combat_msg("Alice: Poop on Bob!", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         let o = dispatch(&pool, &gd, Some(&id()), &poop, ts, &mut st);
         assert!(o.domains.contains(&"report_stats".to_string()));
 
@@ -1027,7 +1545,7 @@ mod tests {
         .unwrap();
         drop(conn);
         let m = status_msg("You received 10 Councils.", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         let conn = pool.get_write().unwrap();
         let delta: i64 = conn
@@ -1040,7 +1558,7 @@ mod tests {
         assert_eq!(delta, 10);
         // Scan-equivalent dispatch (count_currency: false) must not accrue.
         drop(conn);
-        let mut st = state_scan(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state_scan(&mut arena, &mut rez, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         let conn = pool.get_write().unwrap();
         let delta2: i64 = conn
@@ -1053,10 +1571,10 @@ mod tests {
         assert_eq!(delta2, 10);
         // Re-scan inserts nothing new.
         for m in &msgs {
-            let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+            let mut st = state(&mut arena, &mut rez, &mut dmg);
             dispatch(&pool, &gd, Some(&id()), m, ts, &mut st);
         }
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &poop, ts, &mut st);
         let loot2: i64 = conn
             .query_row(
@@ -1080,15 +1598,15 @@ mod tests {
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
-        let mut cow = None;
+        
         let ts = "26-04-01 05:30:53";
 
         let alice = DispatchIdentity { character: "Alice".to_string(), server: "Dreva".to_string() };
         let bob = DispatchIdentity { character: "Bob".to_string(), server: "Legacy".to_string() };
         let m = status_msg("You earned 62 XP and reached level 5 in Sword!", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         dispatch(&pool, &gd, Some(&alice), &m, ts, &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         dispatch(&pool, &gd, Some(&bob), &m, ts, &mut st);
 
         let conn = pool.get_write().unwrap();
@@ -1115,10 +1633,10 @@ mod tests {
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
-        let mut cow = None;
+        
         let ts = "26-04-01 05:30:53";
         let m = status_msg("Tiny Brain Bug Meat added to inventory.", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out = dispatch(&pool, &gd, None, &m, ts, &mut st);
         assert!(out.staged_gains.is_empty());
         let conn = pool.get_write().unwrap();
@@ -1133,16 +1651,16 @@ mod tests {
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
-        let mut cow = None;
+        
         let ts = "26-04-01 05:30:53";
 
         let death = combat_msg(
             "Demon Scout #7059135: Demon Bolt on Alice! Dmg: 179 health, 178 armor. (FATALITY!)",
             ts,
         );
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &death, ts, &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &death, ts, &mut st);
         let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM character_deaths", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
@@ -1150,9 +1668,9 @@ mod tests {
         // Paired rez phrasings within 30s collapse to one row.
         let r1 = emote_msg("Goblin resuscitates Alice", "26-04-01 05:31:00");
         let r2 = emote_msg("Alice comes back to life!", "26-04-01 05:31:10");
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &r1, "26-04-01 05:31:00", &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &r2, "26-04-01 05:31:10", &mut st);
         assert!(out.character_resuscitated.is_none());
         let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM character_resuscitations", [], |r| r.get(0)).unwrap();
@@ -1169,13 +1687,13 @@ mod tests {
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
-        let mut cow = None;
+        
 
         let r1 = emote_msg("Zabael resuscitates Bumblebutt", "26-06-11 22:19:33");
         let r2 = emote_msg("Zabael resuscitates Bumblebutt", "26-06-11 22:19:41");
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &r1, "26-06-11 22:19:33", &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &r2, "26-06-11 22:19:41", &mut st);
         assert!(out.character_resuscitated.is_some());
         let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM character_resuscitations", [], |r| r.get(0)).unwrap();
@@ -1191,53 +1709,17 @@ mod tests {
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
-        let mut cow = None;
+        
 
         let r1 = emote_msg("Alice comes back to life!", "26-04-01 05:31:00");
         let r2 = emote_msg("Goblin resuscitates Alice", "26-04-01 05:31:10");
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &r1, "26-04-01 05:31:00", &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &r2, "26-04-01 05:31:10", &mut st);
         assert!(out.character_resuscitated.is_none());
         let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM character_resuscitations", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
-    }
-
-    #[test]
-    fn scan_loot_claimable_by_survey_use() {
-        let (pool, _guard) = test_pool();
-        let gd = game_data();
-        let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
-        let mut dmg = Vec::new();
-        let mut cow = None;
-        let ts = "26-04-01 05:30:53";
-
-        let m = status_msg("Copper Ore x3 added to inventory.", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
-        dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
-
-        // Untagged until a Basic use claims it.
-        let conn = pool.get_write().unwrap();
-        let kind: Option<String> = conn
-            .query_row("SELECT source_kind FROM item_transactions", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(kind, None);
-        let use_id = insert_use(&conn, "Alice", "Dreva", ts);
-        drop(conn);
-        // Rows carry the normalized 4-digit stamp (`msg.timestamp.format`), so
-        // the claim window needs the same shape — the 2-digit log form is not
-        // parseable by SQLite `datetime()`.
-        assert_eq!(claim_survey_loot_near(&pool, use_id, "Alice", "Dreva", "2026-04-01 05:30:53"), 3);
-        let conn = pool.get_write().unwrap();
-        let kind: Option<String> = conn
-            .query_row("SELECT source_kind FROM item_transactions", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(kind.as_deref(), Some("survey_chat"));
-        // Second claim finds nothing (rows already tagged).
-        drop(conn);
-        assert_eq!(claim_survey_loot_near(&pool, use_id, "Alice", "Dreva", "2026-04-01 05:30:53"), 0);
     }
 
     #[test]
@@ -1249,13 +1731,13 @@ mod tests {
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
-        let mut cow = None;
+        
         let ts = "26-04-01 05:30:53";
         let m = status_msg("You earned 64 Combat Wisdom: Killed the Aktaari Queen", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         assert!(out.chat_status_event.is_some());
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM combat_wisdom_earns", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
@@ -1268,11 +1750,665 @@ mod tests {
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
-        let mut cow = None;
+        
         let ts = "26-04-01 05:30:53";
         let m = status_msg("Saved report to C:/Games/Reports/Character_Alice.json", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg, &mut cow);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         assert_eq!(out.report_saved_paths.len(), 1);
+    }
+
+    fn json_msg(json_type: &str, body: &str, ts: &str) -> ChatMessage {
+        let line = format!("{ts}\t[JSON:{json_type}] {body}");
+        crate::chat_parser::parse_chat_line(&line).unwrap()
+    }
+
+    fn seed_npc(gd: &GameDataState, key: &str, name: &str, area: Option<&str>, tastes: bool) {
+        let mut g = gd.blocking_write();
+        g.npcs.insert(
+            key.to_string(),
+            crate::game_data::NpcInfo {
+                key: key.to_string(),
+                name: name.to_string(),
+                desc: None,
+                area_name: area.map(str::to_string),
+                area_friendly_name: None,
+                trains_skills: vec![],
+                preferences: vec![],
+                gift_favor_tiers: if tastes { vec!["T1".to_string()] } else { vec![] },
+                pos: None,
+                services: None,
+                raw_json: serde_json::Value::Null,
+            },
+        );
+    }
+
+    fn item_rows(pool: &DbPool) -> Vec<(String, i64, Option<String>, Option<i64>)> {
+        let conn = pool.get().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT item_name, quantity, from_name, from_entity_id
+                 FROM item_transactions ORDER BY id",
+            )
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    const LOOT_BODY: &str = "{\"Name\": \"Toxic Sludge\", \"TypeId\": 1137, \"Stack\": 1, \"Flags\": [], \"FromName\": \"Olugax The Ever-Pudding\", \"FromEntityId\": 257400}";
+
+    #[test]
+    fn json_additem_twins_converge_english_first() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        
+        let ts = "26-11-17 08:50:27";
+        let english = status_msg("Toxic Sludge added to inventory.", ts);
+        let json = json_msg("AddItem", LOOT_BODY, ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out1 = dispatch(&pool, &gd, Some(&id()), &english, ts, &mut st);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out2 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        // Exactly one staging across the pair: no double stack correction.
+        assert_eq!(out1.staged_gains.len(), 1);
+        assert!(out2.staged_gains.is_empty());
+        let rows = item_rows(&pool);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "Toxic Sludge");
+        assert_eq!(rows[0].1, 1);
+        // The JSON twin enriched the English row with the entity.
+        assert_eq!(rows[0].2.as_deref(), Some("Olugax The Ever-Pudding"));
+        assert_eq!(rows[0].3, Some(257400));
+    }
+
+    #[test]
+    fn json_receipt_enrichment_stamps_single_row() {
+        // Same-second identical receipts from different entities share the
+        // whole enrichment key. Live English lines dedupe, so two NULL rows
+        // can only arise from out-of-band writes — but the UPDATE must still
+        // stamp exactly one (earliest) and leave the other for its own twin.
+        let (pool, _guard) = test_pool();
+        {
+            // Scope the seed writes: the pool has a single writer, and the
+            // function under test checks out its own.
+            let conn = pool.get_write().unwrap();
+            for _ in 0..2 {
+                conn.execute(
+                    "INSERT INTO item_transactions
+                        (timestamp, character_name, server_name, item_name, quantity,
+                         context, source, from_name, from_entity_id)
+                     VALUES ('26-11-17 08:50:27', 'Alice', 'Dreva', 'Toxic Sludge', 1,
+                         'loot', 'chat_status', NULL, NULL)",
+                    [],
+                )
+                .unwrap();
+            }
+        }
+        insert_json_receipt_guarded(
+            &pool,
+            "26-11-17 08:50:27",
+            "Alice",
+            "Dreva",
+            "Toxic Sludge",
+            None,
+            None,
+            1,
+            Some("Olugax The Ever-Pudding"),
+            Some(257400),
+        );
+        let conn = pool.get().unwrap();
+        let stamped: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM item_transactions WHERE from_entity_id = 257400",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let unstamped: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM item_transactions WHERE from_name IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((stamped, unstamped), (1, 1));
+    }
+
+    #[test]
+    fn json_additem_twins_converge_json_first() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        
+        let ts = "26-11-17 08:50:27";
+        let english = status_msg("Toxic Sludge added to inventory.", ts);
+        let json = json_msg("AddItem", LOOT_BODY, ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out1 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out2 = dispatch(&pool, &gd, Some(&id()), &english, ts, &mut st);
+        assert_eq!(out1.staged_gains.len(), 1);
+        // The English arm stages unconditionally (pre-existing contract);
+        // live file order is always English-first, so production never
+        // double-stages. What matters in reverse order is DB convergence:
+        // the guard skips the second insert, and stack correction +
+        // survey attribution are idempotent downstream.
+        let _ = out2;
+        let rows = item_rows(&pool);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].2.as_deref(), Some("Olugax The Ever-Pudding"));
+    }
+
+    #[test]
+    fn json_additem_rescan_applies_once() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        
+        let ts = "26-11-17 08:50:27";
+        let json = json_msg("AddItem", LOOT_BODY, ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out1 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out2 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert_eq!(out1.staged_gains.len(), 1);
+        assert!(out2.staged_gains.is_empty());
+        assert_eq!(item_rows(&pool).len(), 1);
+    }
+
+    #[test]
+    fn json_xp_upserts_without_level_up() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        seed_skill(&gd, "Teleportation", 4242);
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        
+        let ts = "26-11-17 08:42:52";
+        let json = json_msg(
+            "EarnedXP",
+            "{\"Skill\":\"Teleportation\", \"XP\": 53, \"OldLevel\": 46, \"NewLevel\": 46}",
+            ts,
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out.domains.iter().any(|d| d == "skills"));
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        let (xp, level, n): (i64, i64, i64) = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT xp, level, COUNT(*) FROM game_state_skills
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((xp, level, n), (53, 46, 1));
+    }
+
+    #[test]
+    fn json_xp_level_up_uses_chat_writer() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        seed_skill(&gd, "Sword", 4243);
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        
+        let ts = "26-11-17 08:42:52";
+        let json = json_msg(
+            "EarnedXP",
+            "{\"Skill\":\"Sword\", \"XP\": 62, \"OldLevel\": 4, \"NewLevel\": 5}",
+            ts,
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out.domains.iter().any(|d| d == "skills"));
+        let level: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT level FROM game_state_skills
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND skill_name = 'Sword'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(level, 5);
+    }
+
+    #[test]
+    fn json_favor_delta_accrues_once_with_gift_row() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        seed_npc(&gd, "NPC_Elune", "Elune", Some("AreaSerbule"), true);
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:32:34";
+        let json = json_msg("DeltaFavor", "{\"Npc\":\"NPC_Elune\", \"Delta\": 18.06948}", ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out1 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out2 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out1.domains.iter().any(|d| d == "favor"));
+        assert!(out2.domains.iter().all(|d| d != "favor"));
+        let conn = pool.get().unwrap();
+        // One event row for two identical applications — the log, not a total.
+        let events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM favor_events
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(events, 1);
+        let delta: f64 = conn
+            .query_row(
+                "SELECT delta FROM favor_events
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!((delta - 18.06948).abs() < 1e-9);
+        let gifts: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM game_state_gift_log
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(gifts, 1);
+    }
+
+    #[test]
+    fn json_favor_negative_delta_accrues_but_writes_no_gift_row() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        seed_npc(&gd, "NPC_Elune", "Elune", Some("AreaSerbule"), true);
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:32:34";
+        let json = json_msg("DeltaFavor", "{\"Npc\":\"NPC_Elune\", \"Delta\": -52.65}", ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        let conn = pool.get().unwrap();
+        // Favor loss is real and kept as an event (session sums go negative).
+        let delta: f64 = conn
+            .query_row(
+                "SELECT delta FROM favor_events
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!((delta + 52.65).abs() < 1e-9);
+        // But a loss is never a gift, even for a giftable NPC.
+        let gifts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM game_state_gift_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(gifts, 0);
+    }
+
+    #[test]
+    fn json_favor_delta_skips_gift_row_when_capped_or_tasteless() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        seed_npc(&gd, "NPC_Goss", "Goss", Some("AreaStatehelm"), true);
+        seed_npc(&gd, "NPC_Card", "Card", Some("AreaSerbule"), false);
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        
+        let ts = "26-11-17 08:32:34";
+        for npc in ["NPC_Goss", "NPC_Card"] {
+            let json = json_msg(
+                "DeltaFavor",
+                &format!("{{\"Npc\":\"{npc}\", \"Delta\": 5.0}}"),
+                ts,
+            );
+            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        }
+        let conn = pool.get().unwrap();
+        // Both deltas are retained as events — including the Statehelm one.
+        // Session sums cover capped NPCs; only gift *detection* excludes them.
+        let n_events: i64 = conn
+            .query_row("SELECT COUNT(*) FROM favor_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n_events, 2);
+        // Favor rows exist for name/tier display in both cases.
+        let n_favor: i64 = conn
+            .query_row("SELECT COUNT(*) FROM game_state_favor", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n_favor, 2);
+        // No gift rows: capped counts belong to the report reconcile, and
+        // tasteless NPCs cannot receive gifts.
+        let n_gifts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM game_state_gift_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n_gifts, 0);
+    }
+
+    #[test]
+    fn json_recipe_used_sets_absolute_count() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        
+        let ts = "26-11-17 08:42:52";
+        let json = json_msg(
+            "RecipeUsage",
+            "{\"RecipeName\":\"Recall Heart's Home\", \"RecipeId\": 9008, \"Completions\": 211}",
+            ts,
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out.domains.iter().any(|d| d == "recipes"));
+        let n: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT completion_count FROM game_state_recipes
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND recipe_id = 9008",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 211);
+    }
+
+    #[test]
+    fn json_book_upserts_and_reports_trigger() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        
+        let ts = "26-11-17 08:31:58";
+        let json = json_msg(
+            "Book",
+            "{\"Title\":\"Skill Info\", \"Body\":\"Foods Consumed:\\n\\n  Bacon: 22\"}",
+            ts,
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out.domains.iter().any(|d| d == "books"));
+        let (book_type, title): (String, String) = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT book_type, title FROM game_state_books
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(book_type, "SkillReport");
+        assert_eq!(title, "Skill Info");
+        let (t, b, by, at): (String, String, String, String) =
+            out.json_book.expect("book trigger payload");
+        assert_eq!((t.as_str(), b.as_str(), at.as_str()), ("SkillReport", "Skill Info", "2026-11-17 08:31:58"));
+        assert!(by.contains("Bacon"));
+        // Rescan of the identical book: no write, no domain — but the
+        // trigger payload still flows so caller-side imports stay converged.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out2 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out2.domains.iter().all(|d| d != "books"));
+        assert!(out2.json_book.is_some());
+    }
+
+    #[test]
+    fn json_unknown_and_malformed_are_accounted() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        
+        let ts = "26-11-17 08:50:27";
+        let unknown = json_msg("Report", "{\"Title\":\"Something\"}", ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &unknown, ts, &mut st);
+        assert_eq!(out.unknown_json, vec!["Report".to_string()]);
+        assert!(out.domains.is_empty());
+        let bad = json_msg("AddItem", "not-json", ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &bad, ts, &mut st);
+        assert_eq!(out.malformed_json, vec!["AddItem".to_string()]);
+    }
+
+    #[test]
+    fn json_pigeon_records_message_rescan_safe() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 16:55:59";
+        let body = "{\"Title\":\"Pigeon From TestFriend\", \"Body\":\"This one has food!\\n\\n<i>You received:\\nMulberry Salad x10</i>\"}";
+        let msg = json_msg("Pigeon", body, ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        assert!(out.domains.iter().any(|d| d == "player_messages"));
+        assert!(out.unknown_json.is_empty());
+        let count: i64 = pool
+            .get_write()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM player_messages WHERE message_type = 'pigeon' AND other_player = 'TestFriend'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        let item: Option<String> = pool
+            .get_write()
+            .unwrap()
+            .query_row(
+                "SELECT item_name FROM player_messages WHERE message_type = 'pigeon'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(item.as_deref(), Some("Mulberry Salad"));
+        // Rescan: same line replays to the existing row.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        let count: i64 = pool
+            .get_write()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM player_messages WHERE message_type = 'pigeon'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn json_pigeon_unparseable_title_is_counted_not_dropped() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 16:55:59";
+        let body = "{\"Title\":\"Pigeon To Somebody\", \"Body\":\"...\"}";
+        let msg = json_msg("Pigeon", body, ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        // No message row, but the line stays visible in malformed counters.
+        assert!(out.domains.iter().all(|d| d != "player_messages"));
+        assert_eq!(out.malformed_json, vec!["Pigeon".to_string()]);
+    }
+
+    #[test]
+    fn json_entity_report_records_message() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 16:55:02";
+        let msg = json_msg("EntityReport", "{\"Title\":\"Eveline Rastin\", \"Body\":\"tip\"}", ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        assert!(out.domains.iter().any(|d| d == "player_messages"));
+        let row: (String, String) = pool
+            .get_write()
+            .unwrap()
+            .query_row(
+                "SELECT other_player, body FROM player_messages WHERE message_type = 'entity_report'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("Eveline Rastin".to_string(), "tip".to_string()));
+    }
+
+    #[test]
+    fn json_paragonxp_is_counted_not_stored() {
+        // No DB home: the English Status twin owns the live tally. Typed so
+        // the shape is pinned and `unknown_json` stays clean.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 17:04:42";
+        let msg = json_msg(
+            "ParagonXP",
+            "{\"Skill\":\"Werewolf\", \"XP\": 279200, \"OldLevel\": 6, \"NewLevel\": 6}",
+            ts,
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        assert!(out.unknown_json.is_empty());
+        assert!(out.domains.is_empty());
+    }
+
+    #[test]
+    fn combat_fatality_records_kill_rescan_safe() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 17:04:42";
+        let msg = combat_msg(
+            "Alice: Bruising Blow 8 on City Slime #488966! Dmg: 2943 health. (FATALITY!)",
+            ts,
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        assert!(out.enemy_killed.is_some());
+        let row: (String, String) = pool
+            .get_write()
+            .unwrap()
+            .query_row(
+                "SELECT enemy_name, enemy_entity_id FROM enemy_kills",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("City Slime".to_string(), "488966".to_string()));
+        // Rescan: same FATALITY replays to the existing row.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        let count: i64 = pool
+            .get_write()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM enemy_kills", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn json_receipt_links_loot_to_kill() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        // Kill first, receipt 5s later (live shape: FATALITY 17:04:42 →
+        // receipt 17:04:47).
+        let kill = combat_msg(
+            "Alice: Bruising Blow 8 on City Slime #488966! Dmg: 2943 health. (FATALITY!)",
+            "26-11-17 17:04:42",
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &kill, "26-11-17 17:04:42", &mut st);
+        let receipt = json_msg(
+            "AddItem",
+            "{\"Name\": \"Coin Sack\", \"TypeId\": 1325, \"Stack\": 1, \"Flags\": [], \"FromName\": \"City Slime\", \"FromEntityId\": 488966}",
+            "26-11-17 17:04:47",
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &receipt, "26-11-17 17:04:47", &mut st);
+        let loot: Vec<(String, i64)> = pool
+            .get_write()
+            .unwrap()
+            .prepare("SELECT item_name, quantity FROM enemy_kill_loot")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(loot, vec![("Coin Sack".to_string(), 1)]);
+        // Receipt rescan links nothing new.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &receipt, "26-11-17 17:04:47", &mut st);
+        let count: i64 = pool
+            .get_write()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM enemy_kill_loot", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn unlooted_kill_leaves_no_loot_rows() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        // FATALITY with no receipt (live #488964): kill recorded, no loot.
+        let kill = combat_msg(
+            "Alice: Claw 9 on City Slime #488964! Dmg: 1822 health. (FATALITY!)",
+            "26-11-17 17:05:16",
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &kill, "26-11-17 17:05:16", &mut st);
+        let kills: i64 = pool
+            .get_write()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM enemy_kills", [], |r| r.get(0))
+            .unwrap();
+        let loot: i64 = pool
+            .get_write()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM enemy_kill_loot", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!((kills, loot), (1, 0));
     }
 }

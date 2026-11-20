@@ -124,6 +124,8 @@ mod tests {
             is_system: false,
             from_player: None,
             item_links: items,
+            json_type: None,
+            json_body: None,
         }
     }
 
@@ -459,6 +461,8 @@ mod tests {
             is_system: true,
             from_player: None,
             item_links: vec![],
+            json_type: None,
+            json_body: None,
         };
 
         // FromSender should not match
@@ -556,6 +560,8 @@ mod tests {
             is_system: true,
             from_player: None,
             item_links: vec![],
+            json_type: None,
+            json_body: None,
         };
 
         let rule = make_rule(
