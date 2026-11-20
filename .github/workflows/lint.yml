@@ -249,6 +249,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Changed-files gating needs the base commit; default depth-1
+          # checkout can't diff against it (same as the markdown job).
+          fetch-depth: 0
 
       - name: Install mise and tools
         # No third-party action (org allowlist): official installer script.
@@ -260,12 +263,24 @@ jobs:
           mise install
 
       - name: Author-discipline gates
-        # Same `mise run lint:authoring` slice the pre-commit hook runs (via
-        # `mise run lint:fast`): command registration, store HMR, exec bit,
-        # doc orphans. Unconditional: seconds-scale greps guarding authorship
-        # itself (no scope to gate on — the checkers span rust, frontend,
-        # and docs).
-        run: mise run lint:authoring
+        # Same slices the pre-commit hook runs via `mise run lint:fast`, but
+        # with the PR/push range passed explicitly: a clean CI checkout has
+        # no worktree changes and no upstream, so the local worktree+unpushed
+        # scope would be empty and the gates could never fire. Base selection
+        # is the one sanctioned invocation difference (same as the markdown
+        # job); scope logic stays in the scripts. check-tauri-commands is
+        # whole-tree and needs no base.
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          mise exec -- python scripts/check-tauri-commands.py
+          mise exec -- python scripts/check-store-hmr.py --base "$BASE"
+          mise exec -- python scripts/check-exec-bit.py --base "$BASE"
+          mise exec -- python scripts/check-doc-orphans.py --base "$BASE"
 
   version-sync:
     name: Version sync guard

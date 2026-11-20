@@ -31,10 +31,20 @@ Tracks cow milking activity across three categories: NPC cow cooldown timers, pl
 
 ### NPC Cow Milking
 
-No live producer. Milking an NPC cow previously flowed through `PlayerEventParser`
-(`InteractionStarted` on `Cow_*` names, matched to a pending cow interaction in the
-coordinator), but that pipeline was deleted with the Player.log event parser and
-nothing writes `milking_timers` today. The widget renders legacy rows only.
+Live producer: the Combat-channel Collect-Milk arm in `dispatch_chat_message`
+(`src-tauri/src/chat_status_dispatch.rs`). A `[Combat] Sender: Collect Milk on Target!`
+line issued by the active character parses via
+`chat_combat_parser::parse_self_ability_line(…, "Collect Milk")` — the sender must be
+the active character, and the match runs on the sender-split `message` (never the raw
+line, same gotcha as the self-milk counter below). Each firing writes one `milking_timers`
+row keyed `(character_name, server_name, cow_name)` = (active character, active server,
+the ability target): `zone` is the current area (`''` when unknown), `last_milked_at` is
+the chat line's UTC stamp, `cooldown_unknown` is `0`, the stamp is newer-wins, and a known
+zone is never overwritten with a blank one. The widget reads exactly these rows via
+`get_milking_timers` / `get_milking_timers_for` for the active character/server, so the
+Timers tab shows every cow the active character has milked. When a cow-form player milks
+themselves, the target IS the player's own name, so the arm writes a self-named timer row
+alongside the `self_milked` log row — that is what the code does today.
 
 ### NPC Cow Cooldown Backfill
 
@@ -76,10 +86,11 @@ No live producer. The `"You obtain fresh milk from …"` line is not parsed, so 
 | last_milked_at | TEXT | RFC3339 UTC **event time** of last milk (or, when `cooldown_unknown`, the earliest failed attempt that bounds it) |
 | cooldown_unknown | INTEGER | 1 = exact milk time unknown; the widget renders an upper bound (`≤ Xm`) instead of a countdown (migration v73) |
 
-Like `player_milking_log.milked_at`, this was the milk event's own time (from the
-chat "Bottle of Milk added to inventory" line — the `[Status]` path, not
-Player.log), not ingest time. No code writes this table today, so the old
-`MAX(excluded, stored)` merge rule has no live writer; rows are legacy.
+Like `player_milking_log.milked_at`, this is the milk event's own time (the chat line's
+UTC stamp via `chat_status_dispatch::utc_naive_to_rfc3339`), not ingest time. The
+Collect-Milk arm above is the live writer, so the `MAX(excluded, stored)` merge rule is
+live: replaying an older line never moves the stamp backwards, while a replay that names
+a previously-unknown area still learns it (pinned by `collect_milk_arm_records_named_cow`).
 
 **Identity is per-cow, not per-cow-per-zone.** A cow's 1-hour cooldown belongs to
 the NPC itself (the game's "You've already milked Homer in the past hour." message

@@ -7,6 +7,13 @@ files changed in unpushed commits (fork point via @{u} then origin/HEAD,
 unpushed_base() logic). No --push variant: the commit hook is the contract,
 and push certifies the same worktree-or-committed content it already gated.
 
+CI passes --base <sha> (the PR base / push `before`; the one sanctioned
+invocation difference, same as the markdown job): scope is then exactly the
+files changed between base and HEAD, because a clean CI checkout has no
+worktree changes and no upstream - the local scope would be empty and the
+gate could never fire. An all-zero base (manual dispatch) falls back to
+HEAD~1, same as the markdown script.
+
 In-scope store files: src/stores/*.ts and src/stores/**/*.ts. A store file in
 scope that does not contain the literal acceptHMRUpdate is a finding (printed
 as its path). Unmigrated stores elsewhere in the tree are grandfathered -
@@ -17,6 +24,7 @@ markdown gate.
 # is mirrored from scripts/lint-markdown-changed.py - do not import across
 # scripts; keep the logic duplicated here intentionally.
 
+import argparse
 import subprocess
 import sys
 from pathlib import Path
@@ -53,12 +61,31 @@ def in_scope(path):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--base",
+        default=None,
+        help="CI range: files changed between base and HEAD "
+        "(PR base sha / push before; all-zero falls back to HEAD~1)",
+    )
+    args = parser.parse_args()
+
     root = Path(__file__).resolve().parent.parent
-    files = git("diff", "--name-only", "HEAD")
-    files += git("ls-files", "--others", "--exclude-standard")
-    base = unpushed_base()
-    if base is not None:
-        files += git("diff", "--name-only", base, "HEAD")
+    if args.base is not None:
+        base = args.base
+        if base.strip("0") == "":
+            print(
+                "zero base sha (manual dispatch); falling back to HEAD~1",
+                file=sys.stderr,
+            )
+            base = "HEAD~1"
+        files = git("diff", "--name-only", base, "HEAD")
+    else:
+        files = git("diff", "--name-only", "HEAD")
+        files += git("ls-files", "--others", "--exclude-standard")
+        base = unpushed_base()
+        if base is not None:
+            files += git("diff", "--name-only", base, "HEAD")
 
     store_files = []
     seen = set()

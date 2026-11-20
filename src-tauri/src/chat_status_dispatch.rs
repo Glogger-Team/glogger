@@ -339,18 +339,31 @@ pub fn dispatch_chat_message(
                 // the converter would misread as UTC (off by the tz offset,
                 // defeating the v72 UNIQUE key against backfill rows).
                 let utc_ts = ctx.msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
-                if target == id.character {
-                    record_player_milk(ctx.db, &id.character, &id.server, &id.character, "self_milked", &utc_ts);
+                if target == id.character
+                    && record_player_milk(
+                        ctx.db,
+                        &id.character,
+                        &id.server,
+                        &id.character,
+                        "self_milked",
+                        &utc_ts,
+                    )
+                {
+                    out.domain("milking");
                 }
-                record_cow_milk_session(
+                // Gate the domain on a write that advanced the row (like the
+                // MilkedBy arm and EnemyKilled): replays and write failures
+                // stay silent.
+                if record_cow_milk_session(
                     ctx.db,
                     &id.character,
                     &id.server,
                     &target,
                     state.current_area.as_deref().unwrap_or(""),
                     &utc_ts,
-                );
-                out.domain("milking");
+                ) {
+                    out.domain("milking");
+                }
             }
             if let Some(target) = chat_combat_parser::parse_self_poop_line(
                 ctx.msg.sender.as_deref(),
@@ -1167,8 +1180,11 @@ fn record_player_milk(
         }
     }
 }
-/// Record a cow milking with the newer-wins upsert. Returns `true` on
-/// success (caller emits `milking`).
+/// Record a cow milking with the newer-wins upsert. Returns `true` when the
+/// write advanced the row (caller emits `milking`); replays that move
+/// nothing and write failures report `false`. (The upsert itself always
+/// succeeds on an existing row, so `.is_ok()` would report success for a
+/// pure replay - the change check lives in `record_cow_milk`.)
 pub fn record_cow_milk_session(
     db: &DbPool,
     character: &str,
@@ -1181,7 +1197,13 @@ pub fn record_cow_milk_session(
     let Ok(conn) = db.get_write() else {
         return false;
     };
-    crate::db::game_state_commands::record_cow_milk(&conn, character, server, cow_name, zone, &milked_at).is_ok()
+    match crate::db::game_state_commands::record_cow_milk(&conn, character, server, cow_name, zone, &milked_at) {
+        Ok(advanced) => advanced,
+        Err(e) => {
+            eprintln!("[chat_status_dispatch] Failed to record cow milk: {e}");
+            false
+        }
+    }
 }
 
 

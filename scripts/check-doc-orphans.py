@@ -8,11 +8,18 @@ then greps docs/ for any survivor. A hit means a doc still names something the
 code no longer defines: the author must update/close that spot or narrow the
 symbol.
 
-Scope resolution mirrors lint-markdown-changed.py (no --base): worktree diff
-against HEAD, untracked files, plus unpushed commits via unpushed_base().
+CI passes --base <sha> (the PR base / push `before`; the one sanctioned
+invocation difference, same as the markdown job): scope is then exactly the
+.rs files changed between base and HEAD, because a clean CI checkout has no
+worktree changes and no upstream - the local scope would be empty and the
+gate could never fire. An all-zero base (manual dispatch) falls back to
+HEAD~1, same as the markdown script.
 """
-# Mirrors scope logic from scripts/lint-markdown-changed.py (no --base).
+# Mirrors scope logic from scripts/lint-markdown-changed.py (no --base,
+# plus the --base CI range). Do not import across scripts; keep the logic
+# duplicated here intentionally.
 
+import argparse
 import os
 import re
 import subprocess
@@ -204,22 +211,28 @@ def old_content_for(path: str, ref: str) -> str | None:
         return None
 
 
-def collect_changed_rs() -> list[str]:
+def collect_changed_rs(explicit_base: str | None) -> list[str]:
     files: list[str] = []
-    try:
-        files += git("diff", "--name-only", "HEAD")
-    except subprocess.CalledProcessError:
-        pass
-    try:
-        files += git("ls-files", "--others", "--exclude-standard")
-    except subprocess.CalledProcessError:
-        pass
-    base = unpushed_base()
-    if base is not None:
+    if explicit_base is not None:
         try:
-            files += git("diff", "--name-only", base, "HEAD")
+            files += git("diff", "--name-only", explicit_base, "HEAD")
         except subprocess.CalledProcessError:
             pass
+    else:
+        try:
+            files += git("diff", "--name-only", "HEAD")
+        except subprocess.CalledProcessError:
+            pass
+        try:
+            files += git("ls-files", "--others", "--exclude-standard")
+        except subprocess.CalledProcessError:
+            pass
+        base = unpushed_base()
+        if base is not None:
+            try:
+                files += git("diff", "--name-only", base, "HEAD")
+            except subprocess.CalledProcessError:
+                pass
     out = []
     seen = set()
     for f in files:
@@ -230,29 +243,47 @@ def collect_changed_rs() -> list[str]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--base",
+        default=None,
+        help="CI range: identifiers removed between base and HEAD "
+        "(PR base sha / push before; all-zero falls back to HEAD~1)",
+    )
+    args = parser.parse_args()
+    explicit_base = args.base
+    if explicit_base is not None and explicit_base.strip("0") == "":
+        print(
+            "zero base sha (manual dispatch); falling back to HEAD~1",
+            file=sys.stderr,
+        )
+        explicit_base = "HEAD~1"
     os.chdir(ROOT)
-    changed = collect_changed_rs()
+    changed = collect_changed_rs(explicit_base)
     idents: set[str] = set()
     removed_pairs: set[str] = set()
 
-    # Worktree diff (staged + unstaged) against HEAD
-    for path in changed:
-        try:
-            diff = subprocess.run(
-                ["git", "diff", "-U0", "HEAD", "--", path],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
-        except subprocess.CalledProcessError:
-            diff = ""
-        old = old_content_for(path, "HEAD")
-        names, pairs = extract_identifiers(parse_minus_lines(diff, old))
-        idents |= names
-        removed_pairs |= pairs
+    # Worktree diff (staged + unstaged) against HEAD - local scope only.
+    # An explicit CI base already names the range (and the tree is clean),
+    # so there is nothing extra to collect from the worktree.
+    if explicit_base is None:
+        for path in changed:
+            try:
+                diff = subprocess.run(
+                    ["git", "diff", "-U0", "HEAD", "--", path],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout
+            except subprocess.CalledProcessError:
+                diff = ""
+            old = old_content_for(path, "HEAD")
+            names, pairs = extract_identifiers(parse_minus_lines(diff, old))
+            idents |= names
+            removed_pairs |= pairs
 
-    # Unpushed commits
-    base = unpushed_base()
+    # Unpushed commits (or the explicit CI range)
+    base = explicit_base if explicit_base is not None else unpushed_base()
     if base is not None:
         for path in changed:
             try:
