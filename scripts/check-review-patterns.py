@@ -90,6 +90,77 @@ FINDING_BLOB_OVERWRITE = (
     "review-patterns: wholesale source_details overwrite ({path}:{lineno})"
     " — merge via json_set so other writers' keys survive"
 )
+# A machine-local absolute path in a Rust string literal: a committed test
+# may never read a file by a path that only exists on the author's machine
+# (the scratch repro that read the live Chat.log by its absolute game-dir
+# path is the worked example). Drive roots, Unix home roots, and
+# pasted-Explorer backslash paths with a known-root context flag — unless
+# the user-or-root segment is synthetic by convention (`TestUser`, `Test`,
+# `u`, `books`, `Games`, `...`). Bare `word:\x` shapes do NOT flag: fixture
+# JSON unavoidably contains them (`Consumed:\n...`), identical at the value
+# level to a real `C:\...` path. Escapes resolve before matching, so
+# `Status:` + newline and JSON `\"` never read as drive roots. Raw lines
+# (test modules included — scratch tests live there).
+TEST_PATH_LITERAL_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+TEST_PATH_DRIVE_RE = re.compile(r"[A-Za-z]:/")
+TEST_PATH_HOME_RE = re.compile(r"/(?:Users|home)/")
+TEST_PATH_BACKSLASH_CTX_RE = re.compile(
+    r"[A-Za-z]:\\(?:Users|home|AppData|Program Files|ProgramData|Windows|Temp|tmp)"
+)
+TEST_PATH_ALLOW_FIRST = ("books", "Games", "...", "TestUser", "Test", "u")
+TEST_PATH_ESCAPES = {
+    "n": "\n",
+    "t": "\t",
+    "r": "\r",
+    "0": "\0",
+    "\\": "\\",
+    '"': '"',
+    "'": "'",
+}
+FINDING_TEST_PATH = (
+    "review-patterns: machine-local absolute path {literal} ({path}:{lineno})"
+    " — use a test_data fixture or a synthetic TestUser path"
+)
+
+
+def test_path_decoded(literal: str) -> str:
+    """Value the Rust literal denotes, resolved for path detection."""
+    body = literal[1:-1]
+    out: list[str] = []
+    i = 0
+    while i < len(body):
+        char = body[i]
+        if char == "\\" and i + 1 < len(body):
+            out.append(TEST_PATH_ESCAPES.get(body[i + 1], "\\" + body[i + 1]))
+            i += 2
+        else:
+            out.append(char)
+            i += 1
+    return "".join(out)
+
+
+def test_path_first_segment(path: str) -> str:
+    """User-or-root segment of an absolute local path."""
+    match = re.search(
+        r"(?:[A-Za-z]:)?[/\\](?:Users|home)[/\\]([^/\\]+)|[A-Za-z]:[\\/]([^/\\]+)",
+        path,
+    )
+    if not match:
+        return ""
+    return match.group(1) or match.group(2) or ""
+
+
+def test_path_is_local(literal: str) -> bool:
+    body = test_path_decoded(literal)
+    if "://" in body:
+        return False
+    if not (
+        TEST_PATH_DRIVE_RE.search(body)
+        or TEST_PATH_HOME_RE.search(body)
+        or TEST_PATH_BACKSLASH_CTX_RE.search(body)
+    ):
+        return False
+    return test_path_first_segment(body) not in TEST_PATH_ALLOW_FIRST
 
 
 def read_body(root: Path) -> str:
@@ -387,6 +458,18 @@ def findings_for_tree(root: Path) -> list[str]:
                         path=path.relative_to(root), lineno=start
                     )
                 )
+        # Machine-local paths: raw lines (test modules included — the
+        # silence rules above skip `mod tests`, scratch tests live there).
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for match in TEST_PATH_LITERAL_RE.finditer(line):
+                if test_path_is_local(match.group(0)):
+                    findings.append(
+                        FINDING_TEST_PATH.format(
+                            literal=match.group(0),
+                            path=path.relative_to(root),
+                            lineno=lineno,
+                        )
+                    )
     return findings
 
 
@@ -523,6 +606,26 @@ fn claim_receipt(
         and "INSERT INTO t" in fns_multi[0][1]
         and update_ok_findings(fns_multi[0][1]) == ["t"],
     )
+    for literal in [
+        '"C:/Users/TestUser/AppData/Reports/x.json"',
+        '"C:/Users/Test/ChatLogs/Chat-26-03-06.log"',
+        '"com.example.glogger|/home/u/.local/share/glogger"',
+        '"C:/books/SkillReport_1.txt"',
+        '"C:/Games/Reports/Character_Alice.json"',
+        '"Saved report to C:/.../Reports/Character_Foo.json"',
+        '"Teleportation Status:\\n\\nPrimary Bind Location: Serbule"',
+        '"{\\"Title\\":\\"Skill Info\\"}"',
+        '"https://cdn.projectgorgon.com/v1/data/x.json"',
+    ]:
+        check(f"synthetic path silent: {literal[:40]}", not test_path_is_local(literal))
+    for literal in [
+        '"C:/Users/cprivitere/AppData/LocalLow/Elder Game/Project Gorgon/ChatLogs/Chat-26-11-19.log"',
+        '"D:/data/glogger.db"',
+        '"C:\\\\Users\\\\cprivitere\\\\glogger.db"',
+        '"/Users/cprivitere/Library/Logs/x.log"',
+        '"/home/dev/.local/share/glogger.db"',
+    ]:
+        check(f"machine path fires: {literal[:40]}", test_path_is_local(literal))
     return 1 if failures else 0
 
 
