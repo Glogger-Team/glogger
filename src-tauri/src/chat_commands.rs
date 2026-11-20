@@ -41,6 +41,7 @@ pub async fn scan_chat_logs(
 
     let total_files = log_files.len();
     let mut total_messages = 0;
+    let mut total_lines = 0;
     let mut files_processed = 0;
 
     for (index, log_file) in log_files.iter().enumerate() {
@@ -77,6 +78,7 @@ pub async fn scan_chat_logs(
         // Raw slice for per-line login identity (same byte window).
         let (raw_text, _) = chat_parser::read_chat_log_raw(&log_file.file_path, start_position)
             .map_err(|e| format!("Failed to read chat log: {e}"))?;
+        let lines_read = raw_text.lines().count();
         // Identity + the file's own tz offset come from one walk of the raw
         // slice. Prefer the file offset for UTC conversion (backfill uses the
         // same source); fall back to settings only when the slice carries no
@@ -168,6 +170,7 @@ pub async fn scan_chat_logs(
             );
         }
         total_messages += inserted;
+        total_lines += lines_read;
         files_processed += 1;
     }
 
@@ -184,6 +187,7 @@ pub async fn scan_chat_logs(
     Ok(ScanResult {
         files_processed,
         messages_imported: total_messages,
+        lines_read: total_lines,
     })
 }
 
@@ -191,6 +195,7 @@ pub async fn scan_chat_logs(
 pub struct ScanResult {
     pub files_processed: usize,
     pub messages_imported: usize,
+    pub lines_read: usize,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -752,29 +757,22 @@ pub async fn scan_chat_log_file(
         .ok_or("Invalid file name")?
         .to_string();
 
-    // Read + parse on a READ connection first; the writer is checked out
-    // only for the short insert + position-update phase so a large file
-    // backfill can't block live ingest behind disk I/O.
+    // An explicitly selected file always re-reads from byte 0: the stored
+    // cursor can be advanced by the live tail while the file dialog is
+    // open, and honoring it would silently skip the lines the user asked
+    // to parse. Chat inserts stay idempotent (`INSERT OR IGNORE`) and
+    // structured dispatch is replay-safe, so a full re-read is safe.
     let file_path_str = log_path.to_string_lossy().to_string();
-    let (start_position, file_date) = {
-        let conn = db_pool.get().map_err(|e| format!("Database error: {e}"))?;
-        let pos = log_positions::get_position(&conn, &file_path_str)
-            .map_err(|e| format!("Failed to get log position: {e}"))?;
-        let parsed_name = chat_parser::parse_chat_log_filename(&file_name);
-        (pos, parsed_name)
-    };
-
-    let player_name = if start_position == 0 {
-        chat_parser::extract_player_name(&log_path)
-            .map_err(|e| format!("Failed to extract player name: {e}"))?
-    } else {
-        None
-    };
+    let file_date = chat_parser::parse_chat_log_filename(&file_name);
+    let start_position = 0u64;
+    let player_name = chat_parser::extract_player_name(&log_path)
+        .map_err(|e| format!("Failed to extract player name: {e}"))?;
 
     let (local_messages, new_position) = chat_parser::read_chat_log(&log_path, start_position)
         .map_err(|e| format!("Failed to read chat log: {e}"))?;
     let (raw_text, _) = chat_parser::read_chat_log_raw(&log_path, start_position)
         .map_err(|e| format!("Failed to read chat log: {e}"))?;
+    let lines_read = raw_text.lines().count();
     // File's own tz offset first (backfill parity), settings as fallback.
     let (session_at_line, fallback, file_tz_offset) =
         scan_session_identity(&raw_text, local_messages.len());
@@ -847,6 +845,7 @@ pub async fn scan_chat_log_file(
     Ok(ScanResult {
         files_processed: 1,
         messages_imported,
+        lines_read,
     })
 }
 

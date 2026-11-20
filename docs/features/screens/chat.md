@@ -101,7 +101,7 @@ Parses message text to detect `[Item: ItemName]` patterns and renders them as `I
 ### Import & Tailing
 
 - `scan_chat_logs(path) → ScanResult` — bulk import all chat logs from directory
-- `scan_chat_log_file(path) → ScanResult` — import single file
+- `scan_chat_log_file(path) → ScanResult` — re-read one selected file from the start; already-imported lines report zero new messages
 - `tail_chat_log(chat_log_file) → Vec<ChatMessage>` — continuous import of active log
 
 ### Query
