@@ -31,7 +31,7 @@ See [docs/index.md](docs/index.md) for a full documentation map.
 
 ## Running Tests
 
-**Rust unit tests** (fast, 690 passing):
+**Rust unit tests** (fast, 717 passing):
 
 ```bash
 cd src-tauri
