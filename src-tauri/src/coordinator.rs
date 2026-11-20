@@ -1285,7 +1285,7 @@ impl DataIngestCoordinator {
                     // Emit to frontend
                     self.app_handle.emit("server-detected", &server_name).ok();
                 }
-                LogEvent::CharacterLogin { character_name, .. } => {
+                LogEvent::CharacterLogin { character_name, timestamp, .. } => {
                     // Chat log also detects character login — update active character
                     // and emit so player_watcher can stay in sync
                     self.app_handle
@@ -1316,9 +1316,8 @@ impl DataIngestCoordinator {
                         .unwrap_or_else(|| "Unknown".to_string());
                     self.settings.update(settings).ok();
 
-                    // Update game state active character
                     self.game_state
-                        .set_active_character(&character_name, &server, &self.db_pool);
+                        .set_active_character(&character_name, &server, &self.db_pool, Some(&timestamp.format("%Y-%m-%d %H:%M:%S").to_string()));
                 }
                 _ => {}
             }

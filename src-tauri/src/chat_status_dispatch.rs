@@ -328,31 +328,37 @@ pub fn dispatch_chat_message(
         }
 
         if ctx.msg.channel.as_deref() == Some("Combat") {
-            if chat_combat_parser::parse_self_ability_line(
+            if let Some(target) = chat_combat_parser::parse_self_ability_line(
                 ctx.msg.sender.as_deref(),
                 &ctx.msg.message,
                 &id.character,
                 "Collect Milk",
-            )
-            .as_deref()
-                == Some(id.character.as_str())
-            {
+            ) {
                 // UTC basis (like the MilkedBy arm and the backfill): `msg`
                 // arrives UTC-converted, while `local_ts` is the wall clock
                 // the converter would misread as UTC (off by the tz offset,
                 // defeating the v72 UNIQUE key against backfill rows).
                 let utc_ts = ctx.msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
-                record_player_milk(ctx.db, &id.character, &id.server, &id.character, "self_milked", &utc_ts);
+                if target == id.character {
+                    record_player_milk(ctx.db, &id.character, &id.server, &id.character, "self_milked", &utc_ts);
+                }
+                record_cow_milk_session(
+                    ctx.db,
+                    &id.character,
+                    &id.server,
+                    &target,
+                    state.current_area.as_deref().unwrap_or(""),
+                    &utc_ts,
+                );
                 out.domain("milking");
             }
             if let Some(target) = chat_combat_parser::parse_self_poop_line(
                 ctx.msg.sender.as_deref(),
                 &ctx.msg.message,
                 &id.character,
-            )
-                && record_poop(ctx.db, &id.character, &id.server, &target, ctx.local_ts) {
-                    out.domain("report_stats");
-                }
+            ) && record_poop(ctx.db, &id.character, &id.server, &target, ctx.local_ts) {
+                out.domain("report_stats");
+            }
         }
 
         if let Some(rez_event) = chat_resuscitate_parser::parse_resuscitate_message(ctx.msg)
@@ -1076,6 +1082,23 @@ fn record_player_milk(
         }
     }
 }
+/// Record a cow milking with the newer-wins upsert. Returns `true` on
+/// success (caller emits `milking`).
+pub fn record_cow_milk_session(
+    db: &DbPool,
+    character: &str,
+    server: &str,
+    cow_name: &str,
+    zone: &str,
+    timestamp: &str,
+) -> bool {
+    let milked_at = milking_event_timestamp(timestamp);
+    let Ok(conn) = db.get_write() else {
+        return false;
+    };
+    crate::db::game_state_commands::record_cow_milk(&conn, character, server, cow_name, zone, &milked_at).is_ok()
+}
+
 
 /// Returns `true` when a row was written (caller emits `report_stats`).
 fn record_poop(db: &DbPool, character: &str, server: &str, target: &str, local_ts: &str) -> bool {

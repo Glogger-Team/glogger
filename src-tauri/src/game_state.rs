@@ -77,7 +77,7 @@ impl GameStateManager {
     /// Update the active character.
     /// During live mode, clears transient state so the login burst can repopulate.
     /// During replay/catch-up, skips clearing to preserve data built for each character.
-    pub fn set_active_character(&mut self, name: &str, server: &str, db: &DbPool) {
+    pub fn set_active_character(&mut self, name: &str, server: &str, db: &DbPool, login_at: Option<&str>) {
         startup_log!(
             "Active character set: {} on {} (mode: {})",
             name,
@@ -95,7 +95,9 @@ impl GameStateManager {
             }
         };
 
-        let now = Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let now = login_at
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| Utc::now().format("%Y-%m-%d %H:%M:%S").to_string());
         let live_mode = self.live_mode;
 
         let tx = match conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate) {

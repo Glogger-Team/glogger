@@ -361,6 +361,7 @@ const SCOPED_TABLES: &[&str] = &[
     "corpse_extracts",
     "currency_estimate",
     "enemy_kills",
+    "favor_events",
     "garden_almanac",
     "garden_almanac_history",
     "harvest_almanac",

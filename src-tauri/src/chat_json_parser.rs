@@ -76,17 +76,18 @@ pub enum ChatJsonEvent {
     Unknown { json_type: String },
 }
 
-#[derive(serde::Deserialize, Default)]
-#[serde(rename_all = "PascalCase", default)]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
 struct AddItemJson {
     name: String,
     stack: u32,
+    #[serde(default)]
     from_name: Option<String>,
+    #[serde(default)]
     from_entity_id: Option<u32>,
 }
-
-#[derive(serde::Deserialize, Default)]
-#[serde(rename_all = "PascalCase", default)]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
 struct EarnedXpJson {
     skill: String,
     #[serde(rename = "XP")]
@@ -94,23 +95,20 @@ struct EarnedXpJson {
     old_level: u32,
     new_level: u32,
 }
-
-#[derive(serde::Deserialize, Default)]
-#[serde(rename_all = "PascalCase", default)]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
 struct BookJson {
     title: String,
     body: String,
 }
-
-#[derive(serde::Deserialize, Default)]
-#[serde(rename_all = "PascalCase", default)]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
 struct DeltaFavorJson {
     npc: String,
     delta: f64,
 }
-
-#[derive(serde::Deserialize, Default)]
-#[serde(rename_all = "PascalCase", default)]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
 struct RecipeUsageJson {
     recipe_name: String,
     recipe_id: u32,
@@ -334,6 +332,30 @@ mod tests {
         };
         assert_eq!(*recipe_id, 9008);
         assert_eq!(*completions, 211);
+    }
+
+    #[test]
+    fn recipe_usage_missing_completions_yields_none() {
+        let msgs = parse_chat_lines("26-11-17 08:50:27\t[JSON:RecipeUsage] {\"RecipeName\":\"R\",\"RecipeId\":1}\n");
+        assert_eq!(msgs.len(), 1);
+        assert!(parse_json_message(&msgs[0]).is_none());
+    }
+
+    #[test]
+    fn recipe_usage_explicit_zero_completions_valid() {
+        let msgs = parse_chat_lines("26-11-17 08:50:27\t[JSON:RecipeUsage] {\"RecipeName\":\"R\",\"RecipeId\":1,\"Completions\":0}\n");
+        assert_eq!(msgs.len(), 1);
+        match parse_json_message(&msgs[0]) {
+            Some(ChatJsonEvent::RecipeUsed { completions, .. }) => assert_eq!(completions, 0),
+            other => panic!("expected RecipeUsed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn book_missing_body_yields_none() {
+        let msgs = parse_chat_lines("26-11-17 08:50:27\t[JSON:Book] {\"Title\":\"T\"}\n");
+        assert_eq!(msgs.len(), 1);
+        assert!(parse_json_message(&msgs[0]).is_none());
     }
 
     #[test]

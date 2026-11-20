@@ -1035,6 +1035,34 @@ pub fn get_game_state_books(
     }
 }
 
+/// Record a **known** cow milk: the cooldown starts at `milked_at` (the milk
+/// event's own UTC time) and the "unknown" flag is cleared, because this is the
+/// truth the bound was only approximating.
+///
+/// The stamp only ever moves forward (`MAX`), so replaying an old chat log can't
+/// hand out a fresh hour; the zone merge still learns a previously-unknown area.
+pub fn record_cow_milk(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    cow_name: &str,
+    zone: &str,
+    milked_at: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO milking_timers
+             (character_name, server_name, cow_name, zone, last_milked_at, cooldown_unknown)
+         VALUES (?1, ?2, ?3, ?4, ?5, 0)
+         ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
+            last_milked_at = MAX(excluded.last_milked_at, milking_timers.last_milked_at),
+            cooldown_unknown = 0,
+            zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END",
+        rusqlite::params![character, server, cow_name, zone, milked_at],
+    )
+    .map_err(|e| format!("Failed to record cow milk: {e}"))?;
+    Ok(())
+}
+
 // ── Milking timers ──────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]
