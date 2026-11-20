@@ -2433,6 +2433,7 @@ mod tests {
                     msg: &msg,
                     local_ts: "2026-04-01 05:30:53",
                     watch_rules: &[],
+                    is_scan: false,
                 },
                 None,
                 &mut st,
