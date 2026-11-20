@@ -24,7 +24,7 @@ On `CharacterLogin`, the game dumps full state across many events (items, skills
 
 ### Data Flow
 
-```
+```text
 Player.log → LogWatcher → PlayerEventParser → LogEvent::PlayerEventParsed
                                                         ↓
                                               DataIngestCoordinator
@@ -70,7 +70,7 @@ The game-state tables (the `game_state_*` and `character_*` families) live in th
 | `game_state_inventory` | (character_name, instance_id) | item_name, item_type_id, stack_size, slot_index, source |
 | `game_state_recipes` | (character_name, recipe_id) | completion_count, source |
 | `game_state_equipment` | (character_name, slot) | appearance_key |
-| `game_state_favor` | (character_name, npc_name) | npc_id, cumulative_delta, favor_tier, source |
+| `game_state_favor` | (character_name, npc_name) | npc_id, session_delta, favor_tier, source |
 | `game_state_currencies` | (character_name, currency_name) | amount, source |
 | `game_state_effects` | (character_name, effect_instance_id) | effect_name, source_entity_id |
 | `game_state_storage` | (character_name, server_name, vault_key, instance_id) | item_name, item_type_id, stack_size, slot_index, source |
@@ -98,7 +98,7 @@ Added in V15 migration. Records every item gain/loss event from both Player.log 
 
 ### Chat-Based Stack Correction
 
-`GameStateManager::correct_stack_from_chat()` fixes the `stack_size=1` problem in `game_state_inventory` and `game_state_storage`. Player.log `ProcessAddItem` always records `stack_size=1`; the real quantity comes from chat status `"Item x5 added to inventory."`. The correction:
+`GameStateManager::correct_stack_for_session(character, server, ...)` fixes the `stack_size=1` problem in `game_state_inventory` and `game_state_storage`. Player.log `ProcessAddItem` always records `stack_size=1`; the real quantity comes from chat status `"Item x5 added to inventory."`. The correction runs under the gain's session identity (tag-preferred, active fallback), not whatever identity is active at drain time. The correction:
 
 1. Resolves the chat display name to a Player.log internal name via CDN `resolve_item()`
 2. Finds the most recent row with `stack_size=1` matching that item name
@@ -124,7 +124,7 @@ Lightweight struct with `active_character: Option<String>` and `active_server: O
 | ItemDeleted | game_state_inventory | DELETE | `inventory` |
 | RecipeUpdated | game_state_recipes | UPSERT | `recipes` |
 | EquipmentChanged | game_state_equipment | DELETE all + bulk INSERT | `equipment` |
-| FavorChanged | game_state_favor | UPSERT (increments cumulative_delta) | `favor` |
+| FavorChanged | game_state_favor | UPSERT (increments session_delta) | `favor` |
 | EffectsAdded | game_state_effects | Clear on login batch + bulk INSERT | `effects` |
 | EffectsRemoved | *(signal only)* | Emits domain update | `effects` |
 | EffectNameUpdated | game_state_effects | UPDATE effect_name | `effects` |
@@ -147,9 +147,10 @@ Log events have `"HH:MM:SS"` timestamps. `GameStateManager` normalizes these to 
 ### Login Behavior
 
 On `CharacterLogin`, `set_active_character()`:
+
 - Updates `game_state_session`
 - Clears transient state: inventory, equipment, combat, mount
-- Resets favor `cumulative_delta` to 0 (fresh session baseline)
+- Resets favor session baseline: V91 zeroes the cumulative_delta integral; session_delta is now summed from favor_events via session_favor_sums (fresh session baseline)
 - Does NOT clear storage (storage persists across sessions)
 
 ## Frontend Store (`gameStateStore`)
@@ -243,7 +244,7 @@ These are not persisted to DB — they reset on login/session restart.
 
 ### NPC Favor
 
-Log events only provide **deltas** (`ProcessDeltaFavor`), not absolute values. `cumulative_delta` tracks the running sum since last report. `favor_tier` comes from reports (e.g., `"BestFriends"`). Delta resets to 0 on login.
+Log events only provide **deltas** (`ProcessDeltaFavor`), not absolute values. `session_delta` tracks the running sum since last report. `favor_tier` comes from reports (e.g., `"BestFriends"`). Delta resets to 0 on login.
 
 ### Currencies
 
@@ -266,6 +267,7 @@ Report stat names map to attribute keys: `"MaxHealth"` → `"MAX_HEALTH"`, `"Max
 ### Crafting Material Availability
 
 `check_material_availability()` in `crafting_commands.rs` queries two sources:
+
 1. **`game_state_inventory`** — persisted log-driven inventory, aggregated by `item_type_id`
 2. **`character_snapshot_items`** (storage vaults only) — from the latest Export Storage as JSON (Settings → VIP) export
 

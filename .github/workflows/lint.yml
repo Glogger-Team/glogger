@@ -88,6 +88,11 @@ jobs:
               - '**/*.yaml'
             actions:
               - '.github/**'
+              # The checker's own gate (`lint:workflow` below) must run when
+              # the checker changes — otherwise a checker regression merges
+              # with no CI coverage (a checker-only PR matches `ruff`, not
+              # `actions`).
+              - 'scripts/check-workflow-expressions.py'
             markdown:
               - '**/*.md'
             frontend:
@@ -628,24 +633,26 @@ jobs:
 
       - name: Migration chain (one-per-PR)
         # Same `mise run lint:migrations` slice (`lint:fast` commit set,
-        # also in push `lint`). Base is the PR base sha on pull_request,
-        # the push `before` sha on main pushes (all-zero on manual dispatch
-        # falls back to HEAD~1); scope logic lives in the script, shared
-        # with the mise task.
+        # also in push `lint`). Chain integrity always runs; the added-count
+        # is PR-scoped by design ("one new version per PR at most"): on
+        # pull_request the base is the PR base sha, but on push there is no
+        # PR base — `before` can span several PRs (merge-queue batches),
+        # so the count would fail PRs that were each compliant. Push runs
+        # integrity only.
         if: needs.changes.outputs.migration_chain == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
         shell: bash
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE="${{ github.event.pull_request.base.sha }}"
+            if [ -z "${BASE//0/}" ]; then
+              echo "zero base sha (manual dispatch); falling back to HEAD~1"
+              BASE="HEAD~1"
+            fi
+            mise exec -- python scripts/check-migration-chain.py --added-since "$BASE"
           else
-            BASE="${{ github.event.before }}"
+            mise exec -- python scripts/check-migration-chain.py
           fi
-          if [ -z "${BASE//0/}" ]; then
-            echo "zero base sha (manual dispatch); falling back to HEAD~1"
-            BASE="HEAD~1"
-          fi
-          mise exec -- python scripts/check-migration-chain.py --added-since "$BASE"
 
       - name: Migration chain scope note
         # Always-run note: skipped = exit 0 with note, never a job-level

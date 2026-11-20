@@ -15,7 +15,7 @@ Each log has its own watcher and parser. The **DataIngestCoordinator** polls bot
 
 ## Data Flow
 
-```
+```text
 Player.log                                  Chat.log (Chat-YY-MM-DD.log)
     |                                            |
     v                                            v
@@ -46,7 +46,7 @@ DataIngestCoordinator                       DataIngestCoordinator
     |                   +-- emit "player-events-batch" +-- emit "chat-messages-inserted"
     |                   +-- emit "game-state-updated"
     +-- emit "skill-update"                    +-- GameStateManager
-    +-- emit "character-login"                 |     .correct_stack_from_chat()
+    +-- emit "character-login"                 |     .correct_stack_for_session()
     +-- emit "area-transition"                 |     (fixes stack_size=1 rows)
                                                |     +-- emit "game-state-updated"
                                                +-- item_transactions ledger
@@ -76,6 +76,7 @@ To prevent this, high-volume event types are **batched** before emission:
 | `BATCH_MAX_AGE` | 20ms | Flush when this much time has passed since the batch started |
 
 The coordinator accumulates `PlayerEvent`s and domain update strings as it processes `LogEvent::PlayerEventParsed` variants. When either threshold is hit, it flushes:
+
 - `"player-events-batch"` — `Vec<PlayerEvent>` (1–50 events per emission)
 - `"game-state-updated"` — deduplicated `Vec<&str>` of domain names
 
@@ -98,6 +99,7 @@ The backend accumulates `PlayerEvent`s and flushes them as a `Vec<PlayerEvent>` 
 Full event catalog: [`player-event-parser.md`](player-event-parser.md)
 
 Key event categories:
+
 - **Items:** `ItemAdded`, `ItemStackChanged`, `ItemDeleted` (with context: storage transfer, vendor sale, unknown)
 - **Skills:** `SkillsLoaded`
 - **NPCs:** `InteractionStarted`, `InteractionEnded`, `FavorChanged`
@@ -235,7 +237,7 @@ The coordinator performs **automatic inventory stack correction** by correlating
 
 1. Player.log `ProcessAddItem` records items with `stack_size = 1` in `game_state_inventory` / `game_state_storage`
 2. Chat.log `[Status] Item x5 added to inventory.` provides the real quantity
-3. The coordinator calls `GameStateManager::correct_stack_from_chat()` which resolves the chat display name to a Player.log internal name via CDN data, finds recent `stack_size=1` rows, and updates them
+3. The coordinator calls `GameStateManager::correct_stack_for_session()` with the gain's session identity (tag-preferred, active fallback) which resolves the chat display name to a Player.log internal name via CDN data, finds recent `stack_size=1` rows, and updates them
 4. A `"game-state-updated"` event is emitted so the frontend refreshes
 
 Both sources also write to the `item_transactions` ledger table (v15 migration) — Player.log events with `source = 'player_log'` and chat events with `source = 'chat_status'`.
@@ -364,7 +366,7 @@ The `[Combat]` channel contains damage, healing, and kill events. A future `Comb
 
 The `excluded_channels` setting in `AppSettings` controls what the **chat log feature** persists to the `chat_messages` database table. It does **not** affect parsing or event routing.
 
-```
+```text
 Chat.log line arrives
     |
     v

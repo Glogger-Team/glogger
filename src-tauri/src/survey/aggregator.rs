@@ -376,6 +376,7 @@ impl SurveySessionAggregator {
     /// `internal_name` is the CDN internal name of the gained item when
     /// resolvable; `timestamp` is the UTC `YYYY-MM-DD HH:MM:SS` timestamp of
     /// the chat line.
+#[allow(clippy::too_many_arguments)]
     pub fn attribute_chat_gain(
         &mut self,
         conn: &Connection,
@@ -384,14 +385,21 @@ impl SurveySessionAggregator {
         internal_name: Option<&str>,
         quantity: u32,
         timestamp: &str,
+        display_name: Option<&str>,
     ) -> Option<i64> {
-        // A survey map entering inventory is a craft, never survey loot —
-        // its chat line is identical to a loot line, and players commonly
-        // craft the next map within seconds of using one.
-        if let Some(internal) = internal_name
-            && self.lookup_survey_kind(internal).is_some() {
-                return None;
-            }
+        // A survey map entering inventory is a craft, never survey loot.
+        // Exclusion when (lookup says map) OR (game data unavailable AND
+        // the display name carries the verified "survey" signal).
+        let data_available = self.game_data.try_read().is_ok_and(|gd| !gd.items.is_empty());
+        let lookup_map = internal_name
+            .and_then(|i| self.lookup_survey_kind(i))
+            .is_some();
+        let display_signal = display_name
+            .map(|n| n.to_ascii_lowercase().contains("survey"))
+            .unwrap_or(false);
+        if lookup_map || (!data_available && display_signal) {
+            return None;
+        }
         let chat_ts = parse_utc_datetime(timestamp)?;
 
         // Basic window: same-tick loot around a recent Basic consumption
@@ -436,22 +444,33 @@ impl SurveySessionAggregator {
         // Identity fallback: survey-yield items count while a session is
         // active, attributed to the most recent use at-or-before the gain
         // (a delayed older-stamped gain must not land on a newer use).
+        // Basic uses only attract same-tick gains: without the window, an
+        // ordinary mining gain minutes after a Basic use would land on it,
+        // bypassing the 5s rule above. Other kinds have no window mechanism,
+        // so the fallback is their only attribution path — preserve it.
         if internal_name.is_some_and(|internal| self.is_survey_loot_item(internal))
             && let Some(session_id) = self.fetch_active_session(conn, character, server)
-                && let Ok(Some(use_id)) = persistence::latest_use_id_for_session(conn, session_id, timestamp) {
-                    return self.record_chat_attribution(
-                        conn,
-                        ChatAttribution {
-                            character,
-                            server,
-                            use_id,
-                            quantity,
-                            timestamp,
-                            item_name: internal_name,
-                            mark_completed: false,
-                        },
-                    );
-                }
+            && let Ok(Some((use_id, kind, used_at))) =
+                persistence::latest_use_for_session(conn, session_id, timestamp)
+            && (kind != SurveyUseKind::Basic || {
+                parse_utc_datetime(&used_at).is_some_and(|used| {
+                    (chat_ts - used).num_seconds().abs() <= CHAT_BASIC_WINDOW_SECS
+                })
+            })
+        {
+            return self.record_chat_attribution(
+                conn,
+                ChatAttribution {
+                    character,
+                    server,
+                    use_id,
+                    quantity,
+                    timestamp,
+                    item_name: internal_name,
+                    mark_completed: false,
+                },
+            );
+        }
 
         None
     }
@@ -586,21 +605,25 @@ impl SurveySessionAggregator {
     }
 
     /// Cached active-session-id lookup.
-    /// Drop the cached active-session id (and the recent-Basic-use window,
-    /// which is keyed by use id) so the next lookup re-resolves from the
-    /// DB. Call this when a session is removed by a path that bypasses the
-    /// aggregator's own start/end flow — notably the History UI's
-    /// `survey_tracker_delete_session`, which deletes rows directly. Without
-    /// this, the cache would keep handing out a now-missing session id and
-    /// every subsequent `insert_use` would fail the FK constraint, and a
-    /// queued gain could still attribute to the deleted Basic use.
-    pub fn invalidate_session_cache(&mut self) {
+    /// Drop the cached active-session id (and the deleted session's
+    /// Basic-use window entries, keyed by use id) so the next lookup
+    /// re-resolves from the DB. Call this when a session is removed by a
+    /// path that bypasses the aggregator's own start/end flow — notably
+    /// the History UI's `survey_tracker_delete_session`, which deletes
+    /// rows directly. Without this, the cache would keep handing out a
+    /// now-missing session id and every subsequent `insert_use` would fail
+    /// the FK constraint, and a queued gain could still attribute to the
+    /// deleted use. Only the deleted session's use ids leave the window
+    /// queue: entries belong to every live session, and a global clear
+    /// would steal the attribution window of an unrelated open use.
+    pub fn invalidate_session_cache(&mut self, deleted_use_ids: &[i64]) {
         self.cached_active_session = None;
         // The Basic-use window is keyed by use id too: a deleted use must
         // not keep attracting gains timestamped inside its old window.
         // Worst case a gain goes unattributed (healable via retro-claim)
         // instead of landing on a use that no longer exists.
-        self.recent_basic_uses.clear();
+        self.recent_basic_uses
+            .retain(|(use_id, _, _, _)| !deleted_use_ids.contains(use_id));
     }
 
     fn fetch_active_session(
@@ -694,6 +717,47 @@ mod tests {
         ))
     }
 
+    /// Aggregator with `IronOre` resolvable as survey yield (`Ore` keyword).
+    /// The fallback path is gated on CDN identity, so tests exercising it
+    /// must seed game data — with `GameData::empty()` the gate is false
+    /// and every gain falls through unattributed.
+    fn seeded_aggregator() -> SurveySessionAggregator {
+        use crate::game_data::ItemInfo;
+        let mut gd = crate::game_data::GameData::empty();
+        gd.items.insert(
+            1,
+            ItemInfo {
+                id: 1,
+                name: "Iron Ore".to_string(),
+                description: None,
+                icon_id: None,
+                value: None,
+                max_stack_size: None,
+                keywords: vec!["Ore".to_string()],
+                effect_descs: vec![],
+                internal_name: Some("IronOre".to_string()),
+                food_desc: None,
+                equip_slot: None,
+                num_uses: None,
+                skill_reqs: None,
+                behaviors: None,
+                bestow_recipes: None,
+                bestow_ability: None,
+                bestow_quest: None,
+                bestow_title: None,
+                craft_points: None,
+                crafting_target_level: None,
+                tsys_profile: None,
+                raw_json: serde_json::Value::Null,
+            },
+        );
+        gd.item_internal_name_index
+            .insert("IronOre".to_string(), 1);
+        SurveySessionAggregator::new(std::sync::Arc::new(
+            tauri::async_runtime::RwLock::new(gd),
+        ))
+    }
+
     fn record_basic(
         agg: &mut SurveySessionAggregator,
         conn: &Connection,
@@ -731,6 +795,7 @@ mod tests {
             Some("IronOre"),
             2,
             "2026-04-15 12:00:00",
+            None,
         );
         assert_eq!(hit, Some(use_a));
         let stored = persistence::get_use(&conn, use_a)
@@ -753,7 +818,181 @@ mod tests {
             Some("IronOre"),
             1,
             "2026-04-15 12:00:04",
+            None,
         );
         assert_eq!(hit, Some(use_id));
+    }
+
+    #[test]
+    fn late_gain_does_not_fallback_onto_basic_use() {
+        // Basic use at 12:00:00; an ordinary mining gain a minute later
+        // misses the 5s window AND the fallback (Basic attracts same-tick
+        // gains only). Seeded game data opens the yield-identity gate, so
+        // the None comes from the window — never from a closed gate. The
+        // gain stays unattributed instead of inflating the use.
+        let conn = fresh_db();
+        let mut agg = seeded_aggregator();
+        let use_id = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "Zenith",
+            "Dreva",
+            Some("IronOre"),
+            3,
+            "2026-04-15 12:01:00",
+            None,
+        );
+        assert_eq!(hit, None);
+        let stored = persistence::get_use(&conn, use_id)
+            .expect("read use")
+            .expect("use present");
+        assert_eq!(stored.loot_qty, 0);
+    }
+
+    #[test]
+    fn delete_invalidate_keeps_other_identities_attribution() {
+        // Scoped invalidation drops only the deleted session's use ids.
+        // The retained identity's gain is stamped just BEFORE its Basic
+        // use (pipeline clock skew): it can only attribute via the
+        // tier-1 after_gain queue arm, because the identity fallback's
+        // `latest_use_for_session` requires `used_at <= gain` and the
+        // only use postdates the gain. Under a global queue clear this
+        // gain would return None — so `Some` here discriminates scoped
+        // retain from global clear. The deleted use's queued gain no
+        // longer resolves (queue dropped) — the identity fallback
+        // cannot rescue it because the gain carries no survey-yield item.
+        let conn = fresh_db();
+        let mut agg = seeded_aggregator();
+        let use_a = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+        let (use_b, _) = agg
+            .record_manual_use(
+                &conn,
+                ManualUse {
+                    character: "AltB",
+                    server: "Legacy",
+                    area: None,
+                    map_internal_name: "MiningSurveySerbule1",
+                    kind: SurveyUseKind::Basic,
+                    now_iso: "2026-04-15 12:00:05",
+                },
+            )
+            .expect("record manual Basic use");
+        agg.invalidate_session_cache(&[use_a]);
+
+        // Gain stamped 1s before the retained use: tier-1 after_gain arm
+        // only. The fallback cannot rescue it (use_b postdates the gain).
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "AltB",
+            "Legacy",
+            Some("IronOre"),
+            1,
+            "2026-04-15 12:00:04",
+            None,
+        );
+        assert_eq!(hit, Some(use_b));
+        // Non-survey-yield item: identity fallback cannot rescue, so a
+        // non-None result here would mean the queue entry survived
+        // invalidation (the bug this test guards against).
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "Zenith",
+            "Dreva",
+            None,
+            1,
+            "2026-04-15 12:00:01",
+            None,
+        );
+        assert_eq!(hit, None);
+    }
+
+    #[test]
+    fn empty_data_map_gain_is_none() {
+        let conn = fresh_db();
+        let mut agg = empty_aggregator();
+        let use_id = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+        let _ = use_id;
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "Zenith",
+            "Dreva",
+            None,
+            1,
+            "2026-04-15 12:00:01",
+            Some("Serbule Blue Mineral Survey"),
+        );
+        assert_eq!(hit, None);
+    }
+
+    #[test]
+    fn empty_data_ore_basic_use_still_attributes() {
+        let conn = fresh_db();
+        let mut agg = empty_aggregator();
+        let use_id = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "Zenith",
+            "Dreva",
+            None,
+            1,
+            "2026-04-15 12:00:01",
+            Some("Iron Ore"),
+        );
+        // offline users preserved: ore gain still attributes via Basic window
+        assert_eq!(hit, Some(use_id));
+    }
+
+    #[test]
+    fn seeded_real_map_is_none() {
+        // seeded game data resolves the map; need a registered survey map item.
+        // Use internal name that lookup would resolve; here we rely on display
+        // signal + seeded data path. Register a map item in game data.
+        let conn = fresh_db();
+        let mut agg = seeded_aggregator();
+        // add a survey map item to game data
+        {
+            use crate::game_data::ItemInfo;
+            let mut gd = agg.game_data.try_write().unwrap();
+            gd.items.insert(
+                2,
+                ItemInfo {
+                    id: 2,
+                    name: "Serbule Blue Mineral Survey".to_string(),
+                    description: None,
+                    icon_id: None,
+                    value: None,
+                    max_stack_size: None,
+                    keywords: vec!["MineralSurvey".to_string(), "Document".to_string()],
+                    effect_descs: vec![],
+                    internal_name: Some("GeologySurveySerbule1".to_string()),
+                    food_desc: None,
+                    equip_slot: None,
+                    num_uses: None,
+                    skill_reqs: None,
+                    behaviors: None,
+                    bestow_recipes: None,
+                    bestow_ability: None,
+                    bestow_quest: None,
+                    bestow_title: None,
+                    craft_points: None,
+                    crafting_target_level: None,
+                    tsys_profile: None,
+                    raw_json: serde_json::Value::Null,
+                },
+            );
+            gd.item_internal_name_index
+                .insert("GeologySurveySerbule1".to_string(), 2);
+        }
+        let _use_id = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "Zenith",
+            "Dreva",
+            Some("GeologySurveySerbule1"),
+            1,
+            "2026-04-15 12:00:01",
+            Some("Serbule Blue Mineral Survey"),
+        );
+        assert_eq!(hit, None);
     }
 }

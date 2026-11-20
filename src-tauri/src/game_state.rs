@@ -238,25 +238,6 @@ impl GameStateManager {
         domains
     }
 
-    /// Correct inventory/storage stack sizes using chat status data.
-    ///
-    /// Player.log's ProcessAddItem always records stack_size=1. The chat log's
-    /// "[Status] Item x5 added to inventory." gives us the real quantity.
-    /// This finds recent rows with stack_size=1 for the matching item and
-    /// updates them, returning which domains were corrected.
-    pub fn correct_stack_from_chat(
-        &self,
-        display_name: &str,
-        quantity: u32,
-        db: &DbPool,
-    ) -> Vec<&'static str> {
-        let (character, server) = match (&self.active_character, &self.active_server) {
-            (Some(c), Some(s)) => (c.as_str(), s.as_str()),
-            _ => return vec![],
-        };
-        self.correct_stack_for_session(character, server, display_name, quantity, db)
-    }
-
 }
 /// Scan-callable session-keyed stack correction. Same targeting as
 /// `GameStateManager::correct_stack_for_session` but without the manager:
@@ -334,13 +315,17 @@ fn correct_stack_in_table(conn: &Connection, target: &StackCorrection<'_>) -> bo
     // Build the item name match: prefer internal_name, fall back to display_name
     let name_to_match = internal_name.unwrap_or(display_name);
 
-    // Find the most recent row with stack_size=1 for this item
-    // (rowid ordering gives us recency since rows are inserted in order)
+    // Find the most recent placeholder row with stack_size=1 for this item
+    // (rowid ordering gives us recency since rows are inserted in order).
+    // Provenance-gated to `source = 'log'`: those rows are Player.log-era
+    // placeholders awaiting their real quantity. Report/snapshot imports
+    // (`source = 'snapshot'`) carry authoritative quantities — without the
+    // gate a chat gain would overwrite a real 1-stack with the gain amount.
     let query = format!(
         "UPDATE {table} SET stack_size = ?1
          WHERE rowid = (
-             SELECT rowid FROM {table}
-             WHERE {base_where} AND item_name = ?4 AND stack_size = 1
+            SELECT rowid FROM {table}
+             WHERE {base_where} AND item_name = ?4 AND stack_size = 1 AND source = 'log'
              ORDER BY rowid DESC LIMIT 1
          )"
     );
@@ -367,7 +352,7 @@ fn correct_stack_in_table(conn: &Connection, target: &StackCorrection<'_>) -> bo
                     "UPDATE {table} SET stack_size = ?1
                      WHERE rowid = (
                          SELECT rowid FROM {table}
-                         WHERE {base_where} AND item_name = ?4 AND stack_size = 1
+                         WHERE {base_where} AND item_name = ?4 AND stack_size = 1 AND source = 'log'
                          ORDER BY rowid DESC LIMIT 1
                      )"
                 ),
@@ -425,7 +410,7 @@ mod tests {
         let db_path = unique_temp_db("glogger_session_stack_correct_test");
         let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
 
-        let mut manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
+        let manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
             crate::game_data::GameData::empty(),
         )));
 
@@ -444,14 +429,26 @@ mod tests {
         // before the staged chat corrections run.
         seed("TestPlayer", 1, "Fluorite");
         seed("OtherAlt", 2, "Fluorite");
+        // A report-backed 1-stack: authoritative quantity, never a
+        // correction target even though it matches the old selector.
+        pool.get_write()
+            .unwrap()
+            .execute(
+                "INSERT INTO game_state_inventory
+                 (character_name, server_name, instance_id, item_name, stack_size, last_confirmed_at, source)
+                 VALUES ('TestPlayer', 'Dreva', 7, 'Fluorite', 1, '2026-10-19 12:00:00', 'snapshot')",
+                [],
+            )
+            .unwrap();
 
-        let stack = |character: &str| -> i64 {
+        let stack = |character: &str, source: &str| -> i64 {
             pool.get()
                 .unwrap()
                 .query_row(
                     "SELECT stack_size FROM game_state_inventory
-                     WHERE character_name = ?1 AND server_name = 'Dreva' AND item_name = 'Fluorite'",
-                    rusqlite::params![character],
+                     WHERE character_name = ?1 AND server_name = 'Dreva'
+                       AND item_name = 'Fluorite' AND source = ?2",
+                    rusqlite::params![character, source],
                     |row| row.get(0),
                 )
                 .unwrap()
@@ -460,16 +457,9 @@ mod tests {
         // Session-keyed: only OtherAlt's slice is corrected.
         let domains = manager.correct_stack_for_session("OtherAlt", "Dreva", "Fluorite", 5, &pool);
         assert!(domains.contains(&"inventory"));
-        assert_eq!(stack("OtherAlt"), 5, "staged session corrected");
-        assert_eq!(stack("TestPlayer"), 1, "other session untouched");
-
-        // Live wrapper targets the active slice.
-        manager.set_active_character_name("TestPlayer");
-        manager.set_active_server_name("Dreva");
-        let domains = manager.correct_stack_from_chat("Fluorite", 3, &pool);
-        assert!(domains.contains(&"inventory"));
-        assert_eq!(stack("TestPlayer"), 3, "active slice corrected");
-        assert_eq!(stack("OtherAlt"), 5, "staged correction survived");
+        assert_eq!(stack("OtherAlt", "log"), 5, "staged session corrected");
+        assert_eq!(stack("TestPlayer", "log"), 1, "other session untouched");
+        assert_eq!(stack("TestPlayer", "snapshot"), 1, "report row never a target");
 
         // Drop the pool first: Windows won't delete a file with an open handle.
         drop(pool);

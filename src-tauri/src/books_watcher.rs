@@ -876,6 +876,54 @@ mod tests {
         assert!(!captured.is_empty());
     }
 
+    #[test]
+    fn persist_book_stale_write_changes_no_rows() {
+        // The WHERE captured_at <= excluded.captured_at guard lets the upsert
+        // succeed with zero rows changed when an older book arrives over a
+        // newer stored row. persist_book_content gates its books emit on that
+        // row count (mirroring the E::Book dispatch arm's n > 0 domain rule),
+        // so prove the guard outcome here: stale content must not land.
+        // (AppHandle isn't constructible in unit tests, so no emit
+        // assertion — same split as persist_book_is_idempotent_upsert.)
+        let pool = pool();
+        let conn = pool.get_write().unwrap();
+        conn.execute(
+            "INSERT INTO game_state_books (character_name, server_name, book_type, title, content, captured_at)
+             VALUES ('TestChar', 'TestServer', 'GuildMotd', 'GuildMotd_260712_173954', 'newer body', '2999-01-01T00:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+        // Same statement shape persist_book_content runs, with an older
+        // captured_at than the stored row.
+        let dt = chrono::Utc::now().to_rfc3339();
+        let n = conn
+            .execute(
+                "INSERT INTO game_state_books (character_name, server_name, book_type, title, content, captured_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(character_name, server_name, book_type, title) DO UPDATE SET
+                    content = excluded.content,
+                    captured_at = excluded.captured_at
+                 WHERE captured_at <= excluded.captured_at",
+                rusqlite::params!["TestChar", "TestServer", "GuildMotd", "GuildMotd_260712_173954", "older body", dt],
+            )
+            .unwrap();
+        assert_eq!(n, 0, "stale book write must change zero rows");
+        let (content, captured): (String, String) = conn
+            .query_row(
+                "SELECT content, captured_at FROM game_state_books
+                 WHERE character_name = 'TestChar' AND server_name = 'TestServer'
+                   AND book_type = 'GuildMotd' AND title = 'GuildMotd_260712_173954'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(content, "newer body", "stale write must not clobber content");
+        assert_eq!(
+            captured, "2999-01-01T00:00:00+00:00",
+            "stale write must not move captured_at backwards"
+        );
+    }
+
     // ── teleportation binds ───────────────────────────────────────
 
     #[test]

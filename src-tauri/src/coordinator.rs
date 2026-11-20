@@ -528,41 +528,25 @@ impl DataIngestCoordinator {
         if should_switch {
             // Different file — do a final flush of any unread content
             // before switching, so we don't lose messages written between
-            // the last poll and this switch.
-            if let Some(watcher) = &mut self.chat_watcher {
+            // the last poll and this switch. The events go through the
+            // shared drain (raw insert + structured dispatch): the old
+            // raw-only flush saved the bytes but never created the
+            // `player_messages` rows for structured lines in the tail.
+            // End the watcher borrow before dispatching — the drain needs
+            // `&mut self` for its trackers and follow-ups.
+            let flushed: Vec<LogEvent> = if let Some(watcher) = &mut self.chat_watcher {
                 startup_log!(
                     "Chat log switching from {:?} → {:?}, flushing old watcher",
                     watcher.get_file_path(),
                     chat_log_path
                 );
-                if let Ok(events) = watcher.poll()
-                    && !events.is_empty() {
-                        startup_log!("Final flush: {} events from old chat log", events.len());
-                        // Process inline to avoid borrow issues with self
-                        let conn = self
-                            .db_pool
-                            .get_write()
-                            .map_err(|e| format!("Database error: {}", e))?;
-                        let log_file = watcher.get_file_name().to_string();
-                        let excluded_channels = &self.settings.get().excluded_chat_channels;
-                        let mut messages = Vec::new();
-                        let tz_offset = self
-                            .settings
-                            .get()
-                            .manual_timezone_override
-                            .or(self.settings.get().timezone_offset_seconds)
-                            .unwrap_or(0);
-                        for event in events {
-                            if let LogEvent::ChatMessage(mut msg, _) = event {
-                                msg.timestamp = chat_local_to_utc(msg.timestamp, tz_offset);
-                                messages.push(msg);
-                            }
-                        }
-                        if !messages.is_empty() {
-                            insert_chat_messages(&conn, &messages, &log_file, excluded_channels)
-                                .ok();
-                        }
-                    }
+                watcher.poll().unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            if !flushed.is_empty() {
+                startup_log!("Final flush: {} events from old chat log", flushed.len());
+                self.process_chat_events(flushed)?;
             }
             self.stop_chat_log_tailing()?;
         }
@@ -972,40 +956,31 @@ impl DataIngestCoordinator {
                     // feeding/correcting now under a drain-order identity.
                     // The tag is the login session that produced the line;
                     // only when the file was resumed mid-session (`None`) do
-                    // we fall back to the drain identity. Live, the tag is
-                    // ignored and the active identity rules.
+                    // we fall back to the drain identity. Live resolves the
+                    // same way: a poll batch can span a login boundary (the
+                    // watcher sorts the login marker first), so a pre-login
+                    // line must keep its own tag instead of inheriting the
+                    // new active identity. Tag-less live lines
+                    // (resume-from-offset polls) use the active identity.
                     let is_live = self.game_state.is_live();
-                    let identity: Option<DispatchIdentity> = if is_live {
-                        match (
-                            self.game_state.get_active_character(),
-                            self.game_state.get_active_server(),
-                        ) {
-                            (Some(c), Some(s)) => Some(DispatchIdentity {
-                                character: c.to_string(),
-                                server: s.to_string(),
-                            }),
-                            _ => None,
-                        }
-                    } else {
-                        session_tag
-                            .as_ref()
-                            .map(|tag| DispatchIdentity {
-                                character: tag.character_name.clone(),
-                                server: tag.server_name.clone(),
-                            })
-                            .or_else(|| {
-                                match (
-                                    self.game_state.get_active_character(),
-                                    self.game_state.get_active_server(),
-                                ) {
-                                    (Some(c), Some(s)) => Some(DispatchIdentity {
-                                        character: c.to_string(),
-                                        server: s.to_string(),
-                                    }),
-                                    _ => None,
-                                }
-                            })
-                    };
+                    let identity: Option<DispatchIdentity> = session_tag
+                        .as_ref()
+                        .map(|tag| DispatchIdentity {
+                            character: tag.character_name.clone(),
+                            server: tag.server_name.clone(),
+                        })
+                        .or_else(|| {
+                            match (
+                                self.game_state.get_active_character(),
+                                self.game_state.get_active_server(),
+                            ) {
+                                (Some(c), Some(s)) => Some(DispatchIdentity {
+                                    character: c.to_string(),
+                                    server: s.to_string(),
+                                }),
+                                _ => None,
+                            }
+                        });
 
                     // The shared dispatch owns every idempotent DB arm. Two
                     // live-only follow-ups stay here because they need
@@ -1059,12 +1034,23 @@ impl DataIngestCoordinator {
                                 .unwrap_or((None, None));
                         let ts_utc = msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
                         if is_live {
-                            // Correct inventory/storage stack sizes.
-                            let corrected = self.game_state.correct_stack_from_chat(
-                                &item_name,
-                                quantity,
-                                &self.db_pool,
-                            );
+                            // Correct the gain's own session slice: the
+                            // dispatch above wrote under `identity`
+                            // (tag-preferred), so the correction must too —
+                            // a B-login-then-A-gain poll would otherwise fix
+                            // B's placeholder for A's gain. Matches active
+                            // when tag and active agree; `None` corrects
+                            // nothing (active is also `None` then).
+                            let corrected = match identity.as_ref() {
+                                Some(id) => self.game_state.correct_stack_for_session(
+                                    &id.character,
+                                    &id.server,
+                                    &item_name,
+                                    quantity,
+                                    &self.db_pool,
+                                ),
+                                None => vec![],
+                            };
                             if !corrected.is_empty() {
                                 self.app_handle.emit("game-state-updated", &corrected).ok();
                             }
@@ -1116,40 +1102,63 @@ impl DataIngestCoordinator {
                                     internal_name.as_deref(),
                                     quantity,
                                     &ts_utc,
+                                    Some(item_name.as_str()),
                                 ) {
                                     Some(use_id) => use_id,
                                     None => continue,
                                 };
                                 let source_details =
                                     format!("{{\"survey_use_id\":{use_id}}}");
-                                if tx
-                                    .execute(
-                                        "UPDATE item_transactions
-                                            SET source_kind = 'survey_chat',
-                                                source_details = ?1
-                                          WHERE rowid = (
-                                            SELECT rowid FROM item_transactions
-                                             WHERE timestamp = ?2
-                                               AND character_name = ?3
-                                               AND server_name = ?4
-                                               AND source = 'chat_status'
-                                               AND source_kind IS NULL
-                                               AND item_name = ?5
-                                               AND quantity = ?6
-                                             ORDER BY rowid DESC LIMIT 1
-                                          )",
-                                        rusqlite::params![
-                                            source_details,
-                                            ts_utc,
-                                            id.character,
-                                            id.server,
-                                            item_name,
-                                            quantity as i64,
-                                        ],
-                                    )
-                                    .is_err()
-                                {
-                                    eprintln!("[coordinator] survey row tag failed, rolled back");
+                                let tag_rows = match tx.execute(
+                                    "UPDATE item_transactions
+                                        SET source_kind = 'survey_chat',
+                                            source_details = ?1
+                                      WHERE rowid = (
+                                        SELECT rowid FROM item_transactions
+                                         WHERE timestamp = ?2
+                                           AND character_name = ?3
+                                           AND server_name = ?4
+                                           AND source = 'chat_status'
+                                           AND source_kind IS NULL
+                                           -- staged survey gains are loot only
+                                           -- (summoned rows share source='chat_status'
+                                           -- / source_kind NULL); exclude them.
+                                           AND context = 'loot'
+                                           AND item_name = ?5
+                                           AND quantity = ?6
+                                         ORDER BY rowid DESC LIMIT 1
+                                      )",
+                                    rusqlite::params![
+                                        source_details,
+                                        ts_utc,
+                                        id.character,
+                                        id.server,
+                                        item_name,
+                                        quantity as i64,
+                                    ],
+                                ) {
+                                    Ok(n) => n,
+                                    // A failed tag must not abort the whole
+                                    // batch via `?`: roll back this gain and
+                                    // move on so the remaining gains still
+                                    // process (same shape as the zero-match
+                                    // arm below).
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[coordinator] survey row tag failed: {e}, rolled back"
+                                        );
+                                        continue;
+                                    }
+                                };
+                                // The tag must land on exactly one untagged
+                                // ledger row: zero means the row vanished (or
+                                // never matched) between checkouts — commit
+                                // would bump a use with no provenance, so roll
+                                // back and let a later pass reclaim the gain.
+                                if tag_rows != 1 {
+                                    eprintln!(
+                                        "[coordinator] survey row tag matched {tag_rows} rows, rolled back"
+                                    );
                                     continue;
                                 }
                                 if tx.commit().is_err() {
@@ -1938,16 +1947,22 @@ pub fn persist_book_content(
     let conn = db
         .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
-    conn.execute(
+    let n = conn.execute(
         "INSERT INTO game_state_books (character_name, server_name, book_type, title, content, captured_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(character_name, server_name, book_type, title) DO UPDATE SET
             content = excluded.content,
-            captured_at = excluded.captured_at",
+            captured_at = excluded.captured_at
+         WHERE captured_at <= excluded.captured_at",
         rusqlite::params![character, server, book_type, title, content, dt],
     )
     .map_err(|e| format!("Failed to persist book: {e}"))?;
-    app_handle.emit("game-state-updated", vec!["books"]).ok();
+    // Same convention as the `E::Book` dispatch arm: a stale write can match
+    // the conflict target yet change zero rows via the WHERE guard — refresh
+    // the UI only when a row actually landed.
+    if n > 0 {
+        app_handle.emit("game-state-updated", vec!["books"]).ok();
+    }
     Ok(())
 }
 

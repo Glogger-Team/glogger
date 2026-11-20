@@ -861,13 +861,24 @@ pub fn survey_tracker_delete_session(
 ) -> Result<(), String> {
     let mut coord = coordinator.lock().map_err(|e| e.to_string())?;
     let mut conn = coord.db_pool().get_write().map_err(|e| e.to_string())?;
+    // Capture the session's use ids BEFORE the delete: the scoped cache
+    // invalidation below filters the Basic-use window by use id, and the
+    // rows are gone by the time it runs.
+    let deleted_use_ids: Vec<i64> = conn
+        .prepare("SELECT id FROM survey_uses WHERE session_id = ?1")
+        .and_then(|mut stmt| {
+            stmt.query_map(params![session_id], |r| r.get(0))?.collect()
+        })
+        .map_err(|e| e.to_string())?;
     delete_session_impl(&mut conn, session_id)?;
     drop(conn);
     // The aggregator caches the active-session id. If we just deleted that
     // session, the cache is now stale — the next survey use would insert
     // against a missing session id and fail the FK. Invalidate so it
     // re-resolves (and auto-starts a fresh session) on the next use.
-    coord.survey_aggregator_mut().invalidate_session_cache();
+    coord
+        .survey_aggregator_mut()
+        .invalidate_session_cache(&deleted_use_ids);
     Ok(())
 }
 

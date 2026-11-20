@@ -314,7 +314,6 @@ pub fn dispatch_chat_message(
                                 timestamp,
                             )
                     {
-                        out.domain("enemy_kills");
                         out.enemy_killed = Some(combat_event);
                     }
                 }
@@ -658,7 +657,13 @@ fn insert_json_receipt_guarded(
     // Both twin orders converge here, so this is also the loot↔kill join
     // point: the receipt's entity links the item to its FATALITY row.
     if let Some(entity_id) = from_entity_id {
-        let _ = crate::db::kill_tracking_commands::link_kill_loot(
+        // Rescan re-runs this call idempotently (`WHERE NOT EXISTS`), so a
+        // transient link failure heals on the next scan — but only when the
+        // receipt side re-runs. Receipts recorded before the kill (newest-first
+        // scans) are healed by the kill side (`link_kill_loot_for_kill`); a
+        // kill recorded after its receipt's scan window has passed may still
+        // miss, but only if both sides never re-run. `Ok(false)` (no matching
+        if let Err(e) = crate::db::kill_tracking_commands::link_kill_loot(
             &conn,
             character,
             server,
@@ -666,7 +671,9 @@ fn insert_json_receipt_guarded(
             timestamp,
             item_name,
             quantity as i64,
-        );
+        ) {
+            eprintln!("[dispatch] kill-loot link failed (rescan heals): {e}");
+        }
     }
     wrote
 }
@@ -703,7 +710,8 @@ fn upsert_chat_xp(
             xp = game_state_skills.xp + excluded.xp,
             last_confirmed_at = CASE WHEN excluded.last_confirmed_at > game_state_skills.last_confirmed_at THEN excluded.last_confirmed_at ELSE game_state_skills.last_confirmed_at END,
             source = excluded.source
-         WHERE excluded.last_confirmed_at > game_state_skills.last_confirmed_at",
+         WHERE (excluded.last_confirmed_at > game_state_skills.last_confirmed_at AND excluded.level >= game_state_skills.level)
+            OR excluded.level > game_state_skills.level",
         rusqlite::params![character, server, skill_id, skill_name, level, xp, confirmed_at],
     )
     .map(|n| n > 0)
@@ -856,22 +864,22 @@ fn dispatch_json_event(
                         .map(|c| c == *body)
                         .unwrap_or(false);
                     current = same;
-                    if !same {
-                        let dt = chrono::Utc::now().to_rfc3339();
-                        if conn
+                    if !same
+                        && conn
                             .execute(
                                 "INSERT INTO game_state_books (character_name, server_name, book_type, title, content, captured_at)
                                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                                  ON CONFLICT(character_name, server_name, book_type, title) DO UPDATE SET
                                     content = excluded.content,
-                                    captured_at = excluded.captured_at",
-                                rusqlite::params![id.character, id.server, book_type, title, body, dt],
+                                    captured_at = excluded.captured_at
+                                 WHERE captured_at <= excluded.captured_at",
+                                rusqlite::params![id.character, id.server, book_type, title, body, timestamp],
                             )
-                            .is_ok()
-                        {
-                            out.domain("books");
-                            current = true;
-                        }
+                            .map(|n| n > 0)
+                            .unwrap_or(false)
+                    {
+                        out.domain("books");
+                        current = true;
                     }
                 }
                 // Content triggers (gourmand/hoplology/teleports/report-stats)
@@ -1197,7 +1205,7 @@ fn record_player_message(
          WHERE NOT EXISTS (
             SELECT 1 FROM player_messages
              WHERE character_name = ?1 AND server_name = ?2 AND timestamp = ?3
-               AND message_type = ?4 AND other_player = ?6 AND body = ?7
+               AND message_type = ?4 AND direction = ?5 AND other_player = ?6 AND body = ?7
         )",
         rusqlite::params![
             character, server, timestamp, message_type, direction, other_player, body, item_name
@@ -2202,6 +2210,46 @@ mod tests {
             )
             .unwrap();
         assert_eq!(confirmed, "2026-11-17 11:00:00");
+    }
+
+    #[test]
+    fn upsert_chat_xp_newer_lower_level_does_not_downgrade() {
+        // Mirrors `apply_chat_level_up`'s guard: a newer-stamped award
+        // carrying a lower level (explicit 0/0 first-XP arriving after the
+        // skill is known, or any out-of-order line) must not rewind the
+        // stored level. The conflicting update is skipped whole, matching
+        // the level-up writer's drop semantics.
+        let (pool, _guard) = test_pool();
+        let conn = pool.get_write().unwrap();
+        conn.execute(
+            "INSERT INTO game_state_skills
+                (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
+             VALUES ('Alice', 'Dreva', 7, 'Sword', 5, 5, 0, 100, 0, 0, '2026-11-17 10:00:00', 'snapshot')",
+            [],
+        )
+        .unwrap();
+        let changed = upsert_chat_xp(&conn, "Alice", "Dreva", 7, "Sword", 0, 53, "2026-11-17 11:00:00");
+        assert!(!changed);
+        let (level, xp): (i64, i64) = conn
+            .query_row(
+                "SELECT level, xp FROM game_state_skills
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND skill_id = 7",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((level, xp), (5, 100));
+        let changed = upsert_chat_xp(&conn, "Alice", "Dreva", 7, "Sword", 6, 10, "2026-11-17 12:00:00");
+        assert!(changed);
+        let (level, xp): (i64, i64) = conn
+            .query_row(
+                "SELECT level, xp FROM game_state_skills
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND skill_id = 7",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((level, xp), (6, 110));
     }
 
     #[test]

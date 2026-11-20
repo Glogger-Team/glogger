@@ -315,8 +315,13 @@ pub fn parse_chat_lines_tagged(text: &str) -> Vec<(ChatMessage, Option<ChatSessi
         }
         // Same strictness for logout (watcher matches `"******** Logged Out"`,
         // the game's own marker): a chat line mentioning logging out must not
-        // close the session or be swallowed.
-        if line.contains("******** Logged Out") {
+        // close the session or be swallowed. Scope to non-JSON system lines:
+        // a `[JSON:*]` body (pigeon text, book content) can mention the
+        // marker while the player is still logged in, and player chat can
+        // quote it. JSON lines always fall through to ordinary parsing.
+        if line.contains("******** Logged Out")
+            && parse_chat_line(line).is_none_or(|m| m.json_type.is_none() && m.is_system)
+        {
             if let Some(msg) = parse_chat_line(line) {
                 tagged.push((msg, session.clone()));
             }
@@ -1038,5 +1043,27 @@ Dying together\n\
             .0
             .message
             .contains("still talking here, I Logged Out yesterday"));
+    }
+
+    #[test]
+    fn test_tagged_json_body_marker_does_not_close_session() {
+        // A `[JSON:*]` body mentioning the logout marker (pigeon text,
+        // book content) must not end the session: the marker only closes
+        // on a non-JSON system line. The following gain keeps its tag.
+        let text = "26-03-09 05:01:46\t**************************************** Logged In As Zenith. Server Dreva. Timezone Offset -07:00:00.\n\
+                     26-03-09 05:04:00\t[JSON:PigeonReceived] {\"Title\": \"Gossip\", \"Body\": \"saw ******** Logged Out on the board\"}\n\
+                     26-03-09 05:05:00\t[Status] Fluorite x5 added to inventory.";
+        let tagged = parse_chat_lines_tagged(text);
+
+        assert_eq!(tagged.len(), 3);
+        for (_, tag) in &tagged[1..] {
+            assert_eq!(
+                *tag,
+                Some(ChatSessionTag {
+                    character_name: "Zenith".to_string(),
+                    server_name: "Dreva".to_string(),
+                })
+            );
+        }
     }
 }

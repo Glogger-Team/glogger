@@ -308,17 +308,81 @@ pub fn record_enemy_kill(
     if inserted == 0 {
         return Ok(None);
     }
-    conn.query_row(
-        "SELECT id FROM enemy_kills
-          WHERE character_name = ?1 AND server_name = ?2
-            AND enemy_entity_id = ?3 AND killed_at = ?4",
-        rusqlite::params![character, server, enemy_entity_id, killed_at],
-        |row| row.get(0),
-    )
-    .map(Some)
-    .map_err(|e| format!("Failed to read back kill id: {e}"))
+    let kill_id = conn
+        .query_row(
+            "SELECT id FROM enemy_kills
+              WHERE character_name = ?1 AND server_name = ?2
+                AND enemy_entity_id = ?3 AND killed_at = ?4",
+            rusqlite::params![character, server, enemy_entity_id, killed_at],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| format!("Failed to read back kill id: {e}"))?;
+    // Link any receipt rows that arrived before this FATALITY (newest-first
+    // scans) — idempotent.
+    let _ = link_kill_loot_for_kill(conn, character, server, enemy_entity_id, killed_at);
+    Ok(Some(kill_id))
 }
 
+/// (recorded before the kill line arrived — newest-first cross-file scans)
+/// for the same entity to this kill. Idempotent via `WHERE NOT EXISTS`.
+pub fn link_kill_loot_for_kill(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    enemy_entity_id: &str,
+    killed_at: &str,
+) -> Result<usize, String> {
+    let kill_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM enemy_kills
+              WHERE character_name = ?1 AND server_name = ?2
+                AND enemy_entity_id = ?3 AND killed_at = ?4",
+            rusqlite::params![character, server, enemy_entity_id, killed_at],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to look up kill for loot link: {e}"))?;
+    let Some(kill_id) = kill_id else {
+        return Ok(0);
+    };
+    // Collect distinct (item, qty) receipts for this entity within the 30-min
+    // window after the kill (receipt/loot lag; never before the kill).
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT item_name, quantity FROM item_transactions
+              WHERE character_name = ?1 AND server_name = ?2
+                AND from_entity_id = ?3
+                AND timestamp >= ?4
+                AND timestamp <= datetime(?4, '+30 minutes')",
+        )
+        .map_err(|e| format!("Failed to prepare receipt lookup: {e}"))?;
+    let rows: Vec<(String, i64)> = stmt
+        .query_map(
+            rusqlite::params![character, server, enemy_entity_id, killed_at],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| format!("Failed to query receipts: {e}"))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("Failed to collect receipts: {e}"))?;
+    let mut linked = 0usize;
+    for (item, qty) in rows {
+        let n = conn
+            .execute(
+                "INSERT INTO enemy_kill_loot (kill_id, item_name, quantity)
+                 SELECT ?1, ?2, ?3
+                 WHERE NOT EXISTS (
+                    SELECT 1 FROM enemy_kill_loot
+                     WHERE kill_id = ?1 AND item_name = ?2 AND quantity = ?3
+                 )",
+                rusqlite::params![kill_id, item, qty],
+            )
+            .map_err(|e| format!("Failed to link kill loot: {e}"))?;
+        if n > 0 {
+            linked += 1;
+        }
+    }
+    Ok(linked)
+}
 /// Attach a loot receipt to its kill via the looted-from entity id. Finds the
 /// latest kill for (character, server, entity) at or before the receipt
 /// (30-minute window — corpse search/loot lag, never future kills) and links

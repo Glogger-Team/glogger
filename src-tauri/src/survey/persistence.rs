@@ -106,7 +106,8 @@ pub fn update_first_loot_at(conn: &Connection, session_id: i64, ts: &str) -> Res
 
 pub fn update_last_loot_at(conn: &Connection, session_id: i64, ts: &str) -> Result<()> {
     conn.execute(
-        "UPDATE survey_sessions SET last_loot_at = ?2 WHERE id = ?1",
+        "UPDATE survey_sessions SET last_loot_at = ?2
+         WHERE id = ?1 AND (last_loot_at IS NULL OR last_loot_at < ?2)",
         params![session_id, ts],
     )?;
     Ok(())
@@ -230,7 +231,7 @@ pub fn get_use(conn: &Connection, use_id: i64) -> Result<Option<SurveyUse>> {
 }
 
 /// The most-recently-used survey use belonging to a session, at or before a
-/// gain timestamp, if any.
+/// gain timestamp, if any: `(use id, kind, used_at)`.
 ///
 /// Used by the chat-loot identity fallback: a gain identifiable as survey
 /// yield (Ore/MetalSlab keywords, …) attributes to the most recent survey
@@ -238,17 +239,29 @@ pub fn get_use(conn: &Connection, use_id: i64) -> Result<Option<SurveyUse>> {
 /// without it a delayed (older-stamped) gain arriving after a newer use
 /// would attribute to that newer use. Ordered by `used_at` then `id` so
 /// the latest map at-or-before the gain wins even when two uses share a
-/// second-resolution timestamp.
-pub fn latest_use_id_for_session(
+/// second-resolution timestamp. The caller enforces the Basic window —
+/// a Basic use only attracts same-tick gains; other kinds have no window.
+pub fn latest_use_for_session(
     conn: &Connection,
     session_id: i64,
     gain_timestamp_iso: &str,
-) -> Result<Option<i64>> {
+) -> Result<Option<(i64, SurveyUseKind, String)>> {
     conn.query_row(
-        "SELECT id FROM survey_uses WHERE session_id = ?1 AND used_at <= ?2
+        "SELECT id, kind, used_at FROM survey_uses
+         WHERE session_id = ?1 AND used_at <= ?2
          ORDER BY used_at DESC, id DESC LIMIT 1",
         params![session_id, gain_timestamp_iso],
-        |row| row.get(0),
+        |row| {
+            let kind_str: String = row.get(1)?;
+            let kind = SurveyUseKind::from_str(&kind_str).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    format!("unknown kind value: {kind_str}").into(),
+                )
+            })?;
+            Ok((row.get(0)?, kind, row.get(2)?))
+        },
     )
     .optional()
 }
@@ -753,17 +766,17 @@ mod tests {
         let u2 = mk_use("2026-04-15 12:05:00");
         // Delayed gain stamped before U2 resolves to U1, not the latest use.
         assert_eq!(
-            latest_use_id_for_session(&conn, session, "2026-04-15 12:04:00").unwrap(),
-            Some(u1)
+            latest_use_for_session(&conn, session, "2026-04-15 12:04:00").unwrap(),
+            Some((u1, SurveyUseKind::Basic, "2026-04-15 12:03:00".to_string()))
         );
         // Gain after both resolves to the newest.
         assert_eq!(
-            latest_use_id_for_session(&conn, session, "2026-04-15 12:06:00").unwrap(),
-            Some(u2)
+            latest_use_for_session(&conn, session, "2026-04-15 12:06:00").unwrap(),
+            Some((u2, SurveyUseKind::Basic, "2026-04-15 12:05:00".to_string()))
         );
         // Gain older than every use matches nothing.
         assert_eq!(
-            latest_use_id_for_session(&conn, session, "2026-04-15 12:02:00").unwrap(),
+            latest_use_for_session(&conn, session, "2026-04-15 12:02:00").unwrap(),
             None
         );
     }

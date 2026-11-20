@@ -31,7 +31,7 @@ Three core item events are already emitted:
 ### Chat Cross-Validation (`src-tauri/src/chat_status_parser.rs`)
 
 - **ItemGained** — parsed from `"X added to inventory."` / `"X xN added to inventory."` chat lines.
-- **`correct_stack_from_chat()`** — fixes Player.log's stack_size=1 artifact using the authoritative chat quantity.
+- **`correct_stack_for_session()`** — fixes Player.log's stack_size=1 artifact using the authoritative chat quantity, keyed by the gain's session identity.
 - Chat-sourced transactions recorded separately with `source='chat_status'`.
 
 ### Frontend (`src/stores/gameStateStore.ts`)
@@ -61,6 +61,7 @@ There's no mechanism to periodically record "at this moment, you own X of item Y
 ### No Currency-Specific Tracking
 
 Currencies (councils, gold, etc.) may appear in:
+
 - Character JSON exports (overwritten on each export though)
 - Inventory reports (not overwritten — historical backfill possible)
 - Chat status messages
@@ -71,6 +72,7 @@ There's no dedicated currency tracking path — they're just items in the genera
 ### No Aggregation or Rollup Queries
 
 No backend commands exist for:
+
 - Item transaction history by date range
 - Net quantity change over a period
 - Rate of gain/loss (items/hour, items/day)
@@ -105,6 +107,7 @@ Currencies are **not** inventory items. They live in a dedicated `Currencies` ob
 14 currency types total. These do **not** appear in Storage export item files — those only contain actual items (~1,078 items across ~34 storage vaults in the sample). Character exports are overwritten on each export, so they can't be used for historical backfill.
 
 This means currency tracking and item quantity tracking are two separate data paths:
+
 - **Currencies:** Must come from character export imports (report-seeded `character_currencies`) or from parsing chat/log events (if currency change messages exist).
 - **Items:** Come from the existing inventory pipeline (`game_state_inventory` + `game_state_storage`) and can be backfilled from old Storage export (`*_items_*.json`) reports.
 
@@ -175,26 +178,31 @@ currency_quantity_history (
 ## Potential Implementation Phases
 
 ### Phase 1: Item Quantity Reports
+
 - New migration for `item_quantity_history` table
 - Backend logic to record current owned quantities from `game_state_inventory` + `game_state_storage`
 - Trigger reports on session start, session end, and periodic timer
 - Backend query commands for retrieval
 
 ### Phase 2: Currency Tracking
+
 - New migration for `currency_quantity_history` table
 - Parse currencies from character export imports
 - Investigate whether chat/log events exist for currency changes (e.g., "You received 500 councils")
 
 ### Phase 3: Historical Backfill
+
 - Import old Storage export (`*_items_*.json`) reports as historical item reports
 - Import old character exports for historical currency reports (if any exist un-overwritten)
 
 ### Phase 4: Trend UI
+
 - Simple trend view — table or basic chart showing quantity over time
 - Filterable by item/currency
 - Rate-of-change calculations from report deltas
 
 ### Phase 5: Dashboard Integration
+
 - Dashboard card for critical resource trends
 - Net gain/loss summaries per session
 
