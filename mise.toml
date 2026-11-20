@@ -18,8 +18,8 @@ python = "latest"
 sccache = "latest"
 
 [tasks."lint:ruff"]
-description = "Ruff check + format on scripts/ (commit-fast slice)"
-run = ["ruff check scripts/", "ruff format --check scripts/"]
+description = "Ruff check + format on scripts/ (commit-fast slice; EXE rules: exec bit implies shebang)"
+run = ["ruff check --extend-select EXE scripts/", "ruff format --check scripts/"]
 
 [tasks."lint:commit"]
 description = "Commit-msg hook self-test (commit-fast slice)"

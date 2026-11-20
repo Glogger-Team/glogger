@@ -221,14 +221,72 @@ def update_ok_tables(fn_text: str) -> list[str]:
     return tables
 
 
-def has_blob_overwrite(fn_text: str) -> bool:
-    """An UPDATE statement assigning `source_details = ?N` instead of merging
-    with `json_set` (column-list INSERTs carry no `=`, SELECT filters lack
-    UPDATE — statement-scoped, not line-scoped)."""
-    for stmt in split_statements(fn_text):
-        if not re.search(r"\bUPDATE\b", stmt, re.IGNORECASE):
+def set_clause(stmt: str) -> str:
+    """The SET assignment region of an UPDATE statement (SET..top-level WHERE
+    or end): WHERE-predicate comparisons must not trip the overwrite rule."""
+    depth = 0
+    quote: str | None = None
+    esc = False
+    i, n = 0, len(stmt)
+    start = -1
+    while i < n:
+        ch = stmt[i]
+        if quote is not None:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == quote:
+                if quote == "'" and i + 1 < n and stmt[i + 1] == "'":
+                    i += 1
+                else:
+                    quote = None
+            i += 1
             continue
-        for m in re.finditer(r"\bsource_details\s*=\s*(\?\d*|json_set\s*\()", stmt):
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            if start < 0 and re.match(r"SET\b", stmt[i:], re.IGNORECASE):
+                start = i + 3
+            elif start >= 0 and re.match(r"WHERE\b", stmt[i:], re.IGNORECASE):
+                return stmt[start:i]
+        i += 1
+    return stmt[start:] if start >= 0 else ""
+
+
+SQL_STR_RE = re.compile(r'"((?:[^"\\]|\\.)*)"', re.DOTALL)
+
+
+def sql_text_of(stmt: str) -> str:
+    """Concatenated string-literal contents of a Rust statement (the SQL),
+    with Rust backslash-newline continuations removed per language semantics.
+    Keyword/column matching runs on this, never on Rust code — `SET`/`WHERE`
+    live at SQL depth 0 here while the literals sat inside `execute(` parens."""
+    parts: list[str] = []
+    for m in SQL_STR_RE.finditer(stmt):
+        content = m.group(1)
+        content = re.sub(r"\\\r?\n[ \t]*", "", content)
+        parts.append(content)
+    return "\n".join(parts)
+
+
+def has_blob_overwrite(fn_text: str) -> bool:
+    """An UPDATE statement assigning `source_details = ?N` in its SET clause
+    instead of merging with `json_set` (WHERE-predicate comparisons are
+    scoped out — SET-slice of the SQL text, not line-scoped)."""
+    for stmt in split_statements(fn_text):
+        sql = sql_text_of(stmt)
+        if not re.search(r"\bUPDATE\b", sql, re.IGNORECASE):
+            continue
+        for m in re.finditer(
+            r"\bsource_details\s*=\s*(\?\d*|json_set\s*\()", set_clause(sql)
+        ):
             if m.group(1).startswith("?"):
                 return True
     return False
@@ -236,22 +294,29 @@ def has_blob_overwrite(fn_text: str) -> bool:
 
 def functions(cl: list[tuple[int, str]]) -> list[tuple[int, str]]:
     """(start lineno, joined body) per `fn` item, brace-depth segmented
-    against the depth where the `fn` opened (methods live inside impl)."""
+    against the depth where the `fn` opened (methods live inside impl). The
+    body must open before a close can end the item — a multiline signature
+    has no brace on its first line, so emitting there would drop the body
+    the rules need to see."""
     out: list[tuple[int, str]] = []
     depth = 0
     cur: list[str] | None = None
     start = 0
     base = 0
+    opened = False
     for lineno, line in cl:
         opens, closes = code_braces(line)
         if cur is None and FN_RE.match(line):
             cur = []
             start = lineno
             base = depth
+            opened = False
         if cur is not None:
             cur.append(line.split("//")[0])
         depth += opens - closes
-        if cur is not None and depth <= base:
+        if depth > base:
+            opened = True
+        if cur is not None and opened and depth <= base:
             out.append((start, "\n".join(cur)))
             cur = None
     return out
@@ -427,12 +492,37 @@ fn read_it(conn: &Connection) {
     conn.query_row("SELECT a FROM t WHERE source_details = ?1", params![v], |r| r.get(0)).unwrap();
 }
 """
+    neg_blob_where = """
+fn tag_where(conn: &Connection) {
+    tx.execute(
+        "UPDATE item_transactions SET source_kind = ?1 WHERE source_details = ?2",
+        params![kind, blob],
+    ).unwrap();
+}
+"""
+    multi_sig = """
+fn claim_receipt(
+    conn: &Connection,
+    item: &str,
+) -> bool {
+    conn.execute("UPDATE t SET a = 1", []).ok();
+    conn.execute("INSERT INTO t (a) VALUES (1)", []).is_ok()
+}
+"""
     check("bare blob overwrite fires", has_blob_overwrite(pos_blob))
     check("json_set merge silent", not has_blob_overwrite(neg_blob_merge))
     check("select filter silent", not has_blob_overwrite(neg_blob_select))
+    check("where predicate silent", not has_blob_overwrite(neg_blob_where))
 
     fns = functions([(i + 1, ln) for i, ln in enumerate(pos_update_ok.splitlines())])
     check("fn segmentation finds claim", len(fns) == 1 and fns[0][0] == 2)
+    fns_multi = functions([(i + 1, ln) for i, ln in enumerate(multi_sig.splitlines())])
+    check(
+        "multiline signature keeps body",
+        len(fns_multi) == 1
+        and "INSERT INTO t" in fns_multi[0][1]
+        and update_ok_findings(fns_multi[0][1]) == ["t"],
+    )
     return 1 if failures else 0
 
 

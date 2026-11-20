@@ -208,11 +208,14 @@ def fn_spans(text: str) -> list[tuple[str, int, int]]:
     return out
 
 
-def build_schema(conn: sqlite3.Connection) -> None:
+def build_schema(conn: sqlite3.Connection, include_tests: bool = True) -> None:
     """Replay migration DDL in dispatcher order (file order is NOT version
     order — v73's def precedes v63's). run_migrations' own DDL first, then
     each called migration_vNN fn. Non-versioned helpers holding DDL, and
-    format!-built DDL, fail closed instead of replaying silently wrong."""
+    format!-built DDL, fail closed instead of replaying silently wrong.
+    App-code CREATEs follow: test fixtures only when include_tests (the
+    prod schema must never see test-only tables, or test fixtures would
+    mask a missing migration)."""
     mig = (SRC / "db" / "migrations.rs").read_text(encoding="utf-8")
     tested = test_ranges(mig)
 
@@ -260,21 +263,18 @@ def build_schema(conn: sqlite3.Connection) -> None:
                     f"sql-prepare: DDL in non-dispatched helper {name} — move it into its version"
                 )
                 raise SystemExit(2)
-    # App-code tables (TEMP work tables, export-file schemas): same CREATE
-    # shape, so CREATE them when the migrated schema lacks the name — this
-    # also column-checks temp/export statements. Existing names win (test
-    # fixtures must never override the migrated schema).
-    for path in sorted(SRC.rglob("*.rs")):
-        if path.name == "migrations.rs":
+    # App-code tables (TEMP work tables, export-file schemas, test fixtures):
+    # CREATE them when the schema lacks the name. Existing names win, and
+    # test fixtures stay out of the prod schema (their tables must never
+    # mask a missing migration for app code).
+    for _table, sql, _path, _lineno, is_test in app_table_defs():
+        if is_test and not include_tests:
             continue
-        for _, lit in literals(path.read_text(encoding="utf-8")):
-            for stmt in split_statements(lit):
-                if re.match(r"\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\b", stmt):
-                    try:
-                        conn.executescript(stmt)
-                    except sqlite3.OperationalError as err:
-                        if "already exists" not in str(err):
-                            raise
+        try:
+            conn.executescript(sql)
+        except sqlite3.OperationalError as err:
+            if "already exists" not in str(err):
+                raise
 
 
 def in_format_macro(text: str, lit_start: int) -> bool:
@@ -342,18 +342,38 @@ def bind_nulls(stmt: str) -> str:
     return "".join(out)
 
 
-def statements_in(path: Path) -> list[tuple[int, str]]:
-    out: list[tuple[int, str]] = []
+def lstrip_sql_comments(sql: str) -> str:
+    """Strip leading `--` line comments and `/* */` blocks (and whitespace)
+    for statement classification only — the full text still goes to EXPLAIN."""
+    s = sql.lstrip()
+    while True:
+        if s.startswith("--"):
+            end = s.find("\n")
+            s = "" if end == -1 else s[end + 1 :].lstrip()
+            continue
+        if s.startswith("/*"):
+            end = s.find("*/")
+            if end == -1:
+                return ""
+            s = s[end + 2 :].lstrip()
+            continue
+        return s
+
+
+def statements_in(path: Path) -> list[tuple[int, str, bool]]:
+    out: list[tuple[int, str, bool]] = []
     text = path.read_text(encoding="utf-8")
+    tested = test_ranges(text)
     lexed = lex_strings(text)
     for (lineno, lit), (off, _content) in zip(literals(text), lexed):
-        if not DML_RE.match(lit):
+        if not DML_RE.match(lstrip_sql_comments(lit)):
             continue
         if FORMAT_PH_RE.search(lit) or in_format_macro(text, off):
             continue  # dynamic SQL — cannot resolve statically
+        tested_here = in_test_range(tested, lineno - 1)
         for stmt in split_statements(lit):
-            if DML_RE.match(stmt):
-                out.append((lineno, stmt))
+            if DML_RE.match(lstrip_sql_comments(stmt)):
+                out.append((lineno, stmt, tested_here))
     return out
 
 
@@ -461,6 +481,41 @@ def self_test() -> int:
         "backslash continuation lexes",
         lex_strings('"SELECT a \\\n     FROM t1"')[0][1] == "SELECT a FROM t1",
     )
+    t1_conn = sqlite3.connect(":memory:")
+    t1_conn.executescript("CREATE TABLE t1 (id INTEGER, name TEXT)")
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".rs", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(
+            '"DELETE FROM t1; -- next operation\nINSERT INTO t1 (missing_col) VALUES (1)"'
+        )
+        tmp = Path(f.name)
+    try:
+        got = statements_in(tmp)
+        check("comment-led INSERT classified", len(got) == 2)
+        hit = check_statement(t1_conn, ROOT / "x.rs", 1, got[1][1])
+        check(
+            "comment-led bad column fires",
+            hit is not None and "missing_col" in hit,
+        )
+    finally:
+        tmp.unlink()
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".rs", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(
+            "#[cfg(test)]\nmod tests {\n"
+            '    fn t() { conn.execute("SELECT * FROM t1", []).unwrap(); }\n'
+            "}\n"
+            'fn a() { conn.execute("SELECT * FROM t1", []).unwrap(); }\n'
+        )
+        tmp = Path(f.name)
+    try:
+        got = statements_in(tmp)
+        flags = sorted(in_test for _, _, in_test in got)
+        check("test flag marks mod body", flags == [False, True])
+    finally:
+        tmp.unlink()
     check(
         "columns_of_create reads schema",
         columns_of_create("CREATE TABLE t (a INTEGER, b TEXT)", "t") == {"a", "b"},
@@ -485,22 +540,21 @@ def in_test_range(ranges: list[tuple[int, int]], lineno0: int) -> bool:
     return any(a <= lineno0 <= b for a, b in ranges)
 
 
-def app_table_defs() -> list[tuple[str, str, str, int]]:
-    """(table, create_sql, path, lineno) for CREATE TABLE in non-test app
+def app_table_defs() -> list[tuple[str, str, str, int, bool]]:
+    """(table, create_sql, path, lineno, in_test) for CREATE TABLE in app
     code (migrations excluded — they own the canonical schema)."""
-    out: list[tuple[str, str, str, int]] = []
+    out: list[tuple[str, str, str, int, bool]] = []
     for path in sorted(SRC.rglob("*.rs")):
         if path.name == "migrations.rs":
             continue
         text = path.read_text(encoding="utf-8")
         tested = test_ranges(text)
         for (lineno, lit), (off, _content) in zip(literals(text), lex_strings(text)):
-            if in_test_range(tested, lineno - 1):
-                continue
+            tested_here = in_test_range(tested, lineno - 1)
             for stmt in split_statements(lit):
                 m = CREATE_TABLE_RE.match(stmt)
                 if m:
-                    out.append((m.group(1), stmt, path.as_posix(), lineno))
+                    out.append((m.group(1), stmt, path.as_posix(), lineno, tested_here))
     return out
 
 
@@ -518,9 +572,9 @@ def check_splits(conn: sqlite3.Connection) -> list[str]:
     migrations never had it — two live schemas for one table)."""
     findings: list[str] = []
     reported: set[str] = set()
-    for table, sql, path, lineno in app_table_defs():
-        if table in reported:
-            continue
+    for table, sql, path, lineno, is_test in app_table_defs():
+        if table in reported or is_test:
+            continue  # test fixtures define their own schemas — not app drift
         base = table_columns(conn, table)
         if base is None:
             continue  # temp/export-only table, no canonical schema to split from
@@ -548,19 +602,24 @@ def columns_of_create(sql: str, table: str) -> set[str] | None:
 
 
 def main() -> int:
-    conn = sqlite3.connect(":memory:")
-    build_schema(conn)
+    prod = sqlite3.connect(":memory:")
+    build_schema(prod, include_tests=False)
+    full = sqlite3.connect(":memory:")
+    build_schema(full, include_tests=True)
     tables = {
-        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        r[0] for r in prod.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
     print(f"sql-prepare: schema has {len(tables)} tables", file=sys.stderr)
     findings: list[str] = []
-    findings += check_splits(conn)
+    findings += check_splits(prod)
     for path in sorted(SRC.rglob("*.rs")):
         if path.name == "migrations.rs":
             continue
-        for lineno, stmt in statements_in(path):
-            hit = check_statement(conn, path, lineno, stmt)
+        for lineno, stmt, in_test in statements_in(path):
+            # Test DML prepares against the full schema (fixtures included);
+            # app DML must prepare against prod — a test-only table must
+            # never mask a missing migration for shipped code.
+            hit = check_statement(full if in_test else prod, path, lineno, stmt)
             if hit:
                 findings.append(hit)
     for finding in sorted(set(findings)):
