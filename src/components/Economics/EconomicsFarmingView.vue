@@ -20,7 +20,7 @@ import { useViewPrefs } from '../../composables/useViewPrefs'
 const tabs = [
   { id: 'historical', label: 'Session History' },
   { id: 'database', label: 'Database' },
-  { id: 'sources', label: 'Sources' },
+  { id: 'sources', label: 'Unattributed' },
 ]
 
 const { prefs, update } = useViewPrefs('economics.farming', { activeTab: 'historical' })
