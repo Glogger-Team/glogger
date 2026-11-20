@@ -731,8 +731,15 @@ pub fn set_tracked_skills(
 
 /// Upsert one skill row from a chat `[Status]` level-up line
 /// ("You earned N XP and reached level L in Skill!").
-/// Post-10/21/2026 this is the only live absolute skill signal
-/// (`ProcessUpdateSkill` lines are gone from Player.log).
+/// Post-10/21/2026 this is the only live skill signal
+/// (`ProcessUpdateSkill` lines are gone from Player.log). The carried XP is
+/// awarded increment, not a total — newer lines accumulate onto the
+/// stored value (identical-timestamp resends are no-ops via the recency
+/// guard below). Mixed-basis caveat: report snapshots seed `xp` as the
+/// absolute within-level figure (`xp_toward_next_level`), so chat
+/// accumulation onto a snapshot row blends bases — exact within a level,
+/// muddy across the ding until the next snapshot re-anchors absolute.
+/// (A separate chat-observed basis would need a schema change; see TODO.)
 /// Chat carries only level + this-level XP, so the upsert preserves
 /// `base_level/bonus_levels/tnl/max_level` on conflict and always refreshes
 /// `skill_name` to the canonical display name (a fresh insert seeds
@@ -784,7 +791,7 @@ pub(crate) fn apply_chat_level_up(l: &ChatLevelUp<'_>) -> Result<bool, String> {
          ON CONFLICT(character_name, server_name, skill_id) DO UPDATE SET
             skill_name = excluded.skill_name,
             level = excluded.level,
-            xp = excluded.xp,
+            xp = game_state_skills.xp + excluded.xp,
             last_confirmed_at = CASE WHEN excluded.last_confirmed_at > game_state_skills.last_confirmed_at THEN excluded.last_confirmed_at ELSE game_state_skills.last_confirmed_at END,
             source = excluded.source
          WHERE (excluded.last_confirmed_at > game_state_skills.last_confirmed_at AND excluded.level >= game_state_skills.level)
@@ -2496,7 +2503,7 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?)),
             )
             .expect("row exists");
-        assert_eq!((level, xp), (87, 192));
+        assert_eq!((level, xp), (87, 292));
         assert_eq!(source, "chat");
         assert_eq!(ts, "2026-04-16 14:23:16");
         assert_eq!((base_level, bonus, tnl, max), (80, 3, 5000, 100));
@@ -2511,12 +2518,19 @@ mod tests {
             apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 192, confirmed_at: "2026-04-16 14:23:16" })
                 .expect("first apply");
         assert!(first);
-        // Same values re-applied at a later timestamp: the recency guard lets
-        // it through (only the timestamp moves).
+        // Byte-identical resend (same timestamp): the recency guard drops it,
+        // so the increment is not double-counted.
         let replay =
-            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 192, confirmed_at: "2026-04-16 15:00:00" })
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 192, confirmed_at: "2026-04-16 14:23:16" })
                 .expect("replay apply");
-        assert!(replay);
+        assert!(!replay);
+        // Same values at a LATER timestamp are indistinguishable from a
+        // second identical award, so they accumulate (documented limit of
+        // second-granularity logs).
+        let second =
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 192, confirmed_at: "2026-04-16 15:00:00" })
+                .expect("second apply");
+        assert!(second);
 
         let (level, xp, ts, count): (i64, i64, String, i64) = conn
             .query_row(
@@ -2528,7 +2542,7 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .expect("row exists");
-        assert_eq!((level, xp), (87, 192));
+        assert_eq!((level, xp), (87, 384));
         assert_eq!(ts, "2026-04-16 15:00:00");
         assert_eq!(count, 1);
     }
@@ -2585,7 +2599,7 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .expect("row exists");
-        assert_eq!((level, xp), (88, 10));
+        assert_eq!((level, xp), (88, 202));
         assert_eq!(ts, "2026-04-16 15:00:00");
 
         // A stale replay that would have won against the rewound clock is now

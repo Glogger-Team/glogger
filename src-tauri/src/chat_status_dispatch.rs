@@ -675,6 +675,13 @@ fn insert_json_receipt_guarded(
 /// level-up writer, minus the level gate (XP within a level carries no level
 /// signal). No writer for this existed — `[Status]` XP lines were parsed but
 /// never persisted, and `Player.log` skill snapshots are gone.
+/// `xp` here is an AWARDED INCREMENT, not a total (proven by the live
+/// fixture: Riding 250 → 350 → 300 across three lines — totals cannot fall).
+/// Identical resends (same timestamp) are no-ops; newer lines accumulate.
+/// A second award in the same second is dropped, as is an older award
+/// arriving after a newer one — second-granularity logs give no key that
+/// separates either from its own replay. (Per-award reconciliation against
+/// snapshot anchors would need a per-award ledger; see TODO.)
 #[allow(clippy::too_many_arguments)]
 fn upsert_chat_xp(
     conn: &rusqlite::Connection,
@@ -693,7 +700,7 @@ fn upsert_chat_xp(
          ON CONFLICT(character_name, server_name, skill_id) DO UPDATE SET
             skill_name = excluded.skill_name,
             level = excluded.level,
-            xp = excluded.xp,
+            xp = game_state_skills.xp + excluded.xp,
             last_confirmed_at = CASE WHEN excluded.last_confirmed_at > game_state_skills.last_confirmed_at THEN excluded.last_confirmed_at ELSE game_state_skills.last_confirmed_at END,
             source = excluded.source
          WHERE excluded.last_confirmed_at > game_state_skills.last_confirmed_at",
@@ -827,6 +834,12 @@ fn dispatch_json_event(
         E::Book { timestamp, title, body } => {
             if let Some(id) = ctx.identity {
                 let book_type = classify_json_book_title(title);
+                // `current` tracks whether the row is known to hold this
+                // body: identical content (rescan no-op) or a successful
+                // write. A failed write leaves it false so caller-side
+                // imports never derive content tables from a row that
+                // never landed.
+                let mut current = false;
                 if let Ok(conn) = ctx.db.get_write() {
                     // Same upsert as `persist_book_content` (no emit here —
                     // the caller owns emits; the domain carries the refresh).
@@ -842,6 +855,7 @@ fn dispatch_json_event(
                         )
                         .map(|c| c == *body)
                         .unwrap_or(false);
+                    current = same;
                     if !same {
                         let dt = chrono::Utc::now().to_rfc3339();
                         if conn
@@ -856,6 +870,7 @@ fn dispatch_json_event(
                             .is_ok()
                         {
                             out.domain("books");
+                            current = true;
                         }
                     }
                 }
@@ -863,7 +878,9 @@ fn dispatch_json_event(
                 // run caller-side: they need `AppHandle` for their emits.
                 // Bodies are serde_json-decoded, so newlines are already real —
                 // no `normalize_book_content` step.
-                out.json_book = Some((book_type.to_string(), title.clone(), body.clone(), timestamp.clone()));
+                if current {
+                    out.json_book = Some((book_type.to_string(), title.clone(), body.clone(), timestamp.clone()));
+                }
             }
         }
         E::FavorDelta {
@@ -899,7 +916,24 @@ fn dispatch_json_event(
                     // genuinely distinct same-second same-delta gifts collapse
                     // into one — accepted (second-granularity logs give no
                     // finer key; rapid same-item gifting is rare).
-                    let fresh = conn
+                    // Single write transaction for event + touch-up + gift:
+                    // a gift-log failure rolls back the event, so a later
+                    // replay retries the whole unit instead of leaving a
+                    // gift-less event behind (INSERT OR IGNORE keeps
+                    // successful replays no-ops). Same unchecked-transaction
+                    // shape as the survey aggregator: the pool checkout is
+                    // exclusive and no outer transaction is open here.
+                    let tx = match rusqlite::Transaction::new_unchecked(
+                        &conn,
+                        rusqlite::TransactionBehavior::Immediate,
+                    ) {
+                        Ok(tx) => tx,
+                        Err(e) => {
+                            eprintln!("[chat_status_dispatch] favor txn begin failed: {e}");
+                            return;
+                        }
+                    };
+                    let fresh = tx
                         .execute(
                             "INSERT OR IGNORE INTO favor_events
                                 (character_name, server_name, npc_key, timestamp, delta)
@@ -914,30 +948,43 @@ fn dispatch_json_event(
                     // Tier/name touch-up so log-only NPCs (no report row yet)
                     // still render. Snapshot tiers are never overwritten with
                     // NULL — the upsert only fills name and recency.
-                    conn.execute(
+                    // Recency-guarded like the snapshot seeder: an unseen
+                    // older-stamped delta (catch-up scan of a rotated log)
+                    // must not rewind `last_confirmed_at`, or a later report
+                    // with a middle timestamp would replace a newer tier.
+                    if let Err(e) = tx.execute(
                         "INSERT INTO game_state_favor (character_name, server_name, npc_key, npc_name, favor_tier, last_confirmed_at, source)
                          VALUES (?1, ?2, ?3, ?4, NULL, ?5, 'log')
                          ON CONFLICT(character_name, server_name, npc_key) DO UPDATE SET
                             npc_name = excluded.npc_name,
-                            last_confirmed_at = excluded.last_confirmed_at",
+                            last_confirmed_at = excluded.last_confirmed_at
+                         WHERE excluded.last_confirmed_at > game_state_favor.last_confirmed_at",
                         rusqlite::params![id.character, id.server, npc, display_name, timestamp],
-                    )
-                    .ok();
-                    // Gift row unless the game's own signals say "not a gift":
+                    ) {
+                        eprintln!("[chat_status_dispatch] favor touch-up failed, rolled back: {e}");
+                        return;
+                    }
                     // capped-area counts belong to the report reconcile, and
                     // tasteless NPCs cannot receive gifts (card readings etc.).
                     // Quest-payout noise for uncapped NPCs is accepted and
                     // documented — JSON carries no is_gift flag. Favor losses
                     // are never gifts, whatever the NPC's tastes.
-                    if giftable && *delta > 0.0 {
-                        conn.execute(
+                    if giftable
+                        && *delta > 0.0
+                        && let Err(e) = tx.execute(
                             "INSERT INTO game_state_gift_log (character_name, server_name, npc_key, npc_name, gifted_at, favor_delta)
                              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                             rusqlite::params![
                                 id.character, id.server, npc, display_name, timestamp, *delta
                             ],
                         )
-                        .ok();
+                    {
+                        eprintln!("[chat_status_dispatch] gift-log insert failed, rolled back: {e}");
+                        return;
+                    }
+                    if let Err(e) = tx.commit() {
+                        eprintln!("[chat_status_dispatch] favor txn commit failed: {e}");
+                        return;
                     }
                     out.domain("favor");
                 }
@@ -950,7 +997,11 @@ fn dispatch_json_event(
             ..
         } => {
             if let Some(id) = ctx.identity {
-                // Same absolute-count upsert as the old `RecipeUpdated` arm.
+                // Same absolute-count upsert as the old `RecipeUpdated` arm,
+                // with one refinement: an equal-timestamp snapshot carrying a
+                // GREATER total still applies (two crafts in one second).
+                // Identical resends (same ts, same total) stay no-ops, and
+                // older or lesser snapshots never move the total backward.
                 if let Ok(conn) = ctx.db.get_write() {
                     let rows = conn.execute(
                         "INSERT INTO game_state_recipes (character_name, server_name, recipe_id, completion_count, last_confirmed_at, source)
@@ -959,7 +1010,9 @@ fn dispatch_json_event(
                             completion_count = excluded.completion_count,
                             last_confirmed_at = excluded.last_confirmed_at,
                             source = excluded.source
-                         WHERE excluded.last_confirmed_at > game_state_recipes.last_confirmed_at",
+                         WHERE excluded.last_confirmed_at > game_state_recipes.last_confirmed_at
+                            OR (excluded.last_confirmed_at = game_state_recipes.last_confirmed_at
+                                AND excluded.completion_count > game_state_recipes.completion_count)",
                         rusqlite::params![
                             id.character, id.server, *recipe_id as i64, *completions as i64, timestamp
                         ],
@@ -1116,8 +1169,12 @@ fn record_poop(db: &DbPool, character: &str, server: &str, target: &str, local_t
 }
 
 /// Persist a player/entity message (pigeon mail, entity reports) with a
-/// rescan guard (same character/server/timestamp/type/sender → skip).
-/// Returns `true` when a row was written (caller emits `player_messages`).
+/// rescan guard (same character/server/timestamp/type/sender/body → skip).
+/// The body is in the key: two mails in the same second from one sender
+/// must not collapse (live fixture: text-only pigeon and the item-bearing
+/// one share a timestamp). Byte-identical resends still collapse, which is
+/// the point. Returns `true` when a row was written (caller emits
+/// `player_messages`).
 #[allow(clippy::too_many_arguments)]
 fn record_player_message(
     db: &DbPool,
@@ -1140,8 +1197,8 @@ fn record_player_message(
          WHERE NOT EXISTS (
             SELECT 1 FROM player_messages
              WHERE character_name = ?1 AND server_name = ?2 AND timestamp = ?3
-               AND message_type = ?4 AND other_player = ?6
-         )",
+               AND message_type = ?4 AND other_player = ?6 AND body = ?7
+        )",
         rusqlite::params![
             character, server, timestamp, message_type, direction, other_player, body, item_name
         ],
@@ -1956,8 +2013,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!((xp, level, n), (53, 46, 1));
+        // Live-fixture sequence: Riding awards 250 → 350 → 300 at rising
+        // timestamps (non-monotonic, so increments, not totals). They
+        // accumulate to 900; the byte-identical resend stays a no-op.
+        seed_skill(&gd, "Riding", 4244);
+        for (ts, amount) in [
+            ("26-11-17 08:44:08", 250),
+            ("26-11-17 08:44:23", 350),
+            ("26-11-17 08:44:38", 300),
+        ] {
+            let json = json_msg(
+                "EarnedXP",
+                &format!("{{\"Skill\":\"Riding\", \"XP\": {amount}, \"OldLevel\": 102, \"NewLevel\": 102}}"),
+                ts,
+            );
+            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        }
+        let xp: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT xp FROM game_state_skills
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND skill_name = 'Riding'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(xp, 900);
     }
-
     #[test]
     fn json_xp_level_up_uses_chat_writer() {
         let (pool, _guard) = test_pool();
@@ -2067,6 +2151,60 @@ mod tests {
     }
 
     #[test]
+    fn json_favor_older_delta_does_not_rewind_confirmed_at() {
+        // An unseen older-stamped delta (catch-up scan of a rotated log)
+        // must not rewind `last_confirmed_at`: the snapshot seeder's
+        // recency guard compares against it, so a rewind would let a later
+        // older report replace a newer tier. The event row itself still
+        // lands (the ledger is append-only); only the watermark is guarded.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        seed_npc(&gd, "NPC_Elune", "Elune", Some("AreaSerbule"), true);
+        let conn = pool.get_write().unwrap();
+        conn.execute(
+            "INSERT INTO game_state_favor
+                (character_name, server_name, npc_key, npc_name, favor_tier, last_confirmed_at, source)
+             VALUES ('Alice', 'Dreva', 'NPC_Elune', 'Elune', 'Close Friends', '2026-11-17 10:00:00', 'snapshot')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let old_ts = "26-11-17 08:00:00";
+        let old = json_msg("DeltaFavor", "{\"Npc\":\"NPC_Elune\", \"Delta\": 5.0}", old_ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &old, old_ts, &mut st);
+        let conn = pool.get().unwrap();
+        let (tier, confirmed): (Option<String>, String) = conn
+            .query_row(
+                "SELECT favor_tier, last_confirmed_at FROM game_state_favor
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tier.as_deref(), Some("Close Friends"));
+        assert_eq!(confirmed, "2026-11-17 10:00:00");
+        drop(conn);
+        let new_ts = "26-11-17 11:00:00";
+        let new = json_msg("DeltaFavor", "{\"Npc\":\"NPC_Elune\", \"Delta\": 5.0}", new_ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &new, new_ts, &mut st);
+        let conn = pool.get().unwrap();
+        let confirmed: String = conn
+            .query_row(
+                "SELECT last_confirmed_at FROM game_state_favor
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(confirmed, "2026-11-17 11:00:00");
+    }
+
+    #[test]
     fn json_favor_delta_skips_gift_row_when_capped_or_tasteless() {
         let (pool, _guard) = test_pool();
         let gd = game_data();
@@ -2134,8 +2272,31 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 211);
+        // Same-second progress (212 crafts in the same second) applies;
+        // the byte-identical resend stays a no-op and stays silent.
+        let json = json_msg(
+            "RecipeUsage",
+            "{\"RecipeName\":\"Recall Heart's Home\", \"RecipeId\": 9008, \"Completions\": 212}",
+            ts,
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out.domains.iter().any(|d| d == "recipes"));
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out.domains.iter().all(|d| d != "recipes"));
+        let n: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT completion_count FROM game_state_recipes
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND recipe_id = 9008",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 212);
     }
-
     #[test]
     fn json_book_upserts_and_reports_trigger() {
         let (pool, _guard) = test_pool();
@@ -2231,9 +2392,13 @@ mod tests {
             )
             .unwrap();
         assert_eq!(item.as_deref(), Some("Mulberry Salad"));
-        // Rescan: same line replays to the existing row.
+        // Same-second pair from the live fixture: the text-only line lands
+        // first and must not swallow the item-bearing one (body is in the
+        // rescan key, not just the sender + second).
+        let plain = json_msg("Pigeon", "{\"Title\":\"Pigeon From TestFriend\", \"Body\":\"This is a pigeon\\n\"}", ts);
         let mut st = state(&mut arena, &mut rez, &mut dmg);
-        dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        let out = dispatch(&pool, &gd, Some(&id()), &plain, ts, &mut st);
+        assert!(out.domains.iter().any(|d| d == "player_messages"));
         let count: i64 = pool
             .get_write()
             .unwrap()
@@ -2241,7 +2406,22 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 2);
+        // Rescan: both lines replay to the existing rows, domains stay silent.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
+        assert!(out.domains.iter().all(|d| d != "player_messages"));
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &plain, ts, &mut st);
+        assert!(out.domains.iter().all(|d| d != "player_messages"));
+        let count: i64 = pool
+            .get_write()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM player_messages WHERE message_type = 'pigeon'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 2);
     }
 
     #[test]

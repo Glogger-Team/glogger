@@ -1356,6 +1356,57 @@ fn migration_v90_collapse_stall_same_batch_dupes(conn: &Connection) -> Result<()
 /// zeroed below (main-line databases may carry stale accruals from the old
 /// arm; the label they fed is now computed at read time). Report `favor`
 /// absolutes (snapshot path) and the Statehelm weekly counts are untouched.
+/// Fill-only backfill for `character_npc_favor.gifts_this_week` (V91).
+/// Reports imported before V91 stored `GiftsThisWeek` in
+/// `character_snapshots.raw_json`, but the column did not exist — and
+/// duplicate re-imports return early, so those cells would stay NULL
+/// forever. Parses each affected snapshot once and fills NULL cells from
+/// its own JSON. Fixtures without the snapshots table, malformed JSON, or
+/// absent keys are skipped, never failed; non-NULL cells are never
+/// overwritten (same shape as V81's detail backfill).
+fn backfill_gifts_this_week(conn: &Connection) -> Result<()> {
+    let has_snapshots: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'character_snapshots')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        if has_snapshots {
+            let pending: Vec<(i64, String)> = {
+                let mut stmt = conn.prepare(
+                    "SELECT DISTINCT cs.id, cs.raw_json FROM character_snapshots cs
+                     JOIN character_npc_favor cnf ON cnf.snapshot_id = cs.id
+                     WHERE cnf.gifts_this_week IS NULL AND cs.raw_json IS NOT NULL",
+                )?;
+                let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            };
+            for (snapshot_id, raw_json) in pending {
+                let parsed: serde_json::Value = match serde_json::from_str(&raw_json) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                let npcs = match parsed.get("NPCs").and_then(|v| v.as_object()) {
+                    Some(npcs) => npcs,
+                    None => continue,
+                };
+                for (npc_key, npc) in npcs {
+                    let gifts = match npc.get("GiftsThisWeek").and_then(|v| v.as_i64()) {
+                        Some(g) => g,
+                        None => continue,
+                    };
+                    conn.execute(
+                        "UPDATE character_npc_favor SET gifts_this_week = ?1
+                         WHERE snapshot_id = ?2 AND npc_key = ?3 AND gifts_this_week IS NULL",
+                        rusqlite::params![gifts, snapshot_id, npc_key],
+                    )?;
+                }
+            }
+        }
+    Ok(())
+}
+
 fn migration_v91_vip_json_logging(conn: &Connection) -> Result<()> {
     // Minimal test fixtures build only the tables they need — skip each arm
     // when its table is absent (same shape as V79's milking-log guard).
@@ -1388,6 +1439,7 @@ fn migration_v91_vip_json_logging(conn: &Connection) -> Result<()> {
             "ALTER TABLE character_npc_favor ADD COLUMN gifts_this_week INTEGER",
             [],
         )?;
+        backfill_gifts_this_week(conn)?;
     }
     conn.execute(
         "CREATE TABLE IF NOT EXISTS favor_events (
@@ -5492,6 +5544,58 @@ mod tests {
             .query_row("SELECT cumulative_delta FROM game_state_favor", [], |r| r.get(0))
             .unwrap();
         assert_eq!(zeroed, 0.0);
+    }
+
+    #[test]
+    fn migration_v91_backfills_gifts_this_week_fill_only() {
+        // Pre-V91 shape: the favor table has no gifts column; the snapshots
+        // table carries the raw JSON. The migration must fill present keys,
+        // leave absent keys and unlisted NPCs NULL, and never overwrite a
+        // cell that already holds a value.
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE character_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                raw_json TEXT NOT NULL
+            );
+            INSERT INTO character_snapshots (raw_json) VALUES
+                ('{\"NPCs\":{\"Elune\":{\"GiftsThisWeek\":5},\"Raina\":{}}}'),
+                ('not-json'),
+                ('{\"NPCs\":{}}');
+            CREATE TABLE character_npc_favor (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                snapshot_id INTEGER NOT NULL,
+                npc_key TEXT NOT NULL
+            );
+            INSERT INTO character_npc_favor (snapshot_id, npc_key) VALUES
+                (1, 'Elune'), (1, 'Raina'), (1, 'Bendith'),
+                (2, 'Elune'), (3, 'Elune');",
+        )
+        .unwrap();
+        migration_v91_vip_json_logging(&c).unwrap();
+        let gifts = |snapshot: i64, npc: &str| -> Option<i64> {
+            c.query_row(
+                "SELECT gifts_this_week FROM character_npc_favor
+                 WHERE snapshot_id = ?1 AND npc_key = ?2",
+                rusqlite::params![snapshot, npc],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(gifts(1, "Elune"), Some(5));
+        assert_eq!(gifts(1, "Raina"), None);
+        assert_eq!(gifts(1, "Bendith"), None);
+        assert_eq!(gifts(2, "Elune"), None);
+        assert_eq!(gifts(3, "Elune"), None);
+        // Fill-only: a later value is never overwritten by a re-run.
+        c.execute(
+            "UPDATE character_npc_favor SET gifts_this_week = 9
+             WHERE snapshot_id = 1 AND npc_key = 'Elune'",
+            [],
+        )
+        .unwrap();
+        backfill_gifts_this_week(&c).unwrap();
+        assert_eq!(gifts(1, "Elune"), Some(9));
     }
 }
 

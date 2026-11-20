@@ -92,8 +92,8 @@ struct EarnedXpJson {
     skill: String,
     #[serde(rename = "XP")]
     xp: u32,
-    old_level: u32,
-    new_level: u32,
+    old_level: Option<u32>,
+    new_level: Option<u32>,
 }
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -137,6 +137,12 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
         }
         "EarnedXP" => {
             let v: EarnedXpJson = serde_json::from_str(body).ok()?;
+            // Levels are required but may legitimately be zero (first XP in
+            // an unlearned skill): `Option` rejects only absent fields, so a
+            // missing level never becomes a destructive zero-level overwrite.
+            let (Some(old_level), Some(new_level)) = (v.old_level, v.new_level) else {
+                return None;
+            };
             if v.skill.is_empty() || v.xp == 0 {
                 return None;
             }
@@ -144,13 +150,13 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
                 timestamp,
                 skill: v.skill,
                 xp: v.xp,
-                old_level: v.old_level,
-                new_level: v.new_level,
+                old_level,
+                new_level,
             })
         }
         "Book" => {
             let v: BookJson = serde_json::from_str(body).ok()?;
-            if v.title.is_empty() {
+            if v.title.is_empty() || v.body.is_empty() {
                 return None;
             }
             Some(ChatJsonEvent::Book {
@@ -172,7 +178,7 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
         }
         "RecipeUsage" => {
             let v: RecipeUsageJson = serde_json::from_str(body).ok()?;
-            if v.recipe_name.is_empty() {
+            if v.recipe_name.is_empty() || v.recipe_id == 0 {
                 return None;
             }
             Some(ChatJsonEvent::RecipeUsed {
@@ -183,7 +189,7 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
         }
         "Pigeon" => {
             let v: BookJson = serde_json::from_str(body).ok()?;
-            if v.title.is_empty() {
+            if v.title.is_empty() || v.body.is_empty() {
                 return None;
             }
             Some(ChatJsonEvent::PigeonReceived {
@@ -194,6 +200,9 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
         }
         "ParagonXP" => {
             let v: EarnedXpJson = serde_json::from_str(body).ok()?;
+            let (Some(old_level), Some(new_level)) = (v.old_level, v.new_level) else {
+                return None;
+            };
             if v.skill.is_empty() || v.xp == 0 {
                 return None;
             }
@@ -201,13 +210,13 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
                 timestamp,
                 skill: v.skill,
                 xp: v.xp,
-                old_level: v.old_level,
-                new_level: v.new_level,
+                old_level,
+                new_level,
             })
         }
         "EntityReport" => {
             let v: BookJson = serde_json::from_str(body).ok()?;
-            if v.title.is_empty() {
+            if v.title.is_empty() || v.body.is_empty() {
                 return None;
             }
             Some(ChatJsonEvent::EntityReport {
@@ -370,6 +379,43 @@ mod tests {
         let msgs = parse_chat_lines("26-11-17 08:50:27\t[JSON:AddItem] not-json\n");
         assert_eq!(msgs.len(), 1);
         assert!(parse_json_message(&msgs[0]).is_none());
+    }
+
+    #[test]
+    fn missing_required_fields_yield_none_not_zeros() {
+        // Absent required fields must not default into a destructive
+        // zero/empty event: a missing body would wipe book content, and
+        // absent XP levels would zero a stored level via the upsert.
+        // (Explicit zero completions are valid — see
+        // `recipe_usage_explicit_zero_completions_valid`.)
+        for line in [
+            "26-11-17 08:52:00\t[JSON:RecipeUsage] {\"RecipeName\":\"Recall Heart's Home\", \"RecipeId\": 9008}\n",
+            "26-11-17 08:52:00\t[JSON:Book] {\"Title\":\"Skill Info\"}\n",
+            "26-11-17 08:52:00\t[JSON:Pigeon] {\"Title\":\"Pigeon From TestFriend\"}\n",
+            "26-11-17 08:52:00\t[JSON:EarnedXP] {\"Skill\":\"Sword\", \"XP\": 53}\n",
+            "26-11-17 08:52:00\t[JSON:EarnedXP] {\"Skill\":\"Sword\", \"XP\": 53, \"OldLevel\": 4}\n",
+        ] {
+            let msgs = parse_chat_lines(line);
+            assert_eq!(msgs.len(), 1);
+            assert!(parse_json_message(&msgs[0]).is_none(), "accepted {line:?}");
+        }
+    }
+
+    #[test]
+    fn explicit_zero_xp_levels_are_accepted_not_defaulted() {
+        // First XP in an unlearned skill legitimately carries 0/0: explicit
+        // zeros must survive (a fresh insert seeds level 0 correctly), while
+        // *absent* levels are rejected above. Proves the `Option` fields
+        // distinguish the two instead of defaulting both to zero.
+        let line = "26-11-17 08:52:00\t[JSON:EarnedXP] {\"Skill\":\"Sword\", \"XP\": 53, \"OldLevel\": 0, \"NewLevel\": 0}\n";
+        let msgs = parse_chat_lines(line);
+        assert_eq!(msgs.len(), 1);
+        match parse_json_message(&msgs[0]) {
+            Some(ChatJsonEvent::Xp { old_level, new_level, .. }) => {
+                assert_eq!((old_level, new_level), (0, 0))
+            }
+            other => panic!("expected Xp, got {other:?}"),
+        }
     }
 
     #[test]

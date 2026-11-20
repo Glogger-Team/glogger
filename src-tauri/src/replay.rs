@@ -1,5 +1,5 @@
-/// Chat.log replay — re-processes archived chat logs through the live
-/// dispatch pipeline for backfills and debugging.
+/// Chat.log replay — re-parses archived chat logs and re-emits their events
+/// (emit-only preview for debugging; never writes to the database).
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -116,7 +116,8 @@ fn parse_chat_log_events(path: &PathBuf) -> Result<Vec<TimedEvent>, String> {
     Ok(events)
 }
 
-/// Core replay logic — replays Chat.log events through the live dispatch pipeline.
+/// Core replay logic — re-parses Chat.log events and re-emits them as frontend
+/// events (emit-only; the live dispatch pipeline is never invoked).
 fn run_replay(
     chat_log_path: PathBuf,
     app: &AppHandle,
@@ -280,9 +281,15 @@ fn run_replay(
 // Tauri Command
 // ============================================================
 
-/// Replay a Chat.log file through the full coordinator pipeline, in timestamp
-/// order. This simulates live tailing. (The old dual-log replay also fed a
-/// Player.log; that pipeline was deleted, so only the chat path is replayed.)
+/// Re-parse a Chat.log file and re-emit its chat events, in timestamp order.
+/// This is a parse-and-preview tool for debugging, NOT a backfill path: it
+/// never writes to the database (the message branch parses status lines and
+/// emits `chat-status-event` / `character-login` / `server-detected` only).
+/// Identity comes from the log's own login lines, so replaying another
+/// character's log flips the active character/session feed to that identity
+/// while it runs. Live tailing, scans, and report imports remain the only
+/// writers. (The old dual-log replay also fed a Player.log; that pipeline
+/// was deleted, so only the chat path is replayed.)
 #[tauri::command]
 pub async fn replay_chat_log(
     chat_log_path: String,

@@ -106,9 +106,10 @@
     <div class="settings-section">
       <h3>Chat-Log Replay</h3>
 
-      <p class="mb-3 text-text-muted text-xs leading-relaxed">
-        Replay a Chat.log through the live dispatch pipeline for backfills and
-        debugging. Progress and parsed status events stream back while it runs.
+      <p class="mb-3 text-xs text-text-muted leading-relaxed">
+        Re-parse a Chat.log and re-emit its chat events for debugging. This
+        previews parsing only — it never writes to the database, so it is
+        not a backfill. Identity comes from the log's own login lines.
       </p>
 
       <div class="flex gap-2 mb-3">

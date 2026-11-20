@@ -63,6 +63,8 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
       review: ${{ steps.filter.outputs.review }}
       parity_ipc: ${{ steps.filter.outputs.parity_ipc }}
+      migration_chain: ${{ steps.filter.outputs.migration_chain }}
+      grids: ${{ steps.filter.outputs.grids }}
       version_sync: ${{ steps.filter.outputs.version_sync }}
       rust: ${{ steps.filter.outputs.rust }}
       audit: ${{ steps.filter.outputs.audit }}
@@ -113,6 +115,9 @@ jobs:
               - 'src-tauri/tauri.experimental.conf.json'
               - 'src-tauri/Cargo.toml'
               - 'src-tauri/Cargo.lock'
+            migration_chain:
+              - 'src-tauri/src/db/migrations.rs'
+              - 'scripts/check-migration-chain.py'
             rust:
               - 'src-tauri/**'
               - 'src-tauri/Cargo.toml'
@@ -135,6 +140,7 @@ jobs:
           FILTER_REVIEW: ${{ steps.filter.outputs.review }}
           FILTER_PARITY_IPC: ${{ steps.filter.outputs.parity_ipc }}
           FILTER_VERSION_SYNC: ${{ steps.filter.outputs.version_sync }}
+          FILTER_MIGRATION_CHAIN: ${{ steps.filter.outputs.migration_chain }}
           FILTER_RUST: ${{ steps.filter.outputs.rust }}
           FILTER_AUDIT: ${{ steps.filter.outputs.audit }}
         run: |
@@ -147,6 +153,7 @@ jobs:
           echo "review=$FILTER_REVIEW"
           echo "parity_ipc=$FILTER_PARITY_IPC"
           echo "version_sync=$FILTER_VERSION_SYNC"
+          echo "migration_chain=$FILTER_MIGRATION_CHAIN"
           echo "rust=$FILTER_RUST"
           echo "audit=$FILTER_AUDIT"
           echo "runall=$FILTER_RUN_ALL"
@@ -491,6 +498,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Full history: the migration-chain step diffs against the PR base
+          # (or push `before`) sha, which a depth-1 checkout does not contain
+          # (same reason the markdown job sets fetch-depth: 0).
+          fetch-depth: 0
 
       - name: Log gate inputs (#133)
         # Reads the path-filter outputs this job gates on; informational only.
@@ -613,6 +624,40 @@ jobs:
             echo "parity_ipc scope: ran"
           else
             echo "parity_ipc scope: skipped (no src-tauri/src/**.rs changed)"
+          fi
+
+      - name: Migration chain (one-per-PR)
+        # Same `mise run lint:migrations` slice (`lint:fast` commit set,
+        # also in push `lint`). Base is the PR base sha on pull_request,
+        # the push `before` sha on main pushes (all-zero on manual dispatch
+        # falls back to HEAD~1); scope logic lives in the script, shared
+        # with the mise task.
+        if: needs.changes.outputs.migration_chain == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          if [ -z "${BASE//0/}" ]; then
+            echo "zero base sha (manual dispatch); falling back to HEAD~1"
+            BASE="HEAD~1"
+          fi
+          mise exec -- python scripts/check-migration-chain.py --added-since "$BASE"
+
+      - name: Migration chain scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
+        if: always()
+        env:
+          MIGRATION_CHAIN_SCOPE: ${{ needs.changes.outputs.migration_chain }}
+        run: |
+          if [ "$MIGRATION_CHAIN_SCOPE" = "true" ]; then
+            echo "migration_chain scope: ran"
+          else
+            echo "migration_chain scope: skipped (no migrations.rs changed)"
           fi
 
   rust-tests:

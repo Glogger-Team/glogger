@@ -54,21 +54,26 @@ pub struct ChatAttribution<'a> {
     pub mark_completed: bool,
 }
 
-/// Per-character aggregator. The coordinator owns one instance; chat gains
-/// and manual survey commands feed it.
+/// Shared aggregator. The coordinator owns one instance for ALL
+/// characters/servers, so every cache below is keyed by identity —
+/// a cache entry for one character must never serve another.
 pub struct SurveySessionAggregator {
     game_data: GameDataState,
 
-    /// Recently-consumed Basic survey uses `(use_id, used_at UTC)`. Chat
-    /// gains attribute to one of these only within
-    /// [`CHAT_BASIC_WINDOW_SECS`] of its `used_at` (Basic loot lands in the
-    /// same game tick as the map's consumption). Bounded FIFO.
-    recent_basic_uses: VecDeque<(i64, chrono::NaiveDateTime)>,
+    /// Recently-consumed Basic survey uses `(use_id, used_at UTC,
+    /// character, server)`. Chat gains attribute to one of these only
+    /// within [`CHAT_BASIC_WINDOW_SECS`] of its `used_at` (Basic loot
+    /// lands in the same game tick as the map's consumption) AND for the
+    /// same identity. Bounded FIFO.
+    recent_basic_uses: VecDeque<(i64, chrono::NaiveDateTime, String, String)>,
 
     /// Cached active session id (DB is the source of truth, but we cache to
     /// avoid a query per event). `None` means "unknown — go check the DB".
-    /// Refreshed when a session is started/ended.
-    cached_active_session_id: Option<Option<i64>>,
+    /// The identity is part of the key: a cached id for (A, server) never
+    /// answers for (B, server). Refreshed when a session is started/ended.
+    /// Lookup failures are never cached — a transient DB error must not
+    /// pin "no session" until the next invalidation.
+    cached_active_session: Option<(String, String, Option<i64>)>,
 }
 
 impl SurveySessionAggregator {
@@ -76,7 +81,7 @@ impl SurveySessionAggregator {
         Self {
             game_data,
             recent_basic_uses: VecDeque::new(),
-            cached_active_session_id: None,
+            cached_active_session: None,
         }
     }
 
@@ -107,7 +112,7 @@ impl SurveySessionAggregator {
             None,
         )
         .map_err(|e| e.to_string())?;
-        self.cached_active_session_id = Some(Some(id));
+        self.cached_active_session = Some((character.to_string(), server.to_string(), Some(id)));
         Ok(id)
     }
 
@@ -133,9 +138,13 @@ impl SurveySessionAggregator {
             return Ok(None);
         };
         persistence::end_session(conn, s.id, now_iso).map_err(|e| e.to_string())?;
+        // The session is closed in the DB at this point, so the cache must
+        // already say "no active" even if the bounds recompute below fails —
+        // otherwise a stale id would keep routing new uses into the closed
+        // session until the next invalidation.
+        self.cached_active_session = Some((character.to_string(), server.to_string(), None));
         persistence::recompute_session_bounds_and_end(conn, s.id, now_iso)
             .map_err(|e| e.to_string())?;
-        self.cached_active_session_id = Some(None);
         Ok(Some(s.id))
     }
 
@@ -171,7 +180,7 @@ impl SurveySessionAggregator {
                     None,
                 )
                 .map_err(|e| e.to_string())?;
-                self.cached_active_session_id = Some(Some(id));
+                self.cached_active_session = Some((character.to_string(), server.to_string(), Some(id)));
                 Some(id)
             }
         };
@@ -236,7 +245,7 @@ impl SurveySessionAggregator {
                 Err(_e) if session_id.is_some() && !retried => {
                     retried = true;
                     drop(tx);
-                    self.cached_active_session_id = None;
+                    self.cached_active_session = None;
                     session_id = match self.fetch_active_session(conn, character, server) {
                         Some(id) => Some(id),
                         None => {
@@ -249,7 +258,7 @@ impl SurveySessionAggregator {
                                 None,
                             )
                             .map_err(|e| e.to_string())?;
-                            self.cached_active_session_id = Some(Some(id));
+                            self.cached_active_session = Some((character.to_string(), server.to_string(), Some(id)));
                             Some(id)
                         }
                     };
@@ -257,7 +266,7 @@ impl SurveySessionAggregator {
                 }
                 Err(e) => {
                     eprintln!("[survey-aggregator] insert_use failed: {e}");
-                    self.cached_active_session_id = None;
+                    self.cached_active_session = None;
                     return Err(format!(
                         "survey use insert failed (the session may have been deleted; try again): {e}"
                     ));
@@ -279,30 +288,48 @@ impl SurveySessionAggregator {
         // game tick as the map's consumption).
         if kind == SurveyUseKind::Basic {
             if let Some(used_at) = parse_utc_datetime(now_iso) {
-                remember_bounded(&mut self.recent_basic_uses, (use_id, used_at));
+                remember_bounded(
+                    &mut self.recent_basic_uses,
+                    (use_id, used_at, character.to_string(), server.to_string()),
+                );
             }
-            match persistence::claim_unlinked_chat_loot_near(
-                conn,
-                use_id,
-                character,
-                server,
-                now_iso,
-                CHAT_BASIC_WINDOW_SECS as u32,
-            ) {
+            // One write transaction for the retro-claim: the row links and
+            // the quantity/status updates commit together. If any step
+            // fails, the rollback leaves the rows untagged so a later
+            // pass can reclaim them — never linked rows with a wrong
+            // `loot_qty`. Same unchecked-transaction shape as the use
+            // insert above: no outer transaction is open here.
+            let claim_outcome = (|| -> Result<u32, String> {
+                let tx = rusqlite::Transaction::new_unchecked(
+                    conn,
+                    rusqlite::TransactionBehavior::Immediate,
+                )
+                .map_err(|e| format!("claim txn begin failed: {e}"))?;
+                let claimed = persistence::claim_unlinked_chat_loot_near(
+                    &tx,
+                    use_id,
+                    character,
+                    server,
+                    now_iso,
+                    CHAT_BASIC_WINDOW_SECS as u32,
+                )
+                .map_err(|e| format!("claim rows failed: {e}"))?;
+                if claimed > 0 {
+                    persistence::add_loot_qty(&tx, use_id, claimed)
+                        .map_err(|e| format!("claim qty update failed: {e}"))?;
+                    persistence::set_use_status(&tx, use_id, SurveyUseStatus::Completed)
+                        .map_err(|e| format!("claim status update failed: {e}"))?;
+                }
+                tx.commit().map_err(|e| format!("claim txn commit failed: {e}"))?;
+                Ok(claimed)
+            })();
+            match claim_outcome {
                 Ok(0) => {}
-                Ok(claimed_qty) => {
-                    if let Err(e) = persistence::add_loot_qty(conn, use_id, claimed_qty) {
-                        eprintln!("[survey-aggregator] claimed add_loot_qty failed: {e}");
-                    }
-                    if let Err(e) =
-                        persistence::set_use_status(conn, use_id, SurveyUseStatus::Completed)
-                    {
-                        eprintln!("[survey-aggregator] claimed set_use_status failed: {e}");
-                    }
+                Ok(_) => {
                     update_session_loot_timestamps(conn, use_id, now_iso);
                 }
                 Err(e) => {
-                    eprintln!("[survey-aggregator] claim_unlinked_chat_loot_near failed: {e}");
+                    eprintln!("[survey-aggregator] retro-claim rolled back: {e}");
                 }
             }
         }
@@ -369,13 +396,28 @@ impl SurveySessionAggregator {
 
         // Basic window: same-tick loot around a recent Basic consumption
         // (newest first — back-to-back speed-bonus chains resolve to the
-        // most recent map).
-        let basic_hit = self
-            .recent_basic_uses
-            .iter()
-            .rev()
-            .find(|(_, used_at)| (chat_ts - *used_at).num_seconds().abs() <= CHAT_BASIC_WINDOW_SECS)
-            .map(|(use_id, _)| *use_id);
+        // most recent map). Identity-scoped: a use recorded for another
+        // character/server never matches, even inside the time window.
+        // Newest use at-or-before the gain wins first: a delayed
+        // older-stamped gain arriving after a newer use must not land on
+        // that newer use. Only when nothing precedes the gain, allow a
+        // newer use within the window (pipeline clock skew can stamp the
+        // gain just before the recorded use).
+        let basic_uses_in_window = |after_gain: bool| {
+            self.recent_basic_uses
+                .iter()
+                .rev()
+                .filter(move |(_, used_at, c, s)| {
+                    c == character
+                        && s == server
+                        && (*used_at <= chat_ts) != after_gain
+                        && (chat_ts - *used_at).num_seconds().abs() <= CHAT_BASIC_WINDOW_SECS
+                })
+                .map(|(use_id, _, _, _)| *use_id)
+        };
+        let basic_hit = basic_uses_in_window(false)
+            .next()
+            .or_else(|| basic_uses_in_window(true).next());
         if let Some(use_id) = basic_hit {
             return self.record_chat_attribution(
                 conn,
@@ -392,10 +434,11 @@ impl SurveySessionAggregator {
         }
 
         // Identity fallback: survey-yield items count while a session is
-        // active, attributed to its most recent use.
+        // active, attributed to the most recent use at-or-before the gain
+        // (a delayed older-stamped gain must not land on a newer use).
         if internal_name.is_some_and(|internal| self.is_survey_loot_item(internal))
             && let Some(session_id) = self.fetch_active_session(conn, character, server)
-                && let Ok(Some(use_id)) = persistence::latest_use_id_for_session(conn, session_id) {
+                && let Ok(Some(use_id)) = persistence::latest_use_id_for_session(conn, session_id, timestamp) {
                     return self.record_chat_attribution(
                         conn,
                         ChatAttribution {
@@ -543,14 +586,21 @@ impl SurveySessionAggregator {
     }
 
     /// Cached active-session-id lookup.
-    /// Drop the cached active-session id so the next lookup re-resolves from
-    /// the DB. Call this when a session is removed by a path that bypasses the
+    /// Drop the cached active-session id (and the recent-Basic-use window,
+    /// which is keyed by use id) so the next lookup re-resolves from the
+    /// DB. Call this when a session is removed by a path that bypasses the
     /// aggregator's own start/end flow — notably the History UI's
     /// `survey_tracker_delete_session`, which deletes rows directly. Without
     /// this, the cache would keep handing out a now-missing session id and
-    /// every subsequent `insert_use` would fail the FK constraint.
+    /// every subsequent `insert_use` would fail the FK constraint, and a
+    /// queued gain could still attribute to the deleted Basic use.
     pub fn invalidate_session_cache(&mut self) {
-        self.cached_active_session_id = None;
+        self.cached_active_session = None;
+        // The Basic-use window is keyed by use id too: a deleted use must
+        // not keep attracting gains timestamped inside its old window.
+        // Worst case a gain goes unattributed (healable via retro-claim)
+        // instead of landing on a use that no longer exists.
+        self.recent_basic_uses.clear();
     }
 
     fn fetch_active_session(
@@ -559,17 +609,30 @@ impl SurveySessionAggregator {
         character: &str,
         server: &str,
     ) -> Option<i64> {
-        if let Some(cached) = self.cached_active_session_id {
-            return cached;
+        // Identity-keyed: a cached id only answers for the identity that
+        // stored it. Anything else re-resolves from the DB.
+        if let Some((c, s, id)) = &self.cached_active_session
+            && c == character
+            && s == server
+        {
+            return *id;
         }
-        let s = persistence::active_session(conn, character, server)
-            .ok()
-            .flatten();
-        let id = s.map(|s| s.id);
-        self.cached_active_session_id = Some(id);
-        id
+        // A failed lookup is NOT cached: caching `None` on a transient DB
+        // error would pin "no session" (and route every later event down
+        // the create-new-session path) until the next invalidation.
+        match persistence::active_session(conn, character, server) {
+            Ok(s) => {
+                let id = s.map(|s| s.id);
+                self.cached_active_session =
+                    Some((character.to_string(), server.to_string(), id));
+                id
+            }
+            Err(e) => {
+                eprintln!("[survey-aggregator] active-session lookup failed, not caching: {e}");
+                None
+            }
+        }
     }
-
 }
 
 /// After attributing loot to a survey use, update the session's
@@ -610,5 +673,87 @@ fn remember_bounded<T: PartialEq>(queue: &mut VecDeque<T>, value: T) {
     queue.push_back(value);
     while queue.len() > CHAT_STATE_CAP {
         queue.pop_front();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::migrations::run_migrations;
+    use rusqlite::Connection;
+
+    fn fresh_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        run_migrations(&conn, None).expect("run migrations");
+        conn
+    }
+
+    fn empty_aggregator() -> SurveySessionAggregator {
+        SurveySessionAggregator::new(std::sync::Arc::new(
+            tauri::async_runtime::RwLock::new(crate::game_data::GameData::empty()),
+        ))
+    }
+
+    fn record_basic(
+        agg: &mut SurveySessionAggregator,
+        conn: &Connection,
+        now_iso: &str,
+    ) -> i64 {
+        let (use_id, _) = agg
+            .record_manual_use(
+                conn,
+                ManualUse {
+                    character: "Zenith",
+                    server: "Dreva",
+                    area: None,
+                    map_internal_name: "MiningSurveySerbule1",
+                    kind: SurveyUseKind::Basic,
+                    now_iso,
+                },
+            )
+            .expect("record manual Basic use");
+        use_id
+    }
+
+    #[test]
+    fn delayed_gain_lands_on_preceding_use_not_newer_one() {
+        // Use A at 12:00:00, use B at 12:00:04; A's gain arrives after B
+        // was recorded. Newest-at-or-before wins (A) — a plain
+        // absolute-difference window would hand it to B (4s < 5s window).
+        let conn = fresh_db();
+        let mut agg = empty_aggregator();
+        let use_a = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+        let _use_b = record_basic(&mut agg, &conn, "2026-04-15 12:00:04");
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "Zenith",
+            "Dreva",
+            Some("IronOre"),
+            2,
+            "2026-04-15 12:00:00",
+        );
+        assert_eq!(hit, Some(use_a));
+        let stored = persistence::get_use(&conn, use_a)
+            .expect("read use")
+            .expect("use present");
+        assert_eq!(stored.loot_qty, 2);
+    }
+
+    #[test]
+    fn skewed_gain_before_use_still_matches_when_nothing_precedes() {
+        // Pipeline skew can stamp the gain just before the recorded use:
+        // with no preceding use in the window, the newer use still matches.
+        let conn = fresh_db();
+        let mut agg = empty_aggregator();
+        let use_id = record_basic(&mut agg, &conn, "2026-04-15 12:00:05");
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "Zenith",
+            "Dreva",
+            Some("IronOre"),
+            1,
+            "2026-04-15 12:00:04",
+        );
+        assert_eq!(hit, Some(use_id));
     }
 }
