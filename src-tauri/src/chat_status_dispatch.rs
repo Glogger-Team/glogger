@@ -1196,6 +1196,31 @@ fn dispatch_json_event(
                 out.domain("player_messages");
             }
         }
+        E::WordDiscovered {
+            timestamp,
+            word,
+            power_name,
+            description,
+        } => {
+            if let Some(id) = ctx.identity
+                && let Ok(conn) = ctx.db.get_write()
+            {
+                // Words are consumed game-wide when spoken, so the word
+                // itself is the rescan key: rediscovery never duplicates.
+                let rows = conn
+                    .execute(
+                        "INSERT INTO words_of_power (character_name, server_name, word, power_name, description, discovered_at, source)
+                         SELECT ?1, ?2, ?3, ?4, ?5, ?6, 'chat'
+                         WHERE NOT EXISTS (SELECT 1 FROM words_of_power
+                                            WHERE character_name = ?1 AND server_name = ?2 AND word = ?3)",
+                        rusqlite::params![id.character, id.server, word, power_name, description, timestamp],
+                    )
+                    .unwrap_or(0);
+                if rows > 0 {
+                    out.domain("words_of_power");
+                }
+            }
+        }
         E::Unknown { json_type } => {
             out.unknown_json.push(json_type.clone());
         }
@@ -2897,6 +2922,50 @@ mod tests {
             .unwrap();
         assert_eq!(row.0, "Eveline Rastin".to_string());
         assert!(row.1.contains("Ushug"));
+    }
+
+    #[test]
+    fn json_tip_discovery_records_word_rescan_safe() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-19 21:48:19";
+        let msgs = crate::chat_parser::parse_chat_lines(include_str!("../../test_data/vip_json/chat-tip.log"));
+        assert_eq!(msgs.len(), 11);
+        // First pass: ten discoveries write, the dementia tip does not.
+        let mut hit = false;
+        for msg in &msgs {
+            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            let out = dispatch(&pool, &gd, Some(&id()), msg, ts, &mut st);
+            hit |= out.domains.iter().any(|d| d == "words_of_power");
+        }
+        assert!(hit);
+        // Second pass (rescan): rediscovery never duplicates.
+        for msg in &msgs {
+            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            let out = dispatch(&pool, &gd, Some(&id()), msg, ts, &mut st);
+            assert!(out.domains.iter().all(|d| d != "words_of_power"));
+        }
+        let rows: Vec<(String, String, String, String)> = pool
+            .get_write()
+            .unwrap()
+            .prepare("SELECT word, power_name, source, discovered_at FROM words_of_power")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 10);
+        let breath = rows.iter().find(|(w, _, _, _)| w == "BWEPFYW").expect("BWEPFYW");
+        assert_eq!(breath.1, "Hold Your Breath");
+        assert_eq!(breath.2, "chat");
+        assert!(breath.3.starts_with("2026-11-19"));
+        // The dementia tip stays visible in unknown counters, never written.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &msgs[0], ts, &mut st);
+        assert_eq!(out.unknown_json, vec!["Tip".to_string()]);
     }
 
     #[test]

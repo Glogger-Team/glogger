@@ -21,6 +21,7 @@ Line shape: `YY-MM-DD HH:MM:SS\t[JSON:Type] {single-line JSON}` — no sender pr
 | `Pigeon` | `{"Title":"Pigeon From <friend>", "Body":"...<i>You received:\n<Item> xN</i>"}` (receive only — send emits nothing) | No twin | `player_messages` (message_type='pigeon', direction='in', sender + item parsed), domain `player_messages`. Rescan-safe. Fixture: `chat-pigeon.log` |
 | `ParagonXP` | `{"Skill":"Werewolf", "XP": 279200, "OldLevel": 6, "NewLevel": 6}` | Yes — English `You earned N Prodigy XP in <Skill>.` same second | Typed, deliberately unwritten: per-kill prodigy flow has no DB home (the Status twin owns the live tally; writing it to skill XP would corrupt). Counted-known so `unknown_json` stays clean. Present in `chat-kill-slice.log` |
 | `EntityReport` | `{"Title":"Eveline Rastin", "Body":"Here's a hot tip:…"}` (arena tip, single line, no twin) | No | `player_messages` (message_type='entity_report', other_player=title), domain `player_messages`. Rescan-safe. One line observed — pattern TBD |
+| `Tip` (word discovery) | `{"Title":"You discovered a word of power!", "Body":"...<sel>WORD</sel>...Word of Power: NAME...</size></b>\nEFFECT..."}` (10 scroll uses, 2026-11-19; non-word `Tip` titles, e.g. dementia, observed but unwritten) | No — sole record | `words_of_power` (source `'chat'`, rescan-safe on character/server/word), domain `words_of_power`. Required: word + power name + effect sentence |
 
 ## Twin rule (idempotency across the pair)
 
