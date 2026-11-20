@@ -178,7 +178,7 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
         }
         "RecipeUsage" => {
             let v: RecipeUsageJson = serde_json::from_str(body).ok()?;
-            if v.recipe_name.is_empty() || v.recipe_id == 0 || v.completions == 0 {
+            if v.recipe_name.is_empty() || v.recipe_id == 0 {
                 return None;
             }
             Some(ChatJsonEvent::RecipeUsed {
@@ -383,13 +383,13 @@ mod tests {
 
     #[test]
     fn missing_required_fields_yield_none_not_zeros() {
-        // Struct-level `default` must not turn a missing required field
-        // into a destructive zero/empty event: zero completions would wipe
-        // a stored total, an empty body would wipe book content, and absent
-        // XP levels would zero a stored level via the upsert.
+        // Absent required fields must not default into a destructive
+        // zero/empty event: a missing body would wipe book content, and
+        // absent XP levels would zero a stored level via the upsert.
+        // (Explicit zero completions are valid — see
+        // `recipe_usage_explicit_zero_completions_valid`.)
         for line in [
             "26-11-17 08:52:00\t[JSON:RecipeUsage] {\"RecipeName\":\"Recall Heart's Home\", \"RecipeId\": 9008}\n",
-            "26-11-17 08:52:00\t[JSON:RecipeUsage] {\"RecipeName\":\"Recall Heart's Home\", \"RecipeId\": 9008, \"Completions\": 0}\n",
             "26-11-17 08:52:00\t[JSON:Book] {\"Title\":\"Skill Info\"}\n",
             "26-11-17 08:52:00\t[JSON:Pigeon] {\"Title\":\"Pigeon From TestFriend\"}\n",
             "26-11-17 08:52:00\t[JSON:EarnedXP] {\"Skill\":\"Sword\", \"XP\": 53}\n",
