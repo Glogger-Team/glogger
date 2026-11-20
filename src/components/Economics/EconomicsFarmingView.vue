@@ -2,8 +2,8 @@
   <div class="flex flex-col gap-4 h-full">
     <TabBar v-model="activeTab" :tabs="tabs" />
     <div class="flex-1 min-h-0">
-        <HistoricalTab v-if="activeTab === 'historical'" />
-        <DatabaseTab v-else-if="activeTab === 'database'" />
+      <HistoricalTab v-if="activeTab === 'historical'" />
+      <DatabaseTab v-else-if="activeTab === 'database'" />
     </div>
   </div>
 </template>

@@ -733,13 +733,12 @@ pub fn set_tracked_skills(
 /// ("You earned N XP and reached level L in Skill!").
 /// Post-10/21/2026 this is the only live skill signal
 /// (`ProcessUpdateSkill` lines are gone from Player.log). The carried XP is
-/// awarded increment, not a total — newer lines accumulate onto the
-/// stored value (identical-timestamp resends are no-ops via the recency
-/// guard below). Mixed-basis caveat: report snapshots seed `xp` as the
-/// absolute within-level figure (`xp_toward_next_level`), so chat
-/// accumulation onto a snapshot row blends bases — exact within a level,
-/// muddy across the ding until the next snapshot re-anchors absolute.
-/// (A separate chat-observed basis would need a schema change; see TODO.)
+/// an awarded increment, not a total — newer same-level lines accumulate
+/// onto the stored value (identical-timestamp resends are no-ops via the
+/// recency guard below). Basis rule: report snapshots seed `xp` as the
+/// absolute within-level figure (`xp_toward_next_level`); an award that
+/// raises the level stores just the award (the CASE below), so no
+/// snapshot-seeded balance carries forward into the new level.
 /// Chat carries only level + this-level XP, so the upsert preserves
 /// `base_level/bonus_levels/tnl/max_level` on conflict and always refreshes
 /// `skill_name` to the canonical display name (a fresh insert seeds

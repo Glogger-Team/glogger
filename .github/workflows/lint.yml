@@ -13,8 +13,8 @@
 # scripts/**; yamllint on repo-wide **/*.yml|yaml; zizmor+pinact+pre-commit
 # on .github/**; markdown on **/*.md (changed-files script); frontend build
 # on src/** + manifests; grids on src/**/*.vue; review-patterns on
-# src-tauri/src/db/migrations.rs; sql-prepare on src-tauri/src/**/*.rs +
-# its script; tests+clippy on src-tauri/** + Cargo
+# src-tauri/src/**/*.rs + its script (whole-tree rules); sql-prepare on
+# src-tauri/src/**/*.rs + its script; tests+clippy on src-tauri/** + Cargo
 # manifests; audit on Cargo manifests + scripts/cargo-audit-gate.py;
 # version-sync on manifests + sync script + release workflow.
 # Local hooks (pre-commit lint:fast, pre-push lint) are untouched.
@@ -108,7 +108,8 @@ jobs:
             grids:
               - 'src/**/*.vue'
             review:
-              - 'src-tauri/src/db/migrations.rs'
+              - 'src-tauri/src/**/*.rs'
+              - 'scripts/check-review-patterns.py'
             parity_ipc:
               - 'src-tauri/src/**/*.rs'
               - 'scripts/check-tauri-ipc-parity.py'
@@ -657,7 +658,7 @@ jobs:
           if [ "$REVIEW_SCOPE" = "true" ]; then
             echo "review scope: ran"
           else
-            echo "review scope: skipped (no migrations.rs changed)"
+            echo "review scope: skipped (no src-tauri/src/** or gate script changed)"
           fi
 
       - name: SQL prepare gate (static SQL vs migrated schema)

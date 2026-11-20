@@ -91,7 +91,7 @@ entries as fixtures land and recorders ship.
 
 - **Observed:** 10 scroll uses, `chat-tip.log`: `{"Title":"You discovered a word
   of power!", "Body":"...<sel>WORD</sel>...<b><size=125%>Word of Power:
-  NAME</size></b>\nEFFECT\n\n<i>..."}`. Same run also froze a non-word `Tip`
+  NAME</size></b>\nEFFECT\n\n<i>..."}`. The fixture also freezes a non-word `Tip`
   (`Dementia: Hopping`), which stays `Unknown` — `Tip` is a general channel.
 - **Shipped:** `WordDiscovered` arm extracts word, power name, effect sentence
   (all three required). Dispatch inserts into `words_of_power`

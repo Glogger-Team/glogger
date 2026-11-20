@@ -2,7 +2,7 @@
 
 ## Overview
 
-Frozen since the 10/21 game client: the client stopped writing the verbose `LocalPlayer:` Player.log lines, so loot drops, extracts, item deltas, vendor gold, favor, skill XP, and log backfill accrue no new data. The Farming tab is now a historic-only reader (Session History, Database, Sources). New kills, deaths, XP, and Combat Wisdom from Chat.log live in the Combat view.
+Frozen since the 10/21 game client: the client stopped writing the verbose `LocalPlayer:` Player.log lines, so loot drops, extracts, item deltas, vendor gold, favor, skill XP, and log backfill accrue no new data. The Farming tab is now a historic-only reader (Session History, Database). New kills, deaths, XP, and Combat Wisdom from Chat.log live in the Combat view.
 
 ## Architecture
 
@@ -82,7 +82,7 @@ Historic sessions stay readable under Farming → Session History. Live combat (
 6. User clicked **End Session** — summary saved to SQLite
 7. Session appears in **History** tab with expandable detail view
 
-The Active Session tab, its store arms, and the live-session components are deleted; the readers (History/Database/Sources) remain.
+The Active Session tab, its store arms, and the live-session components are deleted; the readers (History/Database) remain.
 
 ### Historical Sessions
 

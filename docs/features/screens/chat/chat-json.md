@@ -14,7 +14,7 @@ lines exactly as logged, newest first, with the channel badge naming the Type.
 - **Day navigation and text search** work like every other tab. Full Search
   (the Search tab) also matches JSON lines; every other chat view excludes
   them, including Watchwords and the Channels sidebar counts.
-- **No item-link filters** — JSON lines carry no `chat_item_links` rows, so the
+- **No item-link filters** — no observed JSON fixture carries `chat_item_links` rows, so the
   tab offers only the text search box.
 
 ## Use Cases
