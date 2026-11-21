@@ -180,6 +180,11 @@ pub struct DispatchCtx<'a> {
     /// True on scan/tail paths (rescan-safe skips apply); false on the live
     /// drain, where every line is fresh and provisional rows are wanted.
     pub is_scan: bool,
+    /// True only on the live tail, where `DispatchState::current_area` tracks
+    /// the area the line was logged in. False on startup catch-up and scans,
+    /// which drain older lines under a newer area — arms that stamp location
+    /// must record NULL instead of the current value.
+    pub is_live: bool,
 }
 
 /// One ledger row pending the replay guard.
@@ -301,6 +306,15 @@ pub fn dispatch_chat_message(
                     // kills where another lands the blow emit no FATALITY.
                     // Gate both the domain and the event on a fresh insert:
                     // replays and write failures stay silent.
+                    // Non-live kills (catch-up, scans) record NULL zone: the
+                    // drain's `current_area` is newer than where the kill
+                    // happened, and a confident-wrong area is unrecoverable.
+                    // Reads bucket NULL as Unknown.
+                    let zone = if ctx.is_live {
+                        state.current_area.as_deref()
+                    } else {
+                        None
+                    };
                     if let Ok(conn) = ctx.db.get_write()
                         && let Ok(Some(_)) =
                             crate::db::kill_tracking_commands::record_enemy_kill(
@@ -312,7 +326,7 @@ pub fn dispatch_chat_message(
                                 killing_ability,
                                 *health_damage as i64,
                                 *armor_damage as i64,
-                                state.current_area.as_deref(),
+                                zone,
                                 timestamp,
                             )
                     {
@@ -1769,6 +1783,7 @@ mod tests {
                 watch_rules: &[],
                 // Live path: old pinned timestamps must still write.
                 is_scan: false,
+                is_live: true,
             },
             None,
             st,
@@ -1791,6 +1806,7 @@ mod tests {
                 local_ts,
                 watch_rules: &[],
                 is_scan: true,
+                is_live: false,
             },
             None,
             st,
@@ -3192,6 +3208,51 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM enemy_kills", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+    #[test]
+    fn non_live_kill_records_null_zone() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 17:04:42";
+        // Live kill under a known area stamps the zone.
+        let live_msg = combat_msg(
+            "Alice: Bruising Blow 8 on City Slime #488966! Dmg: 2943 health. (FATALITY!)",
+            ts,
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        st.current_area = Some("Serbule".to_string());
+        let out = dispatch(&pool, &gd, Some(&id()), &live_msg, ts, &mut st);
+        assert!(out.enemy_killed.is_some());
+        // Catch-up kill drained under a newer area records NULL, not the
+        // drain area — a confident-wrong zone is unrecoverable, NULL reads
+        // back as the Unknown bucket.
+        let stale_msg = combat_msg(
+            "Alice: Bruising Blow 8 on City Slime #488976! Dmg: 2943 health. (FATALITY!)",
+            ts,
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        st.current_area = Some("Ilmari Desert".to_string());
+        let out = dispatch_scan(&pool, &gd, Some(&id()), &stale_msg, ts, &mut st);
+        assert!(out.enemy_killed.is_some());
+        let zones: Vec<(String, Option<String>)> = pool
+            .get_write()
+            .unwrap()
+            .prepare("SELECT enemy_entity_id, zone FROM enemy_kills ORDER BY enemy_entity_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            zones,
+            vec![
+                ("488966".to_string(), Some("Serbule".to_string())),
+                ("488976".to_string(), None),
+            ]
+        );
     }
 
     #[test]

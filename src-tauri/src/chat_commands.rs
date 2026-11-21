@@ -555,6 +555,7 @@ fn run_scan_dispatch(
                 local_ts: &local_ts,
                 watch_rules,
                 is_scan: true,
+                is_live: false,
             },
             None,
             &mut dstate,
