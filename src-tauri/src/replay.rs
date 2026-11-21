@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::cdn_commands::GameDataState;
 use crate::chat_parser::{
@@ -128,13 +128,21 @@ fn parse_chat_log_events(path: &PathBuf) -> Result<Vec<TimedEvent>, String> {
 }
 
 /// Core replay logic — re-parses Chat.log events and re-emits them as frontend
-/// events (emit-only; the live dispatch pipeline is never invoked).
-fn run_replay(
+/// events (preview-only; the live dispatch pipeline is never invoked and no
+/// report/import path runs here).
+///
+/// The preview deliberately emits NO live identity events (`character-login` /
+/// `server-detected`): the gameStateStore `character-login` listener answers
+/// any identity it sees with `initForActiveCharacter`, which invokes
+/// `import_latest_report_for_character` + `import_reports_for_server` (plus the
+/// inventory import) — production DB writes. Emitting the live names would
+/// turn this debug preview into a report auto-import. Callers needing the
+/// replayed identity read the log, never the event bus.
+fn run_replay<R: Runtime>(
     chat_log_path: PathBuf,
-    app: &AppHandle,
+    app: &AppHandle<R>,
     _db: &DbPool,
     game_data: GameDataState,
-    prior_identity: Option<(String, String)>,
 ) -> Result<ReplayResult, String> {
     // --- Phase 1: Pre-scan chat log for timezone offset ---
     app.emit(
@@ -225,9 +233,6 @@ fn run_replay(
     };
 
     let progress_interval = (total_events / 100).max(50); // emit ~100 progress events
-    // Set when the preview emitted a replayed identity: completion must
-    // put the prior live pair back (same events the flip used).
-    let mut identity_flipped = false;
 
     for (i, event) in all_events.iter().enumerate() {
         // Progress updates
@@ -250,13 +255,12 @@ fn run_replay(
                 character_name,
                 ..
             } => {
-
+                // Local bookkeeping only — deliberately NO `character-login` /
+                // `server-detected` emits (see `run_replay` docs): those are
+                // the live identity events, and the frontend answers each one
+                // with report auto-imports (production DB writes).
                 game_state.set_active_character_name(character_name);
                 game_state.set_active_server_name(server_name);
-
-                app.emit("character-login", character_name).ok();
-                app.emit("server-detected", server_name).ok();
-                identity_flipped = true;
             }
 
 
@@ -298,18 +302,6 @@ fn run_replay(
     )
     .ok();
 
-    // The preview flipped the live feed to the replayed character while it
-    // ran (same `character-login` / `server-detected` events the live drain
-    // emits, so the frontend reloaded for them). Put the prior live pair
-    // back the same way; without this the UI — and any settings save after
-    // it — stays stranded on the replayed character. No prior pair (fresh
-    // boot) or no replayed login means nothing to restore.
-    if identity_flipped
-        && let Some((character, server)) = prior_identity {
-            app.emit("character-login", &character).ok();
-            app.emit("server-detected", &server).ok();
-        }
-
     Ok(result)
 }
 
@@ -319,22 +311,23 @@ fn run_replay(
 
 /// Re-parse a Chat.log file and re-emit its chat events, in timestamp order.
 /// This is a parse-and-preview tool for debugging, NOT a backfill path: it
-/// never writes to the database (the message branch parses status lines and
-/// emits `chat-status-event` / `character-login` / `server-detected` only).
+/// never writes to the database and never emits live identity events. The
+/// message branch parses status lines and emits the `is_replay`-enveloped
+/// `chat-status-event` (which the live session feed skips) plus
+/// `replay-progress`; `character-login` / `server-detected` are deliberately
+/// absent because the frontend answers each with report auto-imports.
 /// Identity: this is a debug preview only. All login lines are forced to
 /// utc_second 0 so they sort before every message, and the last login in the
 /// file wins for the whole preview (per-segment identity is not preserved).
-/// Replay flips the active character/session feed to that identity while it
-/// runs, then restores the prior live pair on completion (same events both
-/// ways, so the frontend reloads symmetrically). Live tailing, scans, and
-/// report imports remain the only writers.
+/// The live character/session feed is untouched — the UI never reloads and
+/// report imports never run. Live tailing, scans, and report imports remain
+/// the only writers.
 /// (The old dual-log replay also fed a Player.log; that pipeline was
 /// deleted, so only the chat path is replayed.)
 #[tauri::command]
 pub async fn replay_chat_log(
     chat_log_path: String,
     app: AppHandle,
-    settings: tauri::State<'_, std::sync::Arc<crate::settings::SettingsManager>>,
 ) -> Result<ReplayResult, String> {
     let chat_path = PathBuf::from(&chat_log_path);
 
@@ -344,22 +337,9 @@ pub async fn replay_chat_log(
 
     let db = app.state::<DbPool>().inner().clone();
     let game_data = app.state::<GameDataState>().inner().clone();
-    // The preview flips the live feed to the replayed identity while it
-    // runs — capture the live pair now so the replay can put it back when
-    // it completes instead of stranding the UI on the replayed character.
-    let app_settings = settings.get();
-    let prior_identity = match (
-        app_settings.active_character_name.clone(),
-        app_settings.active_server_name.clone(),
-    ) {
-        (Some(character), Some(server)) => Some((character, server)),
-        _ => None,
-    };
 
     // Run on a blocking thread since file I/O is synchronous
-    let result = tokio::task::spawn_blocking(move || {
-        run_replay(chat_path, &app, &db, game_data, prior_identity)
-    })
+    let result = tokio::task::spawn_blocking(move || run_replay(chat_path, &app, &db, game_data))
     .await
     .map_err(|e| format!("Replay task failed: {}", e))??;
 
@@ -603,4 +583,141 @@ pub fn spawn_player_prev_watcher(
             std::thread::sleep(Duration::from_secs(30));
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tauri::Listener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+
+    /// Migrated pool over a unique shared-cache memory DB, mirroring the
+    /// `db::character_commands` test helper (migrations run through `writes`;
+    /// report imports would write through `writes` too).
+    fn pool() -> DbPool {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let mk = |query_only: bool| {
+            r2d2_sqlite::SqliteConnectionManager::file(format!(
+                "file:replay_preview_test_{n}?mode=memory&cache=shared"
+            ))
+            .with_init(move |conn| {
+                if query_only {
+                    conn.execute_batch(
+                        "PRAGMA journal_mode=WAL;
+                         PRAGMA busy_timeout=5000;
+                         PRAGMA synchronous=NORMAL;
+                         PRAGMA foreign_keys=ON;
+                         PRAGMA query_only=ON;",
+                    )
+                } else {
+                    conn.execute_batch(
+                        "PRAGMA journal_mode=WAL;
+                         PRAGMA busy_timeout=5000;
+                         PRAGMA synchronous=NORMAL;
+                         PRAGMA foreign_keys=ON;",
+                    )
+                }
+            })
+        };
+        let writes = r2d2::Pool::builder()
+            .max_size(1)
+            .build(mk(false))
+            .expect("writes pool");
+        let reads = r2d2::Pool::builder()
+            .max_size(2)
+            .build(mk(true))
+            .expect("reads pool");
+        let conn = writes.get().expect("conn");
+        crate::db::migrations::run_migrations(&conn, None).expect("migrations");
+        drop(conn);
+        DbPool::from_pools(reads, writes)
+    }
+
+    fn empty_game_data() -> GameDataState {
+        Arc::new(tokio::sync::RwLock::new(crate::game_data::GameData::empty()))
+    }
+
+    /// Chat.log exercising the preview's login arm: one login line (timezone
+    /// + server identity) plus a status line and a plain chat line.
+    fn fixture_log() -> PathBuf {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "replay_preview_test_{}_{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let path = dir.join("Chat.log");
+        std::fs::write(
+            &path,
+            "**************************************** Logged In As TestReplayer. Server Dreva. Timezone Offset -05:00:00.\n\
+             26-03-26 15:12:48\t[Status] You earned 62 XP in Endurance.\n\
+             26-03-26 15:13:02\t[Guild] Mate: hello\n",
+        )
+        .expect("fixture");
+        path
+    }
+
+    /// The preview must stay a preview: a log containing a login line must
+    /// not emit the live identity events (the gameStateStore
+    /// `character-login` listener answers each with report auto-imports —
+    /// production DB writes) and must leave the report tables empty.
+    #[test]
+    fn replay_preview_emits_no_live_identity_and_writes_no_report_rows() {
+        let path = fixture_log();
+
+        // Positive control: the fixture really reaches the login arm, so the
+        // no-emit asserts below pin behaviour rather than an empty file.
+        let parsed = parse_chat_log_events(&path).expect("parse fixture");
+        assert!(
+            parsed
+                .iter()
+                .any(|e| matches!(e, TimedEvent::ChatLogin { .. })),
+            "fixture must contain a login line"
+        );
+
+        let db = pool();
+        let game_data = empty_game_data();
+        let app = tauri::test::mock_app();
+        let logins_seen = Arc::new(AtomicUsize::new(0));
+        let servers_seen = Arc::new(AtomicUsize::new(0));
+        // Listener guards stay alive until after the replay runs (drop =
+        // unlisten), so every emit during the preview is counted.
+        let _unlisten_login = app.listen("character-login", {
+            let count = logins_seen.clone();
+            move |_| {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let _unlisten_server = app.listen("server-detected", {
+            let count = servers_seen.clone();
+            move |_| {
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+
+        let result = run_replay(path, app.handle(), &db, game_data).expect("replay");
+        assert_eq!(result.chat_messages_processed, 2);
+        assert_eq!(result.chat_status_events_emitted, 1);
+        assert_eq!(
+            logins_seen.load(Ordering::SeqCst),
+            0,
+            "preview must not emit character-login"
+        );
+        assert_eq!(
+            servers_seen.load(Ordering::SeqCst),
+            0,
+            "preview must not emit server-detected"
+        );
+
+        let conn = db.get_write().expect("write conn");
+        let snapshots: i64 = conn
+            .query_row("SELECT COUNT(*) FROM character_snapshots", [], |row| {
+                row.get(0)
+            })
+            .expect("snapshot count");
+        assert_eq!(snapshots, 0, "preview must write no report rows");
+    }
 }

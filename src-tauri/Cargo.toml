@@ -32,6 +32,11 @@ regex = "1"
 once_cell = "1"
 zip = "9"
 
+[dev-dependencies]
+# `tauri::test::mock_app` (replay preview regression test) is gated behind
+# the empty `test` feature; features unify, so this only affects test builds.
+tauri = { version = "2", features = ["test"] }
+
 [profile.release]
 strip = true
 
