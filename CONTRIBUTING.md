@@ -31,24 +31,15 @@ See [docs/index.md](docs/index.md) for a full documentation map.
 
 ## Running Tests
 
-**Rust unit tests** (fast, runs 387+ tests):
+**Rust unit tests** (fast, 690 passing):
 
 ```bash
 cd src-tauri
-cargo test
+cargo test --lib
 ```
 
-**Frontend type check + build**:
-
-```bash
-npm run build
-```
-
-**Survey replay integration tests** (slow, requires CDN sample data):
-
-```bash
-npm run survey-test
-```
+The slow survey-replay suite was retired with the Player.log pipeline; survey
+coverage now lives in the normal unit tests (`cargo test --lib survey`).
 
 ## Commit Message Conventions
 

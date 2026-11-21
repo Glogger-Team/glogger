@@ -34,7 +34,7 @@ entries as fixtures land and recorders ship.
 
 - **Observed:** empty pigeon + 2 with-item, `chat-pigeon.log` (friend renamed).
   Dispatch writes `player_messages` (message_type='pigeon', sender + item
-  parsed), rescan-safe, domain `player_messages` (MessagesWidget refreshes).
+  parsed), rescan-safe, domain `player_messages`. `MessagesWidget.vue` already reads this shape but is unregistered (dark) — enabling it is a separate product call.
 - **Send direction confirmed-absent:** the 16:48–16:49 send window has zero
   pigeon lines. No send fixture will ever land — receive only.
 
@@ -72,15 +72,14 @@ entries as fixtures land and recorders ship.
   it to skill XP would corrupt. Typed + counted-known. Revisit if a prodigy
   ledger is designed.
 
-## `JSON:EntityReport` — SHIPPED 2026-11-17 (single line, pattern TBD)
-
-- **Observed:** `{"Title":"Eveline Rastin", "Body":"Here's a hot tip:…'}` 16:55:02
-  (arena tip). Dispatch writes `player_messages`
-  (message_type='entity_report'), rescan-safe — read path exists.
+- **Observed:** `{"Title":"Eveline Rastin", "Body":"Here's a hot tip:…"}` 16:55:02
+   (arena tip). Dispatch writes `player_messages`
+   (message_type='entity_report'), rescan-safe — read path exists
+   (`get_player_messages`). `MessagesWidget.vue` already reads this shape but is
+   unregistered (dark) — enabling it is a separate product call.
 - **Capture:** more `EntityReport` titles/bodies to learn whether this is
-  arena-tips-only or a general entity channel. No fixture file yet (the
-  single observed line is pinned by a synthetic dispatch test, not a
-  `chat-entityreport.log` — do not invent lines).
+  arena-tips-only or a general entity channel. The single observed line is
+  frozen in `test_data/vip_json/chat-entityreport.log` (do not invent lines).
 
 ## Prodigy-overflow `EarnedXP`
 

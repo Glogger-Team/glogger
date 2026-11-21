@@ -9,49 +9,64 @@ Tracks cow milking activity across three categories: NPC cow cooldown timers, pl
 ## Features
 
 ### Timers Tab (NPC Cows)
-- **Cooldown tracking:** Shows 1-hour countdown timers for each NPC cow milked, with "Ready!" when cooldown expires. When the milk time is genuinely unknown (see the backfill below) the timer says `≤ 45m` instead — an upper bound that is certain at zero, rather than a fabricated countdown.
+
+- **Cooldown tracking:** Shows 1-hour countdown timers for each cow milked — NPC cows and player cows milked by another player alike — with "Ready!" when the cooldown expires. Only a self-named row (the active character milking themselves) runs the 5-minute self-milk cooldown. When the milk time is genuinely unknown (see the backfill below) the timer says `≤ 45m` instead — an upper bound that is certain at zero, rather than a fabricated countdown.
 - **Grouped by zone:** Cows are organized under their zone, sorted alphabetically.
 - **Current zone first:** The player's current zone is highlighted and floated to the top.
 - **Cooldown backfill:** If the player tries to milk a cow that's still on cooldown, the error is detected and a *bound* is recorded (see "NPC Cow Cooldown Backfill").
 
 ### Players Milked Tab
+
 - **Leaderboard:** Ranked list of other players milked by this character, sorted by count descending.
 
 ### Milked By Tab
+
 - **Leaderboard:** Ranked list of players who have milked this character, sorted by count descending.
 
 ### Self-Milked Counter
+
 - **Inline counter:** A single line above the tabs showing the total self-milk count. Only visible when count > 0.
 
 ## Detection & Data Flow
 
 ### NPC Cow Milking
-1. Player interacts with an NPC cow (e.g., `Cow_Homer`)
-2. `PlayerEventParser` emits `InteractionStarted` with an `npc_name` starting with `Cow_`
-3. Coordinator stores `pending_cow_interaction`
-4. Chat status `[Status] Bottle of Milk added to inventory.` fires
-5. Coordinator matches the milk gain to the pending cow interaction
-6. Cow name and zone are persisted to `milking_timers` table (UPSERT)
+
+Live producer: the Combat-channel Collect-Milk arm in `dispatch_chat_message`
+(`src-tauri/src/chat_status_dispatch.rs`). A `[Combat] Sender: Collect Milk on Target!`
+line issued by the active character parses via
+`chat_combat_parser::parse_self_ability_line(…, "Collect Milk")` — the sender must be
+the active character, and the match runs on the sender-split `message` (never the raw
+line, same gotcha as the self-milk counter below). Each firing writes one `milking_timers`
+row keyed `(character_name, server_name, cow_name)` = (active character, active server,
+the ability target): `zone` is the current area (`''` when unknown), `last_milked_at` is
+the chat line's UTC stamp, `cooldown_unknown` is `0`, the stamp is newer-wins, and a known
+zone is never overwritten with a blank one. The widget reads exactly these rows via
+`get_milking_timers` / `get_milking_timers_for` for the active character/server, so the
+Timers tab shows every cow the active character has milked. When a cow-form player milks
+themselves, the target IS the player's own name, so the arm writes a self-named timer row
+alongside the `self_milked` log row — that is what the code does today.
+
+Cooldown lengths: every cow runs the 1-hour cooldown — the 14 named NPC cows ([wiki roster](https://wiki.projectgorgon.com/wiki/Cow_(Domesticated_Animal))) and player cows milked by another player alike. The sole exception is the self-named row, which runs the 5-minute self-milk cooldown; the widget picks it by matching `cow_name` against the active character.
 
 ### NPC Cow Cooldown Backfill
-1. Player tries to milk a cow still on cooldown
-2. `ProcessScreenText(ErrorMessage, "You've already milked Homer in the past hour.")` is detected
-3. Coordinator records a **bound**, not a milk time: `cooldown_unknown = 1` with `last_milked_at` = the error line's own timestamp (the earliest attempt seen wins — each accepted attempt tightens the bound)
 
-The error only says the milk happened somewhere in `(attempt - 1h, attempt]`, so the widget's remaining time is `expiry ≤ attempt + 1h` and it renders `≤ Xm`; at zero the cow is certainly ready. A real milk (`record_cow_milk`) clears the flag and stores the true event time, and a bound can never overwrite a known time (only a previously-unknown row's bound is tightened). Rows that predate migration v73 hold the old "59 minutes ago" fabrication and are treated as known — they age out at that cow's next milk.
+No live producer. The `(attempt - 1h, attempt]` bound previously came from
+`ProcessScreenText` cooldown errors, which no longer exist. `cooldown_unknown`
+rows in the table are legacy; the widget still renders them as `≤ Xm` bounds.
 
 ### Player-to-Player Milking (Milking Another Player)
-1. Player milks another player in cow form
-2. `ProcessScreenText(GeneralInfo, "You obtain fresh milk from PlayerName.")` is detected
-3. Recorded as direction `milked` in `player_milking_log`
+
+No live producer. The `"You obtain fresh milk from …"` line is not parsed, so no
+`milked`-direction rows are written (`v38` still allows the direction for legacy rows).
 
 ### Player-to-Player Milking (Being Milked)
+
 1. Another player milks this character
 2. Chat `[Status] PlayerName has milked you.` is detected via `chat_status_parser::try_milked_by` — this is the live producer (28 events observed in Chat logs Jun–Oct 2026; e.g. `26-10-24 22:07:13 [Status] Azyima has milked you.`)
-3. The legacy `ProcessScreenText(ImportantInfo, "PlayerName has milked you.")` Player.log path records the same event if present (unobserved in current logs — `Player.log` carries no `ScreenText` lines in recent builds; kept as fallback). Both paths share `strip_milked_by_suffix` so names normalize identically (the `player_milking_log` dedup key includes `other_player`)
-4. Recorded as direction `milked_by` in `player_milking_log`
+3. Recorded as direction `milked_by` in `player_milking_log`
 
 ### Self-Milking (Cow Player Milks Themselves)
+
 1. A player in cow form uses Collect Milk on themselves
 2. Combat chat `[Combat] PlayerName: Collect Milk on PlayerName!` is detected (no entity ID, matching active character as both source and target) via `chat_combat_parser::parse_self_ability_line(…, "Collect Milk")`, matched against the **sender-split** `message` — never against the raw line, which still carries `"PlayerName: "` (see the gotcha in [chat-parser.md](../../chat-parser.md))
 3. Recorded as direction `self_milked` in `player_milking_log` (the v38 CHECK constraint allows the direction)
@@ -73,14 +88,11 @@ The error only says the milk happened somewhere in `(attempt - 1h, attempt]`, so
 | last_milked_at | TEXT | RFC3339 UTC **event time** of last milk (or, when `cooldown_unknown`, the earliest failed attempt that bounds it) |
 | cooldown_unknown | INTEGER | 1 = exact milk time unknown; the widget renders an upper bound (`≤ Xm`) instead of a countdown (migration v73) |
 
-Like `player_milking_log.milked_at`, this is the milk event's own time (from the
-chat "Bottle of Milk added to inventory" line — the `[Status]` path, not
-Player.log), not ingest time: a catch-up replay of an old chat log used to hand
-out a fresh cooldown hour every time it was re-read. The upsert keeps
-`MAX(excluded, stored)` for the stamp, so a replayed line can't push a cooldown
-back while the zone merge still learns a previously-unknown area. When
-`cooldown_unknown = 1` the stamp is instead the earliest failed attempt (see the
-backfill section) and is tightened with `MIN`.
+Like `player_milking_log.milked_at`, this is the milk event's own time (the chat line's
+UTC stamp via `chat_status_dispatch::utc_naive_to_rfc3339`), not ingest time. The
+Collect-Milk arm above is the live writer, so the `MAX(excluded, stored)` merge rule is
+live: replaying an older line never moves the stamp backwards, while a replay that names
+a previously-unknown area still learns it (pinned by `collect_milk_arm_records_named_cow`).
 
 **Identity is per-cow, not per-cow-per-zone.** A cow's 1-hour cooldown belongs to
 the NPC itself (the game's "You've already milked Homer in the past hour." message
@@ -103,16 +115,17 @@ blank one. The widget additionally de-duplicates by `cow_name` as a safeguard.
 | direction | TEXT | `milked`, `milked_by`, or `self_milked` |
 | milked_at | TEXT | RFC3339 UTC **event time** (not ingest time) |
 
-`milked_at` is derived from the event itself by `coordinator::milking_event_timestamp`:
+`milked_at` is derived from the event itself by `chat_status_dispatch::utc_naive_to_rfc3339`:
 
 | Source | Time handed in |
 |---|---|
-| Player.log `ScreenText` (`milked` / `milked_by`) | `GameStateManager::peek_utc("HH:MM:SS")` — bare log clock time + the session's date, without advancing `LogDateResolver`'s rollover baseline (these side channels read a line before its batch is replayed) |
+| Chat `[Status] … has milked you.` (`milked_by`) | the Status line's UTC timestamp via `chat_status_parser::try_milked_by` |
 | Chat `[Combat] … Collect Milk …` (`self_milked`) | the chat line timestamp converted with **that log file's own login-line offset** (falling back to the settings offset) — see below |
+| `milked` (milking another player) | — no producer; direction unwritten (legacy rows only) |
 
 A missing/unparseable event time falls back to `Utc::now()` so a milking is never dropped.
 
-Fixed 2026-10: `record_player_milk` previously ignored the event timestamp and wrote `Utc::now()` (ingest time), so `milked`/`milked_by` rows read during a catch-up replay were stamped with the read time instead of the log's — a backfill would have dated an entire archive "today". (The `self_milked` arm additionally could not fire at all before the sender-split matcher fix.) The timestamp *format* is pinned by `coordinator::milking_timestamp_tests`; the call-site wiring was verified live against record 2026-10-13T01:14:16+00:00 for a 20:14:16 local self-milk.
+Fixed 2026-10: `record_player_milk` previously ignored the event timestamp and wrote `Utc::now()` (ingest time), so `milked`/`milked_by` rows read during a catch-up replay were stamped with the read time instead of the log's — a backfill would have dated an entire archive "today". (The `self_milked` arm additionally could not fire at all before the sender-split matcher fix.) The timestamp *format* is pinned by `utc_naive_to_rfc3339_converts_and_falls_back`; the call-site wiring was verified live against record 2026-10-13T01:14:16+00:00 for a 20:14:16 local self-milk.
 
 The backfill converts with each log's **own** offset rather than today's setting, because the instant is half of the dedup key: re-running after a DST flip or a changed `manual_timezone_override` must re-derive the same string, not insert a twin row.
 
@@ -121,6 +134,6 @@ The backfill converts with each log's **own** offset rather than today's setting
 ## Files
 
 - `src/components/Dashboard/widgets/MilkingTimersWidget.vue` — widget component (3 tabs + self-milked counter)
-- `src-tauri/src/coordinator.rs` — detection logic for all milking types
+- `src-tauri/src/chat_status_dispatch.rs` — live detection (`MilkedBy` status arm, self-milk combat arm); `src-tauri/src/chat_commands.rs` — `backfill_ability_history` archive scan
 - `src-tauri/src/db/migrations.rs` — migrations v35 (milking_timers), v36 (player_milking_log), v38 (self_milked direction), v72 (per-event dedup key), v73 (`cooldown_unknown` bound column)
 - `src-tauri/src/db/game_state_commands.rs` — `get_milking_timers` and `get_player_milking_leaderboard` Tauri commands

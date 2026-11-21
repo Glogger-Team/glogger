@@ -25,22 +25,26 @@ Accessed via the gear icon on the widget card. Allows manual configuration of:
 
 - **Home Zone** — per-character home zone for quick start zone selection via the "Home" button
 
-Bind pad locations are also auto-populated from the database when available — the coordinator parses them from `BookOpened` events when the player opens their Teleportation skill info in-game. Manual config takes priority over auto-detected values only if the manual value is already set; otherwise the DB value fills in the blanks.
+Bind pad locations are also auto-populated from the database when available — the coordinator parses them from the live JSON `Book` arm (and the Books-watcher backfill) when the player opens their Teleportation skill info in-game. Manual config takes priority over auto-detected values only if the manual value is already set; otherwise the DB value fills in the blanks.
 
 Config is persisted to `localStorage` under key `tripPlannerWidget.config`.
 
 ## Data Sources
 
 ### Current Zone
+
 Read from `gameStateStore.world.area?.area_name`. The game state area name is a friendly name (e.g., "Serbule") which is mapped to CDN area keys via a lookup table in the widget.
 
 ### Route Planning
+
 Calls the `plan_trip` Tauri command (defined in `trip_router.rs`). The command builds a `ZoneGraph`, resolves friendly names in the travel config, and runs the greedy nearest-neighbor solver. See [trip-routing.md](../../trip-routing.md) for full solver documentation.
 
 ### Casino Portal (Moon Phase)
+
 On mount, the widget fetches the current moon phase via `get_current_moon_phase` and maps it to the casino portal destination (Rahu or Statehelm) using the same phase table as the Status widget. This is passed as `casinoPortal` in every `plan_trip` call, so the solver excludes the unavailable Casino edge from the zone graph.
 
 ### Teleportation Binds
+
 On mount, the widget calls `get_teleportation_binds` to load auto-detected bind locations from `game_state_teleportation`. These fill in any blanks in the localStorage config.
 
 ## Zone List

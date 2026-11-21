@@ -664,14 +664,25 @@ impl SurveySessionAggregator {
 /// use row is one cheap indexed read that only fires when loot is
 /// attributed (not on every event).
 fn update_session_loot_timestamps(conn: &Connection, use_id: i64, ts: &str) {
-    if let Ok(Some(su)) = persistence::get_use(conn, use_id)
-        && let Some(sid) = su.session_id {
-            let _ = persistence::update_first_loot_at(conn, sid, ts);
-            let _ = persistence::update_last_loot_at(conn, sid, ts);
-            // Keep started_at tight for open sessions so the header
-            // reflects actual activity, not the session-creation moment.
-            let _ = persistence::tighten_started_at(conn, sid, ts);
+    match persistence::get_use(conn, use_id) {
+        Ok(Some(su)) => {
+            if let Some(sid) = su.session_id {
+                if let Err(e) = persistence::update_first_loot_at(conn, sid, ts) {
+                    eprintln!("[survey-aggregator] first-loot stamp failed: {e}");
+                }
+                if let Err(e) = persistence::update_last_loot_at(conn, sid, ts) {
+                    eprintln!("[survey-aggregator] last-loot stamp failed: {e}");
+                }
+                // Keep started_at tight for open sessions so the header
+                // reflects actual activity, not the session-creation moment.
+                if let Err(e) = persistence::tighten_started_at(conn, sid, ts) {
+                    eprintln!("[survey-aggregator] started-at tighten failed: {e}");
+                }
+            }
         }
+        Ok(None) => {}
+        Err(e) => eprintln!("[survey-aggregator] session-use lookup failed, skipping loot stamps: {e}"),
+    }
 }
 
 // ============================================================
@@ -885,7 +896,8 @@ mod tests {
             &conn,
             "AltB",
             "Legacy",
-            Some("IronOre"),
+            None, // unidentified gain: the identity fallback cannot fire, so
+            // a match proves the queue entry survived invalidation.
             1,
             "2026-04-15 12:00:04",
             None,

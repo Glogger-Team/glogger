@@ -4,7 +4,7 @@ Documents the full initialization flow from app launch to interactive state, cov
 
 ## Timeline Overview
 
-```
+```text
 T+0.000s  Rust setup() begins
           ├── Settings loaded from disk
           ├── Prototype version check (nuke DB if changed)
@@ -61,21 +61,25 @@ Timings are approximate and vary by machine, data size, and network conditions.
 All backend initialization happens synchronously inside `tauri::Builder::setup()` in `src-tauri/src/lib.rs`.
 
 ### Step 1: Settings (`src-tauri/src/settings.rs`)
+
 - `SettingsManager::new()` loads `settings.json` from the app data directory
 - This is **blocking** — everything else depends on settings
 
 ### Step 2: Version Check & Database Nuke
+
 - Compares `last_app_version` in settings against current app version
 - If changed: deletes the database file + WAL/SHM sidecars (prototype-phase behavior)
 - Persists current version to settings
 
 ### Step 3: Database (`src-tauri/src/db/mod.rs`)
+
 - `db::init_pool()` creates the SQLite connection pool
 - Runs the unified v1 migration schema
 - Sets WAL mode, foreign keys, busy timeout pragmas
 - **Blocking** — coordinator needs the pool
 
 ### Step 4: Coordinator (`src-tauri/src/coordinator.rs`)
+
 - `DataIngestCoordinator::new()` creates the coordinator with:
   - DB pool, settings, app handle, game data state (empty at this point)
 - Seeds `GameStateManager` with persisted character/server names from settings
@@ -83,10 +87,12 @@ All backend initialization happens synchronously inside `tauri::Builder::setup()
 - **Blocking** — must be registered as managed state
 
 ### Step 5: State Registration
+
 - `settings_manager`, `db_pool`, and `coordinator` registered as Tauri managed state
 - Frontend commands can now be invoked
 
 ### Step 6: Game Data Load (Background)
+
 - `tauri::async_runtime::spawn()` kicks off `init_game_data()`
 - **Non-blocking** — setup() returns immediately after spawning
 - On success: emits `game-data-ready` event, then persists CDN data to database
@@ -96,11 +102,13 @@ All backend initialization happens synchronously inside `tauri::Builder::setup()
 ## Frontend Sequence (Vue)
 
 ### Phase: `splash`
+
 - Initial state when `App.vue` mounts
 - Shows `StartupSplash` component
 - `startup.initialize()` is called in `onMounted`
 
 ### Phase Decision (`src/stores/startupStore.ts`)
+
 After loading settings and server list:
 
 | Condition | Next Phase |
@@ -113,14 +121,16 @@ After loading settings and server list:
 
 Shows `StartupProgress` with a 4-task checklist. Each task must complete before the next begins. All tasks are orchestrated by `startupStore.runStartupTasks()`.
 
-**Task 1: Loading game data**
+### Task 1: Loading game data
+
 - Waits for `gameDataStore.status` to become `"ready"` (watches the reactive ref)
 - The Rust backend is already loading CDN data in a background task spawned during setup()
 - If status becomes `"error"`, startup halts and shows an error message
 - This is the only **fatal** task — all others are resilient
 
-**Task 2: Catching up on logs**
-- Registers Tauri event listeners (`skill-update`, `survey-event`, `survey-session-ended`, `player-event`)
+### Task 2: Catching up on logs
+
+- Registers Tauri event listeners (`skill-update`, `survey-tracker-*`, `character-death`, `enemy-killed`, `chat-status-event`, `character-resuscitated`, `watch-rule-triggered`)
 - Starts Player.log tailing if `autoTailPlayerLog` enabled
 - Starts chat log tailing if `autoTailChat` enabled
 - Runs one synchronous `poll_watchers` call that **blocks until all historical log content is parsed**
@@ -131,7 +141,8 @@ Shows `StartupProgress` with a 4-task checklist. Each task must complete before 
 - Reloads settings from backend (catch-up may have updated active character/server)
 - Non-fatal — partial failures log warnings but don't block startup
 
-**Task 3: Loading character data**
+### Task 3: Loading character data
+
 - Calls `characterStore.initForActiveCharacter()` which:
   - Auto-imports the latest character report from the Reports folder
   - Seeds game state from the report (skills, favor, recipes, currencies)
@@ -141,7 +152,8 @@ Shows `StartupProgress` with a 4-task checklist. Each task must complete before 
 - Now uses the **correct** active character resolved by the catch-up in Task 2
 - Non-fatal — if no reports exist, continues with empty character data
 
-**Task 4: Preparing game state**
+### Task 4: Preparing game state
+
 - Calls `gameStateStore.loadAll()` — loads all 11 game state domains from the database:
   - skills, attributes, active_skills, world, inventory, recipes, equipment, favor, currencies, effects, storage
 - Loads storage vault CDN metadata (`gameStateStore.loadStorageVaults()`)
@@ -149,6 +161,7 @@ Shows `StartupProgress` with a 4-task checklist. Each task must complete before 
 - This pulls in everything seeded by Tasks 2 and 3 plus any data already in the DB from prior sessions
 
 ### Phase: `ready`
+
 - All startup tasks completed successfully
 - `gameState.startupComplete` set to `true` — enables live `character-login` handling
 - `"App is interactive"` logged to backend
@@ -163,7 +176,9 @@ During the startup catch-up, `character-login` events are emitted by the backend
 Once the app is `ready`, `character-login` events from live log tailing trigger the full reload flow: reset session skills, clear live inventory, reload all game state, and reinitialize character data.
 
 ### Ongoing: Post-Ready Background Work
+
 After the app is interactive:
+
 - **Report polling**: If `autoWatchReports` is enabled, periodically checks for new character/inventory reports.
 - **CDN persistence**: CDN data is written to the database after game-data-ready (~2s after data load).
 
@@ -179,16 +194,19 @@ After the app is interactive:
 ## Key Files
 
 **Startup orchestration:**
+
 - `src/stores/startupStore.ts` — Phase management and `runStartupTasks()` sequencing
 - `src/App.vue` — Phase-based rendering, mounts startup flow
 - `src/components/Startup/StartupProgress.vue` — Loading screen with task progress
 
 **Backend initialization:**
+
 - `src-tauri/src/lib.rs` — Rust `run()` function, setup handler, CDN background task
 - `src-tauri/src/coordinator.rs` — DataIngestCoordinator, log watcher management
-- `src-tauri/src/game_state.rs` — GameStateManager, event processing, report seeding
+- `src-tauri/src/game_state.rs` — GameStateManager, active identity + stack correction
 
 **Data stores populated during startup:**
+
 - `src/stores/gameDataStore.ts` — CDN data (items, skills, recipes, NPCs, effects)
 - `src/stores/gameStateStore.ts` — Character game state (11 domains), startupComplete flag
 - `src/stores/characterStore.ts` — Character reports, report imports

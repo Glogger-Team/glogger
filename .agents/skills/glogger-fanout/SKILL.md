@@ -17,6 +17,7 @@ description: Fan out N small disjoint TODO slices, one branch + git worktree + w
 - Prefer entries marked small with file-level scope; reject report-gated / Large / blocked items.
 - Slices MUST be file-disjoint. Name each `feature/<slug>` cut from `main`.
 - Confirm `main` clean (`git status --porcelain=v1 --branch`) before cutting.
+- **Trivial-slice fast path.** One file, ≤30 changed lines, no behaviour change (comments, test-data fixtures with unchanged expectations, mechanical renames — never process docs: `AGENTS.md`, skills, workflows, gate scripts, which keep their B pass): single worker, A gates only, parent verifies freeze + gates and merges — no B/C/D. The slice report states explicitly `no process-behaviour change`. Write no marker; the next frozen-review pass covers the range as usual.
 
 ## 2. Cut worktrees (plain git) + launch one worker each
 
@@ -41,7 +42,7 @@ description: Fan out N small disjoint TODO slices, one branch + git worktree + w
 
 ## 3. Brief shape (paste verbatim slots)
 
-Each brief MUST contain: existing checkout path + branch (Do NOT create another worktree) · task + TODO origin · scope file list (touch ONLY these) · explicit non-goals (sibling slices' files) · gates (`vue-tsc` / markdownlint / `cargo check` as applicable) · commit prefix (`impv:`/`fix:`/`docs:`, one small commit) · report contract (files changed, gate output, commit hash). On the `hc` path, end the brief with: `Report back with hc send <parent-terminal-address> <result or blocker> when done or stuck.` (the brief carries the parent's address explicitly — `$HC_TERMINAL_ID` inside a worker names the worker itself and self-injects, observed 2026-11-15 — never use it for the report; send explicitly to the parent address).
+- Each brief MUST contain: existing checkout path + branch (Do NOT create another worktree) · task + TODO origin · scope file list (touch ONLY these) · explicit non-goals (sibling slices' files) · gates (`vue-tsc` / markdownlint / `cargo check` as applicable) · commit via `omp commit` (atomic-split flow; keep the `impv:`/`fix:`/`docs:` subject prefix, one small commit; if `omp` CLI is unavailable in the checkout, one conventional commit with the same prefix) · report contract (files changed, gate output, commit hash). On the `hc` path, end the brief with: `Report back with hc send <parent-terminal-address> <result or blocker> when done or stuck.` (the brief carries the parent's address explicitly — `$HC_TERMINAL_ID` inside a worker names the worker itself and self-injects, observed 2026-11-15 — never use it for the report; send explicitly to the parent address).
 
 ## 4. Traps (learned 2026-11-08/09, fanout runs)
 

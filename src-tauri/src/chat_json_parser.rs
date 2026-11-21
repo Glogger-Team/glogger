@@ -80,8 +80,7 @@ pub enum ChatJsonEvent {
 #[serde(rename_all = "PascalCase")]
 struct AddItemJson {
     name: String,
-    stack: u32,
-    #[serde(default)]
+    stack: Option<u32>,
     from_name: Option<String>,
     #[serde(default)]
     from_entity_id: Option<u32>,
@@ -105,7 +104,7 @@ struct BookJson {
 #[serde(rename_all = "PascalCase")]
 struct DeltaFavorJson {
     npc: String,
-    delta: f64,
+    delta: Option<f64>,
 }
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -127,10 +126,14 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
             if v.name.is_empty() {
                 return None;
             }
+            let stack = v.stack?;
+            if stack == 0 {
+                return None;
+            }
             Some(ChatJsonEvent::ItemReceipt {
                 timestamp,
                 item_name: v.name,
-                quantity: v.stack.max(1),
+                quantity: stack,
                 from_name: v.from_name,
                 from_entity_id: v.from_entity_id,
             })
@@ -170,10 +173,21 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
             if v.npc.is_empty() {
                 return None;
             }
+            let delta = v.delta?;
+            // Out-of-range floats (`1e309`) are rejected by `serde_json::from_str`
+            // today: vendored serde_json 1.0.154 `f64_from_parts` returns
+            // `Err(NumberOutOfRange)` when the result is infinite. The
+            // `!delta.is_finite()` check below is therefore belt-and-suspenders
+            // against a serde behavior change, not the live rejection path; keep
+            // it as future-proofing (an infinite delta would poison SUM(delta)
+            // with no repair path).
+            if !delta.is_finite() || delta == 0.0 {
+                return None;
+            }
             Some(ChatJsonEvent::FavorDelta {
                 timestamp,
                 npc: v.npc,
-                delta: v.delta,
+                delta,
             })
         }
         "RecipeUsage" => {
@@ -384,16 +398,39 @@ mod tests {
     #[test]
     fn missing_required_fields_yield_none_not_zeros() {
         // Absent required fields must not default into a destructive
-        // zero/empty event: a missing body would wipe book content, and
+        // zero/empty event: an empty body would wipe book content, and
         // absent XP levels would zero a stored level via the upsert.
-        // (Explicit zero completions are valid — see
+        // Favor/additem deltas and stacks must likewise be present and
+        // non-zero. (Explicit zero completions are valid — see
         // `recipe_usage_explicit_zero_completions_valid`.)
+        // This matrix enumerates the class, not past incidents: every typed
+        // arm appears with each of its required fields missing or zeroed,
+        // so the next arm inherits the rule instead of re-learning it.
         for line in [
             "26-11-17 08:52:00\t[JSON:RecipeUsage] {\"RecipeName\":\"Recall Heart's Home\", \"RecipeId\": 9008}\n",
+            "26-11-17 08:52:00\t[JSON:RecipeUsage] {\"RecipeId\": 9008, \"Completions\": 211}\n",
+            "26-11-17 08:52:00\t[JSON:RecipeUsage] {\"RecipeName\":\"Recall Heart's Home\", \"RecipeId\": 0, \"Completions\": 211}\n",
             "26-11-17 08:52:00\t[JSON:Book] {\"Title\":\"Skill Info\"}\n",
+            "26-11-17 08:52:00\t[JSON:Book] {\"Body\":\"text\"}\n",
             "26-11-17 08:52:00\t[JSON:Pigeon] {\"Title\":\"Pigeon From TestFriend\"}\n",
+            "26-11-17 08:52:00\t[JSON:Pigeon] {\"Body\":\"text\"}\n",
             "26-11-17 08:52:00\t[JSON:EarnedXP] {\"Skill\":\"Sword\", \"XP\": 53}\n",
             "26-11-17 08:52:00\t[JSON:EarnedXP] {\"Skill\":\"Sword\", \"XP\": 53, \"OldLevel\": 4}\n",
+            "26-11-17 08:52:00\t[JSON:EarnedXP] {\"XP\": 53, \"OldLevel\": 4, \"NewLevel\": 5}\n",
+            "26-11-17 08:52:00\t[JSON:EarnedXP] {\"Skill\":\"Sword\", \"XP\": 0, \"OldLevel\": 4, \"NewLevel\": 5}\n",
+            "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Npc\":\"NPC_Elune\"}\n",
+            "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Npc\":\"NPC_Elune\", \"Delta\": 0}\n",
+            "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Npc\":\"NPC_Elune\", \"Delta\": 1e309}\n", // from_str-level rejection (NumberOutOfRange today; guard covers serde saturation)
+            "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Npc\":\"NPC_Elune\", \"Delta\": -1e309}\n", // from_str-level rejection (NumberOutOfRange today; guard covers serde saturation)
+            "26-11-17 08:52:00\t[JSON:DeltaFavor] {\"Delta\": 5.0}\n",
+            "26-11-17 08:52:00\t[JSON:AddItem] {\"Name\":\"Toxic Sludge\"}\n",
+            "26-11-17 08:52:00\t[JSON:AddItem] {\"Name\":\"Toxic Sludge\", \"Stack\": 0}\n",
+            "26-11-17 08:52:00\t[JSON:AddItem] {\"Stack\": 3}\n",
+            "26-11-17 08:52:00\t[JSON:ParagonXP] {\"Skill\":\"Sword\", \"XP\": 53}\n",
+            "26-11-17 08:52:00\t[JSON:ParagonXP] {\"Skill\":\"Sword\", \"XP\": 0, \"OldLevel\": 4, \"NewLevel\": 5}\n",
+            "26-11-17 08:52:00\t[JSON:ParagonXP] {\"XP\": 53, \"OldLevel\": 4, \"NewLevel\": 5}\n",
+            "26-11-17 08:52:00\t[JSON:EntityReport] {\"Title\":\"Eveline Rastin\"}\n",
+            "26-11-17 08:52:00\t[JSON:EntityReport] {\"Body\":\"tip\"}\n",
         ] {
             let msgs = parse_chat_lines(line);
             assert_eq!(msgs.len(), 1);
@@ -480,14 +517,12 @@ mod tests {
 
     #[test]
     fn entity_report_parses_typed() {
-        let msgs = parse_chat_lines("26-11-17 16:55:02\t[JSON:EntityReport] {\"Title\":\"Eveline Rastin\", \"Body\":\"tip\"}\n");
-        assert_eq!(msgs.len(), 1);
-        match parse_json_message(&msgs[0]) {
-            Some(ChatJsonEvent::EntityReport { title, body, .. }) => {
-                assert_eq!(title, "Eveline Rastin");
-                assert_eq!(body, "tip");
-            }
-            other => panic!("expected EntityReport, got {other:?}"),
-        }
+        let events = parse_all(include_str!("../../test_data/vip_json/chat-entityreport.log"));
+        assert_eq!(events.len(), 1);
+        let ChatJsonEvent::EntityReport { title, body, .. } = &events[0] else {
+            panic!("expected EntityReport, got {:?}", events[0]);
+        };
+        assert_eq!(title, "Eveline Rastin");
+        assert!(body.contains("Ushug"));
     }
 }

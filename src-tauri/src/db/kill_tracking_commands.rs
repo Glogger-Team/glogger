@@ -286,26 +286,35 @@ pub fn record_enemy_kill(
     killing_ability: &str,
     health_damage: i64,
     armor_damage: i64,
+    zone: Option<&str>,
     killed_at: &str,
 ) -> Result<Option<i64>, String> {
     let inserted = conn
         .execute(
             "INSERT INTO enemy_kills
                 (enemy_name, enemy_entity_id, killing_ability, health_damage, armor_damage,
-                 killed_at, character_name, server_name)
-             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8
+                 killed_at, character_name, server_name, zone)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
              WHERE NOT EXISTS (
                 SELECT 1 FROM enemy_kills
                  WHERE character_name = ?7 AND server_name = ?8
                    AND enemy_entity_id = ?2 AND killed_at = ?6
              )",
+            // combat_skills stays NULL: loadout tracking has no source in the
+            // chat pipeline (zero combat_skills references in
+            // chat_status_dispatch.rs), so we never fabricate a value here.
             rusqlite::params![
                 enemy_name, enemy_entity_id, killing_ability, health_damage, armor_damage,
-                killed_at, character, server
+                killed_at, character, server, zone
             ],
         )
         .map_err(|e| format!("Failed to record enemy kill: {e}"))?;
     if inserted == 0 {
+        // Rescan heal: even when the row already existed, re-link loot so
+        // receipts that arrived in a different scan window attach.
+        if let Err(e) = link_kill_loot_for_kill(conn, character, server, enemy_entity_id, killed_at) {
+            eprintln!("[dispatch] kill-loot link failed (rescan heals): {e}");
+        }
         return Ok(None);
     }
     let kill_id = conn
@@ -319,7 +328,9 @@ pub fn record_enemy_kill(
         .map_err(|e| format!("Failed to read back kill id: {e}"))?;
     // Link any receipt rows that arrived before this FATALITY (newest-first
     // scans) — idempotent.
-    let _ = link_kill_loot_for_kill(conn, character, server, enemy_entity_id, killed_at);
+    if let Err(e) = link_kill_loot_for_kill(conn, character, server, enemy_entity_id, killed_at) {
+        eprintln!("[dispatch] kill-loot link failed (rescan heals): {e}");
+    }
     Ok(Some(kill_id))
 }
 

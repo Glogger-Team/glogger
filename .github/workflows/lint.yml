@@ -7,8 +7,9 @@
 # gated job/step ends with an always-run note printing `<scope> scope: ran
 # | skipped (no <paths> changed)` — skips exit 0 with a note, never a
 # job-level `if:` (checks stay visible, never missing). Always-run set:
-# commit-msg self-test, lint-parity drift guard (unconditional in the yaml
-# job), game-interaction constraints. Per-slice scopes: ruff on
+# commit-msg self-test, author-discipline gates (unconditional `authoring`
+# job), lint-parity drift guard (unconditional in the yaml job),
+# game-interaction constraints. Per-slice scopes: ruff on
 # scripts/**; yamllint on repo-wide **/*.yml|yaml; zizmor+pinact+pre-commit
 # on .github/**; markdown on **/*.md (changed-files script); frontend build
 # on src/** + manifests; grids on src/**/*.vue; review-patterns on
@@ -237,6 +238,49 @@ jobs:
         # Same `mise run lint:commit` slice the pre-commit hook runs.
         # The hook is scripts/check-commit-msg.py (warning-only).
         run: mise run lint:commit
+  authoring:
+    name: Author-discipline gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Changed-files gating needs the base commit; default depth-1
+          # checkout can't diff against it (same as the markdown job).
+          fetch-depth: 0
+
+      - name: Install mise and tools
+        # No third-party action (org allowlist): official installer script.
+        run: |
+          set -euo pipefail
+          curl -fsSL https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          mise install
+
+      - name: Author-discipline gates
+        # Same slices the pre-commit hook runs via `mise run lint:fast`, but
+        # with the PR/push range passed explicitly: a clean CI checkout has
+        # no worktree changes and no upstream, so the local worktree+unpushed
+        # scope would be empty and the gates could never fire. Base selection
+        # is the one sanctioned invocation difference (same as the markdown
+        # job); scope logic stays in the scripts. check-tauri-commands is
+        # whole-tree and needs no base.
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          mise exec -- python scripts/check-tauri-commands.py
+          mise exec -- python scripts/check-store-hmr.py --base "$BASE"
+          mise exec -- python scripts/check-exec-bit.py --base "$BASE"
+          mise exec -- python scripts/check-doc-orphans.py --base "$BASE"
 
   version-sync:
     name: Version sync guard

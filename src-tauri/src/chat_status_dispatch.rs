@@ -311,6 +311,7 @@ pub fn dispatch_chat_message(
                                 killing_ability,
                                 *health_damage as i64,
                                 *armor_damage as i64,
+                                state.current_area.as_deref(),
                                 timestamp,
                             )
                     {
@@ -338,18 +339,31 @@ pub fn dispatch_chat_message(
                 // the converter would misread as UTC (off by the tz offset,
                 // defeating the v72 UNIQUE key against backfill rows).
                 let utc_ts = ctx.msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
-                if target == id.character {
-                    record_player_milk(ctx.db, &id.character, &id.server, &id.character, "self_milked", &utc_ts);
+                if target == id.character
+                    && record_player_milk(
+                        ctx.db,
+                        &id.character,
+                        &id.server,
+                        &id.character,
+                        "self_milked",
+                        &utc_ts,
+                    )
+                {
+                    out.domain("milking");
                 }
-                record_cow_milk_session(
+                // Gate the domain on a write that advanced the row (like the
+                // MilkedBy arm and EnemyKilled): replays and write failures
+                // stay silent.
+                if record_cow_milk_session(
                     ctx.db,
                     &id.character,
                     &id.server,
                     &target,
                     state.current_area.as_deref().unwrap_or(""),
                     &utc_ts,
-                );
-                out.domain("milking");
+                ) {
+                    out.domain("milking");
+                }
             }
             if let Some(target) = chat_combat_parser::parse_self_poop_line(
                 ctx.msg.sender.as_deref(),
@@ -626,8 +640,9 @@ fn insert_json_receipt_guarded(
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM item_transactions
              WHERE timestamp = ?1 AND character_name = ?2 AND server_name = ?3
-               AND item_name = ?4 AND quantity = ?5 AND context = 'loot' AND source = 'chat_status')",
-            rusqlite::params![timestamp, character, server, item_name, quantity as i32],
+               AND item_name = ?4 AND quantity = ?5 AND context = 'loot' AND source = 'chat_status'
+               AND (from_entity_id = ?6 OR (?6 IS NULL AND from_entity_id IS NULL)))",
+            rusqlite::params![timestamp, character, server, item_name, quantity as i32, from_entity_id],
             |r| r.get(0),
         )
         .unwrap_or(false);
@@ -864,6 +879,25 @@ fn dispatch_json_event(
                         .map(|c| c == *body)
                         .unwrap_or(false);
                     current = same;
+                    // The book's own observation time, normalized to the
+                    // RFC3339 shape `persist_book_content` writes: a naive
+                    // stamp sorts before any RFC3339 row, so without this an
+                    // older watcher row would beat every newer live book.
+                    let observed = utc_naive_to_rfc3339(timestamp);
+                    if same {
+                        // Identical re-read: advance the observation time so
+                        // this row stays the newest observation. No domain,
+                        // no imports — rescan stays silent.
+                        // Swallowed intentionally: this identical row already persisted, so a failed bump only leaves captured_at stale — nothing downstream to fail.
+                        conn.execute(
+                            "UPDATE game_state_books SET captured_at = ?5
+                             WHERE character_name = ?1 AND server_name = ?2
+                               AND book_type = ?3 AND title = ?4
+                               AND captured_at < ?5",
+                            rusqlite::params![id.character, id.server, book_type, title, observed],
+                        )
+                        .ok();
+                    }
                     if !same
                         && conn
                             .execute(
@@ -873,7 +907,7 @@ fn dispatch_json_event(
                                     content = excluded.content,
                                     captured_at = excluded.captured_at
                                  WHERE captured_at <= excluded.captured_at",
-                                rusqlite::params![id.character, id.server, book_type, title, body, timestamp],
+                                rusqlite::params![id.character, id.server, book_type, title, body, observed],
                             )
                             .map(|n| n > 0)
                             .unwrap_or(false)
@@ -1112,7 +1146,10 @@ fn accrue_currency_delta(db: &DbPool, character: &str, server: &str, amount: i64
     }
 }
 
-fn milking_event_timestamp(event_ts: &str) -> String {
+/// Naive UTC (`%Y-%m-%d %H:%M:%S`) → RFC3339 for `*_at` columns shared with
+/// wall-clock writers. Falls back to now() on unparseable input so a bad
+/// stamp never blocks the write.
+fn utc_naive_to_rfc3339(event_ts: &str) -> String {
     match chrono::NaiveDateTime::parse_from_str(event_ts.trim(), "%Y-%m-%d %H:%M:%S") {
         Ok(dt) => chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc).to_rfc3339(),
         Err(_) => chrono::Utc::now().to_rfc3339(),
@@ -1128,7 +1165,7 @@ fn record_player_milk(
     direction: &str,
     timestamp: &str,
 ) -> bool {
-    let milked_at = milking_event_timestamp(timestamp);
+    let milked_at = utc_naive_to_rfc3339(timestamp);
     let Ok(conn) = db.get_write() else {
         return false;
     };
@@ -1143,8 +1180,11 @@ fn record_player_milk(
         }
     }
 }
-/// Record a cow milking with the newer-wins upsert. Returns `true` on
-/// success (caller emits `milking`).
+/// Record a cow milking with the newer-wins upsert. Returns `true` when the
+/// write advanced the row (caller emits `milking`); replays that move
+/// nothing and write failures report `false`. (The upsert itself always
+/// succeeds on an existing row, so `.is_ok()` would report success for a
+/// pure replay - the change check lives in `record_cow_milk`.)
 pub fn record_cow_milk_session(
     db: &DbPool,
     character: &str,
@@ -1153,11 +1193,17 @@ pub fn record_cow_milk_session(
     zone: &str,
     timestamp: &str,
 ) -> bool {
-    let milked_at = milking_event_timestamp(timestamp);
+    let milked_at = utc_naive_to_rfc3339(timestamp);
     let Ok(conn) = db.get_write() else {
         return false;
     };
-    crate::db::game_state_commands::record_cow_milk(&conn, character, server, cow_name, zone, &milked_at).is_ok()
+    match crate::db::game_state_commands::record_cow_milk(&conn, character, server, cow_name, zone, &milked_at) {
+        Ok(advanced) => advanced,
+        Err(e) => {
+            eprintln!("[chat_status_dispatch] Failed to record cow milk: {e}");
+            false
+        }
+    }
 }
 
 
@@ -1991,6 +2037,30 @@ mod tests {
     }
 
     #[test]
+    fn json_receipt_same_second_second_entity_records() {
+        // Two slimes, one Coin Sack each, same second: entity-scoped EXISTS
+        // keeps both gains; a byte-identical resend still collapses.
+        let (pool, _guard) = test_pool();
+        let ts = "26-11-17 08:50:27";
+        let first = insert_json_receipt_guarded(
+            &pool, ts, "Alice", "Dreva", "Coin Sack", None, None, 1,
+            Some("Slime A"), Some(1001),
+        );
+        assert!(first);
+        let second = insert_json_receipt_guarded(
+            &pool, ts, "Alice", "Dreva", "Coin Sack", None, None, 1,
+            Some("Slime B"), Some(1002),
+        );
+        assert!(second, "second entity's receipt is a distinct gain");
+        let resend = insert_json_receipt_guarded(
+            &pool, ts, "Alice", "Dreva", "Coin Sack", None, None, 1,
+            Some("Slime A"), Some(1001),
+        );
+        assert!(!resend, "byte-identical resend collapses");
+        assert_eq!(item_rows(&pool).len(), 2);
+    }
+
+    #[test]
     fn json_xp_upserts_without_level_up() {
         let (pool, _guard) = test_pool();
         let gd = game_data();
@@ -2387,6 +2457,58 @@ mod tests {
     }
 
     #[test]
+    fn json_book_identical_recapture_advances_observation() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+
+        let body = "{\"Title\":\"Skill Info\", \"Body\":\"Foods Consumed:\\n\\n  Bacon: 22\"}";
+        let ts1 = "26-11-17 08:31:58";
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &json_msg("Book", body, ts1), ts1, &mut st);
+        assert!(out.domains.iter().any(|d| d == "books"));
+
+        // Identical body re-observed later: no domain (rescan silent),
+        // but captured_at advances to the newer observation.
+        let ts2 = "26-11-17 08:41:58";
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out2 = dispatch(&pool, &gd, Some(&id()), &json_msg("Book", body, ts2), ts2, &mut st);
+        assert!(out2.domains.iter().all(|d| d != "books"));
+        let captured: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT captured_at FROM game_state_books
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(captured, "2026-11-17T08:41:58+00:00");
+
+        // An older rotated body now loses the freshness check: no write,
+        // no domain, stored content untouched.
+        let ts0 = "26-11-17 08:21:58";
+        let stale = "{\"Title\":\"Skill Info\", \"Body\":\"Foods Consumed:\\n\\n  Eggs: 3\"}";
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out3 = dispatch(&pool, &gd, Some(&id()), &json_msg("Book", stale, ts0), ts0, &mut st);
+        assert!(out3.domains.iter().all(|d| d != "books"));
+        let content: String = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT content FROM game_state_books
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(content.contains("Bacon"), "older rotated body must not win");
+    }
+
+    #[test]
     fn json_unknown_and_malformed_are_accounted() {
         let (pool, _guard) = test_pool();
         let gd = game_data();
@@ -2497,7 +2619,9 @@ mod tests {
         let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 16:55:02";
-        let msg = json_msg("EntityReport", "{\"Title\":\"Eveline Rastin\", \"Body\":\"tip\"}", ts);
+        let msgs = crate::chat_parser::parse_chat_lines(include_str!("../../test_data/vip_json/chat-entityreport.log"));
+        assert_eq!(msgs.len(), 1);
+        let msg = msgs.into_iter().next().unwrap();
         let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
         assert!(out.domains.iter().any(|d| d == "player_messages"));
@@ -2510,7 +2634,8 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(row, ("Eveline Rastin".to_string(), "tip".to_string()));
+        assert_eq!(row.0, "Eveline Rastin".to_string());
+        assert!(row.1.contains("Ushug"));
     }
 
     #[test]
@@ -2638,5 +2763,16 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM enemy_kill_loot", [], |r| r.get(0))
             .unwrap();
         assert_eq!((kills, loot), (1, 0));
+    }
+
+    #[test]
+    fn utc_naive_to_rfc3339_converts_and_falls_back() {
+        assert_eq!(
+            utc_naive_to_rfc3339("2026-11-18 12:10:00"),
+            "2026-11-18T12:10:00+00:00"
+        );
+        // Unparseable input falls back to now() — never blocks the write.
+        let fallback = utc_naive_to_rfc3339("not-a-timestamp");
+        assert!(fallback.ends_with("+00:00"), "unexpected stamp {fallback}");
     }
 }

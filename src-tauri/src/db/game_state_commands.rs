@@ -1048,6 +1048,12 @@ pub fn get_game_state_books(
 ///
 /// The stamp only ever moves forward (`MAX`), so replaying an old chat log can't
 /// hand out a fresh hour; the zone merge still learns a previously-unknown area.
+///
+/// Returns `true` when the upsert advanced the row (a new row, a newer stamp,
+/// a cleared `cooldown_unknown` flag, or a newly learned zone) — the caller
+/// emits `milking` only then, so replays that move nothing stay silent. The
+/// comparison mirrors the upsert below exactly (RFC3339 UTC stamps compare
+/// lexicographically, same as SQL `MAX` on `TEXT`).
 pub fn record_cow_milk(
     conn: &rusqlite::Connection,
     character: &str,
@@ -1055,7 +1061,25 @@ pub fn record_cow_milk(
     cow_name: &str,
     zone: &str,
     milked_at: &str,
-) -> Result<(), String> {
+) -> Result<bool, String> {
+    let advanced: bool = match conn.query_row(
+        "SELECT last_milked_at, cooldown_unknown, zone FROM milking_timers
+         WHERE character_name = ?1 AND server_name = ?2 AND cow_name = ?3",
+        rusqlite::params![character, server, cow_name],
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        },
+    ) {
+        Err(rusqlite::Error::QueryReturnedNoRows) => true,
+        Err(e) => return Err(format!("Failed to read cow milk row: {e}")),
+        Ok((stamp, unknown, stored_zone)) => {
+            milked_at > stamp.as_str() || unknown == 1 || (!zone.is_empty() && zone != stored_zone)
+        }
+    };
     conn.execute(
         "INSERT INTO milking_timers
              (character_name, server_name, cow_name, zone, last_milked_at, cooldown_unknown)
@@ -1067,7 +1091,7 @@ pub fn record_cow_milk(
         rusqlite::params![character, server, cow_name, zone, milked_at],
     )
     .map_err(|e| format!("Failed to record cow milk: {e}"))?;
-    Ok(())
+    Ok(advanced)
 }
 
 // ── Milking timers ──────────────────────────────────────────────

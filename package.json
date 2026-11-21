@@ -23,8 +23,7 @@
     "tauri:dev:experimental": "tauri dev --config src-tauri/tauri.experimental.conf.json",
     "version:bump": "python scripts/bump-version.py",
     "release": "python scripts/release.py",
-    "changelog": "python scripts/generate-changelog.py",
-    "survey-test": "cd src-tauri && cargo test --lib survey::replay_tests::accuracy_report -- --ignored --nocapture"
+    "changelog": "python scripts/generate-changelog.py"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.3",

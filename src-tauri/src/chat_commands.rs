@@ -462,7 +462,7 @@ fn self_milk_events_in_messages(
 /// `chat_messages` by default — so a manual scan that consumed the line
 /// stored nothing and the live drain never saw it. Same UTC treatment as
 /// the self-milk helper (file's own login-line offset): the live hook
-/// writes UTC RFC3339 via `milking_event_timestamp`, and the shared unique
+/// writes UTC RFC3339 via `utc_naive_to_rfc3339`, and the shared unique
 /// index keeps a re-run from double-counting.
 /// Split out so the matching rules are testable without disk or Tauri state.
 fn milked_by_events_in_messages(
