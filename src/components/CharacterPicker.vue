@@ -102,8 +102,6 @@ import { invoke } from '@tauri-apps/api/core'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useGameStateStore } from '../stores/gameStateStore'
 import { useCharacterStore } from '../stores/characterStore'
-import { useCombatStore } from '../stores/combatStore'
-import { useDeathStore } from '../stores/deathStore'
 import type { UserCharacter } from '../stores/startupStore'
 
 defineProps<{
@@ -164,32 +162,17 @@ async function switchTo(char: UserCharacter) {
   settingsStore.settings.activeCharacterName = char.character_name
   settingsStore.settings.activeServerName = char.server_name
 
-  // Reload all data for the new character
-  gameStateStore.resetSessionSkills()
-  gameStateStore.clearLiveInventory()
+  // Clear session-scoped state synchronously under the new identity so no
+  // stale rows from the previous character render while the reloads run.
+  // The async re-seed stays after the awaits below. Both live on the game
+  // state store, shared with the character-login listener.
+  gameStateStore.clearSessionForCharacter()
+
   await gameStateStore.loadAll()
   characterStore.initForActiveCharacter()
-  await resetCombatAndDeathsForCharacter()
+  await gameStateStore.reloadCombatAndDeathsForCharacter()
 
   open.value = false
-}
-
-// Combat is live-only and deaths are per-character: reset combat and reload
-// deaths for the new identity. Runs last, after the gameState/character
-// reloads above (same order as the character-login listener in
-// gameStateStore). Bumps deathsGeneration so an in-flight loadDeaths for the
-// previous character drops its result instead of overwriting the new rows.
-async function resetCombatAndDeathsForCharacter() {
-  const combatStore = useCombatStore()
-  const deathStore = useDeathStore()
-  combatStore.resetForCharacter()
-  deathStore.deathsGeneration++
-  deathStore.deaths = []
-  deathStore.loaded = false
-  await deathStore.loadDeaths()
-  // resetForCharacter cleared baselineLoaded; re-seed it so keep-alive views
-  // (which won't remount) get lifetime totals back.
-  void combatStore.loadHistoricBaseline()
 }
 
 function confirmDelete(char: UserCharacter) {
@@ -205,9 +188,11 @@ async function doDelete() {
     characterName: char.character_name,
     serverName: char.server_name,
   })
-
+  // Re-evaluate after the await: a login or switch may have installed a new
+  // identity while the delete was in flight — never clobber it.
+  const stillActive = isSelected(char)
   // If we deleted the active character, clear settings
-  if (isSelected(char)) {
+  if (stillActive) {
     settingsStore.settings.activeCharacterName = null
     settingsStore.settings.activeServerName = null
   }
@@ -223,6 +208,13 @@ async function doDelete() {
   characterStore.allCharacterWorkOrders = []
   characterStore.allCharacterWorkOrdersLoaded = false
   characterStore.allCharacterWorkOrdersGeneration++
+  // The deleted character's session state is gone with its rows: when it was
+  // still active after the delete await, clear session/live/combat/deaths
+  // under the (now null) identity. The generation bump drops any in-flight
+  // loadDeaths for it. Uses the post-await snapshot (not a fresh check —
+  // settings are already nulled above, and not the pre-await state, so a
+  // login/switch that landed mid-delete keeps its fresh state).
+  if (stillActive) gameStateStore.clearSessionForCharacter()
   // Reopen the picker
   await loadCharacters()
   open.value = true
@@ -252,11 +244,13 @@ async function addCharacter() {
   settingsStore.settings.activeCharacterName = name
   settingsStore.settings.activeServerName = server
 
-  gameStateStore.resetSessionSkills()
-  gameStateStore.clearLiveInventory()
+  // Same split as switchTo: clear synchronously under the new identity, then
+  // re-seed after the awaits.
+  gameStateStore.clearSessionForCharacter()
+
   await gameStateStore.loadAll()
   characterStore.initForActiveCharacter()
-  await resetCombatAndDeathsForCharacter()
+  await gameStateStore.reloadCombatAndDeathsForCharacter()
 
   open.value = false
 }
