@@ -156,6 +156,15 @@ export const useCombatStore = defineStore("combat", () => {
     startedAt.value = null;
   }
 
+  /** Full per-character reset: live session plus historic baseline. The
+   * plain reset() stays live-only for the CombatView "Reset live" button. */
+  function resetForCharacter() {
+    reset();
+    historicKills.value = {};
+    historicXp.value = {};
+    baselineLoaded.value = false;
+  }
+
   const liveKills = computed(() =>
     Object.values(kills.value).reduce((sum, k) => sum + k.count, 0),
   );
@@ -230,6 +239,7 @@ export const useCombatStore = defineStore("combat", () => {
     handleChatStatus,
     handleDeathEvent,
     reset,
+    resetForCharacter,
     liveKills,
     lifetimeKills,
     liveXp,

@@ -102,6 +102,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useGameStateStore } from '../stores/gameStateStore'
 import { useCharacterStore } from '../stores/characterStore'
+import { useCombatStore } from '../stores/combatStore'
+import { useDeathStore } from '../stores/deathStore'
 import type { UserCharacter } from '../stores/startupStore'
 
 defineProps<{
@@ -167,8 +169,27 @@ async function switchTo(char: UserCharacter) {
   gameStateStore.clearLiveInventory()
   await gameStateStore.loadAll()
   characterStore.initForActiveCharacter()
+  await resetCombatAndDeathsForCharacter()
 
   open.value = false
+}
+
+// Combat is live-only and deaths are per-character: reset combat and reload
+// deaths for the new identity. Runs last, after the gameState/character
+// reloads above (same order as the character-login listener in
+// gameStateStore). Bumps deathsGeneration so an in-flight loadDeaths for the
+// previous character drops its result instead of overwriting the new rows.
+async function resetCombatAndDeathsForCharacter() {
+  const combatStore = useCombatStore()
+  const deathStore = useDeathStore()
+  combatStore.resetForCharacter()
+  deathStore.deathsGeneration++
+  deathStore.deaths = []
+  deathStore.loaded = false
+  await deathStore.loadDeaths()
+  // resetForCharacter cleared baselineLoaded; re-seed it so keep-alive views
+  // (which won't remount) get lifetime totals back.
+  void combatStore.loadHistoricBaseline()
 }
 
 function confirmDelete(char: UserCharacter) {
@@ -235,6 +256,7 @@ async function addCharacter() {
   gameStateStore.clearLiveInventory()
   await gameStateStore.loadAll()
   characterStore.initForActiveCharacter()
+  await resetCombatAndDeathsForCharacter()
 
   open.value = false
 }
