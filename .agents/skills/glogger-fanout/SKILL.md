@@ -31,7 +31,7 @@ description: Fan out N small disjoint TODO slices, one branch + git worktree + w
 - If the launch carried a task, check `first_message.sent` in `hc get <t>`; `false` means the task was NOT sent — `hc read` first, resolve readiness, then `send`. Never blind-resend: it may still have arrived.
 - Monitor with ONE collective wait, not sequential per-slice waits: `hc wait --children any` (next news from any slice) or per-slice `hc wait <t>`. The default 180s timeout is a check-in, not failure — wait again. Child reports arrive tagged `<hc from="tN name">…</hc>` as parent input — read the actual result, never infer success from an expected outcome.
 - Read/steer: `hc read --lines 100 <t>`, `hc get <t>`, `hc send <t> "<follow-up>"`. Fix batches go via `send` (same no-blind-resend rule: `read` before re-`send` after a stall/timeout).
-- Visibility — ONLY if the user asked to watch: `herdr-app ls` for space/tab IDs, then adopt the worker with `hc label <t> herdr.space=<id>` (+ `herdr.tab=<id>` to pick a tab), or `herdr-app do tab.new --name <slice> --argv ... --task ...`. Confirm exact shapes via `herdr-app commands` first. Never add labels just for background workers.
+- Visibility — when a Herdr space/tab is available (opt-out; skip only when no space/tab exists or the user asked for background-only): `herdr-app ls` for space/tab IDs, then adopt the worker with `hc label <t> herdr.space=<id>` (+ `herdr.tab=<id>` to pick a tab), or `herdr-app do tab.new --name <slice> --argv ... --task ...`. Confirm exact shapes via `herdr-app commands` first. Never add labels just for background workers.
 
 ### 2B. TUI visible panes (legacy)
 
