@@ -132,15 +132,17 @@ CREATE TABLE game_state_storage (
 
 ## Storage Persistence
 
-Unlike inventory (which clears on login), storage persists across sessions. The `GameStateManager` does NOT clear storage on `CharacterLogin`. Items are only removed by explicit `StorageWithdrawal` events or full report replacement.
+Unlike inventory (which clears its obsolete log-era rows on login), storage persists across sessions. The `GameStateManager` never clears storage — neither on live login (`set_active_character`) nor on session adopt (`apply_catch_up_login`). The slice changes only when a Character report import fully replaces it (DELETE all + re-INSERT `source = 'snapshot'` rows), plus stack-quantity corrections on leftover log-era rows from chat gains.
 
 ## Event Handling
 
-| PlayerEvent | DB Operation | Notes |
-|-------------|-------------|-------|
-| `StorageDeposit` | UPSERT by (character, server, vault_key, instance_id) | Updates item_name, stack_size, slot_index |
-| `StorageWithdrawal` | DELETE by (character, server, vault_key, instance_id) | Removes item from storage |
-| `CharacterLogin` | *(no-op for storage)* | Storage persists across sessions |
+There are no live storage events: `StorageDeposit`, `StorageWithdrawal`, and `CharacterLogin` name no producers anywhere in the tree (the Player.log pipeline is retired). The writers are:
+
+| Writer | DB Operation | Notes |
+|--------|-------------|-------|
+| Character report import (`seed_game_state_from_snapshot`, `import_inventory_report_internal`) | DELETE all for (character, server) + INSERT per vault item | Full-slice replace; `source = 'snapshot'`, synthetic negative `instance_id`s |
+| Chat-gain stack correction (`correct_stack_in_table`) | UPDATE `stack_size` on matching 1-stacks | Only targets leftover `source = 'log'` rows |
+| Live login / session adopt | *(no-op for storage)* | Storage persists across sessions |
 
 ## Data Sources
 

@@ -67,7 +67,7 @@ Tracking, attribution, and UX vary by kind:
 
 **Loot pattern in logs:**
 
-- Each mining hit produces its own batch of `[Status] X added to inventory` + `ProcessAddItem`/`ProcessUpdateItemCode` events under a fresh `Mining` activity context (each hit is its own `ProcessDoDelayLoop` cycle).
+- Each mining hit produces its own batch of `[Status] X added to inventory` lines (the corresponding `ProcessAddItem`/`ProcessUpdateItemCode` Player.log lines are no longer parsed — item parser retired 2026-11, same as Motherlode). In Player.log-era logs each hit was its own `ProcessDoDelayLoop` cycle under a fresh `Mining` activity context.
 - The survey map is consumed when the node spawns, not on individual hits.
 - The node depleting is implicit (same as motherlode).
 

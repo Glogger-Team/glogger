@@ -72,7 +72,7 @@ Parse a single chat log line into a structured `ChatMessage`.
 - Split line on first `\t` to get timestamp + content
 - If content starts with `[`, extract channel name from brackets
 - For Tell channel: parse `Sender->Recipient` arrow format, normalize so `sender` is always the conversation partner
-- For other channels: detect system vs player messages (system indicators: starts with `-`, starts with `You`, contains `#`)
+- For other channels: detect system vs player messages (system indicators: starts with `-`, starts with `You` plus a trailing space, contains `#`)
 - For non-bracketed content: always system messages (banners, area transitions)
 - Chat messages can include linebreaks.
 
