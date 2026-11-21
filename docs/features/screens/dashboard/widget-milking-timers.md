@@ -83,7 +83,7 @@ No live producer. The `"You obtain fresh milk from …"` line is not parsed, so 
 | cow_name | TEXT | PK part — display name (e.g., "Homer") |
 | zone | TEXT | Area where the cow was last milked (grouping label only, not identity) |
 | last_milked_at | TEXT | RFC3339 UTC **event time** of last milk (or, when `cooldown_unknown`, the earliest failed attempt that bounds it) |
-| cooldown_unknown | INTEGER | 1 = exact milk time unknown; the widget renders an upper bound (`≤ Xm`) instead of a countdown (migration v73) |
+| cooldown_unknown | INTEGER | 1 = exact milk time unknown; the removed Timers tab rendered an upper bound (`≤ Xm`) instead of a countdown (migration v73) |
 
 Like `player_milking_log.milked_at`, this is the milk event's own time (the chat line's
 UTC stamp via `chat_status_dispatch::utc_naive_to_rfc3339`), not ingest time. The
@@ -99,7 +99,7 @@ produced two rows and the widget showed the cow twice. Migration v63 drops `zone
 from the PK (keeping the most recent milk time and most recent non-empty zone when
 merging existing duplicates); the write path now upserts on
 `(character_name, server_name, cow_name)` and never overwrites a known zone with a
-blank one. The widget additionally de-duplicates by `cow_name` as a safeguard.
+blank one (the removed widget additionally de-duplicated by `cow_name` as a safeguard).
 
 ### Table: `player_milking_log` (migration v36, updated v38, deduped v72)
 
