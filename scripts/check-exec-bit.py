@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
-"""Gate: scripts in the worktree must carry the owner-exec bit.
+"""Gate: new scripts must carry the owner-exec bit, and executable scripts
+must open with a shebang.
 
 Scope: files new to the worktree (untracked + staged-added). Only *.py and
 *.sh are considered (the repo's script languages; CI invokes via
 interpreters so the bit is conventional). For staged-added files the git
 index mode is authoritative (on core.fileMode=false boxes the worktree bit
 is decorative); untracked files fall back to os.access.
+
+The shebang half exists because ruff EXE002 cannot fire on Windows
+checkouts (FS modes are always 644, so nothing looks executable to ruff);
+the index mode this gate reads is the only local signal, and CI's Linux
+checkout flags the same files. Check both halves before pushing scripts.
 
 CI passes --base <sha> (the PR base / push `before`; the one sanctioned
 invocation difference, same as the markdown job): scope is then the files
@@ -143,6 +149,27 @@ def lost_exec_flips() -> list[str]:
     ]
 
 
+def has_shebang(first_line: str) -> bool:
+    """Line-1 shebang probe (ruff EXE002 semantics for the executable rule)."""
+    return first_line.startswith("#!")
+
+
+def first_line_of(path: str, in_index: bool, base: str | None) -> str | None:
+    """First line of a scoped file: index blob when staged/committed, else the worktree file. Returns None when unreadable (e.g. added then deleted inside the range) — a gone file cannot violate."""
+    if in_index:
+        rev = "HEAD" if base is not None else ""
+        proc = run_git("show", f"{rev}:{path}")
+        if proc.returncode != 0:
+            return None
+        text = proc.stdout
+    else:
+        try:
+            text = (ROOT / path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None
+    return text.split("\n", 1)[0]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -167,6 +194,18 @@ def main() -> int:
         indexed[path] = left.split(" ", 1)[0]
     findings: list[str] = []
     for f in scoped:
+        in_index = f in indexed
+        executable = (
+            (indexed.get(f) == "100755") if in_index else os.access(ROOT / f, os.X_OK)
+        )
+        if executable:
+            first = first_line_of(f, in_index, base)
+            if first is not None and not has_shebang(first):
+                findings.append(
+                    f"{f}: executable but no line-1 shebang - ruff EXE002 fires on CI;"
+                    f" Windows checkouts never flag it (FS modes are 644, index mode decides)"
+                    f" - fix: add #!/usr/bin/env python3 (or appropriate) as line 1"
+                )
         mode = indexed.get(f)
         if mode is not None:
             if mode != "100755":
@@ -214,6 +253,9 @@ def self_test() -> int:
         parse_raw_modes(':100755 100644 a b M\0scripts/we"ird.py\0')
         == {'scripts/we"ird.py': ("100755", "100644")},
     )
+    check("shebang present", has_shebang("#!/usr/bin/env python3"))
+    check("shebang missing on docstring", not has_shebang('"""Docstring first.'))
+    check("shebang missing on empty", not has_shebang(""))
     try:
         git_check_stdout("diff", "--raw", "--invalid-flag-xyz")
         check("bad git exits 2", False)
