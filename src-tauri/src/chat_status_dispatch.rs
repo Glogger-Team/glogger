@@ -2481,12 +2481,11 @@ mod tests {
         let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out2 = dispatch(&pool, &gd, Some(&id()), &english, ts, &mut st);
         assert_eq!(out1.staged_gains.len(), 1);
-        // The English arm stages unconditionally (pre-existing contract);
-        // live file order is always English-first, so production never
-        // double-stages. What matters in reverse order is DB convergence:
-        // the guard skips the second insert, and stack correction +
-        // survey attribution are idempotent downstream.
-        let _ = out2;
+        // English-second finds the JSON twin's row and stages nothing on
+        // either channel (qty 1 also short-circuits the correction gate):
+        // conditional staging holds in both twin orders.
+        assert!(out2.staged_gains.is_empty());
+        assert!(out2.stack_corrections.is_empty());
         let rows = item_rows(&pool);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].2.as_deref(), Some("Olugax The Ever-Pudding"));
@@ -2576,6 +2575,74 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM item_transactions", [], |r| r.get(0))
             .unwrap();
         assert_eq!(ledger, 1, "exactly one ledger row");
+    }
+
+    #[test]
+    fn failed_json_receipt_correction_replays_to_converge_once() {
+        // JSON mirror of failed_stack_correction_replays_to_converge_once:
+        // every existing JSON fixture is Stack:1, which short-circuits the
+        // quantity gate — so this is the only test executing the receipt
+        // correction true-path (`quantity > 1` with the ledger row present).
+        // A wrong entity predicate in `ledger_receipt_present` would degrade
+        // via `unwrap_or(false)` to silent skip, the exact class fixed here.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-04-01 05:30:53";
+
+        pool.get_write()
+            .unwrap()
+            .execute(
+                "INSERT INTO game_state_inventory
+                 (character_name, server_name, instance_id, item_name, stack_size, last_confirmed_at, source)
+                 VALUES ('Alice', 'Dreva', 1, 'Mandrake Root', 1, '2026-04-01 05:30:00', 'log')",
+                [],
+            )
+            .unwrap();
+
+        let body = "{\"Name\": \"Mandrake Root\", \"TypeId\": 1137, \"Stack\": 5, \"Flags\": [], \"FromName\": \"Olugax The Ever-Pudding\", \"FromEntityId\": 257400}";
+        let json = json_msg("AddItem", body, ts);
+        // First dispatch: new receipt row, both channels fire.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out1 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert_eq!(out1.staged_gains.len(), 1);
+        assert_eq!(out1.stack_corrections.len(), 1);
+        // Simulate the failed correction step: apply nothing (writer lost).
+        // Replay hits the exact-entity row: attribution stays silent, but the
+        // correction is reported again for repair.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out2 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out2.staged_gains.is_empty(), "replay must not re-attribute");
+        assert_eq!(out2.stack_corrections.len(), 1, "replay must still repair");
+        // Apply the correction the way run_scan_dispatch does — once per
+        // replay — then prove a further replay converges without doubling.
+        for (name, qty) in &out2.stack_corrections {
+            let conn = pool.get_write().unwrap();
+            crate::game_state::correct_stack_in_table_for(&conn, "Alice", "Dreva", name, None, *qty);
+        }
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out3 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out3.staged_gains.is_empty());
+        for (name, qty) in &out3.stack_corrections {
+            let conn = pool.get_write().unwrap();
+            crate::game_state::correct_stack_in_table_for(&conn, "Alice", "Dreva", name, None, *qty);
+        }
+        let conn = pool.get().unwrap();
+        let stack: i64 = conn
+            .query_row(
+                "SELECT stack_size FROM game_state_inventory
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND item_name = 'Mandrake Root'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stack, 5, "failed-then-replayed receipt converges");
+        let rows = item_rows(&pool);
+        assert_eq!(rows.len(), 1, "exactly one ledger row");
+        assert_eq!(rows[0].1, 5);
+        assert_eq!(rows[0].3, Some(257400));
     }
 
     #[test]
