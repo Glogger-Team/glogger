@@ -1077,7 +1077,7 @@ pub fn record_cow_milk(
         Err(rusqlite::Error::QueryReturnedNoRows) => true,
         Err(e) => return Err(format!("Failed to read cow milk row: {e}")),
         Ok((stamp, unknown, stored_zone)) => {
-            milked_at > stamp.as_str() || unknown == 1 || (!zone.is_empty() && zone != stored_zone)
+            milked_at > stamp.as_str() || (unknown == 1 && milked_at >= stamp.as_str()) || (!zone.is_empty() && zone != stored_zone)
         }
     };
     conn.execute(
@@ -1086,7 +1086,7 @@ pub fn record_cow_milk(
          VALUES (?1, ?2, ?3, ?4, ?5, 0)
          ON CONFLICT(character_name, server_name, cow_name) DO UPDATE SET
             last_milked_at = MAX(excluded.last_milked_at, milking_timers.last_milked_at),
-            cooldown_unknown = 0,
+            cooldown_unknown = CASE WHEN excluded.last_milked_at >= milking_timers.last_milked_at THEN 0 ELSE milking_timers.cooldown_unknown END,
             zone = CASE WHEN excluded.zone != '' THEN excluded.zone ELSE milking_timers.zone END",
         rusqlite::params![character, server, cow_name, zone, milked_at],
     )
@@ -2503,6 +2503,60 @@ mod tests {
         // Drop the pool first: Windows won't delete a file with an open handle.
         drop(pool);
         let _ = std::fs::remove_file(&path);
+    }
+    #[test]
+    fn record_cow_milk_keeps_unknown_flag_on_older_milk() {
+        // Pre-VIP-JSON bound row: the exact milk time is unknown, so the
+        // widget renders an upper bound. An older known milk replayed after
+        // the bound must not clear the flag into a false exact expiry.
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO milking_timers
+                 (character_name, server_name, cow_name, zone, last_milked_at, cooldown_unknown)
+             VALUES ('Alice', 'Dreva', 'Bessie', 'Serbule', '2026-04-01T05:00:00+00:00', 1)",
+            [],
+        )
+        .unwrap();
+        let row = || -> (String, i64) {
+            conn.query_row(
+                "SELECT last_milked_at, cooldown_unknown FROM milking_timers
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND cow_name = 'Bessie'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+
+        // Older known milk: stamp stays (MAX newer-wins), flag stays set,
+        // and nothing advanced so the caller stays silent.
+        assert!(!record_cow_milk(
+            &conn,
+            "Alice",
+            "Dreva",
+            "Bessie",
+            "Serbule",
+            "2026-04-01T04:00:00+00:00"
+        )
+        .unwrap());
+        assert_eq!(
+            row(),
+            ("2026-04-01T05:00:00+00:00".to_string(), 1)
+        );
+
+        // Newer known milk: stamp advances and the bound resolves to exact.
+        assert!(record_cow_milk(
+            &conn,
+            "Alice",
+            "Dreva",
+            "Bessie",
+            "Serbule",
+            "2026-04-01T06:00:00+00:00"
+        )
+        .unwrap());
+        assert_eq!(
+            row(),
+            ("2026-04-01T06:00:00+00:00".to_string(), 0)
+        );
     }
     #[test]
     fn chat_level_up_inserts_new_row() {
