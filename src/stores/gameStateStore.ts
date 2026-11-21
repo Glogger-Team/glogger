@@ -4,6 +4,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { useSettingsStore } from './settingsStore'
 import { useCharacterStore } from './characterStore'
+import { useCombatStore } from './combatStore'
+import { useDeathStore } from './deathStore'
 import {
   skillTotalLevel,
   type GameStateSkill,
@@ -1328,13 +1330,30 @@ export const useGameStateStore = defineStore('gameState', () => {
 
     if (!startupComplete.value) return
 
+    // Same order as the picker switch path (its helpers live in the
+    // component, so the sequence is written out here): clear session-scoped
+    // state synchronously under the new identity, reload, then re-seed
+    // deaths + combat baseline. The generation bump drops an in-flight
+    // loadDeaths for the previous character.
     resetSessionSkills()
     clearLiveInventory()
+    const combatStore = useCombatStore()
+    const deathStore = useDeathStore()
+    combatStore.resetForCharacter()
+    deathStore.deathsGeneration++
+    deathStore.deaths = []
+    deathStore.loaded = false
+
     await loadAll()
 
     // Reload character reports/snapshots for the newly active character
     const characterStore = useCharacterStore()
     characterStore.initForActiveCharacter()
+
+    await deathStore.loadDeaths()
+    // resetForCharacter cleared baselineLoaded; re-seed it so keep-alive
+    // views (which won't remount) get lifetime totals back.
+    void combatStore.loadHistoricBaseline()
   })
 
   // ── Public API ────────────────────────────────────────────────────────

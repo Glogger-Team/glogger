@@ -164,28 +164,42 @@ async function switchTo(char: UserCharacter) {
   settingsStore.settings.activeCharacterName = char.character_name
   settingsStore.settings.activeServerName = char.server_name
 
-  // Reload all data for the new character
-  gameStateStore.resetSessionSkills()
-  gameStateStore.clearLiveInventory()
+  // Clear session-scoped state synchronously under the new identity so no
+  // stale rows from the previous character render while the reloads run.
+  // The async re-seed (loadDeaths + historic baseline) stays after the
+  // awaits below; the generation bump drops an in-flight loadDeaths for the
+  // previous character instead of overwriting the new rows.
+  clearSessionForCharacter()
+
   await gameStateStore.loadAll()
   characterStore.initForActiveCharacter()
-  await resetCombatAndDeathsForCharacter()
+  await reloadCombatAndDeathsForCharacter()
 
   open.value = false
 }
 
-// Combat is live-only and deaths are per-character: reset combat and reload
-// deaths for the new identity. Runs last, after the gameState/character
-// reloads above (same order as the character-login listener in
-// gameStateStore). Bumps deathsGeneration so an in-flight loadDeaths for the
-// previous character drops its result instead of overwriting the new rows.
-async function resetCombatAndDeathsForCharacter() {
+// Session + per-character live state clears synchronously on identity change
+// (switch, add, delete-active, login): session skills and live inventory are
+// keyed to whoever was active, combat is live-only, deaths are per-character.
+// Runs before any await so stale rows never render while the reloads run.
+// The generation bump makes an in-flight loadDeaths for the previous
+// character drop its result instead of overwriting the new rows.
+function clearSessionForCharacter() {
   const combatStore = useCombatStore()
   const deathStore = useDeathStore()
+  gameStateStore.resetSessionSkills()
+  gameStateStore.clearLiveInventory()
   combatStore.resetForCharacter()
   deathStore.deathsGeneration++
   deathStore.deaths = []
   deathStore.loaded = false
+}
+
+// Async re-seed after the gameState/character reloads above (same order as
+// the character-login listener in gameStateStore).
+async function reloadCombatAndDeathsForCharacter() {
+  const combatStore = useCombatStore()
+  const deathStore = useDeathStore()
   await deathStore.loadDeaths()
   // resetForCharacter cleared baselineLoaded; re-seed it so keep-alive views
   // (which won't remount) get lifetime totals back.
@@ -201,13 +215,14 @@ async function doDelete() {
   if (!deleteTarget.value) return
 
   const char = deleteTarget.value
+  const wasActive = isSelected(char)
   await invoke('delete_character', {
     characterName: char.character_name,
     serverName: char.server_name,
   })
 
   // If we deleted the active character, clear settings
-  if (isSelected(char)) {
+  if (wasActive) {
     settingsStore.settings.activeCharacterName = null
     settingsStore.settings.activeServerName = null
   }
@@ -223,6 +238,10 @@ async function doDelete() {
   characterStore.allCharacterWorkOrders = []
   characterStore.allCharacterWorkOrdersLoaded = false
   characterStore.allCharacterWorkOrdersGeneration++
+  // The deleted character's session state is gone with its rows: when it was
+  // active, clear session/live/combat/deaths under the (now null) identity.
+  // The generation bump drops any in-flight loadDeaths for it.
+  if (wasActive) clearSessionForCharacter()
   // Reopen the picker
   await loadCharacters()
   open.value = true
@@ -252,11 +271,13 @@ async function addCharacter() {
   settingsStore.settings.activeCharacterName = name
   settingsStore.settings.activeServerName = server
 
-  gameStateStore.resetSessionSkills()
-  gameStateStore.clearLiveInventory()
+  // Same split as switchTo: clear synchronously under the new identity, then
+  // re-seed after the awaits.
+  clearSessionForCharacter()
+
   await gameStateStore.loadAll()
   characterStore.initForActiveCharacter()
-  await resetCombatAndDeathsForCharacter()
+  await reloadCombatAndDeathsForCharacter()
 
   open.value = false
 }
