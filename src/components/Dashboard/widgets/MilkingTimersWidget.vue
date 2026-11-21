@@ -31,6 +31,12 @@
 
     <!-- Timers tab -->
     <div v-if="activeTab === 'timers'" class="flex-1 overflow-y-auto min-h-0">
+      <!-- milking-dark: stored cooldowns can go stale — surface hidden until the
+           chat-backed writers are rewired. The list below stays compiled for rewire. -->
+      <div v-if="!timersAvailable" class="text-xs text-text-dim italic">
+        Milking timers unavailable — stored cooldowns may be stale.
+      </div>
+      <template v-else>
       <div v-if="timers.length === 0" class="text-xs text-text-dim italic">
         No cows milked yet. Milk an NPC cow to start tracking cooldowns.
       </div>
@@ -66,6 +72,7 @@
             </div>
           </div>
         </div>
+      </template>
       </template>
     </div>
 
@@ -161,6 +168,10 @@ const SELF_COOLDOWN_MS = 5 * 60 * 1000
 const gameState = useGameStateStore()
 const settings = useSettingsStore()
 const activeTab = ref<TabKey>('timers')
+// milking-dark: stored cooldowns can go stale — the Timers tab stays hidden
+// until the chat-backed writers are rewired. Flip to re-enable; the list
+// markup above stays compiled, and leaderboards read live player_milking_log rows.
+const timersAvailable = false
 const timers = ref<MilkingTimer[]>([])
 const milkedLeaderboard = ref<PlayerMilkingEntry[]>([])
 const milkedByLeaderboard = ref<PlayerMilkingEntry[]>([])

@@ -1109,6 +1109,9 @@ pub struct MilkingTimer {
     pub cooldown_unknown: bool,
 }
 
+// milking-dark: the Timers tab is hidden in the widget (stored cooldowns can go stale).
+// This read path stays for the later rewire slice — writers (record_cow_milk,
+// record_milking_event, backfill_ability_history) are untouched.
 #[tauri::command]
 pub fn get_milking_timers(
     db: State<'_, DbPool>,
