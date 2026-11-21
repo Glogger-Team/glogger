@@ -161,15 +161,44 @@ def parse_minus_lines(diff_text: str, old_text: str | None) -> list[tuple[int, s
     return filtered
 
 
-def lex_source(text: str) -> list[str]:
+def lex_source(text: str, keep_strings: bool = False) -> list[str]:
     """Code-only view of every line of a complete source file, threading
-    block-comment and raw-string state across lines in file order."""
+    block-comment and raw-string state across lines in file order.
+
+    With `keep_strings`, comments are still blanked but string spans are
+    preserved (char literals stay blanked): the live-string scan runs the
+    same naive quote regex over this view so comment prose can never
+    count as a live occurrence (sim-D on #212).
+    """
     out: list[str] = []
     in_block = False
     raw_closer: str | None = None
     for line in text.splitlines():
-        code, in_block, raw_closer = code_only(line, in_block, raw_closer)
+        code, in_block, raw_closer = code_only(line, in_block, raw_closer, keep_strings)
         out.append(code)
+    return out
+
+
+def live_string_literals(text: str) -> set[str]:
+    """Quoted contents of live code strings in one complete source file.
+
+    Comments are blanked via the keep-strings lexer (same block/raw-string
+    threading as the extractor side) and test-module lines are skipped, so
+    a removed literal surviving only in a comment or test never counts as
+    live — it still fires (sim-D on #212, fail-closed). The naive quote
+    regex matches the removed-line extractor's, so both sides miss
+    identically on escaped/multiline shapes.
+    """
+    skip = test_module_lines(text)
+    out: set[str] = set()
+    in_block = False
+    raw_closer: str | None = None
+    for lineno, line in enumerate(text.splitlines(), 1):
+        kept, in_block, raw_closer = code_only(line, in_block, raw_closer, True)
+        if lineno in skip:
+            continue
+        for m in re.finditer(r'"([^"]*)"', kept):
+            out.add(m.group(1))
     return out
 
 
@@ -178,7 +207,7 @@ _CHAR_LIT_RE = re.compile(r"'(?:[^'\\]|\\.)'")
 
 
 def code_only(
-    line: str, in_block: bool, raw_closer: str | None
+    line: str, in_block: bool, raw_closer: str | None, keep_strings: bool = False
 ) -> tuple[str, bool, str | None]:
     """Blank Rust string/char literals and comments; lifetimes are kept.
 
@@ -187,6 +216,13 @@ def code_only(
     fires the gate (PR #202 full-review round — the hit came from a removed
     prose comment, not a symbol). String-literal extraction still runs on
     the original line.
+
+    With `keep_strings`, comments are still blanked but double-quoted
+    and raw string spans are preserved verbatim (char literals stay
+    blanked so `'"'` cannot forge a quote pair): the live-string scan
+    extracts quoted contents from this view with the same naive regex
+    the removed-line extractor uses, so both sides miss identically
+    (fail-closed) while comment prose never counts as live (sim-D #212).
     """
     out: list[str] = []
     i, n = 0, len(line)
@@ -194,7 +230,11 @@ def code_only(
         if raw_closer is not None:
             end = line.find(raw_closer, i)
             if end == -1:
+                if keep_strings:
+                    out.append(line[i:])
                 return "".join(out), in_block, raw_closer
+            if keep_strings:
+                out.append(line[i : end + len(raw_closer)])
             i = end + len(raw_closer)
             raw_closer = None
             continue
@@ -213,12 +253,16 @@ def code_only(
             continue
         m = _STR_RE.match(line, i)
         if m:
+            if keep_strings:
+                out.append(line[i : m.end()])
             i = m.end()
             continue
         m = _RAW_STR_RE.match(line, i)
         if m and (i == 0 or not (line[i - 1].isalnum() or line[i - 1] == "_")):
             hashes = m.group(1) or ""
             raw_closer = '"' + "#" * len(hashes)
+            if keep_strings:
+                out.append(line[i : m.end()])
             i = m.end()
             continue
         m = _CHAR_LIT_RE.match(line, i)
@@ -236,7 +280,7 @@ PAIR_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]*)::([A-Z][A-Za-z0-9_]*)\b")
 def extract_identifiers(
     numbered: list[tuple[int, str]],
     cleaned_full: list[str],
-) -> tuple[set[str], set[str], set[str]]:
+) -> tuple[set[str], set[str], set[str], set[str]]:
     """Candidate doc-orphan names + `Enum::Variant` pairs from removed lines.
 
     `numbered` is (old-file line number, removed text) pairs;
@@ -245,13 +289,14 @@ def extract_identifiers(
     reflects the real file — lexing disconnected removals alone would
     misread state when delimiters sit on unchanged lines.
 
-    Returns `(idents, pairs, literals)`: `idents` is the full candidate
-    set (unchanged), `pairs` the `Enum::Variant` uses, and `literals`
-    the string-literal-derived subset minus `fn`/`struct`/`enum`
-    definition names on the same removed lines. A spelling that is both
-    a removed definition and a removed string stays a symbol: only the
-    definition path (`defined` in `main`) can clear it, so a live string
-    with the same spelling never suppresses a retired symbol (#212).
+    Returns `(idents, pairs, literals, defs)`: `idents` is the full candidate
+    set (unchanged), `pairs` the `Enum::Variant` uses, `literals` the
+    string-literal-derived subset minus same-file `fn`/`struct`/`enum`
+    definition names, and `defs` those definition names. `main` unions
+    `defs` across files and subtracts them from the global literals:
+    file A removing `pub struct RetiredWidget` plus file B removing
+    `emit("RetiredWidget")` keeps the symbol governed by the definition
+    path even though neither file holds both spellings (sim-D on #212).
     """
     idents: set[str] = set()
     def_names: set[str] = set()
@@ -298,7 +343,7 @@ def extract_identifiers(
                 idents.add(s)
                 lit_names.add(s)
     literals = lit_names - def_names
-    return idents, pairs, literals
+    return idents, pairs, literals, def_names
 
 
 def old_content_for(path: str, ref: str) -> str | None:
@@ -366,6 +411,7 @@ def main() -> int:
     idents: set[str] = set()
     removed_pairs: set[str] = set()
     removed_literals: set[str] = set()
+    removed_defs: set[str] = set()
 
     # Worktree diff (staged + unstaged) against HEAD - local scope only.
     # An explicit CI base already names the range (and the tree is clean),
@@ -384,10 +430,11 @@ def main() -> int:
             old = old_content_for(path, "HEAD")
             numbered = parse_minus_lines(diff, old)
             cleaned_full = lex_source(old) if old is not None else []
-            names, pairs, lits = extract_identifiers(numbered, cleaned_full)
+            names, pairs, lits, defs = extract_identifiers(numbered, cleaned_full)
             idents |= names
             removed_pairs |= pairs
             removed_literals |= lits
+            removed_defs |= defs
 
     # Unpushed commits (or the explicit CI range)
     base = explicit_base if explicit_base is not None else unpushed_base()
@@ -405,10 +452,11 @@ def main() -> int:
             old = old_content_for(path, base)
             numbered = parse_minus_lines(diff, old)
             cleaned_full = lex_source(old) if old is not None else []
-            names, pairs, lits = extract_identifiers(numbered, cleaned_full)
+            names, pairs, lits, defs = extract_identifiers(numbered, cleaned_full)
             idents |= names
             removed_pairs |= pairs
             removed_literals |= lits
+            removed_defs |= defs
 
     # Untracked files have no minus lines (nothing to extract).
     # A removed `fn` line is not a removed symbol: renames and signature
@@ -418,8 +466,13 @@ def main() -> int:
     # pair still occurs anywhere in the tree. Same for removed string
     # literals (#212): an emit made conditional trips the extractor while
     # the identical string still lives two lines down — only literals with
-    # no live quoted occurrence can orphan a doc. Symbol path is unchanged:
-    # `literals` already excludes `fn`/`struct`/`enum` definition names.
+    # no live quoted occurrence can orphan a doc. `literals` excludes
+    # same-file `fn`/`struct`/`enum` definition names, and `main` unions
+    # `defs` across files before subtracting: file A removing the
+    # definition plus file B removing the same-spelled string keeps the
+    # symbol on the definition path (sim-D). Live strings come from the
+    # keep-strings lexer with test modules skipped, so comment prose or
+    # test-only occurrences never count as live (sim-D, fail-closed).
     defined: set[str] = set()
     live_pairs: set[str] = set()
     live_strings: set[str] = set()
@@ -432,12 +485,11 @@ def main() -> int:
             defined.add(m.group(1))
         for m in PAIR_RE.finditer(text):
             live_pairs.add(m.group(0))
-        for m in re.finditer(r'"([^"]*)"', text):
-            live_strings.add(m.group(1))
+        live_strings |= live_string_literals(text)
     idents -= defined
     for pair in removed_pairs & live_pairs:
         idents.discard(pair.split("::", 1)[1])
-    idents -= removed_literals & live_strings
+    idents -= (removed_literals - removed_defs) & live_strings
 
     # Grep docs/
     docs_root = ROOT / "docs"
@@ -508,17 +560,19 @@ def self_test() -> int:
     full = lex_source(old)
     check("comment-hidden line blank", full[2] == "")
     check("post-block line kept", full[5] == "real_code = 1")
-    idents, _, _ = extract_identifiers(
+    idents, _, _, _ = extract_identifiers(
         [(3, "def FakeThing():"), (6, "real_code = 1")], full
     )
     check("comment-hidden def suppressed", "FakeThing" not in idents)
 
     old2 = "/* c */\npub struct VisibleWidget {\n}\n"
-    idents2, _, _ = extract_identifiers(
+    idents2, _, _, _ = extract_identifiers(
         [(2, "pub struct VisibleWidget {")], lex_source(old2)
     )
     check("post-block def fires", "VisibleWidget" in idents2)
-    idents3, _, _ = extract_identifiers([(1, "    // FromEntityId retired")], ["    "])
+    idents3, _, _, _ = extract_identifiers(
+        [(1, "    // FromEntityId retired")], ["    "]
+    )
     check("prose comment silent", not idents3)
 
     # #212: a removed string literal that still occurs quoted in the new
@@ -526,7 +580,7 @@ def self_test() -> int:
     # string two lines down); a truly removed literal still fires; a
     # retired definition with the same spelling as a live string stays a
     # symbol only the definition path can clear.
-    lit_idents, _, lit_lits = extract_identifiers(
+    lit_idents, _, lit_lits, _ = extract_identifiers(
         [(1, '    emit("game-state-updated");')], ["    emit();"]
     )
     check("kebab literal extracted", "game-state-updated" in lit_idents)
@@ -539,7 +593,7 @@ def self_test() -> int:
         "truly-removed literal fires",
         (lit_idents - (lit_lits & {"something-else"})) == {"game-state-updated"},
     )
-    both_idents, _, both_lits = extract_identifiers(
+    both_idents, _, both_lits, both_defs = extract_identifiers(
         [
             (1, "    pub struct RetiredWidget {"),
             (2, '    emit("RetiredWidget");'),
@@ -550,8 +604,72 @@ def self_test() -> int:
     check("retired def not a literal", "RetiredWidget" not in both_lits)
     check(
         "live string never clears a retired symbol",
-        "RetiredWidget" in (both_idents - (both_lits & {"RetiredWidget"})),
+        "RetiredWidget"
+        in (both_idents - ((both_lits - both_defs) & {"RetiredWidget"})),
     )
+
+    # sim-D cross-file split: file A removes the definition, file B
+    # removes the same-spelled string, and the string still lives
+    # elsewhere. Per-file subtraction misses it; the global defs union
+    # in main keeps the retired symbol firing.
+    _, _, a_lits, a_defs = extract_identifiers(
+        [(1, "    pub struct RetiredWidget {")], ["    pub struct RetiredWidget {"]
+    )
+    b_idents, _, b_lits, b_defs = extract_identifiers(
+        [(1, '    emit("RetiredWidget");')], ["    emit();"]
+    )
+    x_lits = a_lits | b_lits
+    x_defs = a_defs | b_defs
+    check("cross-file literal tracked", "RetiredWidget" in x_lits)
+    check("cross-file def union", "RetiredWidget" in x_defs)
+    check(
+        "cross-file def not suppressible",
+        "RetiredWidget" not in (x_lits - x_defs),
+    )
+    check(
+        "cross-file retired symbol fires",
+        "RetiredWidget" in (b_idents - ((x_lits - x_defs) & {"RetiredWidget"})),
+    )
+
+    # sim-D live scan: comment prose and test-only occurrences never
+    # count as live; real and raw-string code occurrences do; a '"'
+    # char literal forges no quote pair.
+    check(
+        "line-comment survivor not live",
+        "game-state-updated"
+        not in live_string_literals('// emit("game-state-updated");\n'),
+    )
+    check(
+        "block-comment survivor not live",
+        "game-state-updated"
+        not in live_string_literals('/* emit("game-state-updated"); */\n'),
+    )
+    check(
+        "test-only survivor not live",
+        "game-state-updated"
+        not in live_string_literals(
+            '#[cfg(test)]\nmod tests {\n    emit("game-state-updated");\n}\n'
+        ),
+    )
+    check(
+        "real-code survivor live",
+        "game-state-updated" in live_string_literals('emit("game-state-updated");\n'),
+    )
+    check(
+        "raw-string survivor live",
+        "game-state-updated"
+        in live_string_literals('emit(r#"game-state-updated"#);\n'),
+    )
+    check(
+        "char quote forges nothing",
+        live_string_literals("let c = '\"';\n") == set(),
+    )
+    keep, _, _ = code_only('    x = "a // b"; // c', False, None, True)
+    check("keep strings blanks comment", keep == '    x = "a // b"; ')
+    keep2, _, _ = code_only('    let s = r#"x"#;', False, None, True)
+    check("keep raw string span", keep2 == '    let s = r#"x"#;')
+    keep3, _, _ = code_only('    /* c "q" */ let a = 1;', False, None, True)
+    check("keep blanks comment quotes", keep3 == "     let a = 1;")
     return 1 if failures else 0
 
 
