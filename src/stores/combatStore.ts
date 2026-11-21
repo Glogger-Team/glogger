@@ -63,10 +63,9 @@ export const useCombatStore = defineStore("combat", () => {
       }
       historicKills.value = killTotals;
       historicXp.value = xpTotals;
+      baselineLoaded.value = true;
     } catch (e) {
       console.error("[combat] Failed to load historic baseline:", e);
-    } finally {
-      baselineLoaded.value = true;
     }
   }
 
