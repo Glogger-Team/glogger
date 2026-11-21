@@ -52,6 +52,8 @@ fn local_ts_to_epoch_ms(ts: &str) -> Option<i64> {
 
 /// Persist a single Combat Wisdom *monster* award. No-op for non-monster awards
 /// (prodigy levels). Idempotent via the `idx_cw_dedup` unique index.
+/// Returns true only when the insert stuck (a duplicate's 0-row write
+/// reports false so the caller can gate its emit without a pre-check).
 pub fn record_combat_wisdom_earn(
     conn: &rusqlite::Connection,
     earned_at: &str,
@@ -59,17 +61,17 @@ pub fn record_combat_wisdom_earn(
     source_name: Option<&str>,
     verb: &str,
     zone: Option<&str>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let Some(name) = source_name else {
-        return Ok(());
+        return Ok(false);
     };
-    conn.execute(
+    let rows = conn.execute(
         "INSERT OR IGNORE INTO combat_wisdom_earns (earned_at, amount, source_name, verb, zone)
          VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![earned_at, amount, name, verb, zone],
     )
-    .map(|_| ())
-    .map_err(|e| format!("Failed to record combat wisdom earn: {e}"))
+    .map_err(|e| format!("Failed to record combat wisdom earn: {e}"))?;
+    Ok(rows == 1)
 }
 
 /// Aggregate persisted monster awards into per-monster cooldown rows.
