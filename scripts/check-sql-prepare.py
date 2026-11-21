@@ -362,8 +362,18 @@ def lstrip_sql_comments(sql: str) -> str:
         return s
 
 
-def statements_in(path: Path) -> list[tuple[int, str, bool]]:
+def statements_in(
+    path: Path,
+) -> tuple[list[tuple[int, str, bool]], list[tuple[int, str]]]:
+    """(DML statements, skipped dynamic literals) in one Rust file.
+
+    Each statement is (lineno, sql, in_test). Each skip is (lineno,
+    leading-80-chars) for a DML-shaped literal unresolvable statically
+    (format! placeholders or a format! macro argument). Callers surface
+    the skips so the dynamic-SQL hole stays visible instead of silent.
+    """
     out: list[tuple[int, str, bool]] = []
+    skipped: list[tuple[int, str]] = []
     text = path.read_text(encoding="utf-8")
     tested = test_ranges(text)
     lexed = lex_strings(text)
@@ -371,12 +381,13 @@ def statements_in(path: Path) -> list[tuple[int, str, bool]]:
         if not DML_RE.match(lstrip_sql_comments(lit)):
             continue
         if FORMAT_PH_RE.search(lit) or in_format_macro(text, off):
+            skipped.append((lineno, " ".join(lit.split())[:80]))
             continue  # dynamic SQL — cannot resolve statically
         tested_here = in_test_range(tested, lineno - 1)
         for stmt in split_statements(lit):
             if DML_RE.match(lstrip_sql_comments(stmt)):
                 out.append((lineno, stmt, tested_here))
-    return out
+    return out, skipped
 
 
 def check_statement(
@@ -463,7 +474,9 @@ def self_test() -> int:
         f.write('conn.execute(&format!("DELETE FROM {t}"), [])')
         tmp = Path(f.name)
     try:
-        check("table placeholder skipped", statements_in(tmp) == [])
+        got, skipped = statements_in(tmp)
+        check("table placeholder skipped", got == [])
+        check("table placeholder counted", len(skipped) == 1)
     finally:
         tmp.unlink()
     with tempfile.NamedTemporaryFile(
@@ -475,8 +488,9 @@ def self_test() -> int:
         )
         tmp = Path(f.name)
     try:
-        got = statements_in(tmp)
+        got, skipped = statements_in(tmp)
         check("empty-brace format skipped via lookbehind", len(got) == 1)
+        check("empty-brace format counted", len(skipped) == 1)
     finally:
         tmp.unlink()
     with tempfile.NamedTemporaryFile(
@@ -485,8 +499,9 @@ def self_test() -> int:
         f.write('conn.execute("INSERT INTO t1 (name) VALUES (\'{\\"a\\":1}\')", [])')
         tmp = Path(f.name)
     try:
-        got = statements_in(tmp)
+        got, skipped = statements_in(tmp)
         check("non-empty JSON literal is kept, not skipped", len(got) == 1)
+        check("kept literal not counted", skipped == [])
     finally:
         tmp.unlink()
     check(
@@ -503,7 +518,7 @@ def self_test() -> int:
         )
         tmp = Path(f.name)
     try:
-        got = statements_in(tmp)
+        got, _skipped = statements_in(tmp)
         check("comment-led INSERT classified", len(got) == 2)
         hit = check_statement(t1_conn, ROOT / "x.rs", 1, got[1][1])
         check(
@@ -523,7 +538,7 @@ def self_test() -> int:
         )
         tmp = Path(f.name)
     try:
-        got = statements_in(tmp)
+        got, _skipped = statements_in(tmp)
         flags = sorted(in_test for _, _, in_test in got)
         check("test flag marks mod body", flags == [False, True])
     finally:
@@ -652,16 +667,26 @@ def main() -> int:
     print(f"sql-prepare: schema has {len(tables)} tables", file=sys.stderr)
     findings: list[str] = []
     findings += check_splits(prod)
+    skipped_total = 0
     for path in sorted(SRC.rglob("*.rs")):
         if path.name == "migrations.rs":
             continue
-        for lineno, stmt, in_test in statements_in(path):
+        stmts, skipped = statements_in(path)
+        for lineno, snippet in skipped:
+            skipped_total += 1
+            print(
+                f"sql-prepare: skipped dynamic SQL at"
+                f" {path.relative_to(ROOT)}:{lineno}: {snippet}",
+                file=sys.stderr,
+            )
+        for lineno, stmt, in_test in stmts:
             # Test DML prepares against the full schema (fixtures included);
             # app DML must prepare against prod — a test-only table must
             # never mask a missing migration for shipped code.
             hit = check_statement(full if in_test else prod, path, lineno, stmt)
             if hit:
                 findings.append(hit)
+    print(f"sql-prepare: skipped {skipped_total} dynamic statements", file=sys.stderr)
     for finding in sorted(set(findings)):
         print(finding)
     return 1 if findings else 0
