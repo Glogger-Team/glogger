@@ -57,6 +57,8 @@
           :npc="status.npc"
           :favor-tier="status.favorTier"
           :vendor-status="gameState.vendorByNpc[status.npc.key] ?? null"
+          :gift-tracking="{ giftsThisWeek: status.giftsThisWeek, maxGifts: status.maxGifts }"
+          :show-gift-tracking="status.giftTracking"
           :selected="selectedNpcKey === status.npc.key"
           @select="selectNpc(status.npc.key)"
         />
