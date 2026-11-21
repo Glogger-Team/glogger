@@ -19,7 +19,7 @@ macro_rules! startup_log {
 pub struct GameStateManager {
     active_character: Option<String>,
     active_server: Option<String>,
-    /// When true, login events will clear transient state (inventory, equipment, etc.)
+    /// When true, login events clear obsolete log-era inventory rows (snapshot rows survive).
     /// Starts false — set to true after the first poll cycle completes (catch-up is done).
     live_mode: bool,
     /// Reference to loaded CDN game data for entity resolution
@@ -73,10 +73,19 @@ impl GameStateManager {
     pub fn set_active_server_name(&mut self, server: &str) {
         self.active_server = Some(server.to_string());
     }
+    /// Clear the server half of the ingest identity. Used by the Player.log
+    /// re-arm path, which knows the character but not the server: tagless
+    /// lines skip dispatch without identity rather than keying to a stale
+    /// server until the chat marker fires.
+    pub fn clear_active_server_name(&mut self) {
+        self.active_server = None;
+    }
 
     /// Update the active character.
-    /// During live mode, clears transient state so the login burst can repopulate.
-    /// During replay/catch-up, skips clearing to preserve data built for each character.
+    /// During live mode, clears obsolete log-era inventory rows so the report
+    /// snapshot slice (and equipment/combat/mount, which have no repopulating
+    /// source) survives the login. During replay/catch-up, skips clearing to
+    /// preserve data built for each character.
     pub fn set_active_character(&mut self, name: &str, server: &str, db: &DbPool, login_at: Option<&str>) {
         startup_log!(
             "Active character set: {} on {} (mode: {})",
@@ -130,22 +139,24 @@ impl GameStateManager {
             // Only clear transient state during live tailing — during replay/catch-up
             // we want to accumulate data for all characters, not nuke it on each login.
             if live_mode {
+                // Inventory: only the retired Player.log slice. Report imports
+                // delete-then-reinsert the `source = 'snapshot'` slice on every
+                // import (`seed_game_state_from_snapshot`), and live chat gains
+                // write `source = 'chat_status'` — an unscoped wipe deletes
+                // snapshot rows with no import following. Same scoping as the
+                // adopt path (`apply_catch_up_login` in coordinator.rs): no
+                // production writer creates 'log' rows anymore, so the scoped
+                // delete only removes obsolete log-era leftovers.
                 tx.execute(
-                    "DELETE FROM game_state_inventory WHERE character_name = ?1 AND server_name = ?2",
+                    "DELETE FROM game_state_inventory WHERE character_name = ?1 AND server_name = ?2 AND source = 'log'",
                     rusqlite::params![name, server],
                 )?;
-                tx.execute(
-                    "DELETE FROM game_state_equipment WHERE character_name = ?1 AND server_name = ?2",
-                    rusqlite::params![name, server],
-                )?;
-                tx.execute(
-                    "DELETE FROM game_state_combat WHERE character_name = ?1 AND server_name = ?2",
-                    rusqlite::params![name, server],
-                )?;
-                tx.execute(
-                    "DELETE FROM game_state_mount WHERE character_name = ?1 AND server_name = ?2",
-                    rusqlite::params![name, server],
-                )?;
+                // Equipment/combat/mount deliberately untouched: none has a
+                // `source` column to scope on, and none has a production
+                // writer (no report import, no live/chat feed) that would
+                // repopulate the slice after a wipe — deleting here is pure
+                // data loss. Same as the adopt path, which clears only
+                // log-scoped inventory for the same reason.
 
                 // Favor needs no reset: the session label is a timestamp-filtered
                 // sum over favor_events at read time, so a new login naturally
@@ -539,6 +550,80 @@ mod tests {
             crate::db::game_state_commands::session_favor_sums(&conn, "Alice", "Dreva").unwrap();
         assert_eq!(sums.len(), 1);
         assert!((sums["NPC_Test"] - 7.5).abs() < 1e-9);
+
+        // Drop the pool first: Windows won't delete a file with an open handle.
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// A live login clears only obsolete log-era inventory rows: snapshot
+    /// rows (what report imports write) survive with no import following,
+    /// and equipment/combat/mount — which have no `source` column and no
+    /// production writer to repopulate them — survive untouched. Pins the
+    /// per-table scoping of the live-login wipe (same as the adopt path).
+    #[test]
+    fn set_active_character_live_login_preserves_snapshot_inventory() {
+        use std::sync::Arc;
+
+        let db_path = unique_temp_db("glogger_session_login_snapshot_test");
+        let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
+
+        let mut manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
+            crate::game_data::GameData::empty(),
+        )));
+        manager.set_live_mode();
+
+        // Same slice, two provenances: an obsolete log-era row and a saved
+        // snapshot row (what report imports write).
+        pool.get_write()
+            .unwrap()
+            .execute_batch(
+                "INSERT INTO game_state_inventory
+                 (character_name, server_name, instance_id, item_name, stack_size, last_confirmed_at, source) VALUES
+                 ('Alice', 'Dreva', 1, 'Fluorite', 1, '2026-11-16 12:00:00', 'log'),
+                 ('Alice', 'Dreva', 2, 'Fluorite', 1, '2026-11-16 12:00:00', 'snapshot');
+                 INSERT INTO game_state_equipment (character_name, server_name, slot, appearance_key, last_confirmed_at)
+                 VALUES ('Alice', 'Dreva', 'MainHand', 'sword_key', '2026-11-16 12:00:00');
+                 INSERT INTO game_state_combat (character_name, server_name, in_combat, last_confirmed_at)
+                 VALUES ('Alice', 'Dreva', 0, '2026-11-16 12:00:00');
+                 INSERT INTO game_state_mount (character_name, server_name, is_mounted, last_confirmed_at)
+                 VALUES ('Alice', 'Dreva', 0, '2026-11-16 12:00:00')",
+            )
+            .unwrap();
+
+        manager.set_active_character("Alice", "Dreva", &pool, Some("2026-11-16 12:00:00"));
+
+        let conn = pool.get().unwrap();
+        let remaining: Vec<String> = conn
+            .prepare(
+                "SELECT source FROM game_state_inventory
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva'",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            remaining,
+            vec!["snapshot".to_string()],
+            "snapshot survives live login"
+        );
+
+        for table in [
+            "game_state_equipment",
+            "game_state_combat",
+            "game_state_mount",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE character_name = 'Alice' AND server_name = 'Dreva'"),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "{table} survives live login");
+        }
 
         // Drop the pool first: Windows won't delete a file with an open handle.
         drop(pool);

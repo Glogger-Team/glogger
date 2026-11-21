@@ -13,7 +13,8 @@
 # scripts/**; yamllint on repo-wide **/*.yml|yaml; zizmor+pinact+pre-commit
 # on .github/**; markdown on **/*.md (changed-files script); frontend build
 # on src/** + manifests; grids on src/**/*.vue; review-patterns on
-# src-tauri/src/db/migrations.rs; tests+clippy on src-tauri/** + Cargo
+# src-tauri/src/db/migrations.rs; sql-prepare on src-tauri/src/**/*.rs +
+# its script; tests+clippy on src-tauri/** + Cargo
 # manifests; audit on Cargo manifests + scripts/cargo-audit-gate.py;
 # version-sync on manifests + sync script + release workflow.
 # Local hooks (pre-commit lint:fast, pre-push lint) are untouched.
@@ -64,6 +65,7 @@ jobs:
       frontend: ${{ steps.filter.outputs.frontend }}
       review: ${{ steps.filter.outputs.review }}
       parity_ipc: ${{ steps.filter.outputs.parity_ipc }}
+      sql: ${{ steps.filter.outputs.sql }}
       migration_chain: ${{ steps.filter.outputs.migration_chain }}
       grids: ${{ steps.filter.outputs.grids }}
       version_sync: ${{ steps.filter.outputs.version_sync }}
@@ -110,6 +112,9 @@ jobs:
             parity_ipc:
               - 'src-tauri/src/**/*.rs'
               - 'scripts/check-tauri-ipc-parity.py'
+            sql:
+              - 'src-tauri/src/**/*.rs'
+              - 'scripts/check-sql-prepare.py'
             version_sync:
               - 'scripts/bump-version.py'
               - 'scripts/check-version-sync.py'
@@ -653,6 +658,26 @@ jobs:
             echo "review scope: ran"
           else
             echo "review scope: skipped (no migrations.rs changed)"
+          fi
+
+      - name: SQL prepare gate (static SQL vs migrated schema)
+        # Same `mise run lint:sql` slice (`lint:fast` commit set, also
+        # in push `lint`).
+        if: needs.changes.outputs.sql == 'true' || needs.changes.outputs.runall == 'true' || github.event_name == 'push'
+        shell: bash
+        run: mise run lint:sql
+
+      - name: SQL scope note
+        # Always-run note: skipped = exit 0 with note, never a job-level
+        # `if:` (keeps the check visible, not missing).
+        if: always()
+        env:
+          SQL_SCOPE: ${{ needs.changes.outputs.sql }}
+        run: |
+          if [ "$SQL_SCOPE" = "true" ]; then
+            echo "sql scope: ran"
+          else
+            echo "sql scope: skipped (no src-tauri/src/**.rs changed)"
           fi
 
       - name: Tauri IPC parity (window-shaped stock replays)

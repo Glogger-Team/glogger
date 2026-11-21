@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Extract field schemas from Project Gorgon CDN JSON files.
 

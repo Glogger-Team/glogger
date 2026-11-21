@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Single source of truth for conventional-commit classification.
 
 Shared by scripts/next-version.py (bump) and scripts/generate-changelog.py

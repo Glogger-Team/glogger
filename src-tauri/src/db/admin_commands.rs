@@ -325,11 +325,16 @@ pub fn compact_database(db: State<'_, DbPool>) -> Result<CompactResult, String> 
 /// The `path` comes from the frontend save dialog — quote-escape it rather
 /// than interpolating it raw, and refuse NUL (SQLite would truncate there).
 #[tauri::command]
-pub fn backup_database(db: State<'_, DbPool>, path: String) -> Result<(), String> {
-    let conn = db
-        .get_write()
-        .map_err(|e| format!("Database connection error: {e}"))?;
-    backup_to_path(&conn, &path)
+pub async fn backup_database(db: State<'_, DbPool>, path: String) -> Result<(), String> {
+    let db = db.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db
+            .get_write()
+            .map_err(|e| format!("Database connection error: {e}"))?;
+        backup_to_path(&conn, &path)
+    })
+    .await
+    .map_err(|e| format!("Backup task failed: {e}"))?
 }
 
 fn backup_to_path(conn: &rusqlite::Connection, path: &str) -> Result<(), String> {

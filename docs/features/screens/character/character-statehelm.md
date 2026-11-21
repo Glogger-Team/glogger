@@ -4,7 +4,7 @@ Tracks weekly gift progress for Statehelm NPCs. Each NPC accepts up to 5 gifts p
 
 ## How It Works
 
-Gift events are detected from `ProcessDeltaFavor` log lines where `is_gift` is `True`. These are already parsed by `PlayerEventParser` as `FavorChanged` events with the `is_gift` flag. When a gift is detected:
+Gift events are detected from `FavorDelta` favor deltas (JSON and Status chat lines) in `chat_status_dispatch`, which resolves the NPC via CDN data and applies the gift-cap/gift-taste rules. When a gift is detected:
 
 1. The favor delta is applied to `game_state_favor` (existing behavior)
 2. A separate row is inserted into `game_state_gift_log` with the NPC key, timestamp, and favor delta — but only for a *spent* gift. The arm skips the row when the game's own signals say the favor was not a gift the player gave: `npc_id == 0` (scripted payout), no CDN gift data for an NPC the CDN *knows* (gifting cannot move that reputation — an NPC the CDN does not know keeps the old behavior and is logged), or a gift-capped area (the cap note owns the count)
@@ -13,6 +13,7 @@ Gift events are detected from `ProcessDeltaFavor` log lines where `is_gift` is `
 ## NPC Selection
 
 Statehelm NPCs are identified from CDN data by area alone:
+
 - `area_name` is `AreaStatehelm` (the city) **or** `AreaStatehelmCaves` (the
   sewers — Hamilton, Smoke Tail, Fuzzlebun).
 
@@ -52,6 +53,7 @@ Users can manually increment/decrement gift counts per NPC using +/- buttons on 
 ## NPC Card Info
 
 Each card displays:
+
 - **NPC name** (clickable via `NpcInline`)
 - **Favor tier** badge (from `game_state_favor`)
 - **Gift progress** — dot indicators and count (X / 5), only when the NPC has CDN gift data (`giftTracking`); otherwise no counter, no dots, no ± buttons

@@ -1543,13 +1543,15 @@ fn relative_to(
             }
         };
         if let Some(n) = num.take() {
-            secs += n * mult;
+            let add = n.checked_mul(mult)?;
+            secs = secs.checked_add(add)?;
         }
     }
     if secs <= 0 {
         return None;
     }
-    Some((*base + chrono::Duration::seconds(secs)).format("%Y-%m-%d %H:%M:%S").to_string())
+    let dt = base.checked_add_signed(chrono::Duration::try_seconds(secs)?)?;
+    Some(dt.format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
 /// Replace a character's garden snapshot from an almanac body and append the
@@ -1562,6 +1564,11 @@ pub fn import_garden_almanac(
     body: &str,
     captured_at: &str,
 ) -> Result<usize, String> {
+    // A truncated (unclosed) <h2> means a partial parse — refuse to replace
+    // the existing snapshot (no-op, Ok(0)) rather than deleting omitted seasons.
+    if body.rfind("<h2>").map(|h| !body[h..].contains("</h2>")).unwrap_or(false) {
+        return Ok(0);
+    }
     let seasons = parse_garden_almanac_body(body, captured_at);
     if seasons.is_empty() {
         // Never wipe a good snapshot on an unparseable body. Tradeoff: a
@@ -1597,6 +1604,24 @@ pub fn import_garden_almanac(
         .collect();
     fresh.sort();
     if current == fresh {
+        return Ok(0);
+    }
+    // Recency: a rescan can redeliver an OLDER identical Book after a newer
+    // import (newest-first scans). Its content differs (older seasons), so
+    // the check above passes — but replacing the snapshot would move the
+    // garden clock backward and append stale history. Captures sort
+    // lexicographically (naive-UTC stamps on both sides), so compare as
+    // text. Equal captures stay eligible (a failed import of the current
+    // observation can still be retried).
+    let stored_newest: Option<String> = conn
+        .query_row(
+            "SELECT MAX(captured_at) FROM garden_almanac
+             WHERE character_name = ?1 AND server_name = ?2",
+            rusqlite::params![character, server],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("Failed to read garden capture time: {e}"))?;
+    if stored_newest.as_deref().is_some_and(|s| captured_at < s) {
         return Ok(0);
     }
     // One transaction: a crash or error mid-replace must not leave a partial
@@ -2769,6 +2794,78 @@ mod tests {
             })
             .unwrap();
         assert_eq!(snap, 1);
+    }
+    #[test]
+    fn garden_almanac_import_truncated_body_preserves_snapshot() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run_migrations(&conn, None).unwrap();
+        // Seed a good snapshot, then feed one complete season followed by an
+        // unclosed <h2>: the partial parse must not replace the snapshot.
+        conn.execute(
+            "INSERT INTO garden_almanac
+                (character_name, server_name, crop_name, zone_name, event_start, event_end, is_current, captured_at)
+             VALUES ('T', 'Dreva', 'OldCrop', 'OldZone', NULL, NULL, 1, '2026-11-17 16:47:31')",
+            [],
+        )
+        .unwrap();
+        let body = "Upcoming Gardening Events:<h2>Barley Season in Gazluk</h2><i>Ends in 6 hours 12 minutes</i><h2>Carrot Season in";
+        let n = import_garden_almanac(&conn, "T", "Dreva", body, "2026-11-17 16:47:31").unwrap();
+        assert_eq!(n, 0);
+        let kept: String = conn
+            .query_row("SELECT crop_name FROM garden_almanac WHERE character_name = 'T'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(kept, "OldCrop");
+    }
+    #[test]
+    fn garden_almanac_import_older_capture_preserves_snapshot() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run_migrations(&conn, None).unwrap();
+        // A rescan redelivering an OLDER Book after a newer import must not
+        // move the snapshot backward: different content passes the identical
+        // check, so the captured_at guard is the only defense. History must
+        // not gain stale rows either.
+        conn.execute(
+            "INSERT INTO garden_almanac
+                (character_name, server_name, crop_name, zone_name, event_start, event_end, is_current, captured_at)
+             VALUES ('T', 'Dreva', 'NewCrop', 'NewZone', NULL, NULL, 1, '2026-11-17 16:47:31')",
+            [],
+        )
+        .unwrap();
+        let body = "Upcoming Gardening Events:<h2>Old Season in OldZone</h2><i>Ends in 6 hours 12 minutes</i>";
+        let n = import_garden_almanac(&conn, "T", "Dreva", body, "2026-11-16 16:47:31").unwrap();
+        assert_eq!(n, 0);
+        let kept: String = conn
+            .query_row("SELECT crop_name FROM garden_almanac WHERE character_name = 'T'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(kept, "NewCrop");
+        let history: i64 = conn
+            .query_row("SELECT COUNT(*) FROM garden_almanac_history", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(history, 0);
+        // Equal capture stays eligible: a retry of the current observation
+        // with different content still replaces (rescan heals failed imports).
+        let n = import_garden_almanac(&conn, "T", "Dreva", body, "2026-11-17 16:47:31").unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn relative_to_rejects_absurd_durations_without_panic() {
+        let base = chrono::NaiveDateTime::parse_from_str("2026-11-17 16:47:31", "%Y-%m-%d %H:%M:%S");
+        // Valid duration still resolves.
+        assert_eq!(
+            relative_to(&base, "1 day 6 hours").as_deref(),
+            Some("2026-11-18 22:47:31")
+        );
+        // Absurd inputs return None instead of panicking on overflow.
+        assert_eq!(relative_to(&base, "1000000000 days"), None);
+        assert_eq!(relative_to(&base, "999999999999 hours"), None);
+        // chrono stores millis: 7.8e17 s passes i64 seconds math but exceeds
+        // i64::MAX/1000, so Duration::seconds would panic — try_seconds wins.
+        assert_eq!(relative_to(&base, "9000000000000 days"), None);
     }
 
     #[test]

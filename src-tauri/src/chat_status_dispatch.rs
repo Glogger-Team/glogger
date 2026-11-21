@@ -593,9 +593,13 @@ fn insert_item_transaction_guarded(db: &DbPool, item: ItemLedgerCtx<'_>) -> bool
 /// `source = 'chat_status'`) may already exist — live order is English-first,
 /// rescan order varies. When it does, stamp the looted-from entity onto that
 /// row instead of inserting a second one, and report "already present" so the
-/// caller stages the gain exactly once. Survey columns are never touched:
-/// the row keeps `source_kind IS NULL` (or its live survey tag), so the
-/// existing live attribution and scan retro-claim paths work unchanged.
+/// caller stages the gain exactly once. The claim targets ENGLISH rows only:
+/// JSON-originated rows carry `{"json_twin":true}` in source_details (set at
+/// insert) and are never stamped — an unsourced JSON row is not an English
+/// twin, and stamping it would break its own replay's exact-entity hit.
+/// Survey columns are never touched: the row keeps `source_kind IS NULL`
+/// (or its live survey tag), so the existing live attribution and scan
+/// retro-claim paths work unchanged.
 /// Returns `true` when the caller should treat this as a new gain (stage it).
 #[allow(clippy::too_many_arguments)]
 fn insert_json_receipt_guarded(
@@ -613,17 +617,42 @@ fn insert_json_receipt_guarded(
     let Ok(conn) = db.get_write() else {
         return false;
     };
-    if from_name.is_some() {
-        // Scope to a single row: identical same-second receipts from
-        // different entities (AoE farming) share the whole key, and stamping
-        // every NULL row would attach the first entity to all of them while
-        // the second twin then matches nothing. Earliest unstamped wins.
-        conn.execute(
+    // 1. Check for an existing receipt matching the EXACT entity first. A
+    // sourced replay must not stamp an unsourced twin before this check
+    // (otherwise a sourced + unsourced pair at the same timestamp collapses
+    // into a third row on replay).
+    let exact_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM item_transactions
+             WHERE timestamp = ?1 AND character_name = ?2 AND server_name = ?3
+               AND item_name = ?4 AND quantity = ?5 AND context = 'loot' AND source = 'chat_status'
+               AND (from_entity_id = ?6 OR (?6 IS NULL AND from_entity_id IS NULL)))",
+            rusqlite::params![timestamp, character, server, item_name, quantity as i32, from_entity_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+
+    // 2. Only when that misses, claim at most one genuinely unstamped
+    // ENGLISH twin. Presence of FromEntityId locates the twin; the display
+    // name stays optional. Single-row scoping via MIN(rowid). Provenance:
+    // JSON-originated rows carry a `json_twin` marker in source_details
+    // (set at insert below) and are never claimed — an unsourced JSON row
+    // is not an English twin, and stamping it would destroy the NULL-entity
+    // marker its own replay needs for the exact hit (unsourced-first order
+    // would then insert a duplicate row on rescan). Pre-marker rows have
+    // NULL details and stay claimable (they predate JSON ingestion).
+    // A failed UPDATE reports and stops: falling through to the insert on a
+    // broken connection would record a duplicate of the English gain.
+    if !exact_exists && from_entity_id.is_some()
+        && let Err(e) = conn.execute(
             "UPDATE item_transactions SET from_name = ?1, from_entity_id = ?2
              WHERE rowid = (SELECT MIN(rowid) FROM item_transactions
                  WHERE timestamp = ?3 AND character_name = ?4 AND server_name = ?5
                    AND item_name = ?6 AND quantity = ?7 AND context = 'loot'
-                   AND source = 'chat_status' AND from_name IS NULL)",
+                   AND source = 'chat_status'
+                   AND from_name IS NULL AND from_entity_id IS NULL
+                   AND (source_details IS NULL
+                        OR json_extract(source_details, '$.json_twin') IS NULL))",
             rusqlite::params![
                 from_name,
                 from_entity_id,
@@ -634,9 +663,13 @@ fn insert_json_receipt_guarded(
                 quantity as i32
             ],
         )
-        .ok();
+    {
+        eprintln!("[dispatch] twin-claim update failed, receipt left for retry: {e}");
+        return false;
     }
-    let exists: bool = conn
+
+    // Re-check after a possible twin claim.
+    let exists_after: bool = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM item_transactions
              WHERE timestamp = ?1 AND character_name = ?2 AND server_name = ?3
@@ -646,15 +679,16 @@ fn insert_json_receipt_guarded(
             |r| r.get(0),
         )
         .unwrap_or(false);
-    let wrote = if exists {
+
+    let wrote = if exists_after {
         false
     } else {
         conn.execute(
             "INSERT INTO item_transactions
                 (timestamp, character_name, server_name, item_name,
                  internal_name, item_type_id, quantity, context,
-                 source, from_name, from_entity_id)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'loot', 'chat_status', ?8, ?9)",
+                 source, from_name, from_entity_id, source_details)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'loot', 'chat_status', ?8, ?9, ?10)",
             rusqlite::params![
                 timestamp,
                 character,
@@ -665,30 +699,35 @@ fn insert_json_receipt_guarded(
                 quantity as i32,
                 from_name,
                 from_entity_id,
+                // Provenance: this row came from a JSON receipt, never an
+                // English Status line, so the twin claim above must not stamp
+                // it. Readers use json_extract (survey_use_id et al.) and
+                // ignore unknown keys; the survey tagger merges via json_set
+                // (coordinator live-attribution block), preserving the marker.
+                "{\"json_twin\":true}",
             ],
         )
         .is_ok()
     };
     // Both twin orders converge here, so this is also the loot↔kill join
     // point: the receipt's entity links the item to its FATALITY row.
-    if let Some(entity_id) = from_entity_id {
-        // Rescan re-runs this call idempotently (`WHERE NOT EXISTS`), so a
-        // transient link failure heals on the next scan — but only when the
-        // receipt side re-runs. Receipts recorded before the kill (newest-first
-        // scans) are healed by the kill side (`link_kill_loot_for_kill`); a
-        // kill recorded after its receipt's scan window has passed may still
-        // miss, but only if both sides never re-run. `Ok(false)` (no matching
-        if let Err(e) = crate::db::kill_tracking_commands::link_kill_loot(
-            &conn,
-            character,
-            server,
-            &entity_id.to_string(),
-            timestamp,
-            item_name,
-            quantity as i64,
-        ) {
-            eprintln!("[dispatch] kill-loot link failed (rescan heals): {e}");
+    // Attempt the link only when the ledger row exists (Persisted or
+    // AlreadyPresent); a failed insert must not create a dangling loot row.
+    match from_entity_id {
+        Some(entity_id) if wrote || exists_after => {
+            if let Err(e) = crate::db::kill_tracking_commands::link_kill_loot(
+                &conn,
+                character,
+                server,
+                &entity_id.to_string(),
+                timestamp,
+                item_name,
+                quantity as i64,
+            ) {
+                eprintln!("[dispatch] kill-loot link failed (rescan heals): {e}");
+            }
         }
+        _ => {}
     }
     wrote
 }
@@ -1006,11 +1045,13 @@ fn dispatch_json_event(
                         eprintln!("[chat_status_dispatch] favor touch-up failed, rolled back: {e}");
                         return;
                     }
-                    // capped-area counts belong to the report reconcile, and
-                    // tasteless NPCs cannot receive gifts (card readings etc.).
-                    // Quest-payout noise for uncapped NPCs is accepted and
-                    // documented — JSON carries no is_gift flag. Favor losses
-                    // are never gifts, whatever the NPC's tastes.
+                    // capped-area counts are manual-only (the Statehelm +/- UI;
+                    // the user reads the game's cap note): no report field feeds
+                    // game_state_gift_log, so there is no report reconcile to
+                    // restore — only the chat path (uncapped) and manual gifts
+                    // write this table. Quest-payout noise for uncapped NPCs is
+                    // accepted and documented — JSON carries no is_gift flag.
+                    // Favor losses are never gifts, whatever the NPC's tastes.
                     if giftable
                         && *delta > 0.0
                         && let Err(e) = tx.execute(
@@ -1989,7 +2030,93 @@ mod tests {
             .unwrap();
         assert_eq!((stamped, unstamped), (1, 1));
     }
+    #[test]
+    fn json_additem_enriches_twin_on_entity_id_without_name() {
+        // T43: a receipt carrying FromEntityId but no FromName must still
+        // enrich the English twin — not write a second row.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:50:27";
+        let english = status_msg("Toxic Sludge added to inventory.", ts);
+        let entity_only = "{\"Name\": \"Toxic Sludge\", \"TypeId\": 1137, \"Stack\": 1, \"Flags\": [], \"FromEntityId\": 257400}";
+        let json = json_msg("AddItem", entity_only, ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &english, ts, &mut st);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out.staged_gains.is_empty());
+        let rows = item_rows(&pool);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].3, Some(257400));
+    }
 
+    #[test]
+    fn json_sourced_replay_does_not_claim_unsourced_twin() {
+        // T44: sourced + unsourced rows coexist; replaying the sourced
+        // receipt must hit the exact-entity guard first and leave the
+        // unsourced row unstamped (no third row on the next replay).
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:50:27";
+        let sourced = json_msg("AddItem", LOOT_BODY, ts);
+        let unsourced = json_msg(
+            "AddItem",
+            "{\"Name\": \"Toxic Sludge\", \"TypeId\": 1137, \"Stack\": 1, \"Flags\": []}",
+            ts,
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &sourced, ts, &mut st);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &unsourced, ts, &mut st);
+        assert_eq!(item_rows(&pool).len(), 2);
+        // Replay the sourced receipt: exact-entity hit, no stamping.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &sourced, ts, &mut st);
+        let rows = item_rows(&pool);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|r| r.3.is_none()));
+    }
+    #[test]
+    fn json_unsourced_first_sourced_does_not_claim_json_row() {
+        // Reverse of T44: an unsourced JSON receipt is NOT an English twin,
+        // so the sourced receipt must insert its own row instead of stamping
+        // the JSON row — stamping would destroy the NULL-entity marker the
+        // unsourced replay needs, inserting a duplicate third row.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:50:27";
+        let sourced = json_msg("AddItem", LOOT_BODY, ts);
+        let unsourced = json_msg(
+            "AddItem",
+            "{\"Name\": \"Toxic Sludge\", \"TypeId\": 1137, \"Stack\": 1, \"Flags\": []}",
+            ts,
+        );
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &unsourced, ts, &mut st);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &sourced, ts, &mut st);
+        assert_eq!(item_rows(&pool).len(), 2);
+        // Replay the unsourced receipt: exact-NULL hit on its own row.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &unsourced, ts, &mut st);
+        let rows = item_rows(&pool);
+        assert_eq!(rows.len(), 2);
+        // Replay the sourced receipt: exact-entity hit, no stamping.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &sourced, ts, &mut st);
+        let rows = item_rows(&pool);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|r| r.3.is_none()));
+    }
     #[test]
     fn json_additem_twins_converge_json_first() {
         let (pool, _guard) = test_pool();
@@ -2354,7 +2481,7 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM game_state_favor", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n_favor, 2);
-        // No gift rows: capped counts belong to the report reconcile, and
+        // No gift rows: capped counts are manual-only (Statehelm +/- UI), and
         // tasteless NPCs cannot receive gifts.
         let n_gifts: i64 = conn
             .query_row("SELECT COUNT(*) FROM game_state_gift_log", [], |r| r.get(0))

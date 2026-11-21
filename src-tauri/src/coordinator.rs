@@ -49,8 +49,8 @@ pub struct CoordinatorStatus {
 /// per line — not the drain-final identity), except a mid-session resume
 /// (`None` tag), which falls back to the drain identity. Applied to the player
 /// rows via `GameStateManager::correct_stack_for_session` just before the
-/// live flip, because the Player.log drain already wrote fallback `stack_size
-/// = 1` rows before the chat drain ran.
+/// live flip, because the snapshot slice already holds the rows (prior
+/// report imports) before the chat drain ran.
 /// Which VIP report a `ReportSaved` chat line points at, by the game's own
 /// filename convention (mirrors `setup_commands.rs` `Character_*.json` and
 /// `*_items_*.json` scans). Matched on the file name only — plus a `Reports/`
@@ -315,8 +315,8 @@ impl DataIngestCoordinator {
 
     /// Apply chat stack gains staged during catch-up to their own sessions.
     /// Runs once, as the last step of the catch-up window (after the chat
-    /// drain, before `set_live_mode`): the Player.log drain already wrote the
-    /// rows, and the staged keys name the login session that produced each gain
+    /// drain, before `set_live_mode`): the snapshot slice already holds the
+    /// rows from prior report imports, and the staged keys name the login
     /// (mid-session resume gains excepted — see `StagedChatGain`).
     fn apply_staged_chat_corrections(&mut self) {
         let staged = std::mem::take(&mut self.staged_chat_gains);
@@ -855,8 +855,16 @@ impl DataIngestCoordinator {
                             );
                             let mut settings = self.settings.get();
                             settings.active_character_name = Some(character_name.clone());
+                            // Player.log login lines carry no server: a stale
+                            // ambient server (previous session, shared PC)
+                            // would key every tagless line to the wrong
+                            // server until the chat marker fires. Fail closed
+                            // (lines skip dispatch without identity) rather
+                            // than persist a guess.
+                            settings.active_server_name = None;
                             self.settings.update(settings).ok();
                             self.game_state.set_active_character_name(&character_name);
+                            self.game_state.clear_active_server_name();
                         }
                         continue;
                     }
@@ -1055,9 +1063,9 @@ impl DataIngestCoordinator {
                                 self.app_handle.emit("game-state-updated", &corrected).ok();
                             }
                         } else if let Some(id) = identity.as_ref() {
-                            // Catch-up: the Player.log drain already wrote
-                            // fallback rows — stage session-keyed for
-                            // `apply_staged_chat_corrections`.
+                            // Catch-up: the snapshot slice already holds the
+                            // rows from prior report imports — stage
+                            // session-keyed for `apply_staged_chat_corrections`.
                             self.staged_chat_gains.push(StagedChatGain {
                                 character: id.character.clone(),
                                 server: id.server.clone(),
@@ -1107,12 +1115,17 @@ impl DataIngestCoordinator {
                                     Some(use_id) => use_id,
                                     None => continue,
                                 };
-                                let source_details =
-                                    format!("{{\"survey_use_id\":{use_id}}}");
+                                // Merge into source_details (never overwrite):
+                                // JSON receipts carry a `json_twin` provenance
+                                // marker that the twin-claim guard relies on —
+                                // replacing the blob would drop the marker and
+                                // re-open the unsourced-first duplicate hole.
                                 let tag_rows = match tx.execute(
                                     "UPDATE item_transactions
                                         SET source_kind = 'survey_chat',
-                                            source_details = ?1
+                                            source_details = json_set(
+                                                COALESCE(source_details, '{}'),
+                                                '$.survey_use_id', ?1)
                                       WHERE rowid = (
                                         SELECT rowid FROM item_transactions
                                          WHERE timestamp = ?2
@@ -1129,7 +1142,7 @@ impl DataIngestCoordinator {
                                          ORDER BY rowid DESC LIMIT 1
                                       )",
                                     rusqlite::params![
-                                        source_details,
+                                        use_id,
                                         ts_utc,
                                         id.character,
                                         id.server,
@@ -1323,14 +1336,22 @@ impl DataIngestCoordinator {
                     // Emit to frontend
                     self.app_handle.emit("server-detected", &server_name).ok();
                 }
-                LogEvent::CharacterLogin { character_name, timestamp, .. } => {
+                LogEvent::CharacterLogin { character_name, server_name, timestamp, .. } => {
                     // Chat log also detects character login — update active character
                     // and emit so player_watcher can stay in sync
                     self.app_handle
                         .emit("character-login", &character_name)
                         .ok();
 
-                    // Auto-register character with current server
+                    // Prefer the server from the login line itself: the chat
+                    // marker declares it, and ambient active_server may still
+                    // hold the previous session (shared PC) or a stale boot
+                    // value. Persisting that guess poisons every future
+                    // session_server_for lookup for this character.
+                    let login_server = server_name.clone().or_else(|| {
+                        self.settings.get().active_server_name.clone()
+                    });
+                    // Auto-register character with login server
                     if let Ok(conn) = self.db_pool.get_write() {
                         conn.execute(
                             "INSERT INTO user_characters (character_name, server_name, source, last_login_time)
@@ -1340,7 +1361,7 @@ impl DataIngestCoordinator {
                                 updated_at = CURRENT_TIMESTAMP",
                             rusqlite::params![
                                 character_name,
-                                self.settings.get().active_server_name,
+                                login_server.clone(),
                             ],
                         ).ok();
                     }
@@ -1348,10 +1369,7 @@ impl DataIngestCoordinator {
                     // Update active character in settings
                     let mut settings = self.settings.get();
                     settings.active_character_name = Some(character_name.clone());
-                    let server = settings
-                        .active_server_name
-                        .clone()
-                        .unwrap_or_else(|| "Unknown".to_string());
+                    let server = login_server.unwrap_or_else(|| "Unknown".to_string());
                     self.settings.update(settings).ok();
 
                     self.game_state
@@ -2284,18 +2302,22 @@ fn apply_catch_up_login(
     };
     if let Some(server) = server {
         game_state.set_active_server_name(&server);
-        // The adopted session rebuilds its own inventory (report imports),
-        // so start it from an empty slice — otherwise rows from an earlier
-        // session pollute this one. Equipment/combat/mount/favor are
-        // deliberately untouched: equipment self-heals via its full-dump
-        // reinsert, and the rest have no repopulating source.
+        // The adopted session rebuilds its own inventory from report imports
+        // (which delete-then-reinsert the snapshot slice), so only obsolete
+        // log-derived rows are cleared here. Saved snapshot rows survive the
+        // adopt: no production writer creates 'log' inventory rows anymore,
+        // and deleting the snapshot on every login emptied inventory until
+        // the next fresh import. Equipment/combat/mount/favor are deliberately
+        // untouched — none has a production writer (no full-dump reinsert, no
+        // report import, no live/chat feed), so nothing would repopulate the
+        // slice after a wipe.
         if clear_inventory
             && let (Some(character), Ok(conn)) = (
                 game_state.get_active_character().map(str::to_string),
                 db.get_write(),
             )
                 && let Err(e) = conn.execute(
-                    "DELETE FROM game_state_inventory WHERE character_name = ?1 AND server_name = ?2",
+                    "DELETE FROM game_state_inventory WHERE character_name = ?1 AND server_name = ?2 AND source = 'log'",
                     rusqlite::params![character, server],
                 ) {
                     startup_log!("[coordinator] clear-on-adopt inventory delete failed: {e}");
@@ -2848,6 +2870,45 @@ mod session_identity_tests {
         assert_eq!(count, 1, "other character untouched");
 
         // Drop the pool first: Windows won't delete a file with an open handle.
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
+    }
+    #[test]
+    fn catch_up_login_preserves_snapshot_inventory() {
+        let (pool, db_path) = seed_pool(PICKER_ROW);
+        let mut gs = game_state("TestPlayer", "Dreva");
+
+        // Same slice, two provenances: an obsolete log-derived row and a
+        // saved snapshot row (what report imports write).
+        for (instance_id, source) in [(1, "log"), (2, "snapshot")] {
+            pool.get_write()
+                .unwrap()
+                .execute(
+                    "INSERT INTO game_state_inventory
+                     (character_name, server_name, instance_id, item_name, stack_size, last_confirmed_at, source)
+                     VALUES ('OtherAlt', 'Dreva', ?1, 'Fluorite', 1, '2026-10-19 12:00:00', ?2)",
+                    rusqlite::params![instance_id, source],
+                )
+                .unwrap();
+        }
+
+        let map = std::collections::HashMap::from([("OtherAlt".to_string(), "Dreva".to_string())]);
+        apply_catch_up_login(&mut gs, &pool, &map, "OtherAlt", true);
+
+        let remaining: Vec<String> = pool
+            .get()
+            .unwrap()
+            .prepare(
+                "SELECT source FROM game_state_inventory
+                 WHERE character_name = 'OtherAlt' AND server_name = 'Dreva'",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(remaining, vec!["snapshot".to_string()], "snapshot survives adopt");
+
         drop(pool);
         let _ = std::fs::remove_file(&db_path);
     }

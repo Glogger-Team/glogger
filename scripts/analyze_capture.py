@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Analyze a glogger debug capture JSON file.
 

@@ -9,7 +9,6 @@ import { useCharacterStore } from "./characterStore";
 import { useCoordinatorStore } from "./coordinatorStore";
 import { useMarketStore } from "./marketStore";
 import { useStallTrackerStore } from "./stallTrackerStore";
-import { useSurveyTrackerStore } from "./surveyTrackerStore";
 import { useDeathStore } from "./deathStore";
 import { useCombatStore } from "./combatStore";
 import { useResuscitateStore } from "./resuscitateStore";
@@ -228,7 +227,6 @@ export const useStartupStore = defineStore("startup", () => {
     const coordinator = useCoordinatorStore();
     const marketStore = useMarketStore();
     const stallTrackerStore = useStallTrackerStore();
-    const surveyTrackerStore = useSurveyTrackerStore();
     const deathStore = useDeathStore();
     const combatStore = useCombatStore();
     const resuscitateStore = useResuscitateStore();
@@ -269,30 +267,7 @@ export const useStartupStore = defineStore("startup", () => {
     updateTask(TASK_LOG_CATCHUP, "running", "Registering event listeners...");
     try {
       // Register event listeners BEFORE starting watchers so no events are missed
-      await listen("skill-update", (event: any) => {
-        gameState.handleSkillUpdate(event.payload);
-      });
 
-      // Phase 5 survey tracker. Each handler refreshes only what could have
-      // changed; handlers are async so refreshes don't block the event loop.
-      await listen("survey-tracker-session-started", (event: any) => {
-        surveyTrackerStore.handleSessionStarted(event.payload);
-      });
-      await listen("survey-tracker-session-ended", (event: any) => {
-        surveyTrackerStore.handleSessionEnded(event.payload);
-      });
-      await listen("survey-tracker-use-recorded", (event: any) => {
-        surveyTrackerStore.handleUseRecorded(event.payload);
-      });
-      await listen<number>("survey-tracker-use-completed", (event) => {
-        surveyTrackerStore.handleUseCompleted(event.payload);
-      });
-      await listen("survey-tracker-multihit-opened", (event: any) => {
-        surveyTrackerStore.handleMultihitOpened(event.payload);
-      });
-      await listen("survey-tracker-multihit-closed", (event: any) => {
-        surveyTrackerStore.handleMultihitClosed(event.payload);
-      });
       // Combat accumulates live-only: skip startup catch-up replay, which may
       // include other characters' history (gameState handlers use the same guard).
       await listen("character-death", (event) => {

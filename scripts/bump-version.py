@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Bump the version across all project files.
 
 Port of bump-version.sh (stdlib only, works in cmd/PowerShell/git-bash alike).

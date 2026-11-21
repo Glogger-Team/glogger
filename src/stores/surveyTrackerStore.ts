@@ -13,15 +13,22 @@
 //     survey_tracker_end_session         -> Option<session_id>
 //     survey_tracker_recent_sessions     -> Vec<SurveySession>
 //     survey_tracker_session_detail(id)  -> { session, uses, loot_summary }
-//   Events (Tauri emit):
-//     survey-tracker-session-started   { session_id, trigger }
-//     survey-tracker-session-ended     { session_id, reason }
-//     survey-tracker-use-recorded      { use_id, session_id, map_internal_name, kind }
-//     survey-tracker-use-completed     use_id (number)
-//     survey-tracker-multihit-opened   { use_id, node_entity_id }
-//     survey-tracker-multihit-closed   { use_id, node_entity_id }
+//   Events (Tauri emit): none — retired surface, listed as a record only.
+//     `survey-tracker-session-started/ended`, `survey-tracker-use-recorded/
+//     completed`, and `survey-tracker-multihit-opened/closed` no longer exist:
+//     a backend-wide grep finds zero emitters and nothing subscribes, so state
+//     is read through the `survey_tracker_status` command (and friends) with
+//     affected views refreshed after each command instead. (Open multihit
+//     nodes are likewise read via `survey_tracker_status`.) Retired payload
+//     shapes, for reference:
+//       survey-tracker-session-started   { session_id, trigger }
+//       survey-tracker-session-ended     { session_id, reason }
+//       survey-tracker-use-recorded      { use_id, session_id, map_internal_name, kind }
+//       survey-tracker-use-completed     use_id (number)
+//       survey-tracker-multihit-opened   { use_id, node_entity_id }
+//       survey-tracker-multihit-closed   { use_id, node_entity_id }
 
-import { defineStore } from "pinia";
+import { defineStore, acceptHMRUpdate } from "pinia";
 import { computed, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -231,21 +238,21 @@ interface MultihitNodePayload {
 // ── Store ───────────────────────────────────────────────────────────────
 
 export const useSurveyTrackerStore = defineStore("surveyTracker", () => {
-  // Live status — refetched from the backend on every event we receive that
-  // could change it. Cheap on the backend (one indexed query per call) and
-  // keeps the frontend honest about not duplicating state derivation.
+  // Live status — refetched from the backend after each command that could
+  // change it. Cheap on the backend (one indexed query per call) and keeps
+  // the frontend honest about not duplicating state derivation.
   const status = ref<SurveyTrackerStatus | null>(null);
 
-  // Recent sessions list, refreshed when sessions start/end.
+  // Recent sessions list, refreshed after the start/end commands.
   const recentSessions = ref<SurveySession[]>([]);
 
   // Cached session detail for the currently-open detail panel, if any.
-  // null = nothing open. Refreshed on relevant tracker events.
+  // null = nothing open. Refreshed after commands that could change it.
   const openDetailSessionId = ref<number | null>(null);
   const openDetail = ref<SurveySessionDetail | null>(null);
 
   // History tab cache. Refetched lazily — the History view calls
-  // refreshHistorical() on mount and on relevant tracker events.
+  // refreshHistorical() on mount and after relevant tracker commands.
   const historical = ref<HistoricalSessionRow[]>([]);
 
   // Analytics tab cache. Same lazy-refetch pattern.
@@ -600,3 +607,9 @@ export const useSurveyTrackerStore = defineStore("surveyTracker", () => {
     handleMultihitClosed,
   };
 });
+
+// Enable proper Pinia hot-module replacement: without this, editing a store action
+// during `tauri dev` leaves the already-instantiated singleton running the old code.
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useSurveyTrackerStore, import.meta.hot))
+}

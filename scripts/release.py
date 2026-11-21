@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Cut a release: triage notes, commit them, push an annotated v<semver> tag.
 
 CI does the rest (in-workspace version sync, signed builds, GitHub Release,

@@ -15,9 +15,7 @@ Building and running glogger as a Linux Flatpak: offline source generation, the 
 Core structure, patterns, and standards used across the app.
 
 - [architecture-summary.md](architecture/architecture-summary.md) — High-level overview of the Rust/Tauri + Vue architecture and data flow.
-- [live-event-streams.md](architecture/live-event-streams.md) — Unified reference for all live game events: Player.log and Chat.log data flow, all event streams, how features subscribe, timestamp handling, and how to extend both parsers.
-- [player-event-parser.md](architecture/player-event-parser.md) — PlayerEventParser: event types, internal state, pending delete buffer, encoded value decoding, frontend listening, and how to extend.
-- [player-log-events.md](architecture/player-log-events.md) — Complete reference for all Player.log event types: item, skill, NPC, vendor, storage, and screen events with encoding formats and practical patterns.
+- [live-event-streams.md](architecture/live-event-streams.md) — Unified reference for all live game events: Player.log session signals and Chat.log data flow, all event streams, how features subscribe, timestamp handling, and how to extend the chat parser.
 - [survey-mechanics.md](architecture/survey-mechanics.md) — Behavioral catalog of the three survey-map kinds (Basic, Motherlode, Multihit): use mechanics, loot patterns, map lists per area, and parser disambiguation rules.
 - [game-state.md](architecture/game-state.md) — Centralized game state system: design principles, database schema, GameStateManager, frontend store API, and domain catalog.
 - [cdn-data-parsing.md](architecture/cdn-data-parsing.md) — How CDN JSON files are deserialized, typed, and stored with raw JSON preservation.

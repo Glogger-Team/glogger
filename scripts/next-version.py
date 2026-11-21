@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Suggest the next release tag from commit history since a base tag.
 
 Resolution order, first hit wins:

@@ -8,7 +8,7 @@ The game produces two log files with complementary data about the same player ac
 
 | Log File | Format | Timezone | What it contains |
 |---|---|---|---|
-| **Player.log** | `[HH:MM:SS] LocalPlayer: ProcessXxx(...)` | Local time, no date | Structured game engine events — items, skills, NPCs, vendors, storage, combat state, UI actions |
+| **Player.log** | `[HH:MM:SS] LocalPlayer: ...` | Local time, no date | Retired feed — only `CharacterLogin` / `ChatLogPath` / `AreaTransition` still parse (identity + area); item/skill/NPC/vendor/storage/combat/UI arms are gone, gains come from Chat Status rows and structure from report snapshots |
 | **Chat.log** | `YY-MM-DD HH:MM:SS\t[Channel] Sender: Message` | UTC | Chat messages across channels — including `[Status]` which carries item quantities, XP deltas, economy events, and more |
 
 Each log has its own watcher and parser. The **DataIngestCoordinator** polls both, routes events through their respective parsers, and emits structured events to the frontend. Features subscribe to whichever events they need.
@@ -52,10 +52,10 @@ Both watchers are polled on the same coordinator tick (every 500ms — `spawn_po
 
 1. **Player events processed first** — `process_player_events()`
 2. **Chat events processed second** — `process_chat_events()`
-3. **Game state switches to live mode** after the first poll (catch-up replay complete) — i.e. after both drains: the chat login marker's `set_active_character` clears transient state when live, and that must not land on rows the replay just built
+3. **Game state switches to live mode** after the first poll (catch-up replay complete) — i.e. after both drains: the chat login marker's `set_active_character` clears only log-era inventory rows when live (the `source = 'log'` predicate, `game_state.rs:151` — equipment/combat/mount untouched, snapshot rows preserved), and that must not land on rows the replay just built
 4. **Watcher positions saved** to database
 
-This ordering means a Player.log login/area line always lands before the corresponding chat messages for the same game action. Features that correlate across streams can rely on this.
+This ordering describes the drain sequence within one poll tick, not a delivery guarantee: the two files can become readable on different ticks, and during catch-up a later area transition can process before an earlier chat message. Features must not use poll order to infer which area or session produced a chat event.
 
 ## Event Streams Reference
 
@@ -92,13 +92,11 @@ Not a raw event stream — this is a **domain notification**. When chat dispatch
 
 Full details: [`game-state.md`](game-state.md)
 
-### Stream: `"survey-tracker-*"`
+### Stream: `"survey-tracker-*"` (retired — never emitted)
 
 **Source:** [`SurveySessionAggregator`](../../src-tauri/src/survey/aggregator.rs) driven by chat loot gains (`attribute_chat_gain`) and manual sessions.
 
-Downstream consumer of chat loot gains. The aggregator is **stateful** — it tracks survey sessions, stitches survey attribution, and manages open multihit nodes (persisted to DB).
-
-Events emitted: `survey-tracker-session-started`, `survey-tracker-session-ended`, `survey-tracker-use-recorded`, `survey-tracker-use-completed`, `survey-tracker-multihit-opened`, `survey-tracker-multihit-closed`.
+Downstream consumer of chat loot gains. The aggregator is **stateful** — it tracks survey sessions and stitches survey attribution (persisted to DB). It emits **no Tauri events**: a backend-wide grep for `survey-tracker-*` finds zero emitters, so the former `session-started/ended` and `use-recorded/completed` listeners were removed. The frontend reads survey state through Tauri commands (`survey_tracker_status` and friends).
 
 Full details: [`economics-surveying.md`](../features/screens/economics/economics-surveying.md)
 
@@ -157,18 +155,17 @@ const unlistenState: UnlistenFn = await listen<string[]>('game-state-updated', (
 
 ### Combining streams
 
-Some data appears in both streams with different levels of detail. The pattern is: **Player.log is primary** (identity, structure), **Chat Status is supplementary** (quantities, deltas, human-readable names). Features don't deduplicate — they use different fields from each.
+Some data appears in both streams with different levels of detail. The pattern is: **Player.log is residual** (identity + area only — `CharacterLogin` / `ChatLogPath` / `AreaTransition`), **Chat Status carries the gains** (quantities, deltas, human-readable names), and **report snapshots carry the structure** (authoritative quantities per slice). Features don't deduplicate — they use different fields from each.
 
 #### Backend cross-stream correlation
 
-The coordinator performs **automatic inventory stack correction** by correlating chat status events with Player.log data:
+The coordinator performs **automatic inventory stack correction** by correlating chat status events with stored rows:
 
-1. Player.log `ProcessAddItem` records items with `stack_size = 1` in `game_state_inventory` / `game_state_storage`
-2. Chat.log `[Status] Item x5 added to inventory.` provides the real quantity
-3. The coordinator calls `GameStateManager::correct_stack_for_session()` with the gain's session identity (tag-preferred, active fallback) which resolves the chat display name to a Player.log internal name via CDN data, finds recent `stack_size=1` rows, and updates them
-4. A `"game-state-updated"` event is emitted so the frontend refreshes
+1. Report imports (`Reports/*_items_*.json` via `import_inventory_report`) replace the whole snapshot slice for the character/server (`DELETE` + re-insert with `source = 'snapshot'`); those quantities are authoritative.
+2. Chat.log `[Status] Item x5 added to inventory.` carries the real quantity for a gain: the coordinator calls `GameStateManager::correct_stack_for_session()` with the gain's session identity (tag-preferred, active fallback), which resolves the chat display name to an internal name via CDN data and updates the most recent `stack_size = 1, source = 'log'` placeholder row (Player.log-era leftovers). Snapshot rows are never overwritten by correction.
+3. A `"game-state-updated"` event is emitted so the frontend refreshes.
 
-Both sources also write to the `item_transactions` ledger table (v15 migration) — Player.log events with `source = 'player_log'` and chat events with `source = 'chat_status'`.
+Chat gains also write to the `item_transactions` ledger table with `source = 'chat_status'`. When the coordinator attributes a gain to a survey use it stamps `source_kind = 'survey_chat'` plus `survey_use_id` in `source_details` — the `source` stays `'chat_status'`, so a query filtering `source = 'player_log'` misses these rows. The survey tracker does not write its own `source = 'player_log'` rows: the manual path inserts session/use rows and tags `chat_status` rows, so no `player_log`-sourced row producer exists on that path.
 
 #### Frontend cross-stream example
 
@@ -298,9 +295,6 @@ cd src-tauri
 
 # All tests
 cargo test
-
-# Player event parser tests
-cargo test player_event_parser
 
 # Chat status parser tests
 cargo test chat_status_parser

@@ -9,13 +9,14 @@ A CDN-driven database of ALL storage vault locations in the game (~92 vaults), s
 ### Files
 
 **Backend (Rust):**
+
 - `src-tauri/src/game_data/storage_vaults.rs` — CDN `storagevaults.json` parsing
-- `src-tauri/src/player_event_parser.rs` — `vault_key` enrichment on StorageDeposit/Withdrawal
-- `src-tauri/src/game_state.rs` — StorageDeposit → UPSERT, StorageWithdrawal → DELETE
+- `src-tauri/src/db/character_commands.rs` — report import writes storage rows with `vault_key` (per-import snapshot replace)
 - `src-tauri/src/db/game_state_commands.rs` — `get_game_state_storage` query
 - `src-tauri/src/cdn_commands.rs` — `get_storage_vault_metadata` with area resolution
 
 **Frontend (Vue/TS):**
+
 - `src/components/Inventory/VaultDatabaseTab.vue` — main vault browser
 - `src/components/Inventory/VaultAreaCard.vue` — area summary card
 - `src/components/Inventory/VaultRow.vue` — individual vault with items
@@ -33,6 +34,7 @@ Storage in Project Gorgon is NPC-based — players unlock vault slots by gaining
 ### Area Cards (VaultAreaCard)
 
 Each area card shows:
+
 - Area name and vault count
 - Total stored items in that area
 - Capacity bar (used / unlocked slots) with color progression: green → yellow → red
@@ -40,6 +42,7 @@ Each area card shows:
 ### Vault Detail (VaultRow)
 
 Clicking an area card expands to show individual vaults:
+
 - NPC name (via `NpcInline` with full tooltip) or vault display name
 - Requirement description (if any)
 - Favor tier badge (for NPC-gated vaults)
@@ -48,9 +51,7 @@ Clicking an area card expands to show individual vaults:
 
 ## Vault Key Resolution
 
-The critical mapping problem: `ProcessAddToStorageVault(14804, ...)` log lines contain a game **entity ID** that does NOT match `storagevaults.json` `ID` fields.
-
-**Solution:** The parser uses `current_interaction.npc_name` — set by the `ProcessVendorScreen` event that always fires before storage operations — to get the CDN-compatible vault key (e.g., `"NPC_Joe"`). This `vault_key` is added to both `StorageDeposit` and `StorageWithdrawal` events at parse time.
+The `*_items_*.json` report carries a `storage_vault` field per stored item; the report import writes it straight into `game_state_storage.vault_key`. No log parsing is involved — the retired item parser used to derive the key from `ProcessVendorScreen` context, which no longer exists.
 
 ## Vault Capacity Models
 
@@ -66,12 +67,14 @@ Vaults use different systems for determining available slots:
 ### Capacity Calculation
 
 **`getVaultMaxPossibleSlots(vault)`** — theoretical maximum if player had max favor:
+
 1. `num_slots` (skips 0 — NPC vaults have `num_slots: 0` in CDN)
 2. `slot_attribute` → falls back to `num_slots_script_atomic_max`
 3. `levels` → highest slot count from any favor tier
 4. `num_slots_script_atomic_max`
 
 **`getVaultUnlockedSlots(vault)`** — currently unlocked based on player state:
+
 1. `num_slots` (static, skips 0)
 2. `slot_attribute` → current attribute value from `attributesByName`
 3. `levels` → player's favor tier for the NPC via `vault.key`, finds highest qualifying tier using `FAVOR_TIER_ORDER`
@@ -83,25 +86,19 @@ Vaults use different systems for determining available slots:
 
 ### Live Events
 
-```
-Player.log → LogWatcher → PlayerEventParser (adds vault_key)
-                                    ↓
-                          DataIngestCoordinator
-                               ↓              ↓
-                    GameStateManager     accumulate into batch
-                    (UPSERT/DELETE)
-                           ↓
-               flush → emit("player-events-batch")
-                      + emit("game-state-updated", ["storage"])
-                           ↓
-                    gameStateStore.refreshDomain("storage")
-                           ↓
-                    VaultDatabaseTab (reactive update)
+```text
+Character report → character_commands import → game_state_storage (snapshot replace, vault_key)
+                                                              ↓
+                                              emit("game-state-updated", ["storage"])
+                                                              ↓
+                                              gameStateStore.refreshDomain("storage")
+                                                              ↓
+                                              VaultDatabaseTab (reactive update)
 ```
 
 ### Report Seeding
 
-```
+```text
 Export Storage as JSON → character_snapshot_items (DB)
                         ↓
             seed_game_state_from_snapshot()
@@ -109,7 +106,7 @@ Export Storage as JSON → character_snapshot_items (DB)
             DELETE all storage for character → INSERT from Storage report
 ```
 
-Live log events gradually replace report data with real instance IDs as the player interacts with storage.
+Each Character report import replaces the slice; between imports, chat-gain stack correction may adjust quantities on leftover log-era placeholder rows.
 
 ## Database Schema
 
@@ -135,15 +132,17 @@ CREATE TABLE game_state_storage (
 
 ## Storage Persistence
 
-Unlike inventory (which clears on login), storage persists across sessions. The `GameStateManager` does NOT clear storage on `CharacterLogin`. Items are only removed by explicit `StorageWithdrawal` events or full report replacement.
+Unlike inventory (which clears its obsolete log-era rows on login), storage persists across sessions. The `GameStateManager` never clears storage — neither on live login (`set_active_character`) nor on session adopt (`apply_catch_up_login`). The slice changes only when a Character report import fully replaces it (DELETE all + re-INSERT `source = 'snapshot'` rows), plus stack-quantity corrections on leftover log-era rows from chat gains.
 
 ## Event Handling
 
-| PlayerEvent | DB Operation | Notes |
-|-------------|-------------|-------|
-| `StorageDeposit` | UPSERT by (character, server, vault_key, instance_id) | Updates item_name, stack_size, slot_index |
-| `StorageWithdrawal` | DELETE by (character, server, vault_key, instance_id) | Removes item from storage |
-| `CharacterLogin` | *(no-op for storage)* | Storage persists across sessions |
+There are no live storage events: `StorageDeposit`, `StorageWithdrawal`, and `CharacterLogin` name no producers anywhere in the tree (the Player.log pipeline is retired). The writers are:
+
+| Writer | DB Operation | Notes |
+|--------|-------------|-------|
+| Character report import (`seed_game_state_from_snapshot`, `import_inventory_report_internal`) | DELETE all for (character, server) + INSERT per vault item | Full-slice replace; `source = 'snapshot'`, synthetic negative `instance_id`s |
+| Chat-gain stack correction (`correct_stack_in_table`) | UPDATE `stack_size` on matching 1-stacks | Only targets leftover `source = 'log'` rows |
+| Live login / session adopt | *(no-op for storage)* | Storage persists across sessions |
 
 ## Data Sources
 

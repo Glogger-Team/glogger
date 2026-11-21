@@ -253,7 +253,7 @@ fn categorize_section(header: &str) -> String {
 /// Extract label and italic value from a line like `\tLabel  <i>VALUE</i>`.
 fn extract_italic_stat(line: &str) -> Option<(String, String)> {
     let i_start = line.find("<i>")?;
-    let i_end = line.find("</i>")?;
+    let i_end = line[i_start..].find("</i>").map(|p| i_start + p)?;
     let value = line[i_start + 3..i_end].to_string();
     let label = line[..i_start]
         .trim()
@@ -430,5 +430,19 @@ You have used <b>71 days</b> of VIP from a Steam subscription.
         assert_eq!(clean_stat_value("61,453"), "61453");
         assert_eq!(clean_stat_value("40 days 13 hours"), "40 days 13 hours");
         assert_eq!(clean_stat_value(""), "");
+    }
+    #[test]
+    fn test_extract_italic_stat_rejects_stray_close_tag() {
+        // A `</i>` before any `<i>` (mismatched book markup) must not panic
+        // on a reversed slice range: the close tag is searched from the open
+        // tag onward.
+        assert_eq!(
+            extract_italic_stat("Stray </i> text <i>YES</i>").map(|(_, v)| v),
+            Some("YES".to_string())
+        );
+        assert_eq!(
+            extract_italic_stat("Died?  <i>YES (822)</i>").map(|(_, v)| v),
+            Some("YES (822)".to_string())
+        );
     }
 }

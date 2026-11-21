@@ -8,7 +8,7 @@ entries as fixtures land and recorders ship.
 
 - **Recorder:** `record_enemy_kill` writes every FATALITY to `enemy_kills`
   (rescan-safe on character/server/entity/killed_at), hooked in the shared
-  dispatch arm — live + scan + replay. `enemy-killed` event still emitted.
+  dispatch arm — live + scan (manual `replay_chat_log` is emit-only, never writes). `enemy-killed` event still emitted.
 - **Loot link:** `link_kill_loot` runs in `insert_json_receipt_guarded` (both
   twin orders converge there): latest kill for the receipt entity within
   30 min → `enemy_kill_loot` row, rescan-safe. Unlooted kills link nothing

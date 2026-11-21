@@ -29,6 +29,11 @@ pub enum LogEvent {
         character_name: String,
         timestamp: NaiveDateTime,
         area: Option<String>,
+        /// Server from the login line itself. Chat markers declare it
+        /// (`Logged In As X. Server Y`); Player.log lines carry no server,
+        /// so player-sourced logins set this to None and handlers must fall
+        /// back to ambient identity — never persist a guessed server.
+        server_name: Option<String>,
     },
 
     /// Character logged out
@@ -239,6 +244,7 @@ fn match_character_login(line: &str, watcher: &mut PlayerLogWatcher) -> Option<L
             character_name,
             timestamp: utc,
             area: None,
+            server_name: None,
         });
     }
 
@@ -254,6 +260,7 @@ fn match_character_login(line: &str, watcher: &mut PlayerLogWatcher) -> Option<L
                 character_name,
                 timestamp: chrono::Utc::now().naive_utc(),
                 area: None,
+                server_name: None,
             });
         }
     None
@@ -486,7 +493,7 @@ impl ChatLogWatcher {
             self.current_session_start = Some(chrono::Utc::now().naive_utc());
 
             events.push(LogEvent::ServerDetected {
-                server_name: info.server_name,
+                server_name: info.server_name.clone(),
                 character_name: info.character_name.clone(),
                 timezone_offset_seconds: info.timezone_offset_seconds,
             });
@@ -495,6 +502,7 @@ impl ChatLogWatcher {
                 character_name: info.character_name,
                 timestamp: chrono::Utc::now().naive_utc(),
                 area: None,
+                server_name: Some(info.server_name),
             });
 
             return events;
@@ -737,9 +745,11 @@ mod tests {
             panic!("Expected ServerDetected event, got {:?}", events[0]);
         }
 
-        // Second event: CharacterLogin
-        if let LogEvent::CharacterLogin { character_name, .. } = &events[1] {
+        // Second event: CharacterLogin carries the marker's own server so the
+        // handler never persists ambient (possibly stale) active_server.
+        if let LogEvent::CharacterLogin { character_name, server_name, .. } = &events[1] {
             assert_eq!(character_name, "TestCharacter");
+            assert_eq!(server_name.as_deref(), Some("Dreva"));
         } else {
             panic!("Expected CharacterLogin event, got {:?}", events[1]);
         }

@@ -319,12 +319,15 @@ pub fn parse_chat_lines_tagged(text: &str) -> Vec<(ChatMessage, Option<ChatSessi
         // a `[JSON:*]` body (pigeon text, book content) can mention the
         // marker while the player is still logged in, and player chat can
         // quote it. JSON lines always fall through to ordinary parsing.
-        if line.contains("******** Logged Out")
-            && parse_chat_line(line).is_none_or(|m| m.json_type.is_none() && m.is_system)
-        {
-            if let Some(msg) = parse_chat_line(line) {
-                tagged.push((msg, session.clone()));
-            }
+        // Match the marker only inside the content of a successfully parsed
+        // system record — never anywhere in a physical line, and never when
+        // parse returns None (e.g. an untimestamped Guild continuation).
+        if let Some(msg) = parse_chat_line(line).filter(|m| {
+            m.is_system
+                && m.json_type.is_none()
+                && m.message.contains("******** Logged Out")
+        }) {
+            tagged.push((msg, session.clone()));
             session = None;
             continue;
         }
@@ -1066,4 +1069,24 @@ Dying together\n\
             );
         }
     }
+    #[test]
+    fn test_tagged_untimestamped_continuation_marker_does_not_close_session() {
+        let text = "26-03-09 05:01:46\t**************************************** Logged In As Zenith. Server Dreva. Timezone Offset -07:00:00.\n\
+                     26-03-09 05:02:00\t[Guild] Bob: hello\n\
+                     still talking, ******** Logged Out\n\
+                     26-03-09 05:03:00\t[Status] Fluorite x5 added to inventory.";
+        let tagged = parse_chat_lines_tagged(text);
+        let plain = parse_chat_lines(text);
+
+        assert_eq!(tagged.len(), plain.len());
+        assert!(tagged[1]
+            .0
+            .message
+            .contains("still talking, ******** Logged Out"));
+        assert_eq!(tagged[2].1, Some(ChatSessionTag {
+            character_name: "Zenith".to_string(),
+            server_name: "Dreva".to_string(),
+        }));
+    }
+
 }

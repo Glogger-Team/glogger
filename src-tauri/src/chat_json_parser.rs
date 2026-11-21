@@ -525,4 +525,187 @@ mod tests {
         assert_eq!(title, "Eveline Rastin");
         assert!(body.contains("Ushug"));
     }
+
+
+    fn json_message(json_type: &str, body: &str) -> ChatMessage {
+        let line = format!("26-11-17 08:52:00\t[JSON:{json_type}] {body}\n");
+        let mut messages = parse_chat_lines(&line);
+        assert_eq!(messages.len(), 1);
+        messages.remove(0)
+    }
+
+    #[test]
+    fn known_types_reject_invalid_json_shapes() {
+        for kind in [
+            "AddItem", "EarnedXP", "Book", "DeltaFavor", "RecipeUsage",
+            "Pigeon", "ParagonXP", "EntityReport",
+        ] {
+            for body in ["not-json", "null", "[]", "true", "42", "{}", "{\"Title\":"] {
+                assert!(
+                    parse_json_message(&json_message(kind, body)).is_none(),
+                    "accepted {kind}: {body}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn text_events_preserve_escaped_content_and_timestamp() {
+        let title = "Éveline's report: [JSON:Book]";
+        let body = "First line\n\n<i>You received:</i>\t\"Salad\" \\ 雪";
+        let payload = serde_json::json!({"Title": title, "Body": body}).to_string();
+        for kind in ["Book", "Pigeon", "EntityReport"] {
+            let event = parse_json_message(&json_message(kind, &payload)).unwrap();
+            let (timestamp, actual_title, actual_body) = match event {
+                ChatJsonEvent::Book { timestamp, title, body }
+                | ChatJsonEvent::PigeonReceived { timestamp, title, body }
+                | ChatJsonEvent::EntityReport { timestamp, title, body } => (timestamp, title, body),
+                other => panic!("expected text event for {kind}, got {other:?}"),
+            };
+            assert_eq!(timestamp, "2026-11-17 08:52:00");
+            assert_eq!(actual_title, title);
+            assert_eq!(actual_body, body);
+        }
+    }
+
+    #[test]
+    fn text_events_reject_empty_null_and_wrong_type_fields() {
+        for kind in ["Book", "Pigeon", "EntityReport"] {
+            for field in ["Title", "Body"] {
+                for invalid in [serde_json::json!(""), serde_json::Value::Null, serde_json::json!(7)] {
+                    let mut payload = serde_json::json!({"Title": "Report", "Body": "content"});
+                    payload[field] = invalid;
+                    assert!(
+                        parse_json_message(&json_message(kind, &payload.to_string())).is_none(),
+                        "accepted {kind}: {payload}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn xp_events_accept_explicit_zero_levels_and_u32_boundaries() {
+        for kind in ["EarnedXP", "ParagonXP"] {
+            for (xp, old, new) in [(1, 0, 0), (u32::MAX, u32::MAX - 1, u32::MAX)] {
+                let payload = serde_json::json!({
+                    "Skill": "Sword", "XP": xp, "OldLevel": old, "NewLevel": new,
+                    "FutureField": {"ignored": true}
+                });
+                let event = parse_json_message(&json_message(kind, &payload.to_string())).unwrap();
+                let (timestamp, skill, actual_xp, old_level, new_level) = match event {
+                    ChatJsonEvent::Xp { timestamp, skill, xp, old_level, new_level }
+                    | ChatJsonEvent::ParagonXp { timestamp, skill, xp, old_level, new_level } =>
+                        (timestamp, skill, xp, old_level, new_level),
+                    other => panic!("expected XP for {kind}, got {other:?}"),
+                };
+                assert_eq!(timestamp, "2026-11-17 08:52:00");
+                assert_eq!(skill, "Sword");
+                assert_eq!((actual_xp, old_level, new_level), (xp, old, new));
+            }
+        }
+    }
+
+    #[test]
+    fn xp_events_reject_null_missing_and_invalid_numeric_fields() {
+        for kind in ["EarnedXP", "ParagonXP"] {
+            for field in ["XP", "OldLevel", "NewLevel"] {
+                for invalid in [
+                    serde_json::Value::Null, serde_json::json!(-1),
+                    serde_json::json!(4294967296u64), serde_json::json!(1.5),
+                    serde_json::json!("1"),
+                ] {
+                    let mut payload = serde_json::json!({
+                        "Skill": "Sword", "XP": 53, "OldLevel": 4, "NewLevel": 5
+                    });
+                    payload[field] = invalid;
+                    assert!(
+                        parse_json_message(&json_message(kind, &payload.to_string())).is_none(),
+                        "accepted {kind}: {payload}"
+                    );
+                }
+                let mut payload = serde_json::json!({
+                    "Skill": "Sword", "XP": 53, "OldLevel": 4, "NewLevel": 5
+                });
+                payload.as_object_mut().unwrap().remove(field);
+                assert!(parse_json_message(&json_message(kind, &payload.to_string())).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn add_item_optional_source_does_not_change_receipt_quantity() {
+        for source in [serde_json::json!({}), serde_json::json!({"FromName": null, "FromEntityId": null})] {
+            let mut payload = serde_json::json!({"Name": "Salad", "Stack": u32::MAX, "Flags": []});
+            payload.as_object_mut().unwrap().extend(source.as_object().unwrap().clone());
+            match parse_json_message(&json_message("AddItem", &payload.to_string())) {
+                Some(ChatJsonEvent::ItemReceipt { timestamp, item_name, quantity, from_name, from_entity_id }) => {
+                    assert_eq!(timestamp, "2026-11-17 08:52:00");
+                    assert_eq!(item_name, "Salad");
+                    assert_eq!(quantity, u32::MAX);
+                    assert_eq!((from_name, from_entity_id), (None, None));
+                }
+                other => panic!("expected receipt, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn add_item_and_recipe_reject_invalid_unsigned_values() {
+        for (kind, template, fields) in [
+            ("AddItem", serde_json::json!({"Name": "Salad", "Stack": 1}), vec!["Stack"]),
+            ("RecipeUsage", serde_json::json!({"RecipeName": "Recall", "RecipeId": 9, "Completions": 1}), vec!["RecipeId", "Completions"]),
+        ] {
+            for field in fields {
+                for invalid in [serde_json::Value::Null, serde_json::json!(-1), serde_json::json!(4294967296u64), serde_json::json!(1.5)] {
+                    let mut payload = template.clone();
+                    payload[field] = invalid;
+                    assert!(
+                        parse_json_message(&json_message(kind, &payload.to_string())).is_none(),
+                        "accepted {kind}: {payload}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn favor_rejects_negative_zero_and_preserves_small_signed_deltas() {
+        assert!(parse_json_message(&json_message("DeltaFavor", r#"{"Npc":"NPC_Elune","Delta":-0.0}"#)).is_none());
+        for delta in [0.000001, -0.000001] {
+            let payload = serde_json::json!({"Npc": "NPC_Elune", "Delta": delta, "Extra": true});
+            match parse_json_message(&json_message("DeltaFavor", &payload.to_string())) {
+                Some(ChatJsonEvent::FavorDelta { timestamp, npc, delta: actual }) => {
+                    assert_eq!(timestamp, "2026-11-17 08:52:00");
+                    assert_eq!(npc, "NPC_Elune");
+                    assert!((actual - delta).abs() < 1e-15);
+                }
+                other => panic!("expected favor, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn missing_json_metadata_is_not_an_event() {
+        let original = json_message("Book", r#"{"Title":"Report","Body":"content"}"#);
+        let mut no_type = original.clone();
+        no_type.json_type = None;
+        assert!(parse_json_message(&no_type).is_none());
+        let mut no_body = original;
+        no_body.json_body = None;
+        assert!(parse_json_message(&no_body).is_none());
+    }
+
+    #[test]
+    fn malformed_json_does_not_consume_the_next_valid_message() {
+        let events = parse_all(concat!(
+            "26-11-17 08:52:00\t[JSON:Book] {broken\n",
+            "26-11-17 08:52:01\t[JSON:FutureType] not-json\n",
+            "26-11-17 08:52:02\t[JSON:AddItem] {\"Name\":\"Salad\",\"Stack\":2}\n",
+        ));
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], ChatJsonEvent::Unknown { json_type } if json_type == "FutureType"));
+        assert!(matches!(&events[1], ChatJsonEvent::ItemReceipt { item_name, quantity: 2, .. } if item_name == "Salad"));
+    }
+
 }

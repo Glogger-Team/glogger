@@ -47,8 +47,16 @@ STOPWORDS = {
     "default",
     "result",
     "error",
+    # String-literal prose, not a symbol: the 'Unknown' server fallback
+    # appears in docs as ordinary English (PR #202 H1 fix removed two such
+    # lines while the fallback still lives in tree).
+    "unknown",
+    # VIP JSON wire-field names (`FromName`/`FromEntityId`) occur in .rs
+    # only inside JSON string literals and comments, and in docs only inside
+    # JSON examples (the Rust fields are snake_case) — never code symbols.
+    "fromname",
+    "fromentityid",
 }
-
 MOD_TESTS_RE = re.compile(r"^\s*(?:pub\s+)?mod\s+\w*tests?\b")
 
 
@@ -120,11 +128,13 @@ def test_module_lines(text: str) -> set[int]:
     return out
 
 
-def parse_minus_lines(diff_text: str, old_text: str | None) -> list[str]:
-    """Return removed source lines (without leading '-') with test-module
-    lines filtered out using old-file line numbers."""
+def parse_minus_lines(diff_text: str, old_text: str | None) -> list[tuple[int, str]]:
+    """Return (old-file line number, removed source line) pairs, with
+    test-module lines filtered out using old-file line numbers. Numbers let
+    the caller lex the complete old source (correct block-comment state)
+    and select only the removed lines."""
     skip = test_module_lines(old_text) if old_text is not None else set()
-    filtered: list[str] = []
+    filtered: list[tuple[int, str]] = []
     old_lineno = 0
     in_hunk = False
     for raw in diff_text.splitlines():
@@ -142,7 +152,7 @@ def parse_minus_lines(diff_text: str, old_text: str | None) -> list[str]:
             continue
         if raw.startswith("-"):
             if not (old_lineno and old_lineno in skip):
-                filtered.append(raw[1:])
+                filtered.append((old_lineno, raw[1:]))
             old_lineno += 1
         elif raw.startswith("+"):
             pass
@@ -151,16 +161,95 @@ def parse_minus_lines(diff_text: str, old_text: str | None) -> list[str]:
     return filtered
 
 
+def lex_source(text: str) -> list[str]:
+    """Code-only view of every line of a complete source file, threading
+    block-comment and raw-string state across lines in file order."""
+    out: list[str] = []
+    in_block = False
+    raw_closer: str | None = None
+    for line in text.splitlines():
+        code, in_block, raw_closer = code_only(line, in_block, raw_closer)
+        out.append(code)
+    return out
+
+
+_RAW_STR_RE = re.compile(r"r(#+)?\"")
+_CHAR_LIT_RE = re.compile(r"'(?:[^'\\]|\\.)'")
+
+
+def code_only(
+    line: str, in_block: bool, raw_closer: str | None
+) -> tuple[str, bool, str | None]:
+    """Blank Rust string/char literals and comments; lifetimes are kept.
+
+    Only real code tokens reach the identifier regexes: JSON wire-field
+    prose inside string literals (`"FromEntityId"`) and `//` comments never
+    fires the gate (PR #202 full-review round — the hit came from a removed
+    prose comment, not a symbol). String-literal extraction still runs on
+    the original line.
+    """
+    out: list[str] = []
+    i, n = 0, len(line)
+    while i < n:
+        if raw_closer is not None:
+            end = line.find(raw_closer, i)
+            if end == -1:
+                return "".join(out), in_block, raw_closer
+            i = end + len(raw_closer)
+            raw_closer = None
+            continue
+        if in_block:
+            end = line.find("*/", i)
+            if end == -1:
+                return "".join(out), True, None
+            i = end + 2
+            in_block = False
+            continue
+        if line.startswith("//", i):
+            break
+        if line.startswith("/*", i):
+            in_block = True
+            i += 2
+            continue
+        m = _STR_RE.match(line, i)
+        if m:
+            i = m.end()
+            continue
+        m = _RAW_STR_RE.match(line, i)
+        if m and (i == 0 or not (line[i - 1].isalnum() or line[i - 1] == "_")):
+            hashes = m.group(1) or ""
+            raw_closer = '"' + "#" * len(hashes)
+            i = m.end()
+            continue
+        m = _CHAR_LIT_RE.match(line, i)
+        if m:
+            i = m.end()
+            continue
+        out.append(line[i])
+        i += 1
+    return "".join(out), in_block, raw_closer
+
+
 PAIR_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]*)::([A-Z][A-Za-z0-9_]*)\b")
 
 
 def extract_identifiers(
-    removed_lines: list[str],
+    numbered: list[tuple[int, str]],
+    cleaned_full: list[str],
 ) -> tuple[set[str], set[str]]:
-    """Candidate doc-orphan names + `Enum::Variant` pairs from removed lines."""
+    """Candidate doc-orphan names + `Enum::Variant` pairs from removed lines.
+
+    `numbered` is (old-file line number, removed text) pairs;
+    `cleaned_full` is the code-only view of the COMPLETE old source
+    (`lex_source`), so block-comment/raw-string state at each removed line
+    reflects the real file — lexing disconnected removals alone would
+    misread state when delimiters sit on unchanged lines.
+    """
     idents: set[str] = set()
+    removed_lines = [text for _, text in numbered]
+    cleaned = [cleaned_full[n - 1] for n, _ in numbered if 1 <= n <= len(cleaned_full)]
     # fn/struct/enum definition names
-    for line in removed_lines:
+    for line in cleaned:
         for m in re.finditer(
             r"\b(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?"
             r"(?:fn|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)",
@@ -171,7 +260,7 @@ def extract_identifiers(
                 idents.add(name)
     # CamelCase tokens (enum-variant-ish, multi-word). Single-word
     # variants are covered by string-literal PascalCase when quoted.
-    for line in removed_lines:
+    for line in cleaned:
         for m in re.finditer(r"\b[A-Z][a-z]+[A-Z][A-Za-z0-9]*\b", line):
             name = m.group(0)
             if len(name) >= 4 and name.lower() not in STOPWORDS:
@@ -180,10 +269,11 @@ def extract_identifiers(
     # `Enum::Variant` uses on removed arms (a removed match arm is not a
     # removed variant while the pair still occurs in the tree).
     pairs: set[str] = set()
-    for line in removed_lines:
+    for line in cleaned:
         for m in PAIR_RE.finditer(line):
             pairs.add(m.group(0))
-    # String literals: kebab-case or PascalCase
+    # String literals: kebab-case or PascalCase (original lines — the
+    # code-only view blanks these).
     for line in removed_lines:
         for m in re.finditer(r'"([^"]*)"', line):
             s = m.group(1)
@@ -278,7 +368,9 @@ def main() -> int:
             except subprocess.CalledProcessError:
                 diff = ""
             old = old_content_for(path, "HEAD")
-            names, pairs = extract_identifiers(parse_minus_lines(diff, old))
+            numbered = parse_minus_lines(diff, old)
+            cleaned_full = lex_source(old) if old is not None else []
+            names, pairs = extract_identifiers(numbered, cleaned_full)
             idents |= names
             removed_pairs |= pairs
 
@@ -296,7 +388,9 @@ def main() -> int:
             except subprocess.CalledProcessError:
                 diff = ""
             old = old_content_for(path, base)
-            names, pairs = extract_identifiers(parse_minus_lines(diff, old))
+            numbered = parse_minus_lines(diff, old)
+            cleaned_full = lex_source(old) if old is not None else []
+            names, pairs = extract_identifiers(numbered, cleaned_full)
             idents |= names
             removed_pairs |= pairs
 
@@ -352,5 +446,61 @@ def main() -> int:
     return 1 if findings else 0
 
 
+def self_test() -> int:
+    """Adversarial fixtures for the code-only lexer (the D-minor lessons:
+    disconnected removals misread state; lifetimes must survive; gates ship
+    with probes, version-sync precedent)."""
+    failures = 0
+
+    def check(name: str, cond: bool) -> None:
+        nonlocal failures
+        print(("PASS " if cond else "FAIL ") + name)
+        if not cond:
+            failures += 1
+
+    cases = [
+        ("    // Presence of FromEntityId locates the twin", "    "),
+        ('    x = "a // b"; // FromName here', "    x = ; "),
+        ("    /* FromEntityId */ let a = 1;", "     let a = 1;"),
+        (
+            "    fn f<'a>(x: &'a str) -> &'a str {",
+            "    fn f<'a>(x: &'a str) -> &'a str {",
+        ),
+        ("    let c = 'a';", "    let c = ;"),
+        ('    let s = r#"{"FromName": 1}"#;', "    let s = ;"),
+        ('    let u = "http://x";', "    let u = ;"),
+        ("    /* open block", "    "),
+        ("    still FromEntityId comment", ""),
+        ("    end */ let B = 1;", " let B = 1;"),
+    ]
+    in_block, raw = False, None
+    for src, want in cases:
+        out, in_block, raw = code_only(src, in_block, raw)
+        check(f"strip {src.strip()[:40]!r}", out == want)
+    check("block state closed", (in_block, raw) == (False, None))
+
+    # Removal inside a block comment (delimiters on unchanged lines) stays
+    # hidden; a def after the closed block stays visible.
+    old = "/* heading\nstill comment\ndef FakeThing():\n    pass\n*/\nreal_code = 1\n"
+    full = lex_source(old)
+    check("comment-hidden line blank", full[2] == "")
+    check("post-block line kept", full[5] == "real_code = 1")
+    idents, _ = extract_identifiers(
+        [(3, "def FakeThing():"), (6, "real_code = 1")], full
+    )
+    check("comment-hidden def suppressed", "FakeThing" not in idents)
+
+    old2 = "/* c */\npub struct VisibleWidget {\n}\n"
+    idents2, _ = extract_identifiers(
+        [(2, "pub struct VisibleWidget {")], lex_source(old2)
+    )
+    check("post-block def fires", "VisibleWidget" in idents2)
+    idents3, _ = extract_identifiers([(1, "    // FromEntityId retired")], ["    "])
+    check("prose comment silent", not idents3)
+    return 1 if failures else 0
+
+
 if __name__ == "__main__":
+    if "--self-test" in sys.argv:
+        sys.exit(self_test())
     sys.exit(main())
