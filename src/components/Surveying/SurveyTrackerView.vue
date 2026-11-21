@@ -202,9 +202,9 @@
 
         <!-- Second row: breakdown by survey type -->
         <LootByTypePanel :detail="selectedDetail" />
-        <!-- survey-bonus-dark: no chat-carried bonus signal since Player.log removal. -->
+        <!-- survey-bonus-dark: bonus stamps at claim time for chained Basic uses; unchained/single uses show unavailable. -->
         <p v-if="!sessionHasBonus" class="text-text-dim text-xs italic px-1">
-          Speed bonus unavailable on chat-only data.
+          Speed bonus applies to back-to-back Basic uses only.
         </p>
 
       </template>
@@ -490,9 +490,10 @@ watch(
   { immediate: true },
 )
 
-// survey-bonus-dark: chat carries no speed-bonus signal since the Player.log
-// removal, so loot_summary bonus splits read zero on new data. Historic rows
-// keep their stamps (history stands) — show unavailable only when absent.
+// survey-bonus-dark: $.is_speed_bonus stamps at claim time for chained Basic
+// uses (prior Basic use, same identity, short window); unchained/single uses
+// read zero. Historic rows keep their stamps (history stands) — show
+// unavailable only when absent.
 const sessionHasBonus = computed(() =>
   selectedDetail.value?.loot_summary.some((r) => r.bonus_qty > 0) ?? false,
 )
