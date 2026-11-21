@@ -202,6 +202,10 @@
 
         <!-- Second row: breakdown by survey type -->
         <LootByTypePanel :detail="selectedDetail" />
+        <!-- survey-bonus-dark: no chat-carried bonus signal since Player.log removal. -->
+        <p v-if="!sessionHasBonus" class="text-text-dim text-xs italic px-1">
+          Speed bonus unavailable on chat-only data.
+        </p>
 
       </template>
     </div>
@@ -484,6 +488,13 @@ watch(
     }
   },
   { immediate: true },
+)
+
+// survey-bonus-dark: chat carries no speed-bonus signal since the Player.log
+// removal, so loot_summary bonus splits read zero on new data. Historic rows
+// keep their stamps (history stands) — show unavailable only when absent.
+const sessionHasBonus = computed(() =>
+  selectedDetail.value?.loot_summary.some((r) => r.bonus_qty > 0) ?? false,
 )
 
 // ── Reactive economics for the right panel ──────────────────────────

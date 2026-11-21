@@ -122,6 +122,13 @@ const knownIssues: KnownIssue[] = [
       "Loot drops, extracts, item deltas, vendor gold, favor, skill XP, and log backfill were read from Player.log lines the current game client no longer writes, so no new farming data accumulates. Kills, deaths, XP, and Combat Wisdom still flow from Chat.log into the Combat view. Farming → Session History, Database, and Sources remain as historic readers.",
   },
   {
+    id: "milking-dark",
+    severity: "bug",
+    title: "Milking timers are hidden (stale cooldowns)",
+    description:
+      "NPC cow cooldowns were tracked from Player.log screens the current game client no longer writes, so stored timers can go stale; the Timers tab is hidden until the chat-backed writers are rewired. Players Milked, Milked By, and Self Milked counts still update from Chat.log.",
+  },
+  {
     id: "poems-dark",
     severity: "bug",
     title: "New poem recitals are no longer recorded",
@@ -186,6 +193,13 @@ const limitations: KnownIssue[] = [
     title: "Stall Tracker inventory may show incomplete or negative quantities",
     description:
       'Inventory is reconstructed from the shop log event history. If the in-game log was truncated before an item was added (older entries scroll out of range), the baseline is lost and the quantity can briefly go negative until a fresh "added" event resets the tier stack. Count your stock in Manual stock entry to set a baseline, or use Import to backfill from an exported book file. Rebuild from log removes all manual counts for the current character and cannot restore missing events — use it only when the saved log has enough history to reconstruct stock, or recount affected items afterward.',
+  },
+  {
+    id: "survey-bonus-dark",
+    severity: "limitation",
+    title: "Speed-bonus split unavailable on chat-only data",
+    description:
+      "The bonus flag was stamped from Player.log lines the current game client no longer writes, and chat carries no equivalent signal, so the session-detail split shows as unavailable when a session has no bonus rows. The Analytics tab (Overview/Zone/Type/CrossZone) still renders measured zeros and is out of scope for this slice; historic bonus rows keep their stamps.",
   },
 ];
 
