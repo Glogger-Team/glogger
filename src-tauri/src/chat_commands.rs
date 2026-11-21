@@ -604,9 +604,11 @@ fn run_scan_dispatch(
                     }
                 }
         }
-        // Forward the same structured events the live drain emits so a scan
-        // refreshes open widgets identically (death/rez feeds, chat-status
-        // listeners, watch toasts).
+        // Forward the fresh structured events the dispatch kept (same names
+        // as the live drain) so a scan refreshes open widgets identically
+        // (death/rez feeds, chat-status listeners, watch toasts). Replayed
+        // lines stay silent here — their persists were no-ops, so the
+        // dispatch withheld the events instead of double-feeding the UI.
         if let Some(app) = app {
             if let Some(ev) = outcome.chat_status_event {
                 app.emit("chat-status-event", &ev).ok();

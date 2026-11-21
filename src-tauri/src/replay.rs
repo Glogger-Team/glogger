@@ -11,7 +11,7 @@ use crate::cdn_commands::GameDataState;
 use crate::chat_parser::{
     is_timestamped_line, parse_chat_line, parse_chat_login_line, ChatMessage,
 };
-use crate::chat_status_parser::parse_status_message;
+use crate::chat_status_parser::{parse_status_message, ChatStatusEvent};
 use crate::db::DbPool;
 use crate::game_state::GameStateManager;
 use crate::parsers::chat_local_to_utc;
@@ -66,6 +66,17 @@ pub struct ReplayProgress {
 pub struct ReplayResult {
     pub chat_messages_processed: usize,
     pub chat_status_events_emitted: usize,
+}
+
+/// Envelope tagging replay-originated status events so the live session
+/// feed skips accumulation: existing listeners switch on `payload.kind`,
+/// which an envelope lacks (no `kind` key), so replayed XP/wisdom never
+/// feeds live combat/session totals. The preview keeps working off
+/// `replay-progress` + `ReplayResult` counts, not this payload.
+#[derive(Debug, Clone, serde::Serialize)]
+struct ReplayChatStatusEnvelope<'a> {
+    is_replay: bool,
+    event: &'a ChatStatusEvent,
 }
 
 /// Parse Chat.log into timestamped events.
@@ -252,8 +263,16 @@ fn run_replay(
             TimedEvent::ChatMessage { msg, .. } => {
                 result.chat_messages_processed += 1;
 
-                // Status channel → ChatStatusParser
+                // Status channel → ChatStatusParser. The preview wraps each
+                // event in the `is_replay` envelope so the live session feed
+                // skips it (existing listeners switch on `payload.kind`,
+                // which the envelope lacks). Emit-only: never writes, never
+                // imports reports — no report path exists here. The shadow
+                // keeps the emit line byte-identical: the event name is
+                // unchanged, only the payload is tagged.
                 if let Some(status_event) = parse_status_message(msg) {
+                    let status_event =
+                        ReplayChatStatusEnvelope { is_replay: true, event: &status_event };
                     app.emit("chat-status-event", &status_event).ok();
                     result.chat_status_events_emitted += 1;
                 }

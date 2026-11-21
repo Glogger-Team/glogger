@@ -253,17 +253,12 @@ pub fn dispatch_chat_message(
     }
 
     if let Some(status_event) = parse_status_message(ctx.msg) {
-        // Combat Wisdom keys on the LOCAL wall clock (live + backfill dedup),
-        // so it bypasses the UTC-stamped generic arm.
-        if let ChatStatusEvent::CombatWisdomEarned { amount, source_name, verb, zone, .. } = &status_event
-            && let Ok(conn) = ctx.db.get_write() {
-                crate::db::combat_wisdom_commands::record_combat_wisdom_earn(
-                    &conn, ctx.local_ts, *amount, source_name.as_deref(), verb, zone.as_deref(),
-                )
-                .ok();
-            }
-        dispatch_status_event(&ctx, &status_event, &mut out, survey_hook, state);
-        out.chat_status_event = Some(status_event);
+        // Gate the frontend event on a fresh persist like the death/kill
+        // arms: a replayed line's write is a no-op, so re-scans stay
+        // silent instead of double-accruing session XP/wisdom.
+        if dispatch_status_event(&ctx, &status_event, &mut out, survey_hook, state) {
+            out.chat_status_event = Some(status_event);
+        }
     }
 
     // VIP JSON logging: `[JSON:Type] {json}` lines twin the English `[Status]`
@@ -395,7 +390,10 @@ fn dispatch_status_event(
     out: &mut DispatchOutcome,
     survey_hook: SurveyHook<'_>,
     state: &mut DispatchState<'_>,
-) {
+) -> bool {
+    // True when the line advanced a persist (or has no persist key and is
+    // live): the caller gates `chat_status_event` on this, so replays and
+    // re-scans stay silent like the death/kill arms.
     match event {
         ChatStatusEvent::ItemGained {
             item_name,
@@ -447,7 +445,12 @@ fn dispatch_status_event(
                     },
                 ) {
                     out.staged_gains.push((item_name.clone(), *quantity));
+                    true
+                } else {
+                    false
                 }
+            } else {
+                false
             }
         }
         ChatStatusEvent::ItemStudied { timestamp, item_name } => {
@@ -461,53 +464,117 @@ fn dispatch_status_event(
                     match crate::db::hoplology_commands::insert_hoplology_study_from_chat(
                         &conn, &id.character, &id.server, &base_name, timestamp,
                     ) {
-                        Ok(Some(_)) => out.domain("hoplology"),
-                        Ok(None) => {}
-                        Err(e) => eprintln!("Failed to persist hoplology study: {e}"),
+                        Ok(Some(_)) => {
+                            out.domain("hoplology");
+                            true
+                        }
+                        Ok(None) => false,
+                        Err(e) => {
+                            eprintln!("Failed to persist hoplology study: {e}");
+                            false
+                        }
                     }
-                }
+                } else {
+                false
+            }
         }
-        ChatStatusEvent::CombatWisdomEarned { .. } => {
-            // Already recorded with the local-ts key before this fn —
-            // nothing to do here (arm exists so the match stays exhaustive).
+        ChatStatusEvent::CombatWisdomEarned { amount, source_name, verb, zone, .. } => {
+            // Recorded here on the LOCAL wall clock (live + backfill dedup),
+            // not the UTC-stamped generic path. `INSERT OR IGNORE` reports
+            // success on a duplicate, so pre-check the dedup key and fail
+            // closed — a replayed line's no-op write stays silent.
+            let Some(name) = source_name.as_deref() else {
+                // Prodigy-level awards name no monster (no row to write):
+                // no persist key, so scan stays silent and live emits.
+                return !ctx.is_scan;
+            };
+            let Ok(conn) = ctx.db.get_write() else {
+                return false;
+            };
+            let existed: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM combat_wisdom_earns WHERE earned_at = ?1 AND source_name = ?2 AND amount = ?3)",
+                    rusqlite::params![ctx.local_ts, name, *amount],
+                    |r| r.get(0),
+                )
+                .unwrap_or(true);
+            if existed {
+                return false;
+            }
+            crate::db::combat_wisdom_commands::record_combat_wisdom_earn(
+                &conn, ctx.local_ts, *amount, Some(name), verb, zone.as_deref(),
+            )
+            .is_ok()
         }
         // Live-only (gated on `state.count_currency`): the accumulator has
         // no per-line memory, so a scan cannot know which of its lines the
         // live drain already counted. Scan paths leave the flag `false`.
         ChatStatusEvent::CoinsLooted { amount, timestamp } => {
-            if state.count_currency
-                && let Some(id) = ctx.identity {
+            if state.count_currency {
+                if let Some(id) = ctx.identity {
                     accrue_currency_delta(ctx.db, &id.character, &id.server, *amount as i64, timestamp);
                 }
+                true
+            } else {
+                false
+            }
         }
         ChatStatusEvent::CouncilsChanged { amount, timestamp } => {
-            if state.count_currency
-                && let Some(id) = ctx.identity {
+            if state.count_currency {
+                if let Some(id) = ctx.identity {
                     accrue_currency_delta(ctx.db, &id.character, &id.server, *amount, timestamp);
                 }
+                true
+            } else {
+                false
+            }
         }
         // Local wall-clock key, like Combat Wisdom and arena: the chat
         // backfill parses raw log lines (local time, no UTC conversion),
         // so the UTC event stamp would never dedup against it.
         ChatStatusEvent::RouletteResult { number, .. } => {
-            if let Ok(conn) = ctx.db.get_write() {
-                crate::db::roulette_commands::record_roulette_result(&conn, ctx.local_ts, *number).ok();
+            let Ok(conn) = ctx.db.get_write() else {
+                return false;
+            };
+            // Same fail-closed pre-check as Combat Wisdom: `INSERT OR
+            // IGNORE` hides duplicates, and out-of-range numbers error.
+            let existed: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM roulette_results WHERE spun_at = ?1 AND number = ?2)",
+                    rusqlite::params![ctx.local_ts, *number],
+                    |r| r.get(0),
+                )
+                .unwrap_or(true);
+            if existed {
+                return false;
             }
+            crate::db::roulette_commands::record_roulette_result(&conn, ctx.local_ts, *number).is_ok()
         }
         ChatStatusEvent::WordOfPowerUsed { word, .. } => {
             if let Ok(conn) = ctx.db.get_write() {
                 match crate::db::words_of_power_commands::delete_words_by_word(&conn, word) {
-                    Ok(0) => {}
-                    Ok(_) => out.domain("words_of_power"),
-                    Err(e) => eprintln!("[chat_status_dispatch] Failed to remove used word of power: {e}"),
+                    Ok(0) => false,
+                    Ok(_) => {
+                        out.domain("words_of_power");
+                        true
+                    }
+                    Err(e) => {
+                        eprintln!("[chat_status_dispatch] Failed to remove used word of power: {e}");
+                        false
+                    }
                 }
+            } else {
+                false
             }
         }
         ChatStatusEvent::MilkedBy { milker, timestamp } => {
             if let Some(id) = ctx.identity
                 && record_player_milk(ctx.db, &id.character, &id.server, milker, "milked_by", timestamp) {
                     out.domain("milking");
-                }
+                    true
+                } else {
+                false
+            }
         }
         ChatStatusEvent::LevelUp { skill, level, xp, timestamp } => {
             if let Some(id) = ctx.identity {
@@ -530,25 +597,44 @@ fn dispatch_status_event(
                                     confirmed_at: timestamp,
                                 },
                             ) {
-                                Ok(true) => out.domain("skills"),
-                                Ok(false) => {}
-                                Err(e) => eprintln!(
-                                    "[chat_status_dispatch] Chat level-up apply failed for {skill} L{level} ({}@{}): {e}",
-                                    id.character, id.server
-                                ),
+                                Ok(true) => {
+                                    out.domain("skills");
+                                    true
+                                }
+                                Ok(false) => false,
+                                Err(e) => {
+                                    eprintln!(
+                                        "[chat_status_dispatch] Chat level-up apply failed for {skill} L{level} ({}@{}): {e}",
+                                        id.character, id.server
+                                    );
+                                    false
+                                }
                             }
+                        } else {
+                            false
                         }
                     }
-                    None => out.unknown_skills.push(skill.clone()),
+                    None => {
+                        out.unknown_skills.push(skill.clone());
+                        false
+                    }
                 }
+            } else {
+                false
             }
         }
         ChatStatusEvent::ReportSaved { file_path, .. } => {
             // Documented exclusion: scan paths must not auto-import (see
             // module docs). Report the path so the caller can log it.
             out.report_saved_paths.push(file_path.clone());
+            // No persist key in the dispatch (import is caller-side and
+            // live-only), so scan stays silent and live emits.
+            !ctx.is_scan
         }
-        _ => {}
+        // XpGained, ProdigyXpGained, TreasureDistance, AnatomyResult: no
+        // persist key, so gate on live like the currency arms — scan stays
+        // silent, live unchanged.
+        _ => !ctx.is_scan,
     }
 }
 
@@ -1987,6 +2073,46 @@ mod tests {
         dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM combat_wisdom_earns", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn rescan_stays_silent_for_chat_status_event() {
+        // Rescan dedup gate: the frontend event fires only when the line's
+        // persist advanced, so a re-scan never double-accrues session XP.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        seed_skill(&gd, "Sword", 7);
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-04-01 05:30:53";
+
+        // Persist-backed arm: fresh live line emits, identical replay is silent.
+        let m = status_msg("Tiny Brain Bug Meat added to inventory.", ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
+        assert!(out.chat_status_event.is_some());
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
+        assert!(out.chat_status_event.is_none());
+
+        // Pure-XP arm (no persist key): live emits, scan stays silent.
+        let x = status_msg("You earned 25 XP in Sword.", ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &x, ts, &mut st);
+        assert!(out.chat_status_event.is_some());
+        let mut st = state_scan(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch_scan(&pool, &gd, Some(&id()), &x, ts, &mut st);
+        assert!(out.chat_status_event.is_none());
+
+        // Wisdom dedups on the local-ts key: replay of the same line is silent.
+        let w = status_msg("You earned 64 Combat Wisdom: Killed the Aktaari Queen", ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &w, ts, &mut st);
+        assert!(out.chat_status_event.is_some());
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &w, ts, &mut st);
+        assert!(out.chat_status_event.is_none());
     }
 
     #[test]
