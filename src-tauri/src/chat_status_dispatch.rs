@@ -480,9 +480,10 @@ fn dispatch_status_event(
         }
         ChatStatusEvent::CombatWisdomEarned { amount, source_name, verb, zone, .. } => {
             // Recorded here on the LOCAL wall clock (live + backfill dedup),
-            // not the UTC-stamped generic path. `INSERT OR IGNORE` reports
-            // success on a duplicate, so pre-check the dedup key and fail
-            // closed — a replayed line's no-op write stays silent.
+            // not the UTC-stamped generic path. `INSERT OR IGNORE` hides
+            // duplicates, so the emit follows `changes()` on the single
+            // held write checkout — a replayed line's 0-row write stays
+            // silent, with no check-then-act race.
             let Some(name) = source_name.as_deref() else {
                 // Prodigy-level awards name no monster (no row to write):
                 // no persist key, so scan stays silent and live emits.
@@ -491,40 +492,46 @@ fn dispatch_status_event(
             let Ok(conn) = ctx.db.get_write() else {
                 return false;
             };
-            let existed: bool = conn
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM combat_wisdom_earns WHERE earned_at = ?1 AND source_name = ?2 AND amount = ?3)",
-                    rusqlite::params![ctx.local_ts, name, *amount],
-                    |r| r.get(0),
-                )
-                .unwrap_or(true);
-            if existed {
-                return false;
-            }
             crate::db::combat_wisdom_commands::record_combat_wisdom_earn(
                 &conn, ctx.local_ts, *amount, Some(name), verb, zone.as_deref(),
             )
-            .is_ok()
+            .unwrap_or_default()
         }
         // Live-only (gated on `state.count_currency`): the accumulator has
         // no per-line memory, so a scan cannot know which of its lines the
         // live drain already counted. Scan paths leave the flag `false`.
         ChatStatusEvent::CoinsLooted { amount, timestamp } => {
             if state.count_currency {
-                if let Some(id) = ctx.identity {
-                    accrue_currency_delta(ctx.db, &id.character, &id.server, *amount as i64, timestamp);
+                if ctx.is_scan {
+                    if let Some(id) = ctx.identity {
+                        accrue_currency_delta(ctx.db, &id.character, &id.server, *amount as i64, timestamp)
+                    } else {
+                        false
+                    }
+                } else {
+                    if let Some(id) = ctx.identity {
+                        accrue_currency_delta(ctx.db, &id.character, &id.server, *amount as i64, timestamp);
+                    }
+                    true
                 }
-                true
             } else {
                 false
             }
         }
         ChatStatusEvent::CouncilsChanged { amount, timestamp } => {
             if state.count_currency {
-                if let Some(id) = ctx.identity {
-                    accrue_currency_delta(ctx.db, &id.character, &id.server, *amount, timestamp);
+                if ctx.is_scan {
+                    if let Some(id) = ctx.identity {
+                        accrue_currency_delta(ctx.db, &id.character, &id.server, *amount, timestamp)
+                    } else {
+                        false
+                    }
+                } else {
+                    if let Some(id) = ctx.identity {
+                        accrue_currency_delta(ctx.db, &id.character, &id.server, *amount, timestamp);
+                    }
+                    true
                 }
-                true
             } else {
                 false
             }
@@ -536,19 +543,14 @@ fn dispatch_status_event(
             let Ok(conn) = ctx.db.get_write() else {
                 return false;
             };
-            // Same fail-closed pre-check as Combat Wisdom: `INSERT OR
-            // IGNORE` hides duplicates, and out-of-range numbers error.
-            let existed: bool = conn
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM roulette_results WHERE spun_at = ?1 AND number = ?2)",
-                    rusqlite::params![ctx.local_ts, *number],
-                    |r| r.get(0),
-                )
-                .unwrap_or(true);
-            if existed {
-                return false;
+            // `INSERT OR IGNORE` hides duplicates, so the emit follows
+            // `changes()` on the single held write checkout — a replayed
+            // line's 0-row write stays silent, with no check-then-act
+            // race. Out-of-range numbers still error out of the helper.
+            match crate::db::roulette_commands::record_roulette_result(&conn, ctx.local_ts, *number) {
+                Ok(()) => conn.changes() == 1,
+                Err(_) => false,
             }
-            crate::db::roulette_commands::record_roulette_result(&conn, ctx.local_ts, *number).is_ok()
         }
         ChatStatusEvent::WordOfPowerUsed { word, .. } => {
             if let Ok(conn) = ctx.db.get_write() {
@@ -1325,21 +1327,26 @@ fn dispatch_json_event(
 
 /// Signed wallet delta with the same guards as the coordinator: no-op
 /// without an export anchor, and only events newer than the anchor count.
-fn accrue_currency_delta(db: &DbPool, character: &str, server: &str, amount: i64, event_ts: &str) {
+/// Returns true only when a row actually accrued.
+fn accrue_currency_delta(db: &DbPool, character: &str, server: &str, amount: i64, event_ts: &str) -> bool {
     if amount == 0 {
-        return;
+        return false;
     }
     if let Ok(conn) = db.get_write() {
-        conn.execute(
-            "UPDATE currency_estimate
+        matches!(
+            conn.execute(
+                "UPDATE currency_estimate
                 SET delta_since = delta_since + ?1, updated_at = datetime('now')
               WHERE character_name = ?2 AND server_name = ?3
                 AND currency_name = 'GOLD'
                 AND anchor_at IS NOT NULL
                 AND ?4 > anchor_at",
-            rusqlite::params![amount, character, server, event_ts],
+                rusqlite::params![amount, character, server, event_ts],
+            ),
+            Ok(1)
         )
-        .ok();
+    } else {
+        false
     }
 }
 
