@@ -192,7 +192,7 @@ use db::game_state_commands::{
     get_game_state_equipment, get_game_state_favor, get_game_state_inventory,
     get_game_state_recipes, get_game_state_skills, get_game_state_storage, get_game_state_vendor,
     get_game_state_world, get_garden_almanac, get_garden_almanac_history, get_gift_log,
-    get_harvest_almanac, get_item_ownership, get_milking_timers, get_player_milking_leaderboard,
+    get_harvest_almanac, get_item_ownership, get_player_milking_leaderboard,
     get_pooping_stats, get_teleportation_binds, get_tracked_skills, remove_last_gift,
     set_manual_vendor_gold, set_mushroom_circles, set_tracked_skills,
 };
@@ -1008,7 +1008,6 @@ pub fn run() {
             get_game_state_vendor,
             set_manual_vendor_gold,
             get_game_state_books,
-            get_milking_timers,
             get_character_report_stats,
             get_computed_stats,
             get_item_ownership,

@@ -89,7 +89,7 @@ Each widget is documented in its own file under `dashboard/`:
 | [Recipe Items](dashboard/widget-recipe-items.md) | Medium | Recipe scrolls/skill books in inventory, classified by learnability |
 | Gift Watcher | Medium | Monitors inventory for items matching watched NPCs' gift preferences |
 | Teleport Machine Codes | Medium | Searchable lookup for ~190 teleportation machine codes across 14 zones, grouped by zone/destination |
-| [Milking Timers](dashboard/widget-milking-timers.md) | Small | NPC cow milking cooldown tracker — cows grouped by zone with 1h countdown timers, current zone floated to top. Includes "Players Milked", "Milked By", and "Self Milked" tabs for player-to-player and self-milking tracking. |
+| [Milking Timers](dashboard/widget-milking-timers.md) | Small | Player-to-player milking leaderboards ("Players Milked", "Milked By") + "Self Milked" counter from Chat.log. The NPC-cow cooldown Timers tab was removed 2026-11-21 (only the self row had a live writer). |
 | Mushroom Farming | Large | Moon-phase-aware mushroom reference table with level, grow time, substrates, and extra/reduced yield highlighting |
 | Stat Tracker | Small | Configurable display of player attributes and computed stats. Gear icon opens config to search and add/remove tracked stats. Defaults: Total Skill Levels, Combat XP Earned Mod, Crafting XP Earned Mod, Max Inventory Size. Updates live as attributes change. |
 | [Words of Power](dashboard/widget-words-of-power.md) | Medium | Auto-captures words of power when crafted, grouped by power name with age counters, click-to-copy, and manual add/remove. |
