@@ -19,7 +19,7 @@
         </button>
 
         <p class="mt-2 text-text-muted text-xs leading-relaxed">
-          Import chat messages from individual log files or an entire ChatLogs folder.
+          Import chat messages from an entire ChatLogs folder, or re-read one selected file from the start. Already-imported lines report zero new messages.
         </p>
 
         <div v-if="importingFolder" class="mt-3 max-w-100">
@@ -195,8 +195,8 @@ async function selectAndParseFile() {
     parseError.value = null;
     importingFile.value = true;
     try {
-      const result = await invoke<{ messages_imported: number }>('scan_chat_log_file', { path: selected });
-      parseResult.value = `Imported ${result.messages_imported} messages from file.`;
+      const result = await invoke<{ messages_imported: number; lines_read: number }>('scan_chat_log_file', { path: selected });
+      parseResult.value = `Read ${result.lines_read} lines, imported ${result.messages_imported} new messages from file.`;
     } catch (e: any) {
       parseError.value = `Import failed: ${e}`;
       console.error('Failed to parse chat log file:', e);
@@ -236,8 +236,8 @@ async function parseFolder() {
     scanTotal.value = 0;
     scanFileName.value = "";
     try {
-      const result = await invoke<{ messages_imported: number }>('scan_chat_logs', { path: selected });
-      parseResult.value = `Imported ${result.messages_imported} messages from folder.`;
+      const result = await invoke<{ messages_imported: number; lines_read: number }>('scan_chat_logs', { path: selected });
+      parseResult.value = `Read ${result.lines_read} lines, imported ${result.messages_imported} new messages from folder.`;
     } catch (e: any) {
       parseError.value = `Import failed: ${e}`;
       console.error('Failed to parse chat log folder:', e);

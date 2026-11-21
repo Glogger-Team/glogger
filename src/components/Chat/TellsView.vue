@@ -62,7 +62,7 @@ import ChatMessageList from './ChatMessageList.vue'
 import { useChatDateNav } from '../../composables/useChatDateNav'
 import { useChatRequestGuard } from '../../composables/useChatRequestGuard'
 
-const dateNav = useChatDateNav()
+const dateNav = useChatDateNav('exclude')
 const reqGuard = useChatRequestGuard()
 
 interface Conversation {
@@ -104,6 +104,7 @@ async function loadMessages() {
   try {
     const filter: ChatFilter = {
       ...dateNav.filterParams(),
+      jsonScope: 'exclude',
       tellPartner: selectedConversation.value,
       limit: LIMIT,
       offset: offset.value,

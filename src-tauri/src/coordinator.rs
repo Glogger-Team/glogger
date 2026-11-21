@@ -934,6 +934,24 @@ impl DataIngestCoordinator {
     fn process_chat_events(&mut self, events: Vec<LogEvent>) -> Result<(), String> {
         let mut messages = Vec::new();
 
+        // Pre-batch identity for leading untagged lines: login/server events
+        // sort first and mutate the active pair mid-batch, so a line that
+        // precedes the first marker resolves against the session in force
+        // when the batch arrived — not the one the batch switches to.
+        // Batches without markers never mutate mid-batch, so this equals the
+        // live fallback below and resume-from-offset behavior is unchanged.
+        let preceding_identity: Option<DispatchIdentity> =
+            match (
+                self.game_state.get_active_character(),
+                self.game_state.get_active_server(),
+            ) {
+                (Some(c), Some(s)) => Some(DispatchIdentity {
+                    character: c.to_string(),
+                    server: s.to_string(),
+                }),
+                _ => None,
+            };
+
         // Get timezone offset for converting Chat.log local timestamps to UTC
         let tz_offset = self
             .settings
@@ -977,6 +995,12 @@ impl DataIngestCoordinator {
                             character: tag.character_name.clone(),
                             server: tag.server_name.clone(),
                         })
+                        // Leading lines of a boundary-spanning batch carry no
+                        // tag for the session that produced them; resolve
+                        // against the pre-batch pair first. Marker-free
+                        // batches never moved the active pair, so this is the
+                        // same value the live fallback below would read.
+                        .or_else(|| preceding_identity.clone())
                         .or_else(|| {
                             match (
                                 self.game_state.get_active_character(),
@@ -1022,6 +1046,7 @@ impl DataIngestCoordinator {
                                 msg: &msg,
                                 local_ts: &local_ts,
                                 watch_rules: &self.settings.get().watch_rules,
+                                is_scan: false,
                             },
                             None,
                             &mut dstate,

@@ -24,10 +24,10 @@ SRC = ROOT / "src-tauri" / "src"
 
 # Table-valued functions from extensions (CLI-only), not stdlib sqlite3.
 EXTENSION_TVFS = ("rarray",)
-# format! placeholders look like {name} / {?} / {:x}; '{}' is a JSON literal.
-FORMAT_PH_RE = re.compile(r"\{[^{}']+\}")
-# Rust string literal: "..." (escapes) or r#"..."# (any hash depth).
-STR_RE = re.compile(r'r(#+)"(.*?)"\1|"(?:[^"\\]|\\.)*"', re.DOTALL)
+# format! placeholders look like {name} / {?} / {:x} and never contain a
+# double-quote; '{"k":…}' object literals always do. '{}' (empty braces)
+# is handled by the lookbehind below, not this regex.
+FORMAT_PH_RE = re.compile(r"\{[^{}'\"]+\}")
 DML_RE = re.compile(r"^\s*(SELECT|WITH|VALUES|UPDATE|INSERT|DELETE|REPLACE|EXPLAIN)\b")
 DDL_RE = re.compile(
     r"^\s*(CREATE\s+(?:UNIQUE\s+|VIRTUAL\s+|TEMP(?:ORARY)?\s+)?"
@@ -37,7 +37,6 @@ DDL_RE = re.compile(
 ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "\\": "\\", '"': '"', "0": "\0"}
 
 
-ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "\\": "\\", '"': '"', "0": "\0"}
 _RAW_OPEN_RE = re.compile(r"r(#+)?\"")
 _CHAR_LIT_RE = re.compile(r"'(?:[^'\\]|\\.)'")
 
@@ -118,12 +117,6 @@ def literals(text: str) -> list[tuple[int, str]]:
     return [
         (text.count("\n", 0, off) + 1, content) for off, content in lex_strings(text)
     ]
-
-
-def strip_comments(text: str) -> str:
-    """Identity helper kept for call-site shape: extraction is comment-aware
-    at the lexer, so no pre-stripping is needed."""
-    return text
 
 
 def split_statements(sql: str) -> list[str]:
@@ -217,11 +210,14 @@ def fn_spans(text: str) -> list[tuple[str, int, int]]:
     return out
 
 
-def build_schema(conn: sqlite3.Connection) -> None:
+def build_schema(conn: sqlite3.Connection, include_tests: bool = True) -> None:
     """Replay migration DDL in dispatcher order (file order is NOT version
     order — v73's def precedes v63's). run_migrations' own DDL first, then
     each called migration_vNN fn. Non-versioned helpers holding DDL, and
-    format!-built DDL, fail closed instead of replaying silently wrong."""
+    format!-built DDL, fail closed instead of replaying silently wrong.
+    App-code CREATEs follow: test fixtures only when include_tests (the
+    prod schema must never see test-only tables, or test fixtures would
+    mask a missing migration)."""
     mig = (SRC / "db" / "migrations.rs").read_text(encoding="utf-8")
     tested = test_ranges(mig)
 
@@ -269,21 +265,18 @@ def build_schema(conn: sqlite3.Connection) -> None:
                     f"sql-prepare: DDL in non-dispatched helper {name} — move it into its version"
                 )
                 raise SystemExit(2)
-    # App-code tables (TEMP work tables, export-file schemas): same CREATE
-    # shape, so CREATE them when the migrated schema lacks the name — this
-    # also column-checks temp/export statements. Existing names win (test
-    # fixtures must never override the migrated schema).
-    for path in sorted(SRC.rglob("*.rs")):
-        if path.name == "migrations.rs":
+    # App-code tables (TEMP work tables, export-file schemas, test fixtures):
+    # CREATE them when the schema lacks the name. Existing names win, and
+    # test fixtures stay out of the prod schema (their tables must never
+    # mask a missing migration for app code).
+    for _table, sql, _path, _lineno, is_test in app_table_defs():
+        if is_test and not include_tests:
             continue
-        for _, lit in literals(path.read_text(encoding="utf-8")):
-            for stmt in split_statements(lit):
-                if re.match(r"\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\b", stmt):
-                    try:
-                        conn.executescript(stmt)
-                    except sqlite3.OperationalError as err:
-                        if "already exists" not in str(err):
-                            raise
+        try:
+            conn.executescript(sql)
+        except sqlite3.OperationalError as err:
+            if "already exists" not in str(err):
+                raise
 
 
 def in_format_macro(text: str, lit_start: int) -> bool:
@@ -351,18 +344,38 @@ def bind_nulls(stmt: str) -> str:
     return "".join(out)
 
 
-def statements_in(path: Path) -> list[tuple[int, str]]:
-    out: list[tuple[int, str]] = []
+def lstrip_sql_comments(sql: str) -> str:
+    """Strip leading `--` line comments and `/* */` blocks (and whitespace)
+    for statement classification only — the full text still goes to EXPLAIN."""
+    s = sql.lstrip()
+    while True:
+        if s.startswith("--"):
+            end = s.find("\n")
+            s = "" if end == -1 else s[end + 1 :].lstrip()
+            continue
+        if s.startswith("/*"):
+            end = s.find("*/")
+            if end == -1:
+                return ""
+            s = s[end + 2 :].lstrip()
+            continue
+        return s
+
+
+def statements_in(path: Path) -> list[tuple[int, str, bool]]:
+    out: list[tuple[int, str, bool]] = []
     text = path.read_text(encoding="utf-8")
+    tested = test_ranges(text)
     lexed = lex_strings(text)
     for (lineno, lit), (off, _content) in zip(literals(text), lexed):
-        if not DML_RE.match(lit):
+        if not DML_RE.match(lstrip_sql_comments(lit)):
             continue
         if FORMAT_PH_RE.search(lit) or in_format_macro(text, off):
             continue  # dynamic SQL — cannot resolve statically
+        tested_here = in_test_range(tested, lineno - 1)
         for stmt in split_statements(lit):
-            if DML_RE.match(stmt):
-                out.append((lineno, stmt))
+            if DML_RE.match(lstrip_sql_comments(stmt)):
+                out.append((lineno, stmt, tested_here))
     return out
 
 
@@ -466,30 +479,187 @@ def self_test() -> int:
         check("empty-brace format skipped via lookbehind", len(got) == 1)
     finally:
         tmp.unlink()
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".rs", delete=False, encoding="utf-8"
+    ) as f:
+        f.write('conn.execute("INSERT INTO t1 (name) VALUES (\'{\\"a\\":1}\')", [])')
+        tmp = Path(f.name)
+    try:
+        got = statements_in(tmp)
+        check("non-empty JSON literal is kept, not skipped", len(got) == 1)
+    finally:
+        tmp.unlink()
     check(
         "backslash continuation lexes",
         lex_strings('"SELECT a \\\n     FROM t1"')[0][1] == "SELECT a FROM t1",
     )
+    t1_conn = sqlite3.connect(":memory:")
+    t1_conn.executescript("CREATE TABLE t1 (id INTEGER, name TEXT)")
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".rs", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(
+            '"DELETE FROM t1; -- next operation\nINSERT INTO t1 (missing_col) VALUES (1)"'
+        )
+        tmp = Path(f.name)
+    try:
+        got = statements_in(tmp)
+        check("comment-led INSERT classified", len(got) == 2)
+        hit = check_statement(t1_conn, ROOT / "x.rs", 1, got[1][1])
+        check(
+            "comment-led bad column fires",
+            hit is not None and "missing_col" in hit,
+        )
+    finally:
+        tmp.unlink()
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".rs", delete=False, encoding="utf-8"
+    ) as f:
+        f.write(
+            "#[cfg(test)]\nmod tests {\n"
+            '    fn t() { conn.execute("SELECT * FROM t1", []).unwrap(); }\n'
+            "}\n"
+            'fn a() { conn.execute("SELECT * FROM t1", []).unwrap(); }\n'
+        )
+        tmp = Path(f.name)
+    try:
+        got = statements_in(tmp)
+        flags = sorted(in_test for _, _, in_test in got)
+        check("test flag marks mod body", flags == [False, True])
+    finally:
+        tmp.unlink()
     check(
-        "trigger with BEGIN/END splits sanely",
-        len(split_statements("DELETE FROM a; DELETE FROM b;")) == 2,
+        "columns_of_create reads schema",
+        columns_of_create("CREATE TABLE t (a INTEGER, b TEXT)", "t") == {"a", "b"},
+    )
+    check(
+        "columns_of_create fails closed",
+        columns_of_create("CREATE TABLE t (", "t") is None,
+    )
+    check(
+        "split shape detected",
+        columns_of_create("CREATE TABLE t (a INTEGER, c TEXT)", "t") != {"a", "b"},
+    )
+    split_conn = sqlite3.connect(":memory:")
+    split_conn.executescript(
+        "CREATE TABLE t1 (id INTEGER, name TEXT);CREATE TABLE t2 (id INTEGER);"
+    )
+    real_defs = app_table_defs
+    try:
+        globals()["app_table_defs"] = lambda: [
+            (
+                "t1",
+                "CREATE TABLE t1 (id INTEGER, name TEXT, extra TEXT)",
+                "app.rs",
+                1,
+                False,
+            ),
+            ("t2", "CREATE TABLE t2 (id INTEGER)", "app.rs", 2, False),
+        ]
+        split_hits = check_splits(split_conn)
+    finally:
+        globals()["app_table_defs"] = real_defs
+    check(
+        "split probe fires on divergent table",
+        len(split_hits) == 1 and "t1" in split_hits[0],
+    )
+    check(
+        "split probe silent on matching table",
+        all("t2" not in hit for hit in split_hits),
     )
     return 1 if failures else 0
 
 
-def main() -> int:
-    conn = sqlite3.connect(":memory:")
-    build_schema(conn)
-    tables = {
-        r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    }
-    print(f"sql-prepare: schema has {len(tables)} tables", file=sys.stderr)
-    findings: list[str] = []
+CREATE_TABLE_RE = re.compile(
+    r"\s*CREATE\s+(?:TEMP(?:ORARY)?\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)",
+    re.IGNORECASE,
+)
+
+
+def in_test_range(ranges: list[tuple[int, int]], lineno0: int) -> bool:
+    return any(a <= lineno0 <= b for a, b in ranges)
+
+
+def app_table_defs() -> list[tuple[str, str, str, int, bool]]:
+    """(table, create_sql, path, lineno, in_test) for CREATE TABLE in app
+    code (migrations excluded — they own the canonical schema)."""
+    out: list[tuple[str, str, str, int, bool]] = []
     for path in sorted(SRC.rglob("*.rs")):
         if path.name == "migrations.rs":
             continue
-        for lineno, stmt in statements_in(path):
-            hit = check_statement(conn, path, lineno, stmt)
+        text = path.read_text(encoding="utf-8")
+        tested = test_ranges(text)
+        for (lineno, lit), (off, _content) in zip(literals(text), lex_strings(text)):
+            tested_here = in_test_range(tested, lineno - 1)
+            for stmt in split_statements(lit):
+                m = CREATE_TABLE_RE.match(stmt)
+                if m:
+                    out.append((m.group(1), stmt, path.as_posix(), lineno, tested_here))
+    return out
+
+
+def table_columns(conn: sqlite3.Connection, table: str) -> set[str] | None:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except sqlite3.Error:
+        return None
+    return {r[1] for r in rows} or None
+
+
+def check_splits(conn: sqlite3.Connection) -> list[str]:
+    """Same table defined differently in app DDL vs the migrated schema
+    (the survey_types split: clear_cdn_data recreated it WITH kind while
+    migrations never had it — two live schemas for one table)."""
+    findings: list[str] = []
+    reported: set[str] = set()
+    for table, sql, path, lineno, is_test in app_table_defs():
+        if table in reported or is_test:
+            continue  # test fixtures define their own schemas — not app drift
+        base = table_columns(conn, table)
+        if base is None:
+            continue  # temp/export-only table, no canonical schema to split from
+        other = columns_of_create(sql, table)
+        if other is None:
+            continue  # unbuildable in isolation (depends on migration state) — skip
+        if other != base:
+            reported.add(table)
+            findings.append(
+                f"{path}:{lineno}: schema split: app DDL for {table} has columns"
+                f" {sorted(other)} but migrations have {sorted(base)} — unify them"
+            )
+
+    return findings
+
+
+def columns_of_create(sql: str, table: str) -> set[str] | None:
+    """Column names of a standalone CREATE TABLE (isolated scratch DB)."""
+    scratch = sqlite3.connect(":memory:")
+    try:
+        scratch.executescript(sql)
+    except sqlite3.Error:
+        return None
+    return table_columns(scratch, table)
+
+
+def main() -> int:
+    prod = sqlite3.connect(":memory:")
+    build_schema(prod, include_tests=False)
+    full = sqlite3.connect(":memory:")
+    build_schema(full, include_tests=True)
+    tables = {
+        r[0] for r in prod.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    }
+    print(f"sql-prepare: schema has {len(tables)} tables", file=sys.stderr)
+    findings: list[str] = []
+    findings += check_splits(prod)
+    for path in sorted(SRC.rglob("*.rs")):
+        if path.name == "migrations.rs":
+            continue
+        for lineno, stmt, in_test in statements_in(path):
+            # Test DML prepares against the full schema (fixtures included);
+            # app DML must prepare against prod — a test-only table must
+            # never mask a missing migration for shipped code.
+            hit = check_statement(full if in_test else prod, path, lineno, stmt)
             if hit:
                 findings.append(hit)
     for finding in sorted(set(findings)):

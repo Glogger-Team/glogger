@@ -170,19 +170,20 @@ const viewTabs: Partial<Record<AppView, SubTab[]>> = {
     { id: "stall-tracker", label: "Stall Tracker" },
   ],
   chat: [
-    { id: "search", label: "Search" },
+    { id: "all", label: "All Messages" },
     { id: "channels", label: "Channels" },
     { id: "tells", label: "Tells" },
     { id: "party", label: "Party" },
     { id: "nearby", label: "Nearby" },
     { id: "guild", label: "Guild" },
     { id: "system", label: "System" },
-    { id: "all", label: "All Messages" },
+    { id: "json", label: "JSON" },
     { id: "watchwords", label: "Watchwords" },
     // Poems kept visible but dark: new recitals are Player.log-only (dark
     // on the current client) — the tab carries the no-new-data banner plus
     // the historic list and the old-log backfill scan.
     { id: "poems", label: "Poems" },
+    { id: "search", label: "Search" },
   ],
 };
 
@@ -192,7 +193,7 @@ const defaultSubTabs: Partial<Record<AppView, string>> = {
   inventory: "storage",
   crafting: "quick-calc",
   economics: "market",
-  chat: "search",
+  chat: "all",
 };
 
 const coordinatorStore = useCoordinatorStore();

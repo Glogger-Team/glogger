@@ -123,6 +123,7 @@ fn run_replay(
     app: &AppHandle,
     _db: &DbPool,
     game_data: GameDataState,
+    prior_identity: Option<(String, String)>,
 ) -> Result<ReplayResult, String> {
     // --- Phase 1: Pre-scan chat log for timezone offset ---
     app.emit(
@@ -213,6 +214,9 @@ fn run_replay(
     };
 
     let progress_interval = (total_events / 100).max(50); // emit ~100 progress events
+    // Set when the preview emitted a replayed identity: completion must
+    // put the prior live pair back (same events the flip used).
+    let mut identity_flipped = false;
 
     for (i, event) in all_events.iter().enumerate() {
         // Progress updates
@@ -241,6 +245,7 @@ fn run_replay(
 
                 app.emit("character-login", character_name).ok();
                 app.emit("server-detected", server_name).ok();
+                identity_flipped = true;
             }
 
 
@@ -274,6 +279,18 @@ fn run_replay(
     )
     .ok();
 
+    // The preview flipped the live feed to the replayed character while it
+    // ran (same `character-login` / `server-detected` events the live drain
+    // emits, so the frontend reloaded for them). Put the prior live pair
+    // back the same way; without this the UI — and any settings save after
+    // it — stays stranded on the replayed character. No prior pair (fresh
+    // boot) or no replayed login means nothing to restore.
+    if identity_flipped
+        && let Some((character, server)) = prior_identity {
+            app.emit("character-login", &character).ok();
+            app.emit("server-detected", &server).ok();
+        }
+
     Ok(result)
 }
 
@@ -289,13 +306,16 @@ fn run_replay(
 /// utc_second 0 so they sort before every message, and the last login in the
 /// file wins for the whole preview (per-segment identity is not preserved).
 /// Replay flips the active character/session feed to that identity while it
-/// runs. Live tailing, scans, and report imports remain the only writers.
+/// runs, then restores the prior live pair on completion (same events both
+/// ways, so the frontend reloads symmetrically). Live tailing, scans, and
+/// report imports remain the only writers.
 /// (The old dual-log replay also fed a Player.log; that pipeline was
 /// deleted, so only the chat path is replayed.)
 #[tauri::command]
 pub async fn replay_chat_log(
     chat_log_path: String,
     app: AppHandle,
+    settings: tauri::State<'_, std::sync::Arc<crate::settings::SettingsManager>>,
 ) -> Result<ReplayResult, String> {
     let chat_path = PathBuf::from(&chat_log_path);
 
@@ -305,10 +325,21 @@ pub async fn replay_chat_log(
 
     let db = app.state::<DbPool>().inner().clone();
     let game_data = app.state::<GameDataState>().inner().clone();
+    // The preview flips the live feed to the replayed identity while it
+    // runs — capture the live pair now so the replay can put it back when
+    // it completes instead of stranding the UI on the replayed character.
+    let app_settings = settings.get();
+    let prior_identity = match (
+        app_settings.active_character_name.clone(),
+        app_settings.active_server_name.clone(),
+    ) {
+        (Some(character), Some(server)) => Some((character, server)),
+        _ => None,
+    };
 
     // Run on a blocking thread since file I/O is synchronous
     let result = tokio::task::spawn_blocking(move || {
-        run_replay(chat_path, &app, &db, game_data)
+        run_replay(chat_path, &app, &db, game_data, prior_identity)
     })
     .await
     .map_err(|e| format!("Replay task failed: {}", e))??;

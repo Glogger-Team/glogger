@@ -87,10 +87,22 @@ entries as fixtures land and recorders ship.
 - **Capture:** earn XP on a capped skill, save the slice. (`ParagonXP` above is
   adjacent but distinct — per-kill flow, not overflow.)
 
+## `JSON:Tip` word discovery — SHIPPED 2026-11-19
+
+- **Observed:** 10 scroll uses, `chat-tip.log`: `{"Title":"You discovered a word
+  of power!", "Body":"...<sel>WORD</sel>...<b><size=125%>Word of Power:
+  NAME</size></b>\nEFFECT\n\n<i>..."}`. The fixture also freezes a non-word `Tip`
+  (`Dementia: Hopping`), which stays `Unknown` — `Tip` is a general channel.
+- **Shipped:** `WordDiscovered` arm extracts word, power name, effect sentence
+  (all three required). Dispatch inserts into `words_of_power`
+  (source `'chat'`, rescan-safe on character/server/word) and emits domain
+  `words_of_power`, which `WordsOfPowerWidget` already listens on. Spoken-use
+  deletion (`delete_words_by_word`, live + backfill) now has a recorded
+  discovery to delete. No twin: the discovery line is the sole record.
+
 ## Confirmed-absent (validate the dead, do not expect lines)
 
 - Arena bet `LocalPlayer:` lines — PROVEN DEAD 2026-11-17 (Vizlark bet start to
   payout, zero `LocalPlayer` lines file-wide; payout via plain Status).
 - Pigeon-send lines — PROVEN ABSENT 2026-11-17 (send window has zero lines).
 - Cow interaction `Process*` lines (interact with a cow).
-- Word-of-power discovery lines.

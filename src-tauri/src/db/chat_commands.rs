@@ -73,6 +73,15 @@ pub fn insert_chat_messages(
     Ok(inserted)
 }
 
+/// Scope of `JSON:<Type>` raw lines in a message query. `Search` never sets
+/// this (raw lines stay searchable); every other chat view excludes them and
+/// the JSON tab selects only them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonScope {
+    Only,
+    Exclude,
+}
+
 /// Get chat messages with optional filters
 #[derive(Debug, Clone)]
 pub struct ChatMessageFilter {
@@ -84,6 +93,7 @@ pub struct ChatMessageFilter {
     pub has_item_links: Option<bool>,
     pub item_name: Option<String>,
     pub tell_partner: Option<String>,
+    pub json_scope: Option<JsonScope>,
     pub limit: i64,
     pub offset: i64,
     /// "asc" for oldest-first, "desc" (default) for newest-first
@@ -101,6 +111,7 @@ impl Default for ChatMessageFilter {
             has_item_links: None,
             item_name: None,
             tell_partner: None,
+            json_scope: None,
             limit: 100,
             offset: 0,
             sort_order: "desc".to_string(),
@@ -244,6 +255,16 @@ fn build_chat_where(filter: &ChatMessageFilter) -> (Vec<String>, Vec<Box<dyn rus
         }
     }
 
+    // Raw `JSON:<Type>` lines live in their own tab. `Search` sets no scope
+    // and keeps them; every other view excludes them; the JSON tab takes
+    // only them. Static patterns: no params, prepare-gate safe.
+    match filter.json_scope {
+        Some(JsonScope::Only) => conditions.push("cm.channel LIKE 'JSON:%'".to_string()),
+        Some(JsonScope::Exclude) => conditions.push(
+            "(cm.channel IS NULL OR cm.channel NOT LIKE 'JSON:%')".to_string(),
+        ),
+        None => {}
+    }
     if let Some(start_time) = &filter.start_time {
         conditions.push(format!("cm.timestamp >= ?{}", param_idx));
         params.push(Box::new(start_time.clone()));
@@ -476,13 +497,28 @@ pub fn build_fts_match_expr(search_text: &str) -> Option<String> {
 /// times the UI renders. Without it a non-UTC viewer's day list disagrees
 /// with the displayed times near midnight (the day's window shows the
 /// previous/next day's timestamps).
-pub fn get_chat_days<C: DbRead + ?Sized>(conn: &C, offset_seconds: i64) -> Result<Vec<ChatDayRow>> {
-    let mut stmt = conn.prepare(
+///
+/// `json_scope` narrows the counts to the tab asking: the JSON tab counts
+/// only raw `JSON:<Type>` lines, every other tab excludes them, and `None`
+/// (Search) counts everything — so a day with no rows in the current tab
+/// never appears in its picker. Same static patterns as `build_chat_where`:
+/// no params, prepare-gate safe.
+pub fn get_chat_days<C: DbRead + ?Sized>(
+    conn: &C,
+    offset_seconds: i64,
+    json_scope: Option<JsonScope>,
+) -> Result<Vec<ChatDayRow>> {
+    let where_clause = match json_scope {
+        Some(JsonScope::Only) => " WHERE channel LIKE 'JSON:%'",
+        Some(JsonScope::Exclude) => " WHERE (channel IS NULL OR channel NOT LIKE 'JSON:%')",
+        None => "",
+    };
+    let mut stmt = conn.prepare(&format!(
         "SELECT date(timestamp, printf('%d seconds', ?1)) AS day, COUNT(*) AS count
-         FROM chat_messages
+         FROM chat_messages{where_clause}
          GROUP BY day
          ORDER BY day DESC",
-    )?;
+    ))?;
 
     let rows = stmt.query_map(rusqlite::params![offset_seconds], |row| {
         Ok(ChatDayRow {
@@ -539,7 +575,7 @@ pub fn get_channel_stats<C: DbRead + ?Sized>(conn: &C) -> Result<Vec<(String, i6
     let mut stmt = conn.prepare(
         "SELECT channel, COUNT(*) as count
          FROM chat_messages
-         WHERE channel IS NOT NULL
+         WHERE channel IS NOT NULL AND channel NOT LIKE 'JSON:%'
          GROUP BY channel
          ORDER BY count DESC",
     )?;
@@ -741,6 +777,8 @@ pub fn get_watch_rule_messages<C: DbRead + ?Sized>(
         }
     }
 
+    // Watchwords is a chat view, not Search: raw JSON lines never match.
+    conditions.push("(cm.channel IS NULL OR cm.channel NOT LIKE 'JSON:%')".to_string());
     // Join watch conditions with AND or OR based on match_mode
     if !watch_conditions.is_empty() {
         let joiner = match rule.match_mode {
@@ -1045,6 +1083,51 @@ mod tests {
     }
 
     #[test]
+    fn json_scope_only_and_exclude() {
+        let conn = setup();
+        msg_with(&conn, "2026-11-19 21:48:19", "JSON:Tip", "", "raw tip body");
+        msg_with(&conn, "2026-11-19 21:48:20", "Guild", "Truffle", "hello");
+        msg_with(&conn, "2026-11-19 21:48:21", "", "Pip", "no channel");
+        conn.execute(
+            "INSERT INTO chat_messages (timestamp, channel, sender, message, is_system, log_file, from_player)
+             VALUES ('2026-11-19 21:48:22', NULL, 'Sys', 'null channel', 0, 'Chat-test.log', 0)",
+            [],
+        )
+        .unwrap();
+
+        let only = ChatMessageFilter {
+            json_scope: Some(JsonScope::Only),
+            ..Default::default()
+        };
+        let rows = get_chat_messages(&*conn, &only).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].channel.as_deref(), Some("JSON:Tip"));
+
+        let exclude = ChatMessageFilter {
+            json_scope: Some(JsonScope::Exclude),
+            ..Default::default()
+        };
+        let rows = get_chat_messages(&*conn, &exclude).unwrap();
+        // NULL and empty channels survive the exclusion: only JSON: goes.
+        assert_eq!(rows.len(), 3);
+        assert!(rows.iter().all(|r| r.channel.as_deref() != Some("JSON:Tip")));
+
+        let rows = get_chat_messages(&*conn, &ChatMessageFilter::default()).unwrap();
+        assert_eq!(rows.len(), 4);
+    }
+
+    #[test]
+    fn channel_stats_skip_json_channels() {
+        let conn = setup();
+        msg_with(&conn, "2026-11-19 21:48:19", "JSON:Tip", "", "raw tip body");
+        msg_with(&conn, "2026-11-19 21:48:20", "Guild", "Truffle", "hello");
+
+        let stats = get_channel_stats(&*conn).unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].0, "Guild");
+    }
+
+    #[test]
     fn test_fts_combined_with_time_range() {
         let conn = setup();
         msg_with(
@@ -1257,7 +1340,7 @@ mod tests {
         msg_with(&conn, "2026-07-01 15:30:00", "General", "B", "two");
         msg_with(&conn, "2026-07-03 09:00:00", "General", "C", "three");
 
-        let days = get_chat_days(&*conn, 0).unwrap();
+        let days = get_chat_days(&*conn, 0, None).unwrap();
         assert_eq!(days.len(), 2);
         assert_eq!(days[0].day, "2026-07-03");
         assert_eq!(days[0].count, 1);
@@ -1271,13 +1354,13 @@ mod tests {
         msg_with(&conn, "2026-07-01 00:30:00", "General", "A", "late night");
         msg_with(&conn, "2026-07-01 12:00:00", "General", "B", "midday");
 
-        let utc = get_chat_days(&*conn, 0).unwrap();
+        let utc = get_chat_days(&*conn, 0, None).unwrap();
         assert_eq!(utc.len(), 1);
         assert_eq!(utc[0].day, "2026-07-01");
         assert_eq!(utc[0].count, 2);
 
         // UTC-7 viewer: 00:30Z renders as 2026-06-30 17:30, a day of its own
-        let west = get_chat_days(&*conn, -7 * 3600).unwrap();
+        let west = get_chat_days(&*conn, -7 * 3600, None).unwrap();
         assert_eq!(west.len(), 2);
         assert_eq!(west[0].day, "2026-07-01");
         assert_eq!(west[0].count, 1);
@@ -1285,10 +1368,35 @@ mod tests {
         assert_eq!(west[1].count, 1);
 
         // UTC+2 viewer: 00:30Z is 02:30 the same day — bucketing matches UTC
-        let east = get_chat_days(&*conn, 2 * 3600).unwrap();
+        let east = get_chat_days(&*conn, 2 * 3600, None).unwrap();
         assert_eq!(east.len(), 1);
         assert_eq!(east[0].day, "2026-07-01");
         assert_eq!(east[0].count, 2);
+    }
+
+    #[test]
+    fn test_get_chat_days_respects_json_scope() {
+        let conn = setup();
+        msg_with(&conn, "2026-07-01 10:00:00", "General", "A", "one");
+        msg_with(&conn, "2026-07-01 11:00:00", "JSON:Book", "B", "raw");
+        msg_with(&conn, "2026-07-02 10:00:00", "JSON:Book", "C", "raw two");
+
+        let only = get_chat_days(&*conn, 0, Some(JsonScope::Only)).unwrap();
+        assert_eq!(only.len(), 2);
+        assert_eq!(only[0].day, "2026-07-02");
+        assert_eq!(only[0].count, 1);
+        assert_eq!(only[1].day, "2026-07-01");
+        assert_eq!(only[1].count, 1);
+
+        let excluded = get_chat_days(&*conn, 0, Some(JsonScope::Exclude)).unwrap();
+        assert_eq!(excluded.len(), 1);
+        assert_eq!(excluded[0].day, "2026-07-01");
+        assert_eq!(excluded[0].count, 1);
+
+        let all = get_chat_days(&*conn, 0, None).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].count, 1);
+        assert_eq!(all[1].count, 2);
     }
 
     #[test]

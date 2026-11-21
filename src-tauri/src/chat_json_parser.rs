@@ -71,6 +71,15 @@ pub enum ChatJsonEvent {
         title: String,
         body: String,
     },
+    /// `Tip` word discovery: `<sel>WORD</sel>` + `Word of Power: NAME` +
+    /// the effect sentence. Discovery auto-records into `words_of_power`
+    /// (source `'chat'`); other `Tip` titles stay `Unknown`.
+    WordDiscovered {
+        timestamp: String,
+        word: String,
+        power_name: String,
+        description: String,
+    },
     /// Any `Type` with no frozen schema yet — structured ingest skips it,
     /// the raw chat row stays searchable.
     Unknown { json_type: String },
@@ -112,6 +121,14 @@ struct RecipeUsageJson {
     recipe_name: String,
     recipe_id: u32,
     completions: u32,
+}
+
+/// Slice of `hay` strictly between the first `start` and the next `end`.
+/// `None` when either marker is absent or inverted.
+fn between<'a>(hay: &'a str, start: &str, end: &str) -> Option<&'a str> {
+    let s = hay.find(start)? + start.len();
+    let e = hay[s..].find(end)? + s;
+    (e >= s).then(|| &hay[s..e])
 }
 
 /// Parse one `[JSON:Type]` message. Returns `None` when the message is not a
@@ -237,6 +254,32 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
                 timestamp,
                 title: v.title,
                 body: v.body,
+            })
+        }
+        "Tip" => {
+            let v: BookJson = serde_json::from_str(body).ok()?;
+            if v.title.is_empty() || v.body.is_empty() {
+                return None;
+            }
+            if v.title != "You discovered a word of power!" {
+                // A general channel (dementia, role-play effects): observed
+                // but with no recorder, so it stays Unknown rather than
+                // vanishing into a typed no-op.
+                return Some(ChatJsonEvent::Unknown {
+                    json_type: json_type.to_string(),
+                });
+            }
+            let word = between(&v.body, "<sel>", "</sel>")?;
+            let power_name = between(&v.body, "Word of Power: ", "</size>")?;
+            let description = between(&v.body, "</b>\n", "\n\n<i>")?;
+            if word.is_empty() || power_name.is_empty() || description.is_empty() {
+                return None;
+            }
+            Some(ChatJsonEvent::WordDiscovered {
+                timestamp,
+                word: word.to_string(),
+                power_name: power_name.to_string(),
+                description: description.to_string(),
             })
         }
         _ => Some(ChatJsonEvent::Unknown {
@@ -526,6 +569,37 @@ mod tests {
         assert!(body.contains("Ushug"));
     }
 
+    #[test]
+    fn tip_fixture_discovers_words() {
+        let events = parse_all(include_str!("../../test_data/vip_json/chat-tip.log"));
+        assert_eq!(events.len(), 11);
+        let mut words = Vec::new();
+        let mut unknown = 0;
+        for ev in &events {
+            match ev {
+                ChatJsonEvent::WordDiscovered {
+                    word,
+                    power_name,
+                    description,
+                    ..
+                } => words.push((word.clone(), power_name.clone(), description.clone())),
+                ChatJsonEvent::Unknown { json_type } => {
+                    assert_eq!(json_type, "Tip");
+                    unknown += 1;
+                }
+                other => panic!("expected WordDiscovered or Unknown, got {other:?}"),
+            }
+        }
+        // Ten scroll discoveries plus the (observed, unwritten) dementia tip.
+        assert_eq!(unknown, 1);
+        assert_eq!(words.len(), 10);
+        let breath = words.iter().find(|(w, _, _)| w == "BWEPFYW").expect("BWEPFYW");
+        assert_eq!(breath.1, "Hold Your Breath");
+        assert!(breath.2.contains("lung capacity"));
+        let death = words.iter().find(|(w, _, _)| w == "LIBGLEN").expect("LIBGLEN");
+        assert_eq!(death.1, "Instant Death");
+    }
+
 
     fn json_message(json_type: &str, body: &str) -> ChatMessage {
         let line = format!("26-11-17 08:52:00\t[JSON:{json_type}] {body}\n");
@@ -538,7 +612,7 @@ mod tests {
     fn known_types_reject_invalid_json_shapes() {
         for kind in [
             "AddItem", "EarnedXP", "Book", "DeltaFavor", "RecipeUsage",
-            "Pigeon", "ParagonXP", "EntityReport",
+            "Pigeon", "ParagonXP", "EntityReport", "Tip",
         ] {
             for body in ["not-json", "null", "[]", "true", "42", "{}", "{\"Title\":"] {
                 assert!(

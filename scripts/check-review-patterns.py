@@ -90,6 +90,77 @@ FINDING_BLOB_OVERWRITE = (
     "review-patterns: wholesale source_details overwrite ({path}:{lineno})"
     " — merge via json_set so other writers' keys survive"
 )
+# A machine-local absolute path in a Rust string literal: a committed test
+# may never read a file by a path that only exists on the author's machine
+# (the scratch repro that read the live Chat.log by its absolute game-dir
+# path is the worked example). Drive roots, Unix home roots, and
+# pasted-Explorer backslash paths with a known-root context flag — unless
+# the user-or-root segment is synthetic by convention (`TestUser`, `Test`,
+# `u`, `books`, `Games`, `...`). Bare `word:\x` shapes do NOT flag: fixture
+# JSON unavoidably contains them (`Consumed:\n...`), identical at the value
+# level to a real `C:\...` path. Escapes resolve before matching, so
+# `Status:` + newline and JSON `\"` never read as drive roots. Raw lines
+# (test modules included — scratch tests live there).
+TEST_PATH_LITERAL_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+TEST_PATH_DRIVE_RE = re.compile(r"[A-Za-z]:/")
+TEST_PATH_HOME_RE = re.compile(r"/(?:Users|home)/")
+TEST_PATH_BACKSLASH_CTX_RE = re.compile(
+    r"[A-Za-z]:\\(?:Users|home|AppData|Program Files|ProgramData|Windows|Temp|tmp)"
+)
+TEST_PATH_ALLOW_FIRST = ("books", "Games", "...", "TestUser", "Test", "u")
+TEST_PATH_ESCAPES = {
+    "n": "\n",
+    "t": "\t",
+    "r": "\r",
+    "0": "\0",
+    "\\": "\\",
+    '"': '"',
+    "'": "'",
+}
+FINDING_TEST_PATH = (
+    "review-patterns: machine-local absolute path {literal} ({path}:{lineno})"
+    " — use a test_data fixture or a synthetic TestUser path"
+)
+
+
+def test_path_decoded(literal: str) -> str:
+    """Value the Rust literal denotes, resolved for path detection."""
+    body = literal[1:-1]
+    out: list[str] = []
+    i = 0
+    while i < len(body):
+        char = body[i]
+        if char == "\\" and i + 1 < len(body):
+            out.append(TEST_PATH_ESCAPES.get(body[i + 1], "\\" + body[i + 1]))
+            i += 2
+        else:
+            out.append(char)
+            i += 1
+    return "".join(out)
+
+
+def test_path_first_segment(path: str) -> str:
+    """User-or-root segment of an absolute local path."""
+    match = re.search(
+        r"(?:[A-Za-z]:)?[/\\](?:Users|home)[/\\]([^/\\]+)|[A-Za-z]:[\\/]([^/\\]+)",
+        path,
+    )
+    if not match:
+        return ""
+    return match.group(1) or match.group(2) or ""
+
+
+def test_path_is_local(literal: str) -> bool:
+    body = test_path_decoded(literal)
+    if "://" in body:
+        return False
+    if not (
+        TEST_PATH_DRIVE_RE.search(body)
+        or TEST_PATH_HOME_RE.search(body)
+        or TEST_PATH_BACKSLASH_CTX_RE.search(body)
+    ):
+        return False
+    return test_path_first_segment(body) not in TEST_PATH_ALLOW_FIRST
 
 
 def read_body(root: Path) -> str:
@@ -221,14 +292,72 @@ def update_ok_tables(fn_text: str) -> list[str]:
     return tables
 
 
-def has_blob_overwrite(fn_text: str) -> bool:
-    """An UPDATE statement assigning `source_details = ?N` instead of merging
-    with `json_set` (column-list INSERTs carry no `=`, SELECT filters lack
-    UPDATE — statement-scoped, not line-scoped)."""
-    for stmt in split_statements(fn_text):
-        if not re.search(r"\bUPDATE\b", stmt, re.IGNORECASE):
+def set_clause(stmt: str) -> str:
+    """The SET assignment region of an UPDATE statement (SET..top-level WHERE
+    or end): WHERE-predicate comparisons must not trip the overwrite rule."""
+    depth = 0
+    quote: str | None = None
+    esc = False
+    i, n = 0, len(stmt)
+    start = -1
+    while i < n:
+        ch = stmt[i]
+        if quote is not None:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == quote:
+                if quote == "'" and i + 1 < n and stmt[i + 1] == "'":
+                    i += 1
+                else:
+                    quote = None
+            i += 1
             continue
-        for m in re.finditer(r"\bsource_details\s*=\s*(\?\d*|json_set\s*\()", stmt):
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            if start < 0 and re.match(r"SET\b", stmt[i:], re.IGNORECASE):
+                start = i + 3
+            elif start >= 0 and re.match(r"WHERE\b", stmt[i:], re.IGNORECASE):
+                return stmt[start:i]
+        i += 1
+    return stmt[start:] if start >= 0 else ""
+
+
+SQL_STR_RE = re.compile(r'"((?:[^"\\]|\\.)*)"', re.DOTALL)
+
+
+def sql_text_of(stmt: str) -> str:
+    """Concatenated string-literal contents of a Rust statement (the SQL),
+    with Rust backslash-newline continuations removed per language semantics.
+    Keyword/column matching runs on this, never on Rust code — `SET`/`WHERE`
+    live at SQL depth 0 here while the literals sat inside `execute(` parens."""
+    parts: list[str] = []
+    for m in SQL_STR_RE.finditer(stmt):
+        content = m.group(1)
+        content = re.sub(r"\\\r?\n[ \t]*", "", content)
+        parts.append(content)
+    return "\n".join(parts)
+
+
+def has_blob_overwrite(fn_text: str) -> bool:
+    """An UPDATE statement assigning `source_details = ?N` in its SET clause
+    instead of merging with `json_set` (WHERE-predicate comparisons are
+    scoped out — SET-slice of the SQL text, not line-scoped)."""
+    for stmt in split_statements(fn_text):
+        sql = sql_text_of(stmt)
+        if not re.search(r"\bUPDATE\b", sql, re.IGNORECASE):
+            continue
+        for m in re.finditer(
+            r"\bsource_details\s*=\s*(\?\d*|json_set\s*\()", set_clause(sql)
+        ):
             if m.group(1).startswith("?"):
                 return True
     return False
@@ -236,22 +365,29 @@ def has_blob_overwrite(fn_text: str) -> bool:
 
 def functions(cl: list[tuple[int, str]]) -> list[tuple[int, str]]:
     """(start lineno, joined body) per `fn` item, brace-depth segmented
-    against the depth where the `fn` opened (methods live inside impl)."""
+    against the depth where the `fn` opened (methods live inside impl). The
+    body must open before a close can end the item — a multiline signature
+    has no brace on its first line, so emitting there would drop the body
+    the rules need to see."""
     out: list[tuple[int, str]] = []
     depth = 0
     cur: list[str] | None = None
     start = 0
     base = 0
+    opened = False
     for lineno, line in cl:
         opens, closes = code_braces(line)
         if cur is None and FN_RE.match(line):
             cur = []
             start = lineno
             base = depth
+            opened = False
         if cur is not None:
             cur.append(line.split("//")[0])
         depth += opens - closes
-        if cur is not None and depth <= base:
+        if depth > base:
+            opened = True
+        if cur is not None and opened and depth <= base:
             out.append((start, "\n".join(cur)))
             cur = None
     return out
@@ -322,6 +458,18 @@ def findings_for_tree(root: Path) -> list[str]:
                         path=path.relative_to(root), lineno=start
                     )
                 )
+        # Machine-local paths: raw lines (test modules included — the
+        # silence rules above skip `mod tests`, scratch tests live there).
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for match in TEST_PATH_LITERAL_RE.finditer(line):
+                if test_path_is_local(match.group(0)):
+                    findings.append(
+                        FINDING_TEST_PATH.format(
+                            literal=match.group(0),
+                            path=path.relative_to(root),
+                            lineno=lineno,
+                        )
+                    )
     return findings
 
 
@@ -427,12 +575,57 @@ fn read_it(conn: &Connection) {
     conn.query_row("SELECT a FROM t WHERE source_details = ?1", params![v], |r| r.get(0)).unwrap();
 }
 """
+    neg_blob_where = """
+fn tag_where(conn: &Connection) {
+    tx.execute(
+        "UPDATE item_transactions SET source_kind = ?1 WHERE source_details = ?2",
+        params![kind, blob],
+    ).unwrap();
+}
+"""
+    multi_sig = """
+fn claim_receipt(
+    conn: &Connection,
+    item: &str,
+) -> bool {
+    conn.execute("UPDATE t SET a = 1", []).ok();
+    conn.execute("INSERT INTO t (a) VALUES (1)", []).is_ok()
+}
+"""
     check("bare blob overwrite fires", has_blob_overwrite(pos_blob))
     check("json_set merge silent", not has_blob_overwrite(neg_blob_merge))
     check("select filter silent", not has_blob_overwrite(neg_blob_select))
+    check("where predicate silent", not has_blob_overwrite(neg_blob_where))
 
     fns = functions([(i + 1, ln) for i, ln in enumerate(pos_update_ok.splitlines())])
     check("fn segmentation finds claim", len(fns) == 1 and fns[0][0] == 2)
+    fns_multi = functions([(i + 1, ln) for i, ln in enumerate(multi_sig.splitlines())])
+    check(
+        "multiline signature keeps body",
+        len(fns_multi) == 1
+        and "INSERT INTO t" in fns_multi[0][1]
+        and update_ok_findings(fns_multi[0][1]) == ["t"],
+    )
+    for literal in [
+        '"C:/Users/TestUser/AppData/Reports/x.json"',
+        '"C:/Users/Test/ChatLogs/Chat-26-03-06.log"',
+        '"com.example.glogger|/home/u/.local/share/glogger"',
+        '"C:/books/SkillReport_1.txt"',
+        '"C:/Games/Reports/Character_Alice.json"',
+        '"Saved report to C:/.../Reports/Character_Foo.json"',
+        '"Teleportation Status:\\n\\nPrimary Bind Location: Serbule"',
+        '"{\\"Title\\":\\"Skill Info\\"}"',
+        '"https://cdn.projectgorgon.com/v1/data/x.json"',
+    ]:
+        check(f"synthetic path silent: {literal[:40]}", not test_path_is_local(literal))
+    for literal in [
+        '"C:/Users/cprivitere/AppData/LocalLow/Elder Game/Project Gorgon/ChatLogs/Chat-26-11-19.log"',
+        '"D:/data/glogger.db"',
+        '"C:\\\\Users\\\\cprivitere\\\\glogger.db"',
+        '"/Users/cprivitere/Library/Logs/x.log"',
+        '"/home/dev/.local/share/glogger.db"',
+    ]:
+        check(f"machine path fires: {literal[:40]}", test_path_is_local(literal))
     return 1 if failures else 0
 
 

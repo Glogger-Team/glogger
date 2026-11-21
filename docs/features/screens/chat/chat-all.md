@@ -2,7 +2,7 @@
 
 ## Overview
 
-The most feature-rich chat tab — search across all messages from all channels with advanced filtering.
+The most feature-rich chat tab — search across all non-JSON messages from all channels with advanced filtering.
 
 ## How It Works
 

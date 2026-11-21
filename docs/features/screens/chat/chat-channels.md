@@ -6,7 +6,7 @@ Browse public and custom chat channels (Global, Trade, Help, LFG, etc.) with per
 
 ## How It Works
 
-- **Channel sidebar** — lists all channels with message counts
+- **Channel sidebar** — lists all non-JSON channels with message counts
 - **Select a channel** to view its messages in the main panel
 - **Search** within the selected channel by message text
 - **Paginated loading** — 100 messages per page with "Load More"

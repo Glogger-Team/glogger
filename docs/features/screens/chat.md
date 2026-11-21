@@ -19,14 +19,14 @@ The screen also hosts a **Poems** tab — a browsable, searchable collection of 
 
 **Frontend (Vue/TS):**
 
-- `src/components/Chat/ChatView.vue` — 10-tab container
+- `src/components/Chat/ChatView.vue` — 11-tab container
 - `src/components/Chat/ChatMessageList.vue` — shared paginated message renderer
 - `src/components/Chat/ChatSearchView.vue` — unified search; results open in the day's real log
 - `src/utils/displayDay.ts` — display-timezone day bucketing (offset → day / UTC day bounds) shared by the day picker, windows and headers
 - `src/components/Chat/ChatMessage.vue` — individual message display
 - `src/components/Chat/MessageWithItemLinks.vue` — item link detection and rendering
 - `src/utils/parseSearchQuery.ts` — search query parser for `from:`/`in:` operators
-- Channel views: `ChannelView`, `TellsView`, `PartyView`, `NearbyView`, `GuildView`, `SystemView`, `AllMessagesView`, `WatchwordsView`
+- Channel views: `ChannelView`, `TellsView`, `PartyView`, `NearbyView`, `GuildView`, `SystemView`, `AllMessagesView`, `JsonView`, `WatchwordsView`
 - `src/components/Chat/PoemsView.vue` — recorded-poems browser (list + full-poem viewer with prev/next)
 
 **Poems pipeline (Rust):**
@@ -42,15 +42,16 @@ The screen also hosts a **Poems** tab — a browsable, searchable collection of 
 ### Component Hierarchy
 
 ```text
-ChatView.vue                        — 9-tab container
-├── ChatSearchView.vue              — unified search (default tab)
+ChatView.vue                        — 11-tab container
+├── ChatSearchView.vue              — unified search (raw JSON lines stay searchable here)
 ├── ChannelView.vue                 — public/custom channels with sidebar
 ├── TellsView.vue                   — direct messages with conversation list
 ├── PartyView.vue                   — party channel
 ├── NearbyView.vue                  — nearby/local chat
 ├── GuildView.vue                   — guild chat
 ├── SystemView.vue                  — system/status messages
-├── AllMessagesView.vue             — global search across all channels
+├── AllMessagesView.vue             — every non-JSON message (default tab)
+├── JsonView.vue                    — raw `JSON:*` lines only
 ├── WatchwordsView.vue              — rule-based filtering and alerts
 └── PoemsView.vue                   — recorded poems (self-contained; list + viewer)
 
@@ -64,7 +65,8 @@ Shared:
 - [chat-channels.md](chat/chat-channels.md) — Channels
 - [chat-tells.md](chat/chat-tells.md) — Tells (Direct Messages)
 - [chat-simple.md](chat/chat-simple.md) — Party, Nearby, Guild, System
-- [chat-all.md](chat/chat-all.md) — All Messages (Global Search)
+- [chat-all.md](chat/chat-all.md) — All Messages (default tab; every non-JSON message)
+- [chat-json.md](chat/chat-json.md) — JSON (raw `JSON:*` lines)
 - [chat-watchwords.md](chat/chat-watchwords.md) — Watchwords (Alert Rules)
 
 ## Shared Components
@@ -99,7 +101,7 @@ Parses message text to detect `[Item: ItemName]` patterns and renders them as `I
 ### Import & Tailing
 
 - `scan_chat_logs(path) → ScanResult` — bulk import all chat logs from directory
-- `scan_chat_log_file(path) → ScanResult` — import single file
+- `scan_chat_log_file(path) → ScanResult` — re-read one selected file from the start; already-imported lines report zero new messages
 - `tail_chat_log(chat_log_file) → Vec<ChatMessage>` — continuous import of active log
 
 ### Query
@@ -135,10 +137,17 @@ interface ChatFilter {
   limit?: number;
   offset?: number;
   sortOrder?: 'asc' | 'desc';
+  jsonScope?: 'only' | 'exclude';
 }
 ```
 
 ## Key Design Decisions
+
+- **JSON lines live in their own tab** — raw `JSON:*` rows are stored with
+  `channel = 'JSON:<Type>'`. `ChatFilter.jsonScope` selects only them
+  (`'only'`, the JSON tab) or hides them everywhere else (`'exclude'`,
+  every chat view except Search, which never sets the scope). Watchwords and
+  the Channels sidebar apply the same exclusion.
 
 - **FTS indexing** — full-text search via SQLite FTS5 for fast text queries across potentially millions of messages.
 - **Item link extraction at parse time** — item references are detected during import and stored in a separate table, enabling "item links only" filtering without re-scanning messages.

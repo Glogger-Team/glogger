@@ -26,7 +26,7 @@ import ChatMessageList from './ChatMessageList.vue'
 import { useChatDateNav } from '../../composables/useChatDateNav'
 import { useChatRequestGuard } from '../../composables/useChatRequestGuard'
 
-const dateNav = useChatDateNav()
+const dateNav = useChatDateNav('exclude')
 const reqGuard = useChatRequestGuard()
 
 const messages = ref<ChatMessage[]>([])
@@ -42,6 +42,7 @@ async function loadMessages() {
   try {
     const filter: ChatFilter = {
       ...dateNav.filterParams(),
+      jsonScope: 'exclude',
       channel: 'Nearby',
       limit: LIMIT,
       offset: offset.value,

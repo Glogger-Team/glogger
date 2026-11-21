@@ -177,6 +177,9 @@ pub struct DispatchCtx<'a> {
     pub msg: &'a ChatMessage,
     pub local_ts: &'a str,
     pub watch_rules: &'a [WatchRule],
+    /// True on scan/tail paths (rescan-safe skips apply); false on the live
+    /// drain, where every line is fresh and provisional rows are wanted.
+    pub is_scan: bool,
 }
 
 /// One ledger row pending the replay guard.
@@ -190,6 +193,9 @@ pub struct ItemLedgerCtx<'a> {
     pub quantity: u32,
     pub context: &'a str,
     pub survey_use_id: Option<i64>,
+    /// Mirrors `DispatchCtx::is_scan`: scans skip provisional rows that
+    /// are already past the link-up window instead of writing-then-sweeping.
+    pub is_scan: bool,
 }
 
 /// Run every idempotent structured arm for one chat message.
@@ -437,6 +443,7 @@ fn dispatch_status_event(
                         quantity: *quantity,
                         context,
                         survey_use_id,
+                        is_scan: ctx.is_scan,
                     },
                 ) {
                     out.staged_gains.push((item_name.clone(), *quantity));
@@ -545,6 +552,17 @@ fn dispatch_status_event(
     }
 }
 
+/// True when a UTC `"%Y-%m-%d %H:%M:%S"` timestamp is older than the
+/// unlinked-gain retention window. Fail-open: malformed timestamps never
+/// skip (the sweeper owns those). Lexicographic compare is chronological
+/// in this fixed format.
+fn is_older_than_retention(timestamp: &str) -> bool {
+    if timestamp.len() != 19 {
+        return false;
+    }
+    let cutoff = chrono::Utc::now() - chrono::Duration::hours(crate::db::unknown_source_commands::UNLINKED_GAIN_RETENTION_HOURS);
+    timestamp < cutoff.format("%Y-%m-%d %H:%M:%S").to_string().as_str()
+}
 
 /// Insert a chat-sourced item ledger row, skipping when the identical row
 /// already exists (replay-safe re-scan). Returns `true` when a row was
@@ -552,6 +570,13 @@ fn dispatch_status_event(
 /// supplied a use id; scan paths leave rows untagged for the tracker's
 /// retro-claim step.
 fn insert_item_transaction_guarded(db: &DbPool, item: ItemLedgerCtx<'_>) -> bool {
+    // Kill-only ledger: scans never write provisional rows that are already
+    // past the link-up window — the end-of-scan sweep would delete them in
+    // the same pass. Sourced rows (survey tag) always write; live lines are
+    // always fresh so the live drain never skips.
+    if item.is_scan && item.survey_use_id.is_none() && is_older_than_retention(item.timestamp) {
+        return false;
+    }
     let Ok(conn) = db.get_write() else {
         return false;
     };
@@ -613,7 +638,16 @@ fn insert_json_receipt_guarded(
     quantity: u32,
     from_name: Option<&str>,
     from_entity_id: Option<i64>,
+    // Mirrors `DispatchCtx::is_scan`: scans skip bare provisional receipts
+    // already past the link-up window; sourced rows (entity present) always
+    // write so the twin claim and kill link converge on rescans.
+    is_scan: bool,
 ) -> bool {
+    // Kill-only ledger, JSON side: a bare old receipt could never attribute,
+    // and the end-of-scan sweep would delete it in the same pass.
+    if is_scan && from_entity_id.is_none() && is_older_than_retention(timestamp) {
+        return false;
+    }
     let Ok(conn) = db.get_write() else {
         return false;
     };
@@ -738,11 +772,14 @@ fn insert_json_receipt_guarded(
 /// never persisted, and `Player.log` skill snapshots are gone.
 /// `xp` here is an AWARDED INCREMENT, not a total (proven by the live
 /// fixture: Riding 250 → 350 → 300 across three lines — totals cannot fall).
-/// Identical resends (same timestamp) are no-ops; newer lines accumulate.
-/// A second award in the same second is dropped, as is an older award
-/// arriving after a newer one — second-granularity logs give no key that
-/// separates either from its own replay. (Per-award reconciliation against
-/// snapshot anchors would need a per-award ledger; see TODO.)
+/// Identical resends (same timestamp) are no-ops; newer lines accumulate —
+/// but only within a level. An award that raises the level stores just the
+/// award: the previous level's within-level progress must not carry forward
+/// (a snapshot-seeded balance plus a later award would otherwise sum into
+/// the new level). A second award in the same second is dropped, as is an
+/// older award arriving after a newer one — second-granularity logs give no
+/// key that separates either from its own replay. (Per-award reconciliation
+/// against snapshot anchors would need a per-award ledger; see TODO.)
 #[allow(clippy::too_many_arguments)]
 fn upsert_chat_xp(
     conn: &rusqlite::Connection,
@@ -761,7 +798,8 @@ fn upsert_chat_xp(
          ON CONFLICT(character_name, server_name, skill_id) DO UPDATE SET
             skill_name = excluded.skill_name,
             level = excluded.level,
-            xp = game_state_skills.xp + excluded.xp,
+            xp = CASE WHEN excluded.level > game_state_skills.level THEN excluded.xp
+                      ELSE game_state_skills.xp + excluded.xp END,
             last_confirmed_at = CASE WHEN excluded.last_confirmed_at > game_state_skills.last_confirmed_at THEN excluded.last_confirmed_at ELSE game_state_skills.last_confirmed_at END,
             source = excluded.source
          WHERE (excluded.last_confirmed_at > game_state_skills.last_confirmed_at AND excluded.level >= game_state_skills.level)
@@ -834,6 +872,7 @@ fn dispatch_json_event(
                     *quantity,
                     from_name.as_deref(),
                     (*from_entity_id).map(|n| n as i64),
+                    ctx.is_scan,
                 ) {
                     out.staged_gains.push((item_name.clone(), *quantity));
                 }
@@ -927,15 +966,21 @@ fn dispatch_json_event(
                         // Identical re-read: advance the observation time so
                         // this row stays the newest observation. No domain,
                         // no imports — rescan stays silent.
-                        // Swallowed intentionally: this identical row already persisted, so a failed bump only leaves captured_at stale — nothing downstream to fail.
-                        conn.execute(
+                        if let Err(e) = conn.execute(
                             "UPDATE game_state_books SET captured_at = ?5
                              WHERE character_name = ?1 AND server_name = ?2
                                AND book_type = ?3 AND title = ?4
                                AND captured_at < ?5",
                             rusqlite::params![id.character, id.server, book_type, title, observed],
-                        )
-                        .ok();
+                        ) {
+                            // Recency bump failed: the write path is broken, so
+                            // fail closed (report + return) rather than falling
+                            // through to the INSERT — the return discards
+                            // `current` with the function, so caller-side
+                            // imports never derive from this row.
+                            eprintln!("[dispatch] JSON book captured_at bump failed: {e}");
+                            return;
+                        }
                     }
                     if !same
                         && conn
@@ -1159,6 +1204,31 @@ fn dispatch_json_event(
                 )
             {
                 out.domain("player_messages");
+            }
+        }
+        E::WordDiscovered {
+            timestamp,
+            word,
+            power_name,
+            description,
+        } => {
+            if let Some(id) = ctx.identity
+                && let Ok(conn) = ctx.db.get_write()
+            {
+                // Words are consumed game-wide when spoken, so the word
+                // itself is the rescan key: rediscovery never duplicates.
+                let rows = conn
+                    .execute(
+                        "INSERT INTO words_of_power (character_name, server_name, word, power_name, description, discovered_at, source)
+                         SELECT ?1, ?2, ?3, ?4, ?5, ?6, 'chat'
+                         WHERE NOT EXISTS (SELECT 1 FROM words_of_power
+                                            WHERE character_name = ?1 AND server_name = ?2 AND word = ?3)",
+                        rusqlite::params![id.character, id.server, word, power_name, description, timestamp],
+                    )
+                    .unwrap_or(0);
+                if rows > 0 {
+                    out.domain("words_of_power");
+                }
             }
         }
         E::Unknown { json_type } => {
@@ -1604,6 +1674,30 @@ mod tests {
                 msg,
                 local_ts,
                 watch_rules: &[],
+                // Live path: old pinned timestamps must still write.
+                is_scan: false,
+            },
+            None,
+            st,
+        )
+    }
+    fn dispatch_scan(
+        pool: &DbPool,
+        gd: &GameDataState,
+        identity: Option<&DispatchIdentity>,
+        msg: &ChatMessage,
+        local_ts: &str,
+        st: &mut DispatchState<'_>,
+    ) -> DispatchOutcome {
+        dispatch_chat_message(
+            DispatchCtx {
+                db: pool,
+                game_data: gd,
+                identity,
+                msg,
+                local_ts,
+                watch_rules: &[],
+                is_scan: true,
             },
             None,
             st,
@@ -2012,6 +2106,7 @@ mod tests {
             1,
             Some("Olugax The Ever-Pudding"),
             Some(257400),
+            false,
         );
         let conn = pool.get().unwrap();
         let stamped: i64 = conn
@@ -2172,19 +2267,93 @@ mod tests {
         let first = insert_json_receipt_guarded(
             &pool, ts, "Alice", "Dreva", "Coin Sack", None, None, 1,
             Some("Slime A"), Some(1001),
+            false,
         );
         assert!(first);
         let second = insert_json_receipt_guarded(
             &pool, ts, "Alice", "Dreva", "Coin Sack", None, None, 1,
             Some("Slime B"), Some(1002),
+            false,
         );
         assert!(second, "second entity's receipt is a distinct gain");
         let resend = insert_json_receipt_guarded(
             &pool, ts, "Alice", "Dreva", "Coin Sack", None, None, 1,
             Some("Slime A"), Some(1001),
+            false,
         );
         assert!(!resend, "byte-identical resend collapses");
         assert_eq!(item_rows(&pool).len(), 2);
+    }
+
+    #[test]
+    fn scan_skips_old_unsourced_english_gain() {
+        // Kill-only ledger: a scan of an old English loot line with no
+        // survey tag writes nothing (the end-of-scan sweep would delete it
+        // in the same pass). Pinned old date stays old forever.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:50:27";
+        let english = status_msg("Mandrake Root x5 added to inventory.", ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch_scan(&pool, &gd, Some(&id()), &english, ts, &mut st);
+        assert!(out.staged_gains.is_empty());
+        assert_eq!(item_rows(&pool).len(), 0);
+    }
+
+    #[test]
+    fn scan_keeps_old_sourced_json_receipt() {
+        // A sourced receipt always writes, even old and on a scan: it
+        // carries the kill link the ledger keeps.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:50:27";
+        let json = json_msg("AddItem", LOOT_BODY, ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch_scan(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert_eq!(out.staged_gains.len(), 1);
+        let rows = item_rows(&pool);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].3, Some(257400));
+    }
+
+    #[test]
+    fn scan_skips_old_bare_json_receipt() {
+        // A bare old receipt could never attribute: skip it.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:50:27";
+        let bare = "{\"Name\": \"Mandrake Root\", \"TypeId\": 1012, \"Stack\": 5, \"Flags\": []}";
+        let json = json_msg("AddItem", bare, ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch_scan(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out.staged_gains.is_empty());
+        assert_eq!(item_rows(&pool).len(), 0);
+    }
+
+    #[test]
+    fn live_keeps_old_unsourced_english_gain() {
+        // The live drain writes provisional rows regardless of age; the
+        // sweeper owns aging them out. Pinned old date proves the point.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:50:27";
+        let english = status_msg("Mandrake Root x5 added to inventory.", ts);
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &english, ts, &mut st);
+        assert_eq!(out.staged_gains.len(), 1);
+        assert_eq!(item_rows(&pool).len(), 1);
     }
 
     #[test]
@@ -2446,7 +2615,33 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!((level, xp), (6, 110));
+        // Level change stores just the award: the old level-5 progress (100)
+        // must not carry into level 6.
+        assert_eq!((level, xp), (6, 10));
+    }
+
+    #[test]
+    fn upsert_chat_xp_same_level_awards_accumulate() {
+        let (pool, _guard) = test_pool();
+        let conn = pool.get_write().unwrap();
+        conn.execute(
+            "INSERT INTO game_state_skills
+                (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
+             VALUES ('Alice', 'Dreva', 7, 'Sword', 5, 5, 0, 100, 0, 0, '2026-11-17 10:00:00', 'snapshot')",
+            [],
+        )
+        .unwrap();
+        let changed = upsert_chat_xp(&conn, "Alice", "Dreva", 7, "Sword", 5, 50, "2026-11-17 11:00:00");
+        assert!(changed);
+        let (level, xp): (i64, i64) = conn
+            .query_row(
+                "SELECT level, xp FROM game_state_skills
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND skill_id = 7",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((level, xp), (5, 150));
     }
 
     #[test]
@@ -2763,6 +2958,50 @@ mod tests {
             .unwrap();
         assert_eq!(row.0, "Eveline Rastin".to_string());
         assert!(row.1.contains("Ushug"));
+    }
+
+    #[test]
+    fn json_tip_discovery_records_word_rescan_safe() {
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-19 21:48:19";
+        let msgs = crate::chat_parser::parse_chat_lines(include_str!("../../test_data/vip_json/chat-tip.log"));
+        assert_eq!(msgs.len(), 11);
+        // First pass: ten discoveries write, the dementia tip does not.
+        let mut hit = false;
+        for msg in &msgs {
+            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            let out = dispatch(&pool, &gd, Some(&id()), msg, ts, &mut st);
+            hit |= out.domains.iter().any(|d| d == "words_of_power");
+        }
+        assert!(hit);
+        // Second pass (rescan): rediscovery never duplicates.
+        for msg in &msgs {
+            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            let out = dispatch(&pool, &gd, Some(&id()), msg, ts, &mut st);
+            assert!(out.domains.iter().all(|d| d != "words_of_power"));
+        }
+        let rows: Vec<(String, String, String, String)> = pool
+            .get_write()
+            .unwrap()
+            .prepare("SELECT word, power_name, source, discovered_at FROM words_of_power")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 10);
+        let breath = rows.iter().find(|(w, _, _, _)| w == "BWEPFYW").expect("BWEPFYW");
+        assert_eq!(breath.1, "Hold Your Breath");
+        assert_eq!(breath.2, "chat");
+        assert!(breath.3.starts_with("2026-11-19"));
+        // The dementia tip stays visible in unknown counters, never written.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &msgs[0], ts, &mut st);
+        assert_eq!(out.unknown_json, vec!["Tip".to_string()]);
     }
 
     #[test]
