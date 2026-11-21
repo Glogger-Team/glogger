@@ -236,7 +236,7 @@ PAIR_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]*)::([A-Z][A-Za-z0-9_]*)\b")
 def extract_identifiers(
     numbered: list[tuple[int, str]],
     cleaned_full: list[str],
-) -> tuple[set[str], set[str]]:
+) -> tuple[set[str], set[str], set[str]]:
     """Candidate doc-orphan names + `Enum::Variant` pairs from removed lines.
 
     `numbered` is (old-file line number, removed text) pairs;
@@ -244,8 +244,18 @@ def extract_identifiers(
     (`lex_source`), so block-comment/raw-string state at each removed line
     reflects the real file — lexing disconnected removals alone would
     misread state when delimiters sit on unchanged lines.
+
+    Returns `(idents, pairs, literals)`: `idents` is the full candidate
+    set (unchanged), `pairs` the `Enum::Variant` uses, and `literals`
+    the string-literal-derived subset minus `fn`/`struct`/`enum`
+    definition names on the same removed lines. A spelling that is both
+    a removed definition and a removed string stays a symbol: only the
+    definition path (`defined` in `main`) can clear it, so a live string
+    with the same spelling never suppresses a retired symbol (#212).
     """
     idents: set[str] = set()
+    def_names: set[str] = set()
+    lit_names: set[str] = set()
     removed_lines = [text for _, text in numbered]
     cleaned = [cleaned_full[n - 1] for n, _ in numbered if 1 <= n <= len(cleaned_full)]
     # fn/struct/enum definition names
@@ -258,6 +268,7 @@ def extract_identifiers(
             name = m.group(1)
             if len(name) >= 4 and name.lower() not in STOPWORDS:
                 idents.add(name)
+                def_names.add(name)
     # CamelCase tokens (enum-variant-ish, multi-word). Single-word
     # variants are covered by string-literal PascalCase when quoted.
     for line in cleaned:
@@ -285,7 +296,9 @@ def extract_identifiers(
             is_pascal = bool(re.fullmatch(r"[A-Z][A-Za-z0-9]*", s))
             if (is_kebab or is_pascal) and s.lower() not in STOPWORDS:
                 idents.add(s)
-    return idents, pairs
+                lit_names.add(s)
+    literals = lit_names - def_names
+    return idents, pairs, literals
 
 
 def old_content_for(path: str, ref: str) -> str | None:
@@ -352,6 +365,7 @@ def main() -> int:
     changed = collect_changed_rs(explicit_base)
     idents: set[str] = set()
     removed_pairs: set[str] = set()
+    removed_literals: set[str] = set()
 
     # Worktree diff (staged + unstaged) against HEAD - local scope only.
     # An explicit CI base already names the range (and the tree is clean),
@@ -370,9 +384,10 @@ def main() -> int:
             old = old_content_for(path, "HEAD")
             numbered = parse_minus_lines(diff, old)
             cleaned_full = lex_source(old) if old is not None else []
-            names, pairs = extract_identifiers(numbered, cleaned_full)
+            names, pairs, lits = extract_identifiers(numbered, cleaned_full)
             idents |= names
             removed_pairs |= pairs
+            removed_literals |= lits
 
     # Unpushed commits (or the explicit CI range)
     base = explicit_base if explicit_base is not None else unpushed_base()
@@ -390,19 +405,24 @@ def main() -> int:
             old = old_content_for(path, base)
             numbered = parse_minus_lines(diff, old)
             cleaned_full = lex_source(old) if old is not None else []
-            names, pairs = extract_identifiers(numbered, cleaned_full)
+            names, pairs, lits = extract_identifiers(numbered, cleaned_full)
             idents |= names
             removed_pairs |= pairs
+            removed_literals |= lits
 
     # Untracked files have no minus lines (nothing to extract).
-
     # A removed `fn` line is not a removed symbol: renames and signature
     # edits trip the extractor while the name still lives in the tree.
     # Only identifiers with no live definition can orphan a doc. Same for
     # `Enum::Variant` uses on removed arms: the variant survives while the
-    # pair still occurs anywhere in the tree.
+    # pair still occurs anywhere in the tree. Same for removed string
+    # literals (#212): an emit made conditional trips the extractor while
+    # the identical string still lives two lines down — only literals with
+    # no live quoted occurrence can orphan a doc. Symbol path is unchanged:
+    # `literals` already excludes `fn`/`struct`/`enum` definition names.
     defined: set[str] = set()
     live_pairs: set[str] = set()
+    live_strings: set[str] = set()
     for rs in (ROOT / "src-tauri" / "src").rglob("*.rs"):
         try:
             text = rs.read_text(encoding="utf-8")
@@ -412,9 +432,12 @@ def main() -> int:
             defined.add(m.group(1))
         for m in PAIR_RE.finditer(text):
             live_pairs.add(m.group(0))
+        for m in re.finditer(r'"([^"]*)"', text):
+            live_strings.add(m.group(1))
     idents -= defined
     for pair in removed_pairs & live_pairs:
         idents.discard(pair.split("::", 1)[1])
+    idents -= removed_literals & live_strings
 
     # Grep docs/
     docs_root = ROOT / "docs"
@@ -485,18 +508,50 @@ def self_test() -> int:
     full = lex_source(old)
     check("comment-hidden line blank", full[2] == "")
     check("post-block line kept", full[5] == "real_code = 1")
-    idents, _ = extract_identifiers(
+    idents, _, _ = extract_identifiers(
         [(3, "def FakeThing():"), (6, "real_code = 1")], full
     )
     check("comment-hidden def suppressed", "FakeThing" not in idents)
 
     old2 = "/* c */\npub struct VisibleWidget {\n}\n"
-    idents2, _ = extract_identifiers(
+    idents2, _, _ = extract_identifiers(
         [(2, "pub struct VisibleWidget {")], lex_source(old2)
     )
     check("post-block def fires", "VisibleWidget" in idents2)
-    idents3, _ = extract_identifiers([(1, "    // FromEntityId retired")], ["    "])
+    idents3, _, _ = extract_identifiers([(1, "    // FromEntityId retired")], ["    "])
     check("prose comment silent", not idents3)
+
+    # #212: a removed string literal that still occurs quoted in the new
+    # tree is not an orphan (unconditional emit made conditional, same
+    # string two lines down); a truly removed literal still fires; a
+    # retired definition with the same spelling as a live string stays a
+    # symbol only the definition path can clear.
+    lit_idents, _, lit_lits = extract_identifiers(
+        [(1, '    emit("game-state-updated");')], ["    emit();"]
+    )
+    check("kebab literal extracted", "game-state-updated" in lit_idents)
+    check("kebab literal tracked", "game-state-updated" in lit_lits)
+    check(
+        "still-live literal suppressed",
+        not (lit_idents - (lit_lits & {"game-state-updated"})),
+    )
+    check(
+        "truly-removed literal fires",
+        (lit_idents - (lit_lits & {"something-else"})) == {"game-state-updated"},
+    )
+    both_idents, _, both_lits = extract_identifiers(
+        [
+            (1, "    pub struct RetiredWidget {"),
+            (2, '    emit("RetiredWidget");'),
+        ],
+        ["    pub struct RetiredWidget {", "    emit();"],
+    )
+    check("retired def fires", "RetiredWidget" in both_idents)
+    check("retired def not a literal", "RetiredWidget" not in both_lits)
+    check(
+        "live string never clears a retired symbol",
+        "RetiredWidget" in (both_idents - (both_lits & {"RetiredWidget"})),
+    )
     return 1 if failures else 0
 
 
