@@ -582,7 +582,9 @@ impl SurveySessionAggregator {
         // read guard dedups those.
         // Fail-dangerous guards: a busy/locked DB error is "unknown", never
         // "not counted". Bumping blind would double-count loot_qty with no
-        // error and no log; skipping is healable via retro-claim.
+        // error and no log; skipping leaves the row untagged with no qty
+        // behind it (a later rescan or retro-claim heals cleanly) instead
+        // of a bumped qty a later claim would double-count.
         let tagged = match persistence::player_gain_already_counted(
             conn,
             use_id,
@@ -947,6 +949,69 @@ mod tests {
             .expect("read use")
             .expect("use present");
         assert_eq!(stored.loot_qty, 0);
+    }
+
+    #[test]
+    fn twin_guard_error_skips_bump_and_retro_claim_heals() {
+        // Fail-dangerous guard regression: a guard query error is
+        // "unknown", never "not counted". With the ledger table renamed
+        // away, the twin-guard query fails → attribution returns None
+        // and loot_qty stays 0 (no blind bump). Restoring the table and
+        // running the retro-claim sweep then heals the same Basic-window
+        // gain onto the use.
+        let conn = fresh_db();
+        let mut agg = empty_aggregator();
+        let use_id = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+        conn.execute(
+            "ALTER TABLE item_transactions RENAME TO item_transactions_hidden",
+            [],
+        )
+        .expect("hide ledger table");
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "Zenith",
+            "Dreva",
+            Some("IronOre"),
+            2,
+            "2026-04-15 12:00:00",
+            None,
+        );
+        assert_eq!(hit, None);
+        let stored = persistence::get_use(&conn, use_id)
+            .expect("read use")
+            .expect("use present");
+        assert_eq!(stored.loot_qty, 0);
+        conn.execute(
+            "ALTER TABLE item_transactions_hidden RENAME TO item_transactions",
+            [],
+        )
+        .expect("restore ledger table");
+        // The skipped gain's ledger row, still untagged.
+        conn.execute(
+            "INSERT INTO item_transactions
+                (timestamp, character_name, server_name, item_name, quantity, context, source)
+             VALUES ('2026-04-15 12:00:00', 'Zenith', 'Dreva', 'Iron Ore', 2, 'loot', 'chat_status')",
+            [],
+        )
+        .expect("insert skipped gain");
+        // Retro-claim sweep: the same calls record_manual_use makes for
+        // Basic uses (claim rows, then bump the use).
+        let claimed = persistence::claim_unlinked_chat_loot_near(
+            &conn,
+            use_id,
+            "Zenith",
+            "Dreva",
+            "2026-04-15 12:00:00",
+            CHAT_BASIC_WINDOW_SECS as u32,
+            false,
+        )
+        .expect("retro-claim");
+        assert_eq!(claimed, 2);
+        persistence::add_loot_qty(&conn, use_id, claimed).expect("heal bump");
+        let stored = persistence::get_use(&conn, use_id)
+            .expect("read use")
+            .expect("use present");
+        assert_eq!(stored.loot_qty, 2);
     }
 
     #[test]

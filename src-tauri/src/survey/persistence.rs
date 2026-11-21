@@ -434,7 +434,8 @@ pub fn player_gain_already_counted(
 ) -> Result<bool> {
     // Fail-dangerous if downgraded: a query error must NEVER read as "not
     // counted" — that double-bumps loot_qty with no error and no log.
-    // Callers skip attribution on Err (healable via retro-claim).
+    // Callers skip attribution on Err (a later rescan or retro-claim
+    // heals cleanly).
     let counted: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM item_transactions
           WHERE survey_use_id = ?1
