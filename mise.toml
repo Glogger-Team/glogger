@@ -102,7 +102,7 @@ run = ["npm run build"]
 
 [tasks."lint:typecheck"]
 description = "Frontend type-check only, no bundle (push slice)"
-run = ["npm run typecheck"]
+run = ["test -f node_modules/.bin/vue-tsc || (echo 'node_modules missing in this checkout: run mise exec -- npm install' >&2; exit 1)", "npm run typecheck"]
 
 [tasks."lint:clippy"]
 description = "Clippy deny-warnings on all targets (push slice)"
