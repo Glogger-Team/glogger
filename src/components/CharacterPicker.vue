@@ -102,8 +102,6 @@ import { invoke } from '@tauri-apps/api/core'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useGameStateStore } from '../stores/gameStateStore'
 import { useCharacterStore } from '../stores/characterStore'
-import { useCombatStore } from '../stores/combatStore'
-import { useDeathStore } from '../stores/deathStore'
 import type { UserCharacter } from '../stores/startupStore'
 
 defineProps<{
@@ -166,44 +164,15 @@ async function switchTo(char: UserCharacter) {
 
   // Clear session-scoped state synchronously under the new identity so no
   // stale rows from the previous character render while the reloads run.
-  // The async re-seed (loadDeaths + historic baseline) stays after the
-  // awaits below; the generation bump drops an in-flight loadDeaths for the
-  // previous character instead of overwriting the new rows.
-  clearSessionForCharacter()
+  // The async re-seed stays after the awaits below. Both live on the game
+  // state store, shared with the character-login listener.
+  gameStateStore.clearSessionForCharacter()
 
   await gameStateStore.loadAll()
   characterStore.initForActiveCharacter()
-  await reloadCombatAndDeathsForCharacter()
+  await gameStateStore.reloadCombatAndDeathsForCharacter()
 
   open.value = false
-}
-
-// Session + per-character live state clears synchronously on identity change
-// (switch, add, delete-active, login): session skills and live inventory are
-// keyed to whoever was active, combat is live-only, deaths are per-character.
-// Runs before any await so stale rows never render while the reloads run.
-// The generation bump makes an in-flight loadDeaths for the previous
-// character drop its result instead of overwriting the new rows.
-function clearSessionForCharacter() {
-  const combatStore = useCombatStore()
-  const deathStore = useDeathStore()
-  gameStateStore.resetSessionSkills()
-  gameStateStore.clearLiveInventory()
-  combatStore.resetForCharacter()
-  deathStore.deathsGeneration++
-  deathStore.deaths = []
-  deathStore.loaded = false
-}
-
-// Async re-seed after the gameState/character reloads above (same order as
-// the character-login listener in gameStateStore).
-async function reloadCombatAndDeathsForCharacter() {
-  const combatStore = useCombatStore()
-  const deathStore = useDeathStore()
-  await deathStore.loadDeaths()
-  // resetForCharacter cleared baselineLoaded; re-seed it so keep-alive views
-  // (which won't remount) get lifetime totals back.
-  void combatStore.loadHistoricBaseline()
 }
 
 function confirmDelete(char: UserCharacter) {
@@ -241,7 +210,7 @@ async function doDelete() {
   // The deleted character's session state is gone with its rows: when it was
   // active, clear session/live/combat/deaths under the (now null) identity.
   // The generation bump drops any in-flight loadDeaths for it.
-  if (wasActive) clearSessionForCharacter()
+  if (wasActive) gameStateStore.clearSessionForCharacter()
   // Reopen the picker
   await loadCharacters()
   open.value = true
@@ -273,11 +242,11 @@ async function addCharacter() {
 
   // Same split as switchTo: clear synchronously under the new identity, then
   // re-seed after the awaits.
-  clearSessionForCharacter()
+  gameStateStore.clearSessionForCharacter()
 
   await gameStateStore.loadAll()
   characterStore.initForActiveCharacter()
-  await reloadCombatAndDeathsForCharacter()
+  await gameStateStore.reloadCombatAndDeathsForCharacter()
 
   open.value = false
 }

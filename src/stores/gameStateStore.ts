@@ -1291,6 +1291,34 @@ export const useGameStateStore = defineStore('gameState', () => {
       console.error('[gameStateStore] Failed to load storage vault metadata:', e)
     }
   }
+  // ── Character-switch session reset ────────────────────────────────────
+  // Session + per-character live state clears synchronously on identity
+  // change (switch, add, delete-active, login): session skills and live
+  // inventory are keyed to whoever was active, combat is live-only, deaths
+  // are per-character. Runs before any await so stale rows never render
+  // while the reloads run. The generation bump makes an in-flight loadDeaths
+  // for the previous character drop its result instead of overwriting the
+  // new rows.
+  function clearSessionForCharacter() {
+    const combatStore = useCombatStore()
+    const deathStore = useDeathStore()
+    resetSessionSkills()
+    clearLiveInventory()
+    combatStore.resetForCharacter()
+    deathStore.deathsGeneration++
+    deathStore.deaths = []
+    deathStore.loaded = false
+  }
+
+  // Async re-seed after the gameState/character reloads. resetForCharacter
+  // cleared baselineLoaded; re-seed it so keep-alive views (which won't
+  // remount) get lifetime totals back.
+  async function reloadCombatAndDeathsForCharacter() {
+    const combatStore = useCombatStore()
+    const deathStore = useDeathStore()
+    await deathStore.loadDeaths()
+    void combatStore.loadHistoricBaseline()
+  }
   // ── Event Listeners ───────────────────────────────────────────────────
 
   listen<string[]>('game-state-updated', (event) => {
@@ -1330,19 +1358,10 @@ export const useGameStateStore = defineStore('gameState', () => {
 
     if (!startupComplete.value) return
 
-    // Same order as the picker switch path (its helpers live in the
-    // component, so the sequence is written out here): clear session-scoped
-    // state synchronously under the new identity, reload, then re-seed
-    // deaths + combat baseline. The generation bump drops an in-flight
-    // loadDeaths for the previous character.
-    resetSessionSkills()
-    clearLiveInventory()
-    const combatStore = useCombatStore()
-    const deathStore = useDeathStore()
-    combatStore.resetForCharacter()
-    deathStore.deathsGeneration++
-    deathStore.deaths = []
-    deathStore.loaded = false
+    // Same order as the picker switch path: clear session-scoped state
+    // synchronously under the new identity, reload, then re-seed deaths +
+    // combat baseline.
+    clearSessionForCharacter()
 
     await loadAll()
 
@@ -1350,10 +1369,7 @@ export const useGameStateStore = defineStore('gameState', () => {
     const characterStore = useCharacterStore()
     characterStore.initForActiveCharacter()
 
-    await deathStore.loadDeaths()
-    // resetForCharacter cleared baselineLoaded; re-seed it so keep-alive
-    // views (which won't remount) get lifetime totals back.
-    void combatStore.loadHistoricBaseline()
+    await reloadCombatAndDeathsForCharacter()
   })
 
   // ── Public API ────────────────────────────────────────────────────────
@@ -1463,6 +1479,9 @@ export const useGameStateStore = defineStore('gameState', () => {
     loadAll,
     refreshDomain,
     loadStorageVaults,
+    // Character-switch session reset (shared by picker + login listener)
+    clearSessionForCharacter,
+    reloadCombatAndDeathsForCharacter,
 
     // Startup lifecycle
     startupComplete,
