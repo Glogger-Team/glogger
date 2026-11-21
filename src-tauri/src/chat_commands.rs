@@ -903,14 +903,20 @@ pub async fn get_chat_messages(
 #[tauri::command(rename_all = "camelCase")]
 pub async fn get_chat_days(
     offset_seconds: Option<i64>,
+    json_scope: Option<String>,
     db_pool: State<'_, DbPool>,
 ) -> Result<Vec<chat_commands::ChatDayRow>, String> {
     let conn = db_pool.get().map_err(|e| format!("Database error: {e}"))?;
 
     // `offsetSeconds` = viewer's display timezone (seconds east of UTC), so the
-    // day list matches the times the UI renders.
-    chat_commands::get_chat_days(&conn, offset_seconds.unwrap_or(0))
-        .map_err(|e| format!("Failed to get chat days: {e}"))
+    // day list matches the times the UI renders. `jsonScope` narrows the
+    // counts to the asking tab (same values as `get_chat_messages`).
+    chat_commands::get_chat_days(
+        &conn,
+        offset_seconds.unwrap_or(0),
+        parse_json_scope(json_scope)?,
+    )
+    .map_err(|e| format!("Failed to get chat days: {e}"))
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -39,7 +39,7 @@ export interface ChatDateNav {
   filterParams: () => { startTime?: string, endTime?: string }
 }
 
-export function useChatDateNav(): ChatDateNav {
+export function useChatDateNav(jsonScope?: 'only' | 'exclude'): ChatDateNav {
   const days = ref<ChatDay[]>([])
   const activeDay = ref<string | null>(null)
   // Display shift for the current Local/Server/UTC mode. Switching the mode
@@ -49,7 +49,7 @@ export function useChatDateNav(): ChatDateNav {
 
   async function loadDays() {
     try {
-      days.value = await invoke<ChatDay[]>('get_chat_days', { offsetSeconds: offsetSeconds.value })
+      days.value = await invoke<ChatDay[]>('get_chat_days', { offsetSeconds: offsetSeconds.value, jsonScope })
       // Drop the active day if it vanished (e.g. admin purge)
       if (activeDay.value && !days.value.some(d => d.day === activeDay.value)) {
         activeDay.value = null

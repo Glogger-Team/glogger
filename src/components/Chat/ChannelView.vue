@@ -63,7 +63,7 @@ import ChatMessageList from './ChatMessageList.vue'
 import { useChatDateNav } from '../../composables/useChatDateNav'
 import { useChatRequestGuard } from '../../composables/useChatRequestGuard'
 
-const dateNav = useChatDateNav()
+const dateNav = useChatDateNav('exclude')
 const reqGuard = useChatRequestGuard()
 
 const selectedChannel = ref<string | null>(null)

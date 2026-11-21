@@ -540,6 +540,33 @@ def self_test() -> int:
         "split shape detected",
         columns_of_create("CREATE TABLE t (a INTEGER, c TEXT)", "t") != {"a", "b"},
     )
+    split_conn = sqlite3.connect(":memory:")
+    split_conn.executescript(
+        "CREATE TABLE t1 (id INTEGER, name TEXT);CREATE TABLE t2 (id INTEGER);"
+    )
+    real_defs = app_table_defs
+    try:
+        globals()["app_table_defs"] = lambda: [
+            (
+                "t1",
+                "CREATE TABLE t1 (id INTEGER, name TEXT, extra TEXT)",
+                "app.rs",
+                1,
+                False,
+            ),
+            ("t2", "CREATE TABLE t2 (id INTEGER)", "app.rs", 2, False),
+        ]
+        split_hits = check_splits(split_conn)
+    finally:
+        globals()["app_table_defs"] = real_defs
+    check(
+        "split probe fires on divergent table",
+        len(split_hits) == 1 and "t1" in split_hits[0],
+    )
+    check(
+        "split probe silent on matching table",
+        all("t2" not in hit for hit in split_hits),
+    )
     return 1 if failures else 0
 
 

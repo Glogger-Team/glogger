@@ -497,13 +497,28 @@ pub fn build_fts_match_expr(search_text: &str) -> Option<String> {
 /// times the UI renders. Without it a non-UTC viewer's day list disagrees
 /// with the displayed times near midnight (the day's window shows the
 /// previous/next day's timestamps).
-pub fn get_chat_days<C: DbRead + ?Sized>(conn: &C, offset_seconds: i64) -> Result<Vec<ChatDayRow>> {
-    let mut stmt = conn.prepare(
+///
+/// `json_scope` narrows the counts to the tab asking: the JSON tab counts
+/// only raw `JSON:<Type>` lines, every other tab excludes them, and `None`
+/// (Search) counts everything — so a day with no rows in the current tab
+/// never appears in its picker. Same static patterns as `build_chat_where`:
+/// no params, prepare-gate safe.
+pub fn get_chat_days<C: DbRead + ?Sized>(
+    conn: &C,
+    offset_seconds: i64,
+    json_scope: Option<JsonScope>,
+) -> Result<Vec<ChatDayRow>> {
+    let where_clause = match json_scope {
+        Some(JsonScope::Only) => " WHERE channel LIKE 'JSON:%'",
+        Some(JsonScope::Exclude) => " WHERE (channel IS NULL OR channel NOT LIKE 'JSON:%')",
+        None => "",
+    };
+    let mut stmt = conn.prepare(&format!(
         "SELECT date(timestamp, printf('%d seconds', ?1)) AS day, COUNT(*) AS count
-         FROM chat_messages
+         FROM chat_messages{where_clause}
          GROUP BY day
          ORDER BY day DESC",
-    )?;
+    ))?;
 
     let rows = stmt.query_map(rusqlite::params![offset_seconds], |row| {
         Ok(ChatDayRow {
@@ -1325,7 +1340,7 @@ mod tests {
         msg_with(&conn, "2026-07-01 15:30:00", "General", "B", "two");
         msg_with(&conn, "2026-07-03 09:00:00", "General", "C", "three");
 
-        let days = get_chat_days(&*conn, 0).unwrap();
+        let days = get_chat_days(&*conn, 0, None).unwrap();
         assert_eq!(days.len(), 2);
         assert_eq!(days[0].day, "2026-07-03");
         assert_eq!(days[0].count, 1);
@@ -1339,13 +1354,13 @@ mod tests {
         msg_with(&conn, "2026-07-01 00:30:00", "General", "A", "late night");
         msg_with(&conn, "2026-07-01 12:00:00", "General", "B", "midday");
 
-        let utc = get_chat_days(&*conn, 0).unwrap();
+        let utc = get_chat_days(&*conn, 0, None).unwrap();
         assert_eq!(utc.len(), 1);
         assert_eq!(utc[0].day, "2026-07-01");
         assert_eq!(utc[0].count, 2);
 
         // UTC-7 viewer: 00:30Z renders as 2026-06-30 17:30, a day of its own
-        let west = get_chat_days(&*conn, -7 * 3600).unwrap();
+        let west = get_chat_days(&*conn, -7 * 3600, None).unwrap();
         assert_eq!(west.len(), 2);
         assert_eq!(west[0].day, "2026-07-01");
         assert_eq!(west[0].count, 1);
@@ -1353,10 +1368,35 @@ mod tests {
         assert_eq!(west[1].count, 1);
 
         // UTC+2 viewer: 00:30Z is 02:30 the same day — bucketing matches UTC
-        let east = get_chat_days(&*conn, 2 * 3600).unwrap();
+        let east = get_chat_days(&*conn, 2 * 3600, None).unwrap();
         assert_eq!(east.len(), 1);
         assert_eq!(east[0].day, "2026-07-01");
         assert_eq!(east[0].count, 2);
+    }
+
+    #[test]
+    fn test_get_chat_days_respects_json_scope() {
+        let conn = setup();
+        msg_with(&conn, "2026-07-01 10:00:00", "General", "A", "one");
+        msg_with(&conn, "2026-07-01 11:00:00", "JSON:Book", "B", "raw");
+        msg_with(&conn, "2026-07-02 10:00:00", "JSON:Book", "C", "raw two");
+
+        let only = get_chat_days(&*conn, 0, Some(JsonScope::Only)).unwrap();
+        assert_eq!(only.len(), 2);
+        assert_eq!(only[0].day, "2026-07-02");
+        assert_eq!(only[0].count, 1);
+        assert_eq!(only[1].day, "2026-07-01");
+        assert_eq!(only[1].count, 1);
+
+        let excluded = get_chat_days(&*conn, 0, Some(JsonScope::Exclude)).unwrap();
+        assert_eq!(excluded.len(), 1);
+        assert_eq!(excluded[0].day, "2026-07-01");
+        assert_eq!(excluded[0].count, 1);
+
+        let all = get_chat_days(&*conn, 0, None).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].count, 1);
+        assert_eq!(all[1].count, 2);
     }
 
     #[test]

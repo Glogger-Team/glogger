@@ -975,8 +975,9 @@ fn dispatch_json_event(
                         ) {
                             // Recency bump failed: the write path is broken, so
                             // fail closed (report + return) rather than falling
-                            // through to the INSERT — `current` stays false and
-                            // caller-side imports never derive from this row.
+                            // through to the INSERT — the return discards
+                            // `current` with the function, so caller-side
+                            // imports never derive from this row.
                             eprintln!("[dispatch] JSON book captured_at bump failed: {e}");
                             return;
                         }
