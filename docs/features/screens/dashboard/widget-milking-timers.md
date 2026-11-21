@@ -10,7 +10,7 @@ Tracks cow milking activity across three categories: NPC cow cooldown timers, pl
 
 ### Timers Tab (NPC Cows)
 
-- **Cooldown tracking:** Shows 1-hour countdown timers for each NPC cow milked, with "Ready!" when cooldown expires. When the milk time is genuinely unknown (see the backfill below) the timer says `≤ 45m` instead — an upper bound that is certain at zero, rather than a fabricated countdown.
+- **Cooldown tracking:** Shows 1-hour countdown timers for each cow milked — NPC cows and player cows milked by another player alike — with "Ready!" when the cooldown expires. Only a self-named row (the active character milking themselves) runs the 5-minute self-milk cooldown. When the milk time is genuinely unknown (see the backfill below) the timer says `≤ 45m` instead — an upper bound that is certain at zero, rather than a fabricated countdown.
 - **Grouped by zone:** Cows are organized under their zone, sorted alphabetically.
 - **Current zone first:** The player's current zone is highlighted and floated to the top.
 - **Cooldown backfill:** If the player tries to milk a cow that's still on cooldown, the error is detected and a *bound* is recorded (see "NPC Cow Cooldown Backfill").
@@ -45,6 +45,8 @@ zone is never overwritten with a blank one. The widget reads exactly these rows 
 Timers tab shows every cow the active character has milked. When a cow-form player milks
 themselves, the target IS the player's own name, so the arm writes a self-named timer row
 alongside the `self_milked` log row — that is what the code does today.
+
+Cooldown lengths: every cow runs the 1-hour cooldown — the 14 named NPC cows ([wiki roster](https://wiki.projectgorgon.com/wiki/Cow_(Domesticated_Animal))) and player cows milked by another player alike. The sole exception is the self-named row, which runs the 5-minute self-milk cooldown; the widget picks it by matching `cow_name` against the active character.
 
 ### NPC Cow Cooldown Backfill
 

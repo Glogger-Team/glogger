@@ -152,7 +152,11 @@ const tabs = [
 
 type TabKey = typeof tabs[number]['key']
 
-const COOLDOWN_MS = 60 * 60 * 1000
+// Every cow — NPC or player-milked-by-player — runs the 1-hour cooldown.
+// Only milking yourself (cow_name is the active character) runs the 5-minute
+// self-milk cooldown.
+const NPC_COOLDOWN_MS = 60 * 60 * 1000
+const SELF_COOLDOWN_MS = 5 * 60 * 1000
 
 const gameState = useGameStateStore()
 const settings = useSettingsStore()
@@ -208,7 +212,9 @@ const groupedTimers = computed<ZoneGroup[]>(() => {
     const milkedAt = new Date(t.last_milked_at).getTime()
     // Same formula for both kinds: for a known milk it is the remaining
     // cooldown, for a bound row the latest possible expiry (an upper bound).
-    const remaining = Math.ceil((milkedAt + COOLDOWN_MS - now.value) / 1000)
+    const self = settings.settings.activeCharacterName
+    const cooldown = self !== null && self === t.cow_name ? SELF_COOLDOWN_MS : NPC_COOLDOWN_MS
+    const remaining = Math.ceil((milkedAt + cooldown - now.value) / 1000)
     return { ...t, remaining }
   })
 
