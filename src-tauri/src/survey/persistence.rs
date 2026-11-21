@@ -431,8 +431,11 @@ pub fn player_gain_already_counted(
     timestamp_iso: &str,
     item_name: Option<&str>,
     window_secs: u32,
-) -> bool {
-    conn.query_row(
+) -> Result<bool> {
+    // Fail-dangerous if downgraded: a query error must NEVER read as "not
+    // counted" — that double-bumps loot_qty with no error and no log.
+    // Callers skip attribution on Err (healable via retro-claim).
+    let counted: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM item_transactions
           WHERE survey_use_id = ?1
             AND source = 'player_log'
@@ -442,8 +445,8 @@ pub fn player_gain_already_counted(
             AND (?5 IS NULL OR internal_name = ?5 OR item_name = ?5))",
         params![use_id, qty, timestamp_iso, window_secs, item_name],
         |r| r.get(0),
-    )
-    .unwrap_or(false)
+    )?;
+    Ok(counted)
 }
 
 /// True when an untagged legacy Player.log loot row that looks like this
@@ -459,8 +462,10 @@ pub fn untagged_player_gain_exists(
     timestamp_iso: &str,
     item_name: Option<&str>,
     window_secs: u32,
-) -> bool {
-    conn.query_row(
+) -> Result<bool> {
+    // Same fail-dangerous contract as player_gain_already_counted: Err
+    // means "unknown", never "absent". Callers skip attribution on Err.
+    let exists: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM item_transactions
           WHERE character_name = ?1
             AND server_name = ?2
@@ -473,8 +478,8 @@ pub fn untagged_player_gain_exists(
             AND (?6 IS NULL OR internal_name = ?6 OR item_name = ?6))",
         params![character, server, qty, timestamp_iso, window_secs, item_name],
         |r| r.get(0),
-    )
-    .unwrap_or(false)
+    )?;
+    Ok(exists)
 }
 
 /// All uses belonging to a session, ordered by `used_at` ascending.

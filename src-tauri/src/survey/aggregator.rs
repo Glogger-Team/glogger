@@ -580,22 +580,41 @@ impl SurveySessionAggregator {
         // and the returned `use_id` (which tags the chat row) are unchanged.
         // Per-item rows stay in both pipelines; the summary's `NOT EXISTS`
         // read guard dedups those.
-        let already_counted = persistence::player_gain_already_counted(
+        // Fail-dangerous guards: a busy/locked DB error is "unknown", never
+        // "not counted". Bumping blind would double-count loot_qty with no
+        // error and no log; skipping is healable via retro-claim.
+        let tagged = match persistence::player_gain_already_counted(
             conn,
             use_id,
             quantity,
             timestamp,
             item_name,
             CHAT_BASIC_WINDOW_SECS as u32,
-        ) || persistence::untagged_player_gain_exists(
-            conn,
-            character,
-            server,
-            quantity,
-            timestamp,
-            item_name,
-            CHAT_BASIC_WINDOW_SECS as u32,
-        );
+        ) {
+            Ok(counted) => counted,
+            Err(e) => {
+                eprintln!("[survey-aggregator] twin-guard query failed, skipping attribution: {e}");
+                return None;
+            }
+        };
+        let already_counted = tagged
+            || match persistence::untagged_player_gain_exists(
+                conn,
+                character,
+                server,
+                quantity,
+                timestamp,
+                item_name,
+                CHAT_BASIC_WINDOW_SECS as u32,
+            ) {
+                Ok(exists) => exists,
+                Err(e) => {
+                    eprintln!(
+                        "[survey-aggregator] untagged-twin guard query failed, skipping attribution: {e}"
+                    );
+                    return None;
+                }
+            };
         if !already_counted
             && let Err(e) = persistence::add_loot_qty(conn, use_id, quantity) {
                 eprintln!("[survey-aggregator] chat add_loot_qty failed: {e}");
