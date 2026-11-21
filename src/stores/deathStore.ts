@@ -1,4 +1,4 @@
-import { defineStore } from "pinia";
+import { defineStore, acceptHMRUpdate } from "pinia";
 import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "./settingsStore";
@@ -33,6 +33,10 @@ export interface DeathDamageSource {
 export const useDeathStore = defineStore("deaths", () => {
   const deaths = ref<CharacterDeath[]>([]);
   const loaded = ref(false);
+  /** Bumped on every invalidation (character switch, missing identity) so an
+   * in-flight load drops its stale result instead of overwriting the new
+   * character's rows. Same shape as characterStore.allCharacterItemsGeneration. */
+  const deathsGeneration = ref(0);
   /** Cache of damage sources per death ID, loaded on demand. */
   const damageSourcesCache = ref<Record<number, DeathDamageSource[]>>({});
 
@@ -40,15 +44,52 @@ export const useDeathStore = defineStore("deaths", () => {
     const settings = useSettingsStore();
     const characterName = settings.settings.activeCharacterName;
     const serverName = settings.settings.activeServerName;
-    if (!characterName || !serverName) return;
+    if (!characterName || !serverName) {
+      deathsGeneration.value++;
+      deaths.value = [];
+      loaded.value = false;
+      return;
+    }
 
+    const generation = deathsGeneration.value;
     try {
-      deaths.value = await invoke("get_character_deaths", {
+      const rows = await invoke<CharacterDeath[]>("get_character_deaths", {
         characterName,
         serverName,
       });
+      // Drop stale results: invalidated mid-flight, or the active identity
+      // moved on while the fetch was out.
+      if (generation !== deathsGeneration.value) return;
+      if (
+        settings.settings.activeCharacterName !== characterName ||
+        settings.settings.activeServerName !== serverName
+      )
+        return;
+      // Merge instead of overwrite: a live death event may have unshifted a
+      // temp row while the fetch was in flight. Key on real id; drop temp
+      // Date.now() rows whose DB row arrived (same character + server +
+      // died_at + killer); never carry another identity's rows.
+      const merged = new Map<number, CharacterDeath>();
+      for (const row of rows) merged.set(row.id, row);
+      for (const existing of deaths.value) {
+        if (merged.has(existing.id)) continue;
+        if (existing.character_name !== characterName || existing.server_name !== serverName) continue;
+        const arrived = rows.some(
+          (row) =>
+            row.character_name === existing.character_name &&
+            row.server_name === existing.server_name &&
+            row.died_at === existing.died_at &&
+            row.killer_name === existing.killer_name,
+        );
+        if (arrived) continue;
+        merged.set(existing.id, existing);
+      }
+      deaths.value = [...merged.values()].sort((a, b) =>
+        a.died_at < b.died_at ? 1 : a.died_at > b.died_at ? -1 : b.id - a.id,
+      );
       loaded.value = true;
     } catch (e) {
+      // Keep old rows on failure — never blank the list.
       console.error("[deaths] Failed to load deaths:", e);
     }
   }
@@ -142,6 +183,7 @@ export const useDeathStore = defineStore("deaths", () => {
   return {
     deaths,
     loaded,
+    deathsGeneration,
     damageSourcesCache,
     loadDeaths,
     loadDamageSources,
@@ -153,3 +195,7 @@ export const useDeathStore = defineStore("deaths", () => {
     deathsByDamageType,
   };
 });
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useDeathStore, import.meta.hot))
+}
