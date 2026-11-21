@@ -9,12 +9,14 @@ The economics screen consolidates tools for tracking wealth, market prices, farm
 ### Files
 
 **Backend (Rust):**
+
 - `src-tauri/src/db/market_commands.rs` — market value CRUD, import/export
 - `src-tauri/src/db/farming_commands.rs` — farming session persistence
 - `src-tauri/src/db/survey_commands.rs` — survey type CDN reference data (read)
 - `src-tauri/src/survey/` — survey tracker module (aggregator, persistence, commands) on the provenance pipeline
 
 **Frontend (Vue/TS):**
+
 - `src/components/Economics/EconomicsView.vue` — 4-tab container
 - `src/components/Market/MarketView.vue` — market price management
 - `src/components/Economics/EconomicsFarmingView.vue` — farming session wrapper
@@ -23,13 +25,14 @@ The economics screen consolidates tools for tracking wealth, market prices, farm
 - `src/components/Surveying/` — SurveyTrackerView, HistoricalTab, AnalyticsTab
 
 **Stores:**
+
 - `marketStore` — market value CRUD, import/export, valuation modes
 - `farmingStore` — farming session lifecycle, live event tracking
 - `surveyTrackerStore` — read-through cache over the backend survey tracker
 
 ### Component Hierarchy
 
-```
+```text
 EconomicsView.vue                   — 4-tab container
 ├── MarketView.vue                  — market price management
 ├── EconomicsFarmingView.vue        — farming wrapper
@@ -52,7 +55,7 @@ EconomicsView.vue                   — 4-tab container
 ## Database Tables
 
 - **`market_values`** — item prices keyed by (server_name, item_type_id), with timestamps
-- **`farming_sessions`** — session headers (name, notes, start/end, elapsed, vendor gold)
+- **`farming_sessions`** — session headers (name, notes, start/end, elapsed, vendor gold, attributing character_name/server_name, NULL on legacy rows)
 - **`farming_session_skills`** — XP/level data per skill per session
 - **`farming_session_items`** — net item quantities per session
 - **`farming_session_favors`** — NPC favor deltas per session

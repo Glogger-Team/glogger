@@ -106,7 +106,7 @@ Live session kill attribution is deleted (Combat view covers live kills; the Act
 
 ## Database Tables
 
-- **`farming_sessions`** — session summary (name, notes, timing, vendor gold)
+- **`farming_sessions`** — session summary (name, notes, timing, vendor gold, attributing character_name/server_name, NULL on legacy rows)
 - **`farming_session_skills`** — XP gained per skill per session
 - **`farming_session_items`** — net item quantity changes per session
 - **`farming_session_favors`** — favor changes per NPC per session
@@ -134,7 +134,7 @@ Farming follows the app-wide time standards defined in [time.md](../../../archit
 
 ## Tauri Commands
 
-- `save_farming_session(input) → session_id`
-- `get_farming_sessions(limit?) → Vec<FarmingSession>`
+- `save_farming_session(input) → session_id` — `input` may carry `character_name`/`server_name`; absent = legacy NULL row
+- `get_farming_sessions(limit?, character_name?, server_name?) → Vec<HistoricalFarmingSession>` — a `Some` filter matches that value OR NULL, so legacy unattributed rows stay visible to every character
 - `update_farming_session(session_id, name, notes)`
 - `delete_farming_session(session_id)`
