@@ -184,14 +184,15 @@ async function doDelete() {
   if (!deleteTarget.value) return
 
   const char = deleteTarget.value
-  const wasActive = isSelected(char)
   await invoke('delete_character', {
     characterName: char.character_name,
     serverName: char.server_name,
   })
-
+  // Re-evaluate after the await: a login or switch may have installed a new
+  // identity while the delete was in flight — never clobber it.
+  const stillActive = isSelected(char)
   // If we deleted the active character, clear settings
-  if (wasActive) {
+  if (stillActive) {
     settingsStore.settings.activeCharacterName = null
     settingsStore.settings.activeServerName = null
   }
@@ -208,9 +209,12 @@ async function doDelete() {
   characterStore.allCharacterWorkOrdersLoaded = false
   characterStore.allCharacterWorkOrdersGeneration++
   // The deleted character's session state is gone with its rows: when it was
-  // active, clear session/live/combat/deaths under the (now null) identity.
-  // The generation bump drops any in-flight loadDeaths for it.
-  if (wasActive) gameStateStore.clearSessionForCharacter()
+  // still active after the delete await, clear session/live/combat/deaths
+  // under the (now null) identity. The generation bump drops any in-flight
+  // loadDeaths for it. Uses the post-await snapshot (not a fresh check —
+  // settings are already nulled above, and not the pre-await state, so a
+  // login/switch that landed mid-delete keeps its fresh state).
+  if (stillActive) gameStateStore.clearSessionForCharacter()
   // Reopen the picker
   await loadCharacters()
   open.value = true
