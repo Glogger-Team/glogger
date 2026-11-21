@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Gate: every static SQL statement in app code must prepare against the
 migrated schema (catches stale table/column names and syntax errors in paths
 no test executes — the doc-orphan gate's counterpart for SQL drift).
