@@ -171,6 +171,9 @@ WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history.
 - [ ] Boss kill loot timers
   - Reverse tracking exists (`chat_combat_parser.rs:9-30` `PlayerDeath`/`EnemyKilled`/`DamageOnPlayer`; `EnemyKilled` → `enemy-killed` → `farmingStore.handleEnemyKilled`; corpse-search drop attribution via `coordinator.rs:1910`, migration v49). Combat Wisdom cooldowns shipped (`CombatWisdomWidget.vue:132-176`, `combat_wisdom_commands.rs:8-11`). Genuinely missing: **boss/named classification** (no log class signal) and per-boss timer/lockout UI. A heuristic + UI item, not a parser extension.
   - **Suspects:** `src-tauri/src/chat_combat_parser.rs`, `src/stores/farmingStore.ts` (`handleEnemyKilled`), `src/components/Dashboard/widgets/CombatWisdomWidget.vue`.
+- [ ] Arena widget refactor — surface today's hot tips + re-audit fight/result tracking
+  - JSON `EntityReport` arena tips already land in `player_messages` (`message_type='entity_report'`, via `chat_json_parser.rs` EntityReport arm + `chat_status_dispatch.rs:1170` dispatch) but no UI reads them — `ArenaWidget.vue` still shows only the historic-bets note plus Kuzavek-derived rankings/predictor/H2H. Work: (a) surface the tips valid for the current day in the widget (query `entity_report` messages, filter to today); (b) re-evaluate what fight/result tracking is still real — match results via Kuzavek NPC chatter (chat-backed, live), personal bets dead with the log (talk screens gone, already noted in-widget + `dashboardWidgets.ts:200`), rankings build from actuals only.
+  - **Suspects:** `src/components/Dashboard/widgets/ArenaWidget.vue`, `src/stores/gameStateStore.ts` (arena fetch/types), `src-tauri/src/db/arena_commands.rs`, `src-tauri/src/chat_status_dispatch.rs` (EntityReport arm), `player_messages` query.
 
 ---
 
@@ -229,7 +232,7 @@ WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history.
 - [ ] Reevaluate test suite
   - Think about what tests make sense, what isn't giving value, and how to harden against future failures.
   - need to figure out if we can build some sample data or something that makes sense for tests.
-  - **Audit: re-scoped — the sample-data ask is done; only hardening remains.** The `surveyLogs/` replay datasets were retired with the Player.log pipeline (PR #202): `survey/replay_tests.rs` deleted (dual-pipeline interleave un-portable; chat-only harness dropped — the map-use signal lived in Player.log, so rebuilding it would be synthesis, not replay), `test_data/surveyLogs/` removed, `survey-test` script removed. Census: **692 `#[test]` across 61 files, 2 `#[ignore]`** (chat-log backfill + character-report import); no integration dir, no JS tests. (Counts match `AGENTS.md`; `cargo test --lib` reports 690 passed + 2 ignored.)
+  - **Audit: re-scoped — the sample-data ask is done; only hardening remains.** The `surveyLogs/` replay datasets were retired with the Player.log pipeline (PR #202): `survey/replay_tests.rs` deleted (dual-pipeline interleave un-portable; chat-only harness dropped — the map-use signal lived in Player.log, so rebuilding it would be synthesis, not replay), `test_data/surveyLogs/` removed, `survey-test` script removed. Census (fresh on `main` @ `a3365d13`): **731 `#[test]` across 61 files, 2 `#[ignore]`** (chat-log backfill + character-report import); no integration dir, no JS tests. (`cargo test --lib`: 729 passed + 2 ignored.)
   - **Effort: Large | Impact: Medium (reliability/confidence)**
   - **Suspects:** `src-tauri/src/db/migrations.rs` (v74/v81 test patterns).
 
