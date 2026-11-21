@@ -199,7 +199,7 @@ const limitations: KnownIssue[] = [
     severity: "limitation",
     title: "Speed-bonus split unavailable on chat-only data",
     description:
-      "The bonus flag was stamped from Player.log lines the current game client no longer writes, and chat carries no equivalent signal, so the Analytics bonus split reads zero on new data and shows as unavailable. Historic bonus rows keep their stamps and still render.",
+      "The bonus flag was stamped from Player.log lines the current game client no longer writes, and chat carries no equivalent signal, so the session-detail split shows as unavailable when a session has no bonus rows. The Analytics tab (Overview/Zone/Type/CrossZone) still renders measured zeros and is out of scope for this slice; historic bonus rows keep their stamps.",
   },
 ];
 
