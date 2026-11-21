@@ -130,7 +130,7 @@ Shows `StartupProgress` with a 4-task checklist. Each task must complete before 
 
 ### Task 2: Catching up on logs
 
-- Registers Tauri event listeners (`skill-update`, `survey-tracker-*`, `character-death`, `enemy-killed`, `chat-status-event`, `character-resuscitated`, `watch-rule-triggered`)
+- Registers Tauri event listeners (`character-death`, `enemy-killed`, `chat-status-event`, `character-resuscitated`, `watch-rule-triggered`)
 - Starts Player.log tailing if `autoTailPlayerLog` enabled
 - Starts chat log tailing if `autoTailChat` enabled
 - Runs one synchronous `poll_watchers` call that **blocks until all historical log content is parsed**

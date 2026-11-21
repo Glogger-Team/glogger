@@ -23,7 +23,7 @@ For the full design rationale and history of the rewrite, see:
 
 **Frontend:**
 
-- `src/stores/surveyTrackerStore.ts` — reads/caches backend state; subscribes to events
+- `src/stores/surveyTrackerStore.ts` — reads/caches backend state via Tauri commands (`survey_tracker_status` and friends); subscribes to no events
 - `src/components/Economics/EconomicsSurveyView.vue` — three-tab container (Session / Session History / Analytics)
 - `src/components/Surveying/SurveyTrackerView.vue` — Session tab (PaneLayout: recent sessions / live detail / selected session)
 - `src/components/Surveying/HistoricalTab.vue` — expandable session list with notes + delete; each row shows cost / revenue / profit inline
@@ -47,7 +47,7 @@ Manual use ──► record_manual_use ─────────────�
                Tauri commands ──► frontend (read-only)
 ```
 
-Live updates emit as `survey-tracker-session-started/ended` and `survey-tracker-use-recorded/completed`. The frontend subscribes and refreshes affected views. (No multihit open/close event exists — open nodes are read via the `survey_tracker_status` command.)
+Survey state is read through Tauri commands, not events: the frontend calls `survey_tracker_status` (and friends) and refreshes affected views after each command. No `survey-tracker-*` Tauri event exists — a backend-wide grep finds zero emitters — so there is nothing to subscribe to. (No multihit open/close event exists either — open nodes are read via the `survey_tracker_status` command.)
 
 ### Attribution (A3 stitching)
 

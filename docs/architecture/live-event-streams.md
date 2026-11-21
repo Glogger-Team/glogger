@@ -92,13 +92,11 @@ Not a raw event stream — this is a **domain notification**. When chat dispatch
 
 Full details: [`game-state.md`](game-state.md)
 
-### Stream: `"survey-tracker-*"`
+### Stream: `"survey-tracker-*"` (retired — never emitted)
 
 **Source:** [`SurveySessionAggregator`](../../src-tauri/src/survey/aggregator.rs) driven by chat loot gains (`attribute_chat_gain`) and manual sessions.
 
-Downstream consumer of chat loot gains. The aggregator is **stateful** — it tracks survey sessions and stitches survey attribution (persisted to DB).
-
-Events emitted: `survey-tracker-session-started`, `survey-tracker-session-ended`, `survey-tracker-use-recorded`, `survey-tracker-use-completed`.
+Downstream consumer of chat loot gains. The aggregator is **stateful** — it tracks survey sessions and stitches survey attribution (persisted to DB). It emits **no Tauri events**: a backend-wide grep for `survey-tracker-*` finds zero emitters, so the former `session-started/ended` and `use-recorded/completed` listeners were removed. The frontend reads survey state through Tauri commands (`survey_tracker_status` and friends).
 
 Full details: [`economics-surveying.md`](../features/screens/economics/economics-surveying.md)
 
