@@ -2,6 +2,7 @@ import { defineStore, acceptHMRUpdate } from "pinia";
 import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { CombatLogEntry } from "../types/combat";
+import { useSettingsStore } from "./settingsStore";
 import type { HistoricalFarmingSession } from "../types/farming";
 
 export interface CombatKillTally {
@@ -49,8 +50,19 @@ export const useCombatStore = defineStore("combat", () => {
 
   async function loadHistoricBaseline() {
     if (baselineLoaded.value) return;
+    const settings = useSettingsStore();
+    const characterName = settings.settings.activeCharacterName ?? null;
+    const serverName = settings.settings.activeServerName ?? null;
     try {
-      const sessions = await invoke<HistoricalFarmingSession[]>("get_farming_sessions", { limit: 500 });
+      // Per-character baseline; NULL-legacy rows stay visible to every
+      // character via the backend OR-NULL predicate. Null identity = no
+      // filter (current global behavior). resetForCharacter already clears
+      // baselineLoaded on switch, so no second reset path here.
+      const sessions = await invoke<HistoricalFarmingSession[]>("get_farming_sessions", {
+        limit: 500,
+        characterName,
+        serverName,
+      });
       const killTotals: Record<string, number> = {};
       const xpTotals: Record<string, number> = {};
       for (const s of sessions) {

@@ -1,4 +1,4 @@
-use super::DbPool;
+use super::{DbPool, DbRead};
 use serde::{Deserialize, Serialize};
 /// Farming session persistence commands
 use tauri::State;
@@ -44,6 +44,12 @@ pub struct SaveFarmingSessionInput {
     pub start_time: String,
     pub end_time: Option<String>,
     pub elapsed_seconds: i64,
+    /// Attributing character. None = legacy unattributed row, visible under
+    /// any character filter (NULL-legacy rule on the read side).
+    #[serde(default)]
+    pub character_name: Option<String>,
+    #[serde(default)]
+    pub server_name: Option<String>,
     pub total_paused_seconds: i64,
     pub vendor_gold: i64,
     pub skills: Vec<FarmingSkillInput>,
@@ -92,6 +98,8 @@ pub struct HistoricalFarmingSession {
     pub total_paused_seconds: i64,
     pub vendor_gold: i64,
     pub created_at: String,
+    pub character_name: Option<String>,
+    pub server_name: Option<String>,
     pub skills: Vec<FarmingSkillRecord>,
     pub items: Vec<FarmingItemRecord>,
     pub favors: Vec<FarmingFavorRecord>,
@@ -126,6 +134,8 @@ fn save_farming_session_impl(
     // Upsert the session row. When updating an existing row (periodic auto-save
     // of an active session) we refresh its columns and clear the child rows so
     // they can be rewritten from the current snapshot — no double-counting.
+    // The attributing character is fixed at insert: a session's owner never
+    // changes mid-session, so the update arm refreshes snapshot columns only.
     let session_id = if let Some(existing_id) = input.session_id {
         let affected = conn
             .execute(
@@ -166,8 +176,8 @@ fn save_farming_session_impl(
         existing_id
     } else {
         conn.execute(
-            "INSERT INTO farming_sessions (name, notes, start_time, end_time, elapsed_seconds, total_paused_seconds, vendor_gold)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO farming_sessions (name, notes, start_time, end_time, elapsed_seconds, total_paused_seconds, vendor_gold, character_name, server_name)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             rusqlite::params![
                 input.name,
                 input.notes,
@@ -176,6 +186,8 @@ fn save_farming_session_impl(
                 input.elapsed_seconds,
                 input.total_paused_seconds,
                 input.vendor_gold,
+                input.character_name,
+                input.server_name,
             ],
         ).map_err(|e| format!("Failed to save farming session: {e}"))?;
 
@@ -228,25 +240,43 @@ fn save_farming_session_impl(
 pub fn get_farming_sessions(
     db: State<'_, DbPool>,
     limit: Option<usize>,
+    character_name: Option<String>,
+    server_name: Option<String>,
 ) -> Result<Vec<HistoricalFarmingSession>, String> {
     let conn = db
         .get()
         .map_err(|e| format!("Database connection error: {e}"))?;
     let limit = limit.unwrap_or(50) as i64;
+    get_farming_sessions_impl(&conn, limit, character_name.as_deref(), server_name.as_deref())
+}
 
+/// Core read logic, separated from Tauri managed state so it can be unit-tested
+/// against an in-memory connection (same shape as `save_farming_session_impl`).
+/// A `None` filter disables that predicate (current behavior). A `Some` filter
+/// matches the requested value OR NULL, so legacy unattributed rows stay
+/// visible to every character; empty result is an empty vec, never an error.
+fn get_farming_sessions_impl<C: DbRead + ?Sized>(
+    conn: &C,
+    limit: i64,
+    character_name: Option<&str>,
+    server_name: Option<&str>,
+) -> Result<Vec<HistoricalFarmingSession>, String> {
     // Fetch session rows
     let mut stmt = conn
         .prepare(
             "SELECT id, name, notes, start_time, end_time, elapsed_seconds,
-                total_paused_seconds, vendor_gold, datetime(created_at) as created_at
+                total_paused_seconds, vendor_gold, datetime(created_at) as created_at,
+                character_name, server_name
          FROM farming_sessions
+         WHERE (?1 IS NULL OR character_name IS NULL OR character_name = ?1)
+           AND (?2 IS NULL OR server_name IS NULL OR server_name = ?2)
          ORDER BY created_at DESC
-         LIMIT ?1",
+         LIMIT ?3",
         )
         .map_err(|e| format!("Failed to prepare query: {e}"))?;
 
     let session_rows = stmt
-        .query_map([limit], |row| {
+        .query_map(rusqlite::params![character_name, server_name, limit], |row| {
             Ok(HistoricalFarmingSession {
                 id: row.get(0)?,
                 name: row.get(1)?,
@@ -257,6 +287,8 @@ pub fn get_farming_sessions(
                 total_paused_seconds: row.get(6)?,
                 vendor_gold: row.get(7)?,
                 created_at: row.get(8)?,
+                character_name: row.get(9)?,
+                server_name: row.get(10)?,
                 skills: Vec::new(),
                 items: Vec::new(),
                 favors: Vec::new(),
@@ -420,6 +452,8 @@ mod tests {
             start_time: "12:00:00".into(),
             end_time: None,
             elapsed_seconds: 600,
+            character_name: None,
+            server_name: None,
             total_paused_seconds: 0,
             vendor_gold: 0,
             skills: Vec::new(),
@@ -517,5 +551,46 @@ mod tests {
             result.is_err(),
             "updating a non-existent session should error"
         );
+    }
+
+    fn input_for_character(character: &str, server: &str) -> SaveFarmingSessionInput {
+        let mut input = input_with(None, vec![], vec![]);
+        input.character_name = Some(character.into());
+        input.server_name = Some(server.into());
+        input
+    }
+
+    /// A save carrying a character must persist the attribution on the row.
+    #[test]
+    fn save_with_character_is_attributed() {
+        let conn = setup();
+        let id = save_farming_session_impl(&conn, &input_for_character("Alice", "TestServer"))
+            .unwrap();
+        let sessions = get_farming_sessions_impl(&conn, 50, None, None).unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, id);
+        assert_eq!(sessions[0].character_name.as_deref(), Some("Alice"));
+        assert_eq!(sessions[0].server_name.as_deref(), Some("TestServer"));
+    }
+
+    /// NULL-legacy rule: rows saved without a character stay visible under any
+    /// filter, while another character's attributed rows stay excluded.
+    #[test]
+    fn legacy_null_row_visible_under_any_character_filter() {
+        let conn = setup();
+        save_farming_session_impl(&conn, &input_with(None, vec![], vec![])).unwrap();
+        save_farming_session_impl(&conn, &input_for_character("Bob", "TestServer")).unwrap();
+
+        let unfiltered = get_farming_sessions_impl(&conn, 50, None, None).unwrap();
+        assert_eq!(unfiltered.len(), 2, "no filter returns every row");
+
+        let alice = get_farming_sessions_impl(&conn, 50, Some("Alice"), Some("TestServer"))
+            .unwrap();
+        assert_eq!(alice.len(), 1, "legacy NULL row visible under any character");
+        assert_eq!(alice[0].character_name, None);
+
+        let bob =
+            get_farming_sessions_impl(&conn, 50, Some("Bob"), Some("TestServer")).unwrap();
+        assert_eq!(bob.len(), 2, "own rows plus legacy NULL rows");
     }
 }

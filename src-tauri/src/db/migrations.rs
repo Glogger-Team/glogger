@@ -491,6 +491,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         migration_v91_vip_json_logging(conn)?;
         super::record_migration(conn, 91)?;
     }
+
+    if current_version < 92 {
+        migration_v92_farming_session_character(conn)?;
+        super::record_migration(conn, 92)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1461,6 +1466,40 @@ fn migration_v91_vip_json_logging(conn: &Connection) -> Result<()> {
         .unwrap_or(false);
     if has_favor {
         conn.execute("UPDATE game_state_favor SET cumulative_delta = 0", [])?;
+    }
+    Ok(())
+}
+
+/// Migration V92: attribute farming sessions to a character.
+///
+/// `farming_sessions` (and its `farming_session_*` child tables, keyed by
+/// `session_id` only) predates per-character scoping, so the historic combat
+/// baseline aggregates every character's rows. The new columns are NULL by
+/// default: legacy rows stay unattributed and the read predicate matches
+/// `requested character OR NULL`, so old totals remain visible to every
+/// character until new saves attribute going forward. Guarded by table
+/// existence like V91 — minimal test fixtures build only what they need.
+fn migration_v92_farming_session_character(conn: &Connection) -> Result<()> {
+    let has_sessions: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'farming_sessions')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if has_sessions {
+        conn.execute(
+            "ALTER TABLE farming_sessions ADD COLUMN character_name TEXT",
+            [],
+        )?;
+        conn.execute(
+            "ALTER TABLE farming_sessions ADD COLUMN server_name TEXT",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_farming_sessions_character ON farming_sessions(character_name, server_name)",
+            [],
+        )?;
     }
     Ok(())
 }
@@ -4719,13 +4758,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            91,
+            92,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 91);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 92);
     }
 
     #[test]
@@ -4848,13 +4887,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 91) plus the purge itself on the three aggregate source tables.
+        // 92) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 91, "migration chain head");
+        assert_eq!(head, 92, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -4900,8 +4939,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 91 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging). Repair: a
+        // Chain wiring: full run_migrations head must be 92 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -4909,7 +4948,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 91, "migration chain head");
+        assert_eq!(head, 92, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[

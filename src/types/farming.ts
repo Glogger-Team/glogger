@@ -186,6 +186,8 @@ export interface SaveFarmingSessionInput {
   items: Array<{ item_name: string; net_quantity: number }>
   favors: Array<{ npc_key: string; npc_name: string; delta: number }>
   kills: Array<{ enemy_name: string; kill_count: number }>
+  character_name?: string | null
+  server_name?: string | null
 }
 
 // === Historical (loaded from DB) ===
@@ -200,6 +202,8 @@ export interface HistoricalFarmingSession {
   total_paused_seconds: number
   vendor_gold: number
   created_at: string
+  character_name: string | null
+  server_name: string | null
   skills: Array<{ skill_id: number; skill_name: string; xp_gained: number; levels_gained: number }>
   items: Array<{ item_name: string; net_quantity: number }>
   favors: Array<{ npc_key: string; npc_name: string; delta: number }>
