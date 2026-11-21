@@ -966,15 +966,20 @@ fn dispatch_json_event(
                         // Identical re-read: advance the observation time so
                         // this row stays the newest observation. No domain,
                         // no imports — rescan stays silent.
-                        // Swallowed intentionally: this identical row already persisted, so a failed bump only leaves captured_at stale — nothing downstream to fail.
-                        conn.execute(
+                        if let Err(e) = conn.execute(
                             "UPDATE game_state_books SET captured_at = ?5
                              WHERE character_name = ?1 AND server_name = ?2
                                AND book_type = ?3 AND title = ?4
                                AND captured_at < ?5",
                             rusqlite::params![id.character, id.server, book_type, title, observed],
-                        )
-                        .ok();
+                        ) {
+                            // Recency bump failed: the write path is broken, so
+                            // fail closed (report + return) rather than falling
+                            // through to the INSERT — `current` stays false and
+                            // caller-side imports never derive from this row.
+                            eprintln!("[dispatch] JSON book captured_at bump failed: {e}");
+                            return;
+                        }
                     }
                     if !same
                         && conn
