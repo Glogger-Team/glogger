@@ -4,16 +4,13 @@
 
 ## Purpose
 
-Tracks cow milking activity across three categories: NPC cow cooldown timers, player-to-player milking leaderboards, and self-milking (cow players milking themselves).
+Tracks cow milking activity across two categories: player-to-player milking leaderboards and self-milking (cow players milking themselves). The NPC-cow cooldown Timers tab was removed 2026-11-21 (only the self row had a live writer; every other row was frozen since the log went dark) — `milking_timers` rows are still written by the Collect-Milk arm but no surface reads them.
 
 ## Features
 
-### Timers Tab (NPC Cows)
+### Timers Tab (removed 2026-11-21)
 
-- **Cooldown tracking:** Shows 1-hour countdown timers for each cow milked — NPC cows and player cows milked by another player alike — with "Ready!" when the cooldown expires. Only a self-named row (the active character milking themselves) runs the 5-minute self-milk cooldown. When the milk time is genuinely unknown (see the backfill below) the timer says `≤ 45m` instead — an upper bound that is certain at zero, rather than a fabricated countdown.
-- **Grouped by zone:** Cows are organized under their zone, sorted alphabetically.
-- **Current zone first:** The player's current zone is highlighted and floated to the top.
-- **Cooldown backfill:** If the player tries to milk a cow that's still on cooldown, the error is detected and a *bound* is recorded (see "NPC Cow Cooldown Backfill").
+Previously showed 1-hour countdown timers per cow (5-minute for the self-named row), grouped by zone with the current zone floated to top, rendering `≤ Xm` upper bounds for `cooldown_unknown` rows. Removed with the per-cow timer command: the only live writer was the self-milk row, every other cow's row was frozen, and the tab had been hidden behind `milking-dark` since the log went dark. The `record_cow_milk` write path stays (it gates the `milking` domain emit); the read surface is gone.
 
 ### Players Milked Tab
 
@@ -40,19 +37,19 @@ line, same gotcha as the self-milk counter below). Each firing writes one `milki
 row keyed `(character_name, server_name, cow_name)` = (active character, active server,
 the ability target): `zone` is the current area (`''` when unknown), `last_milked_at` is
 the chat line's UTC stamp, `cooldown_unknown` is `0`, the stamp is newer-wins, and a known
-zone is never overwritten with a blank one. The widget reads exactly these rows via
-`get_milking_timers` / `get_milking_timers_for` for the active character/server, so the
-Timers tab shows every cow the active character has milked. When a cow-form player milks
-themselves, the target IS the player's own name, so the arm writes a self-named timer row
-alongside the `self_milked` log row — that is what the code does today.
+zone is never overwritten with a blank one. Since the Timers tab removal, no surface reads
+these rows — the write path stays because `record_cow_milk`'s row-advanced return gates the
+`milking` domain emit. When a cow-form player milks themselves, the target IS the player's
+own name, so the arm writes a self-named timer row alongside the `self_milked` log row —
+that is what the code does today.
 
-Cooldown lengths: every cow runs the 1-hour cooldown — the 14 named NPC cows ([wiki roster](https://wiki.projectgorgon.com/wiki/Cow_(Domesticated_Animal))) and player cows milked by another player alike. The sole exception is the self-named row, which runs the 5-minute self-milk cooldown; the widget picks it by matching `cow_name` against the active character.
+Cooldown lengths (for the record, no longer surfaced): every cow runs the 1-hour cooldown — the 14 named NPC cows ([wiki roster](https://wiki.projectgorgon.com/wiki/Cow_(Domesticated_Animal))) and player cows milked by another player alike. The sole exception is the self-named row, which runs the 5-minute self-milk cooldown.
 
 ### NPC Cow Cooldown Backfill
 
 No live producer. The `(attempt - 1h, attempt]` bound previously came from
 `ProcessScreenText` cooldown errors, which no longer exist. `cooldown_unknown`
-rows in the table are legacy; the widget still renders them as `≤ Xm` bounds.
+rows in the table are legacy; nothing renders them since the Timers tab removal.
 
 ### Player-to-Player Milking (Milking Another Player)
 
@@ -133,7 +130,7 @@ The backfill converts with each log's **own** offset rather than today's setting
 
 ## Files
 
-- `src/components/Dashboard/widgets/MilkingTimersWidget.vue` — widget component (3 tabs + self-milked counter)
+- `src/components/Dashboard/widgets/MilkingTimersWidget.vue` — widget component (Players Milked + Milked By tabs + self-milked counter; Timers tab removed 2026-11-21)
 - `src-tauri/src/chat_status_dispatch.rs` — live detection (`MilkedBy` status arm, self-milk combat arm); `src-tauri/src/chat_commands.rs` — `backfill_ability_history` archive scan
 - `src-tauri/src/db/migrations.rs` — migrations v35 (milking_timers), v36 (player_milking_log), v38 (self_milked direction), v72 (per-event dedup key), v73 (`cooldown_unknown` bound column)
-- `src-tauri/src/db/game_state_commands.rs` — `get_milking_timers` and `get_player_milking_leaderboard` Tauri commands
+- `src-tauri/src/db/game_state_commands.rs` — `get_player_milking_leaderboard` Tauri command (per-cow timer command removed 2026-11-21; `record_cow_milk` write path stays for the `milking` domain emit)

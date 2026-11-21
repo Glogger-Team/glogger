@@ -1094,64 +1094,6 @@ pub fn record_cow_milk(
     Ok(advanced)
 }
 
-// ── Milking timers ──────────────────────────────────────────────
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct MilkingTimer {
-    pub cow_name: String,
-    pub zone: String,
-    /// For a known milk: when it happened. For `cooldown_unknown` rows: the
-    /// **earliest observed failed attempt**, which is what bounds the cooldown
-    /// (`expiry ≤ last_milked_at + 1h`).
-    pub last_milked_at: String,
-    /// The game only said "milked within the past hour", so this cow's exact
-    /// milk time is unknown: the widget must render an upper bound, not a countdown.
-    pub cooldown_unknown: bool,
-}
-
-// milking-dark: the Timers tab is hidden in the widget (stored cooldowns can go stale).
-// This read path stays for the later rewire slice — writers (record_cow_milk,
-// record_milking_event, backfill_ability_history) are untouched.
-#[tauri::command]
-pub fn get_milking_timers(
-    db: State<'_, DbPool>,
-    character_name: String,
-    server_name: String,
-) -> Result<Vec<MilkingTimer>, String> {
-    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
-    get_milking_timers_for(&conn, &character_name, &server_name)
-}
-
-/// Split out from the command so tests can exercise it without Tauri state.
-pub fn get_milking_timers_for<C: crate::db::DbRead + ?Sized>(
-    conn: &C,
-    character_name: &str,
-    server_name: &str,
-) -> Result<Vec<MilkingTimer>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT cow_name, zone, last_milked_at, cooldown_unknown
-             FROM milking_timers
-             WHERE character_name = ?1 AND server_name = ?2
-             ORDER BY zone, cow_name",
-        )
-        .map_err(|e| format!("Query error: {e}"))?;
-
-    let rows = stmt
-        .query_map(rusqlite::params![character_name, server_name], |row| {
-            Ok(MilkingTimer {
-                cow_name: row.get(0)?,
-                zone: row.get(1)?,
-                last_milked_at: row.get(2)?,
-                cooldown_unknown: row.get(3)?,
-            })
-        })
-        .map_err(|e| format!("Query error: {e}"))?;
-
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Row error: {e}"))
-}
-
 // ── Character stats ─────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]

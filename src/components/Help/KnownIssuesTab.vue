@@ -117,9 +117,9 @@ const knownIssues: KnownIssue[] = [
   {
     id: "milking-dark",
     severity: "bug",
-    title: "Milking timers are hidden (stale cooldowns)",
+    title: "NPC cow cooldowns not tracked (stale timers removed)",
     description:
-      "NPC cow cooldowns were tracked from Player.log screens the current game client no longer writes, so stored timers can go stale; the Timers tab is hidden until the chat-backed writers are rewired. Players Milked, Milked By, and Self Milked counts still update from Chat.log.",
+      "NPC cow cooldowns were tracked from Player.log screens the current game client no longer writes, so the Timers tab was removed — only the self-milk row ever had a live writer. Players Milked, Milked By, and Self Milked counts still update from Chat.log.",
   },
   {
     id: "poems-dark",
