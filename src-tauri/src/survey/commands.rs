@@ -395,7 +395,7 @@ fn loot_summary_for_session<C: DbRead + ?Sized>(
     // Join both market_values (user-set prices) AND items (CDN vendor
     // value) so we can apply the user's valuation-mode preference via
     // `resolve_item_value(mode, vendor, market)`.
-    // survey-bonus-dark: chat-only data never stamps $.is_speed_bonus (Player.log signal gone) — bonus reads zero; NEVER infer from quantity patterns.
+    // survey-bonus-dark: $.is_speed_bonus stamps at claim time for chained Basic uses (issue #211); unchained uses read NULL — NEVER infer from quantity patterns.
     let mut stmt = conn.prepare(
         "SELECT t.item_name,
                 SUM(t.quantity) AS total_qty,
@@ -1043,7 +1043,7 @@ pub fn survey_tracker_analytics(
         )
         .unwrap_or(0);
 
-    // survey-bonus-dark: chat-only data never stamps $.is_speed_bonus (Player.log signal gone) — bonus reads zero; NEVER infer from quantity patterns.
+    // survey-bonus-dark: $.is_speed_bonus stamps at claim time for chained Basic uses (issue #211); unchained uses read NULL — NEVER infer from quantity patterns.
     // Basic uses with at least one bonus drop + total bonus items across all.
     let (basic_uses_with_bonus, bonus_items_total): (i64, i64) = conn
         .query_row(
@@ -1080,7 +1080,7 @@ fn zone_summaries<C: DbRead + ?Sized>(
     character: &str,
     server: &str,
 ) -> SqlResult<Vec<ZoneSummary>> {
-    // survey-bonus-dark: chat-only data never stamps $.is_speed_bonus (Player.log signal gone) — bonus reads zero; NEVER infer from quantity patterns.
+    // survey-bonus-dark: $.is_speed_bonus stamps at claim time for chained Basic uses (issue #211); unchained uses read NULL — NEVER infer from quantity patterns.
     // Bonus stats join item_transactions to survey_uses through the
     // survey_use_id in source_details, filter to is_speed_bonus, and
     // aggregate by (area, use). Left-joined into the per-area rollup so
@@ -1149,7 +1149,7 @@ fn survey_type_summaries<C: DbRead + ?Sized>(
     character: &str,
     server: &str,
 ) -> SqlResult<Vec<SurveyTypeSummary>> {
-    // survey-bonus-dark: chat-only data never stamps $.is_speed_bonus (Player.log signal gone) — bonus reads zero; NEVER infer from quantity patterns.
+    // survey-bonus-dark: $.is_speed_bonus stamps at claim time for chained Basic uses (issue #211); unchained uses read NULL — NEVER infer from quantity patterns.
     // Same pattern as zone_summaries — bonus metrics come from a LEFT JOIN
     // onto a CTE that counts bonus-flagged transactions per survey use.
     let mut stmt = conn.prepare(
@@ -1233,7 +1233,7 @@ fn items_for_zone<C: DbRead + ?Sized>(
     server: &str,
     area_label: &str,
 ) -> SqlResult<Vec<ItemSummary>> {
-    // survey-bonus-dark: chat-only data never stamps $.is_speed_bonus (Player.log signal gone) — bonus reads zero; NEVER infer from quantity patterns.
+    // survey-bonus-dark: $.is_speed_bonus stamps at claim time for chained Basic uses (issue #211); unchained uses read NULL — NEVER infer from quantity patterns.
     let mut stmt = conn.prepare(
         "SELECT t.item_name,
                 SUM(t.quantity) AS total_qty,
@@ -1274,7 +1274,7 @@ fn items_for_survey_type<C: DbRead + ?Sized>(
     map_internal_name: &str,
     area: Option<&str>,
 ) -> SqlResult<Vec<ItemSummary>> {
-    // survey-bonus-dark: chat-only data never stamps $.is_speed_bonus (Player.log signal gone) — bonus reads zero; NEVER infer from quantity patterns.
+    // survey-bonus-dark: $.is_speed_bonus stamps at claim time for chained Basic uses (issue #211); unchained uses read NULL — NEVER infer from quantity patterns.
     // SQLite's `IS` handles NULL-safe equality; parameter binding to
     // `Option<&str>` gives us the right NULL at the right spot.
     let mut stmt = conn.prepare(
@@ -1313,7 +1313,7 @@ fn item_summaries<C: DbRead + ?Sized>(
     character: &str,
     server: &str,
 ) -> SqlResult<Vec<ItemSummary>> {
-    // survey-bonus-dark: chat-only data never stamps $.is_speed_bonus (Player.log signal gone) — bonus reads zero; NEVER infer from quantity patterns.
+    // survey-bonus-dark: $.is_speed_bonus stamps at claim time for chained Basic uses (issue #211); unchained uses read NULL — NEVER infer from quantity patterns.
     // Items aggregated across all of this character's survey-attributed
     // gains. Joins item_transactions to survey_uses via the same JSON
     // path the per-session loot summary uses. The primary / bonus split
@@ -1417,7 +1417,7 @@ fn item_cost_analysis_rows<C: DbRead + ?Sized>(
     //
     // The per-type statistics aggregate across zones too, grouping by
     // (map_internal_name, area) to match the granularity the UI shows.
-    // survey-bonus-dark: chat-only data never stamps $.is_speed_bonus (Player.log signal gone) — bonus reads zero; NEVER infer from quantity patterns.
+    // survey-bonus-dark: $.is_speed_bonus stamps at claim time for chained Basic uses (issue #211); unchained uses read NULL — NEVER infer from quantity patterns.
     let mut stmt = conn.prepare(
         "WITH type_duration AS (
             -- Compute per-session duration once, then aggregate by map type.

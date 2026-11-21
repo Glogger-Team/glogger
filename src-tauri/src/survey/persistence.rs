@@ -266,6 +266,79 @@ pub fn latest_use_for_session(
     .optional()
 }
 
+/// True when a Basic use is part of a back-to-back chain: another Basic use
+/// for the same character/server has `used_at` within `window_secs` before
+/// this use's `used_at` (same-second duplicates count — manual recordings
+/// share second resolution; the use itself is excluded by id).
+///
+/// Speed bonus is an emergent timing property (issue #211): the game appends
+/// bonus rewards when a Basic survey is collected within X seconds of the
+/// prior use. Chat carries no per-item bonus marker since the Player.log
+/// `ProcessScreenText "(speed bonus!)"` signal went away, so the claim-time
+/// stamp flags every row of a chained use — NEVER infer bonus from quantity
+/// patterns. Motherlode/Multihit have no speed bonus (see
+/// `docs/architecture/survey-mechanics.md`): only Basic rows chain, and
+/// callers only invoke this for Basic uses.
+pub fn basic_use_is_chained(
+    conn: &Connection,
+    character: &str,
+    server: &str,
+    survey_use_id: i64,
+    used_at_iso: &str,
+    window_secs: u32,
+) -> Result<bool> {
+    let chained: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM survey_uses
+         WHERE character_name = ?2 AND server_name = ?3
+           AND kind = 'basic'
+           AND id != ?1
+           AND used_at <= ?4
+           AND used_at >= datetime(?4, '-' || ?5 || ' seconds'))",
+        params![survey_use_id, character, server, used_at_iso, window_secs],
+        |row| row.get(0),
+    )?;
+    Ok(chained)
+}
+
+/// Stamp `$.is_speed_bonus` on the untagged chat-status ledger row the live
+/// attribution just resolved. Same newest-row match predicate the
+/// coordinator's tag UPDATE uses (timestamp/identity/item/quantity,
+/// `source_kind IS NULL`, `ORDER BY rowid DESC LIMIT 1`), so both hit the
+/// same row when run back-to-back in one transaction. Runs BEFORE the
+/// coordinator tags the row: its `json_set(..., '$.survey_use_id', …)`
+/// merge preserves the flag, and its `source_kind IS NULL` guard still
+/// matches because this only touches `source_details`.
+///
+/// Best-effort: returns rows stamped (0 when the row vanished between
+/// checkouts — the coordinator's zero-match arm then rolls back and a later
+/// pass reclaims the gain). Callers log failures, never propagate.
+pub fn mark_live_chat_gain_as_speed_bonus(
+    conn: &Connection,
+    character: &str,
+    server: &str,
+    timestamp_iso: &str,
+    item_name: &str,
+    quantity: u32,
+) -> Result<usize> {
+    let updated = conn.execute(
+        "UPDATE item_transactions
+            SET source_details = json_set(COALESCE(source_details, '{}'),
+                                          '$.is_speed_bonus', json('true'))
+          WHERE rowid = (SELECT rowid FROM item_transactions
+                         WHERE timestamp = ?1
+                           AND character_name = ?2
+                           AND server_name = ?3
+                           AND source = 'chat_status'
+                           AND source_kind IS NULL
+                           AND context = 'loot'
+                           AND item_name = ?4
+                           AND quantity = ?5
+                         ORDER BY rowid DESC LIMIT 1)",
+        params![timestamp_iso, character, server, item_name, quantity],
+    )?;
+    Ok(updated)
+}
+
 /// Claim untagged chat-status loot rows near a Basic survey use's `used_at`
 /// and link them to the use. Returns the total quantity claimed.
 ///
@@ -279,6 +352,11 @@ pub fn latest_use_for_session(
 /// Survey maps themselves are excluded by internal-name prefix — crafting a
 /// map emits the same "added to inventory" chat line as loot, and players
 /// commonly craft the next map within seconds of using one.
+///
+/// When `is_speed_bonus` is set (the caller resolved a back-to-back chain
+/// via [`basic_use_is_chained`]), claimed rows also stamp
+/// `$.is_speed_bonus` — same `json('true')` shape the retired Player.log
+/// marker path wrote, so readers (`= 1` checks) treat them identically.
 pub fn claim_unlinked_chat_loot_near(
     conn: &Connection,
     survey_use_id: i64,
@@ -286,6 +364,7 @@ pub fn claim_unlinked_chat_loot_near(
     server: &str,
     used_at_iso: &str,
     window_secs: u32,
+    is_speed_bonus: bool,
 ) -> Result<u32> {
     const PREDICATE: &str = "character_name = ?2
            AND server_name = ?3
@@ -307,16 +386,30 @@ pub fn claim_unlinked_chat_loot_near(
     if total == 0 {
         return Ok(0);
     }
-    conn.execute(
-        &format!(
-            "UPDATE item_transactions
-                SET source_kind = 'survey_chat',
-                    source_details = json_set(COALESCE(source_details, '{{}}'),
-                                              '$.survey_use_id', ?1)
-              WHERE {PREDICATE}"
-        ),
-        params![survey_use_id, character, server, used_at_iso, window_secs],
-    )?;
+    if is_speed_bonus {
+        conn.execute(
+            &format!(
+                "UPDATE item_transactions
+                    SET source_kind = 'survey_chat',
+                        source_details = json_set(COALESCE(source_details, '{{}}'),
+                                                  '$.survey_use_id', ?1,
+                                                  '$.is_speed_bonus', json('true'))
+                  WHERE {PREDICATE}"
+            ),
+            params![survey_use_id, character, server, used_at_iso, window_secs],
+        )?;
+    } else {
+        conn.execute(
+            &format!(
+                "UPDATE item_transactions
+                    SET source_kind = 'survey_chat',
+                        source_details = json_set(COALESCE(source_details, '{{}}'),
+                                                  '$.survey_use_id', ?1)
+                  WHERE {PREDICATE}"
+            ),
+            params![survey_use_id, character, server, used_at_iso, window_secs],
+        )?;
+    }
     Ok(total)
 }
 
@@ -779,5 +872,207 @@ mod tests {
             latest_use_for_session(&conn, session, "2026-04-15 12:02:00").unwrap(),
             None
         );
+    }
+
+    fn insert_basic_use(
+        conn: &Connection,
+        session: i64,
+        character: &str,
+        server: &str,
+        used_at: &str,
+    ) -> i64 {
+        insert_use(
+            conn,
+            Some(session),
+            character,
+            server,
+            used_at,
+            "MiningSurveySerbule1",
+            "Serbule Copper Survey",
+            SurveyUseKind::Basic,
+            None,
+        )
+        .unwrap()
+    }
+
+    fn insert_chat_loot(conn: &Connection, ts: &str, item: &str, qty: u32) {
+        conn.execute(
+            "INSERT INTO item_transactions
+                (timestamp, character_name, server_name, item_name, quantity, context, source)
+             VALUES (?1, 'Zenith', 'Dreva', ?2, ?3, 'loot', 'chat_status')",
+            params![ts, item, qty],
+        )
+        .unwrap();
+    }
+
+    fn speed_bonus_flag(conn: &Connection, item: &str) -> Option<i64> {
+        conn.query_row(
+            "SELECT json_extract(source_details, '$.is_speed_bonus')
+             FROM item_transactions WHERE item_name = ?1",
+            params![item],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn chained_use_detects_back_to_back_chain() {
+        let conn = fresh_db();
+        let session = insert_session(
+            &conn,
+            "Zenith",
+            "Dreva",
+            "2026-04-15 12:00:00",
+            SessionStartTrigger::Manual,
+            None,
+        )
+        .unwrap();
+        let a = insert_basic_use(&conn, session, "Zenith", "Dreva", "2026-04-15 12:00:00");
+        let b = insert_basic_use(&conn, session, "Zenith", "Dreva", "2026-04-15 12:00:04");
+        let c = insert_basic_use(&conn, session, "Zenith", "Dreva", "2026-04-15 12:00:10");
+        // B chains off A (4s inside the 5s window); A has no prior; C lands
+        // 6s past B (outside the window).
+        assert!(basic_use_is_chained(&conn, "Zenith", "Dreva", b, "2026-04-15 12:00:04", 5).unwrap());
+        assert!(!basic_use_is_chained(&conn, "Zenith", "Dreva", a, "2026-04-15 12:00:00", 5).unwrap());
+        assert!(!basic_use_is_chained(&conn, "Zenith", "Dreva", c, "2026-04-15 12:00:10", 5).unwrap());
+        // Same-second duplicates chain (manual recordings share second
+        // resolution, and the use itself is excluded by id, not by time).
+        let d = insert_basic_use(&conn, session, "Zenith", "Dreva", "2026-04-15 12:00:10");
+        assert!(basic_use_is_chained(&conn, "Zenith", "Dreva", d, "2026-04-15 12:00:10", 5).unwrap());
+        // Other identities never chain each other.
+        let alt_session = insert_session(
+            &conn,
+            "AltB",
+            "Legacy",
+            "2026-04-15 12:00:00",
+            SessionStartTrigger::Manual,
+            None,
+        )
+        .unwrap();
+        let alt = insert_basic_use(&conn, alt_session, "AltB", "Legacy", "2026-04-15 12:00:04");
+        assert!(!basic_use_is_chained(&conn, "AltB", "Legacy", alt, "2026-04-15 12:00:04", 5).unwrap());
+    }
+
+    #[test]
+    fn chained_use_ignores_non_basic_priors() {
+        // Motherlode/Multihit have no speed bonus: a Basic recorded
+        // back-to-back after one is NOT chained.
+        let conn = fresh_db();
+        let session = insert_session(
+            &conn,
+            "Zenith",
+            "Dreva",
+            "2026-04-15 12:00:00",
+            SessionStartTrigger::Manual,
+            None,
+        )
+        .unwrap();
+        for (map, kind) in [
+            ("SimpleMetalMotherlodeKur1", SurveyUseKind::Motherlode),
+            ("MiningSurveyPovus7Y", SurveyUseKind::Multihit),
+        ] {
+            insert_use(
+                &conn,
+                Some(session),
+                "Zenith",
+                "Dreva",
+                "2026-04-15 12:00:03",
+                map,
+                "Survey",
+                kind,
+                None,
+            )
+            .unwrap();
+        }
+        let basic = insert_basic_use(&conn, session, "Zenith", "Dreva", "2026-04-15 12:00:04");
+        assert!(!basic_use_is_chained(&conn, "Zenith", "Dreva", basic, "2026-04-15 12:00:04", 5).unwrap());
+    }
+
+    #[test]
+    fn chained_claim_stamps_bonus_flag() {
+        let conn = fresh_db();
+        let session = insert_session(
+            &conn,
+            "Zenith",
+            "Dreva",
+            "2026-04-15 12:00:00",
+            SessionStartTrigger::Manual,
+            None,
+        )
+        .unwrap();
+        let _a = insert_basic_use(&conn, session, "Zenith", "Dreva", "2026-04-15 12:00:00");
+        let b = insert_basic_use(&conn, session, "Zenith", "Dreva", "2026-04-15 12:00:04");
+        insert_chat_loot(&conn, "2026-04-15 12:00:04", "Iron Ore", 2);
+        insert_chat_loot(&conn, "2026-04-15 12:00:05", "Copper Ore", 1);
+        insert_chat_loot(&conn, "2026-04-15 12:01:00", "Iron Ore Far", 9);
+
+        let chained =
+            basic_use_is_chained(&conn, "Zenith", "Dreva", b, "2026-04-15 12:00:04", 5).unwrap();
+        assert!(chained);
+        let claimed = claim_unlinked_chat_loot_near(
+            &conn,
+            b,
+            "Zenith",
+            "Dreva",
+            "2026-04-15 12:00:04",
+            5,
+            chained,
+        )
+        .unwrap();
+        assert_eq!(claimed, 3);
+        // Claimed rows carry the flag (the `= 1` shape readers check) and
+        // the generated survey_use_id the loot summary joins on.
+        assert_eq!(speed_bonus_flag(&conn, "Iron Ore"), Some(1));
+        assert_eq!(speed_bonus_flag(&conn, "Copper Ore"), Some(1));
+        let use_id: Option<i64> = conn
+            .query_row(
+                "SELECT survey_use_id FROM item_transactions WHERE item_name = 'Iron Ore'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(use_id, Some(b));
+        // The far row stays untagged.
+        let far: (Option<String>, Option<i64>) = conn
+            .query_row(
+                "SELECT source_kind, json_extract(source_details, '$.is_speed_bonus')
+                 FROM item_transactions WHERE item_name = 'Iron Ore Far'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(far, (None, None));
+    }
+
+    #[test]
+    fn unchained_claim_leaves_flag_null() {
+        let conn = fresh_db();
+        let session = insert_session(
+            &conn,
+            "Zenith",
+            "Dreva",
+            "2026-04-15 12:00:00",
+            SessionStartTrigger::Manual,
+            None,
+        )
+        .unwrap();
+        let a = insert_basic_use(&conn, session, "Zenith", "Dreva", "2026-04-15 12:00:00");
+        insert_chat_loot(&conn, "2026-04-15 12:00:00", "Iron Ore", 3);
+
+        let chained =
+            basic_use_is_chained(&conn, "Zenith", "Dreva", a, "2026-04-15 12:00:00", 5).unwrap();
+        assert!(!chained);
+        let claimed = claim_unlinked_chat_loot_near(
+            &conn,
+            a,
+            "Zenith",
+            "Dreva",
+            "2026-04-15 12:00:00",
+            5,
+            chained,
+        )
+        .unwrap();
+        assert_eq!(claimed, 3);
+        assert_eq!(speed_bonus_flag(&conn, "Iron Ore"), None);
     }
 }

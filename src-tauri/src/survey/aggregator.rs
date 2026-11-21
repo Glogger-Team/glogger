@@ -22,6 +22,15 @@ use std::collections::VecDeque;
 /// lands in the same game tick as the map's consumption; the slack covers
 /// second-truncation).
 const CHAT_BASIC_WINDOW_SECS: i64 = 5;
+/// Speed-bonus chain window, Basic surveys: a Basic use whose `used_at`
+/// lands within this many seconds after another Basic use for the same
+/// identity earned the game's back-to-back speed bonus — its attributed rows
+/// stamp `$.is_speed_bonus` at claim time (issue #211). Same 5s value as the
+/// loot-tick window above: the game appends bonus rewards on fast
+/// re-collection and chat carries no per-item marker since the Player.log
+/// `"(speed bonus!)"` signal went away, so chained-use timing is the only
+/// non-quantity signal available. NEVER infer bonus from quantity patterns.
+const SPEED_BONUS_CHAIN_WINDOW_SECS: u32 = 5;
 /// Cap for the chat-side recent-basic-uses queue.
 const CHAT_STATE_CAP: usize = 16;
 
@@ -42,7 +51,9 @@ pub struct ManualUse<'a> {
 /// What [`SurveySessionAggregator::attribute_chat_gain`] resolves before the
 /// shared tail runs: the owning character/server plus the gain's ledger
 /// fields. Grouped so the attribution tail stays under the argument-count
-/// lint without changing what it carries.
+/// lint without changing what it carries. `item_name` is the CDN internal
+/// name (loose-matched for twin dedup); `display_name` is the chat display
+/// name the ledger row carries — the live speed-bonus stamp matches on it.
 #[derive(Debug, Clone, Copy)]
 pub struct ChatAttribution<'a> {
     pub character: &'a str,
@@ -51,6 +62,7 @@ pub struct ChatAttribution<'a> {
     pub quantity: u32,
     pub timestamp: &'a str,
     pub item_name: Option<&'a str>,
+    pub display_name: Option<&'a str>,
     pub mark_completed: bool,
 }
 
@@ -313,6 +325,20 @@ impl SurveySessionAggregator {
                     rusqlite::TransactionBehavior::Immediate,
                 )
                 .map_err(|e| format!("claim txn begin failed: {e}"))?;
+                // Claim-time speed-bonus (issue #211): a Basic use recorded
+                // back-to-back after a prior Basic use earned the game's
+                // speed bonus — stamp the claimed rows. Same transaction:
+                // a failure rolls back to untagged rows a later pass can
+                // reclaim, never half-tagged rows.
+                let is_bonus = persistence::basic_use_is_chained(
+                    &tx,
+                    character,
+                    server,
+                    use_id,
+                    now_iso,
+                    SPEED_BONUS_CHAIN_WINDOW_SECS,
+                )
+                .map_err(|e| format!("bonus chain check failed: {e}"))?;
                 let claimed = persistence::claim_unlinked_chat_loot_near(
                     &tx,
                     use_id,
@@ -320,6 +346,7 @@ impl SurveySessionAggregator {
                     server,
                     now_iso,
                     CHAT_BASIC_WINDOW_SECS as u32,
+                    is_bonus,
                 )
                 .map_err(|e| format!("claim rows failed: {e}"))?;
                 if claimed > 0 {
@@ -444,6 +471,7 @@ impl SurveySessionAggregator {
                     quantity,
                     timestamp,
                     item_name: internal_name,
+                    display_name,
                     mark_completed: true,
                 },
             );
@@ -475,6 +503,7 @@ impl SurveySessionAggregator {
                     quantity,
                     timestamp,
                     item_name: internal_name,
+                    display_name,
                     mark_completed: false,
                 },
             );
@@ -539,6 +568,7 @@ impl SurveySessionAggregator {
             quantity,
             timestamp,
             item_name,
+            display_name,
             mark_completed,
         }: ChatAttribution<'_>,
     ) -> Option<i64> {
@@ -571,6 +601,38 @@ impl SurveySessionAggregator {
                 eprintln!("[survey-aggregator] chat add_loot_qty failed: {e}");
                 return None;
             }
+        // Claim-time speed-bonus stamp (issue #211): a Basic use chained
+        // back-to-back after a prior Basic use earned the game's speed
+        // bonus, so its rows carry `$.is_speed_bonus`. Chat has no per-item
+        // marker since the Player.log "(speed bonus!)" signal went away —
+        // chained-use timing is the only signal, NEVER quantity patterns.
+        // Motherlode/Multihit have no speed bonus. The stamp lands before
+        // the coordinator's tag UPDATE in the same transaction and its
+        // json_set merge preserves the flag; best-effort (log, never
+        // propagate) so a vanished row can't fail the attribution.
+        let bonus_eligible = persistence::get_use(conn, use_id)
+            .ok()
+            .flatten()
+            .is_some_and(|u| {
+                u.kind == SurveyUseKind::Basic
+                    && persistence::basic_use_is_chained(
+                        conn,
+                        character,
+                        server,
+                        use_id,
+                        &u.used_at,
+                        SPEED_BONUS_CHAIN_WINDOW_SECS,
+                    )
+                    .unwrap_or(false)
+            });
+        if bonus_eligible
+            && let Some(name) = display_name
+            && let Err(e) = persistence::mark_live_chat_gain_as_speed_bonus(
+                conn, character, server, timestamp, name, quantity,
+            )
+        {
+            eprintln!("[survey-aggregator] speed-bonus stamp failed: {e}");
+        }
         update_session_loot_timestamps(conn, use_id, timestamp);
         if mark_completed {
             // Post-attribution cosmetic mark: log, never propagate.
@@ -1014,5 +1076,154 @@ mod tests {
             Some("Serbule Blue Mineral Survey"),
         );
         assert_eq!(hit, None);
+    }
+
+    fn insert_chat_loot(conn: &Connection, ts: &str, item: &str, qty: u32) {
+        conn.execute(
+            "INSERT INTO item_transactions
+                (timestamp, character_name, server_name, item_name, quantity, context, source)
+             VALUES (?1, 'Zenith', 'Dreva', ?2, ?3, 'loot', 'chat_status')",
+            rusqlite::params![ts, item, qty],
+        )
+        .unwrap();
+    }
+
+    fn speed_bonus_flag(conn: &Connection, item: &str) -> Option<i64> {
+        conn.query_row(
+            "SELECT json_extract(source_details, '$.is_speed_bonus')
+             FROM item_transactions WHERE item_name = ?1",
+            rusqlite::params![item],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn live_attribution_stamps_bonus_for_chained_use() {
+        // Loot lands AFTER the use is recorded (live ordering): the
+        // retro-claim inside record_basic finds nothing, so the flag below
+        // comes from the live attribution stamp, not the claim path.
+        let conn = fresh_db();
+        let mut agg = empty_aggregator();
+        let _a = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+        let b = record_basic(&mut agg, &conn, "2026-04-15 12:00:04");
+        insert_chat_loot(&conn, "2026-04-15 12:00:04", "Iron Ore", 2);
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "Zenith",
+            "Dreva",
+            None,
+            2,
+            "2026-04-15 12:00:04",
+            Some("Iron Ore"),
+        );
+        assert_eq!(hit, Some(b));
+        assert_eq!(speed_bonus_flag(&conn, "Iron Ore"), Some(1));
+        // The unit stamps the flag only — tagging the row `survey_chat` is
+        // the coordinator's job (its json_set merge preserves the flag).
+        let kind: Option<String> = conn
+            .query_row(
+                "SELECT source_kind FROM item_transactions WHERE item_name = 'Iron Ore'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, None);
+        // Single loot authority still holds: the gain bumps exactly once.
+        assert_eq!(
+            persistence::get_use(&conn, b).unwrap().unwrap().loot_qty,
+            2
+        );
+    }
+
+    #[test]
+    fn live_attribution_leaves_flag_null_without_chain() {
+        let conn = fresh_db();
+        let mut agg = empty_aggregator();
+        let a = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+        insert_chat_loot(&conn, "2026-04-15 12:00:00", "Iron Ore", 3);
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "Zenith",
+            "Dreva",
+            None,
+            3,
+            "2026-04-15 12:00:00",
+            Some("Iron Ore"),
+        );
+        assert_eq!(hit, Some(a));
+        assert_eq!(speed_bonus_flag(&conn, "Iron Ore"), None);
+    }
+
+    #[test]
+    fn live_attribution_never_flags_non_basic_use() {
+        // Motherlode M recorded back-to-back after Basic A; a survey-yield
+        // gain past A's 5s window falls back to M and stays unflagged —
+        // Motherlode has no speed bonus even when chained.
+        let conn = fresh_db();
+        let mut agg = seeded_aggregator();
+        let _a = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+        let (m, _) = agg
+            .record_manual_use(
+                &conn,
+                ManualUse {
+                    character: "Zenith",
+                    server: "Dreva",
+                    area: None,
+                    map_internal_name: "SimpleMetalMotherlodeKur1",
+                    kind: SurveyUseKind::Motherlode,
+                    now_iso: "2026-04-15 12:00:03",
+                },
+            )
+            .expect("record manual Motherlode use");
+        insert_chat_loot(&conn, "2026-04-15 12:00:10", "Iron Ore", 2);
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "Zenith",
+            "Dreva",
+            Some("IronOre"),
+            2,
+            "2026-04-15 12:00:10",
+            Some("Iron Ore"),
+        );
+        assert_eq!(hit, Some(m));
+        assert_eq!(speed_bonus_flag(&conn, "Iron Ore"), None);
+    }
+
+    #[test]
+    fn retro_claim_stamps_bonus_for_chained_use() {
+        // Loot lands BEFORE the use is recorded (scan ordering): the
+        // retro-claim inside record_basic stamps the chained use's rows.
+        let conn = fresh_db();
+        let mut agg = empty_aggregator();
+        let _a = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+        insert_chat_loot(&conn, "2026-04-15 12:00:04", "Iron Ore", 2);
+        insert_chat_loot(&conn, "2026-04-15 12:00:05", "Copper Ore", 1);
+        let b = record_basic(&mut agg, &conn, "2026-04-15 12:00:04");
+        assert_eq!(speed_bonus_flag(&conn, "Iron Ore"), Some(1));
+        assert_eq!(speed_bonus_flag(&conn, "Copper Ore"), Some(1));
+        let use_id: Option<i64> = conn
+            .query_row(
+                "SELECT survey_use_id FROM item_transactions WHERE item_name = 'Iron Ore'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(use_id, Some(b));
+        let stored = persistence::get_use(&conn, b).unwrap().unwrap();
+        assert_eq!(stored.loot_qty, 3);
+    }
+
+    #[test]
+    fn retro_claim_leaves_flag_null_for_first_use() {
+        let conn = fresh_db();
+        let mut agg = empty_aggregator();
+        insert_chat_loot(&conn, "2026-04-15 12:00:00", "Iron Ore", 3);
+        let a = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+        assert_eq!(speed_bonus_flag(&conn, "Iron Ore"), None);
+        assert_eq!(
+            persistence::get_use(&conn, a).unwrap().unwrap().loot_qty,
+            3
+        );
     }
 }

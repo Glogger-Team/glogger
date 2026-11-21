@@ -190,9 +190,9 @@ const limitations: KnownIssue[] = [
   {
     id: "survey-bonus-dark",
     severity: "limitation",
-    title: "Speed-bonus split unavailable on chat-only data",
+    title: "Speed-bonus split only on chained Basic uses",
     description:
-      "The bonus flag was stamped from Player.log lines the current game client no longer writes, and chat carries no equivalent signal, so the session-detail split shows as unavailable when a session has no bonus rows. The Analytics tab (Overview/Zone/Type/CrossZone) still renders measured zeros and is out of scope for this slice; historic bonus rows keep their stamps.",
+      "The bonus flag stamps at claim time when a Basic survey is recorded back-to-back after a prior Basic use for the same character (short window); unchained or single uses carry no bonus signal, so the session-detail split shows as unavailable when a session has no bonus rows. The Analytics tab (Overview/Zone/Type/CrossZone) renders measured values from stamped rows; historic bonus rows keep their stamps.",
   },
 ];
 
