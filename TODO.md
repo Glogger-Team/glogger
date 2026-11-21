@@ -13,16 +13,31 @@ Completed slices (fanout 2026-11-09 — PRs #166/#167/#168/#169, all MERGED to m
 
 Small, user-action-triggered or cosmetic items found by the full-PR adversarial pass (4/4 ship, 0 fix-now). None blocks anything; each is an isolated slice when wanted.
 
-- [ ] Character-switch staleness (P2): `CharacterPicker.switchTo/addCharacter` reload game/character state but never touch death/combat stores; an already-visited CombatView keeps the old character's deaths and keeps accumulating live kills/XP/log across characters. Fix: reset live accumulators + reload deaths on character switch.
+- [x] Character-switch staleness (P2) — FIXED #216 (`resetCombatAndDeathsForCharacter` in `CharacterPicker`, `combatStore.resetForCharacter`, `deathStore` generation-guarded merge). Follow-ups below (reset ordering, baseline scope, login-listener/doDelete parity) are separate items.
   - **Suspects:** `CharacterPicker.vue`, `src/stores/combatStore.ts` (`reset`), `src/stores/deathStore.ts` (`loaded`/`loadDeaths`).
-- [ ] Manual re-scan duplication (P2): scan paths (`chat_commands.rs run_scan_dispatch`) emit `character-death`/`enemy-killed`/`chat-status-event` unconditionally even when `persist_death_event` dedup skips the DB write; the frontend unshifts/accumulates without dedup → phantom death / double-counted kill-XP on re-import. Fix: frontend dedup or skip scan-originated emits for accumulating stores.
+- [x] Manual re-scan duplication (P2) — FIXED #217 (verified: death/kill emits were already persist-gated; the hole was unconditional `chat-status-event`, now gated on fresh persist; replay wraps `is_replay` envelope). Residual currency/TOCTOU notes below are separate items.
   - **Suspects:** `src-tauri/src/chat_commands.rs` (`run_scan_dispatch`), `src/stores/combatStore.ts`, `src/stores/deathStore.ts`.
-- [ ] `loadDeaths` mount race (P2): overwrites `deaths.value` on resolve, so a live death arriving between mount-fetch start and resolve (temp unshift) can be clobbered until next reload. Narrow window. Fix: merge instead of overwrite.
+- [x] `loadDeaths` mount race (P2) — FIXED #216 (merge-by-real-id + generation guard + identity check; failure keeps old rows).
   - **Suspects:** `src/stores/deathStore.ts` (`loadDeaths`).
 - [ ] Orphaned `fetchEnemyStats`/`historicXp` (P3): `farmingStore.fetchEnemyStats` + cache has zero callers (surviving tabs invoke the backend directly); `combatStore.historicXp` is populated but no view reads it (XP card is live-only by design). Fix: remove or wire up.
   - **Suspects:** `src/stores/farmingStore.ts`, `src/stores/combatStore.ts`.
 - [ ] Stale farming-archive comments (P3): `src-tauri/src/lib.rs:533-535` call-site comment still describes the watcher as ingesting into the kill/loot DB (now archive-only); `docs/features/statehelm-gift-backfill.md:22-23` parenthetical names deleted `replay::ingest_player_log`; `src/types/farming.ts` keeps dead live-session aliases (`FarmingSession`, `SaveFarmingSessionInput`, `FarmingSkillEntry/FavorEntry/KillEntry/KillLoot/ExtractLoot/ItemDropBreakdownRow`, `FarmingLogKind/Entry`) + stale header/type comments claiming historic readers need them (zero consumers — `HistoricalTab`/`combatStore` use `HistoricalFarmingSession`). Redundant `#[allow(dead_code)]` on still-live `get_auto_ingest_player_prev` (`settings.rs`). Fix: reword/delete.
   - **Suspects:** `src-tauri/src/lib.rs:533-535`, `docs/features/statehelm-gift-backfill.md:22-23`, `src/types/farming.ts:146-172`, `src-tauri/src/settings.rs:519-521`.
+
+### Release-blocker fanout follow-ups (2026-11-21 — PRs #216/#217/#218/#219 merged, ordinary work)
+
+Lows triaged as backlog during the fanout close (bot D quota-blocked; closed on frozen B + adversarial simulated-D). None blocks the release; each is an isolated slice when wanted.
+
+- [ ] Currency arms emit without confirming a write (low, simulated-D PR #217): `CoinsLooted`/`CouncilsChanged` return true whenever `count_currency` is set, even with identity `None` or a 0-row accrue (no anchor, `amount == 0`, older-than-anchor). Backlogged deliberately: making `accrue_currency_delta` return a bool would change live None-identity feed behavior; the rescan hole (the blocker) is silent. Fix = bool return + gate, preserving the live feed contract.
+  - **Suspects:** `src-tauri/src/chat_status_dispatch.rs:485-497` (arms), `:1242` (`accrue_currency_delta`), `src/stores/gameStateStore.ts:1021-1060` (feed `pushActivity` vs `applyWalletDelta` guard).
+- [ ] Wisdom/roulette freshness is check-then-act (low, simulated-D PR #217): fail-closed `EXISTS` pre-check races a concurrent live+scan on the same line (both see missing, both emit, one insert wins via `INSERT OR IGNORE`). Strictly better than the old unconditional emit; fix = derive the bool from post-`INSERT OR IGNORE` `changes() == 1` on a single held write checkout.
+  - **Suspects:** `src-tauri/src/chat_status_dispatch.rs:470-473,498-502`, `src-tauri/src/db/combat_wisdom_commands.rs:55`.
+- [ ] Reset-after-`loadAll` ordering (minor, bot D PR #216): sync reset runs after the awaited reloads, so kills arriving mid-`loadAll` are cleared and a concurrent second switch can clear the wrong session. Backlogged deliberately: reset-last mirrors the `character-login` listener order per spec; reordering invents a new order. Fix = split sync reset (right after identity assignment) from `loadDeaths`/baseline re-seed, in both `switchTo` and `addCharacter`.
+  - **Suspects:** `src/components/CharacterPicker.vue:172,192`.
+- [ ] Historic baseline has no character filter (minor, bot D PR #216 + B review): `get_farming_sessions` takes only `limit`, so the switch re-seed restores account-wide totals (pre-existing design, no regression). Fix needs a contract decision (per-character vs account-wide lifetime) + Rust query change; out of scope for the switch slice.
+  - **Suspects:** `src-tauri/src/db/farming_commands.rs:228` (`get_farming_sessions`), `src/stores/combatStore.ts` (`loadHistoricBaseline`).
+- [ ] `character-login` listener + `doDelete` skip combat/death reset (B review, pre-existing): backend-driven switches and post-delete state keep the staleness the picker path now fixes. Fix = reuse `resetCombatAndDeathsForCharacter` in `gameStateStore.ts:1322` listener + `CharacterPicker.doDelete`.
+  - **Suspects:** `src/stores/gameStateStore.ts:1322`, `src/components/CharacterPicker.vue` (`doDelete`).
 
 - [ ] rez-dedup 30s window calibration — see `docs/plans/deferred-tuning.md` (bidirectional `abs()<=30s` window shipped in `rez_within_dedup_window`; still needs a captured rez pair to calibrate 30s vs 60s; no fixture contains either phrasing; watch for duplicate `character_resuscitations` rows, cosmetic only). **Suspects:** `src-tauri/src/chat_status_dispatch.rs` (`rez_within_dedup_window`), `src-tauri/src/chat_resuscitate_parser.rs`.
 
