@@ -2308,8 +2308,9 @@ fn apply_catch_up_login(
         // adopt: no production writer creates 'log' inventory rows anymore,
         // and deleting the snapshot on every login emptied inventory until
         // the next fresh import. Equipment/combat/mount/favor are deliberately
-        // untouched: equipment self-heals via its full-dump reinsert, and the
-        // rest have no repopulating source.
+        // untouched — none has a production writer (no full-dump reinsert, no
+        // report import, no live/chat feed), so nothing would repopulate the
+        // slice after a wipe.
         if clear_inventory
             && let (Some(character), Ok(conn)) = (
                 game_state.get_active_character().map(str::to_string),

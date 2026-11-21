@@ -287,12 +287,6 @@ export const useStartupStore = defineStore("startup", () => {
       await listen<number>("survey-tracker-use-completed", (event) => {
         surveyTrackerStore.handleUseCompleted(event.payload);
       });
-      await listen("survey-tracker-multihit-opened", (event: any) => {
-        surveyTrackerStore.handleMultihitOpened(event.payload);
-      });
-      await listen("survey-tracker-multihit-closed", (event: any) => {
-        surveyTrackerStore.handleMultihitClosed(event.payload);
-      });
       // Combat accumulates live-only: skip startup catch-up replay, which may
       // include other characters' history (gameState handlers use the same guard).
       await listen("character-death", (event) => {

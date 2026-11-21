@@ -3,7 +3,7 @@ migrated schema (catches stale table/column names and syntax errors in paths
 no test executes — the doc-orphan gate's counterpart for SQL drift).
 
 Builds the schema by replaying DDL (CREATE TABLE/INDEX/TRIGGER, ALTER TABLE,
-DROP TABLE) from migrations.rs in file order on :memory:, then EXPLAINs each
+DROP TABLE) from migrations.rs in dispatcher order (run_migrations call order,
 string-literal DML statement (SELECT/WITH/UPDATE/INSERT/DELETE/REPLACE) from
 src .rs files except migrations.rs (its DML is version-sensitive). Dynamic SQL
 (format! placeholders) and extension table-valued functions (rarray) are

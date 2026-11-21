@@ -47,7 +47,7 @@ Manual use ──► record_manual_use ─────────────�
                Tauri commands ──► frontend (read-only)
 ```
 
-Live updates emit as `survey-tracker-session-started/ended`, `survey-tracker-use-recorded/completed`, `survey-tracker-multihit-opened/closed`. The frontend subscribes and refreshes affected views.
+Live updates emit as `survey-tracker-session-started/ended` and `survey-tracker-use-recorded/completed`. The frontend subscribes and refreshes affected views. (No multihit open/close event exists — open nodes are read via the `survey_tracker_status` command.)
 
 ### Attribution (A3 stitching)
 

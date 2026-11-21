@@ -8,7 +8,7 @@ The game produces two log files with complementary data about the same player ac
 
 | Log File | Format | Timezone | What it contains |
 |---|---|---|---|
-| **Player.log** | `[HH:MM:SS] LocalPlayer: ProcessXxx(...)` | Local time, no date | Structured game engine events — items, skills, NPCs, vendors, storage, combat state, UI actions |
+| **Player.log** | `[HH:MM:SS] LocalPlayer: ...` | Local time, no date | Retired feed — only `CharacterLogin` / `ChatLogPath` / `AreaTransition` still parse (identity + area); item/skill/NPC/vendor/storage/combat/UI arms are gone, gains come from Chat Status rows and structure from report snapshots |
 | **Chat.log** | `YY-MM-DD HH:MM:SS\t[Channel] Sender: Message` | UTC | Chat messages across channels — including `[Status]` which carries item quantities, XP deltas, economy events, and more |
 
 Each log has its own watcher and parser. The **DataIngestCoordinator** polls both, routes events through their respective parsers, and emits structured events to the frontend. Features subscribe to whichever events they need.
@@ -52,7 +52,7 @@ Both watchers are polled on the same coordinator tick (every 500ms — `spawn_po
 
 1. **Player events processed first** — `process_player_events()`
 2. **Chat events processed second** — `process_chat_events()`
-3. **Game state switches to live mode** after the first poll (catch-up replay complete) — i.e. after both drains: the chat login marker's `set_active_character` clears transient state when live, and that must not land on rows the replay just built
+3. **Game state switches to live mode** after the first poll (catch-up replay complete) — i.e. after both drains: the chat login marker's `set_active_character` clears only log-era inventory rows when live (the `source = 'log'` predicate, `game_state.rs:151` — equipment/combat/mount untouched, snapshot rows preserved), and that must not land on rows the replay just built
 4. **Watcher positions saved** to database
 
 This ordering describes the drain sequence within one poll tick, not a delivery guarantee: the two files can become readable on different ticks, and during catch-up a later area transition can process before an earlier chat message. Features must not use poll order to infer which area or session produced a chat event.
@@ -157,7 +157,7 @@ const unlistenState: UnlistenFn = await listen<string[]>('game-state-updated', (
 
 ### Combining streams
 
-Some data appears in both streams with different levels of detail. The pattern is: **Player.log is primary** (identity, structure), **Chat Status is supplementary** (quantities, deltas, human-readable names). Features don't deduplicate — they use different fields from each.
+Some data appears in both streams with different levels of detail. The pattern is: **Player.log is residual** (identity + area only — `CharacterLogin` / `ChatLogPath` / `AreaTransition`), **Chat Status carries the gains** (quantities, deltas, human-readable names), and **report snapshots carry the structure** (authoritative quantities per slice). Features don't deduplicate — they use different fields from each.
 
 #### Backend cross-stream correlation
 
