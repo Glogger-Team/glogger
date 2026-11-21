@@ -185,7 +185,9 @@ impl GameStateManager {
     /// Session-keyed stack correction: corrects the named `(character, server)`
     /// slice instead of the active slice. Catch-up applies staged chat gains
     /// through this so corrections land on the session that produced the rows,
-    /// not whatever identity is active at drain time.
+    /// not whatever identity is active at drain time. Idempotent — only
+    /// `stack_size = 1` placeholder rows match — so callers report every
+    /// recorded gain (new or replayed) and repeats converge without doubling.
     pub fn correct_stack_for_session(
         &self,
         character: &str,
@@ -200,7 +202,13 @@ impl GameStateManager {
 
         let conn = match db.get_write() {
             Ok(c) => c,
-            Err(_) => return vec![],
+            // Lost race for the single writer: leave a trace (the dispatch
+            // now restages the correction, so the next replay heals this)
+            // instead of skipping silently.
+            Err(e) => {
+                eprintln!("[game-state] Stack correction skipped ({character}@{server} {display_name} x{quantity}): writer checkout failed: {e}");
+                return vec![];
+            }
         };
 
         // Resolve display name to internal name via CDN data
@@ -469,6 +477,56 @@ mod tests {
         assert_eq!(stack("TestPlayer", "log"), 5, "target slice corrects");
         assert_eq!(stack("TestPlayer", "snapshot"), 1, "report row never a target");
         assert_eq!(stack("OtherAlt", "log"), 5, "other session untouched");
+
+        // Drop the pool first: Windows won't delete a file with an open handle.
+        drop(pool);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// A replayed correction converges without doubling: the first call fixes
+    /// the placeholder 1→N, and every later call with the same quantity is a
+    /// no-op (no row matched, no domain), so restaged corrections from
+    /// replays never inflate the stack or re-emit.
+    #[test]
+    fn replayed_stack_correction_converges_without_doubling() {
+        use std::sync::Arc;
+
+        let db_path = unique_temp_db("glogger_session_stack_correct_replay_test");
+        let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
+
+        let manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
+            crate::game_data::GameData::empty(),
+        )));
+
+        pool.get_write()
+            .unwrap()
+            .execute(
+                "INSERT INTO game_state_inventory
+                 (character_name, server_name, instance_id, item_name, stack_size, last_confirmed_at, source)
+                 VALUES ('TestPlayer', 'Dreva', 1, 'Fluorite', 1, '2026-10-19 12:00:00', 'log')",
+                [],
+            )
+            .unwrap();
+
+        // First correction (the replayed repair): placeholder 1→5.
+        let domains = manager.correct_stack_for_session("TestPlayer", "Dreva", "Fluorite", 5, &pool);
+        assert!(domains.contains(&"inventory"));
+        // Every later replay with the same quantity matches nothing.
+        for _ in 0..2 {
+            let domains = manager.correct_stack_for_session("TestPlayer", "Dreva", "Fluorite", 5, &pool);
+            assert!(domains.is_empty(), "converged correction stays silent");
+        }
+        let stack: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT stack_size FROM game_state_inventory
+                 WHERE character_name = 'TestPlayer' AND server_name = 'Dreva' AND item_name = 'Fluorite'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stack, 5, "replayed corrections converge exactly once");
 
         // Drop the pool first: Windows won't delete a file with an open handle.
         drop(pool);

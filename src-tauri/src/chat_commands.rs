@@ -569,12 +569,16 @@ fn run_scan_dispatch(
                 domains.push(d);
             }
         }
-        // Session-keyed stack correction (see `DispatchOutcome::staged_gains`
+        // Session-keyed stack correction (see `DispatchOutcome::stack_corrections`
         // docs): the Player.log drain wrote fallback `stack_size = 1` rows,
         // and the chat line carries the real quantity. Correct inline per
         // line, keyed by the line's own session identity — never the
         // drain-final identity. Idempotent: only `stack_size = 1` rows match.
-        for (item_name, quantity) in std::mem::take(&mut outcome.staged_gains) {
+        // The correction channel fires for every recorded gain — new or
+        // replayed — so a replay repairs a correction whose writer checkout
+        // failed, without restaging attribution (exactly-once `staged_gains`
+        // stays with the live coordinator).
+        for (item_name, quantity) in std::mem::take(&mut outcome.stack_corrections) {
             if let Some(id) = identity.as_ref()
                 && quantity > 1 {
                     // Resolve the internal name like the manager path does:
