@@ -77,7 +77,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useStatehelmTracker } from '../../composables/useStatehelmTracker'
 import { useGameStateStore } from '../../stores/gameStateStore'
 import { useGameDataStore } from '../../stores/gameDataStore'
@@ -94,7 +94,12 @@ const gameData = useGameDataStore()
 const {
   npcStatuses,
   loading,
+  loadGiftLog,
 } = useStatehelmTracker()
+
+onMounted(() => {
+  loadGiftLog()
+})
 
 // Selection state
 const selectedNpcKey = ref<string | null>(null)
