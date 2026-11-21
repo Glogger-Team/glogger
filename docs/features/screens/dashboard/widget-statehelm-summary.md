@@ -1,8 +1,8 @@
 # Widget: Statehelm Gifting
 
-> **DARK until `LocalPlayer:` lines recur (hidden 2026-11-03)** — removed from `DASHBOARD_WIDGETS`; the component file is retained as a dark-component spec. Re-adding the registry entry + import restores it.
+> Restored 2026-11-21: weekly counts flow from `game_state_gift_log` (JSON `FavorDelta` + manual gifts), not `LocalPlayer:` lines.
 
-**ID:** `statehelm-summary` *(not currently registered — DARK, see banner above)* | **Default size:** Medium | **Component:** `widgets/StatehelmSummaryWidget.vue`
+**ID:** `statehelm-summary` | **Default size:** Medium | **Component:** `widgets/StatehelmSummaryWidget.vue`
 
 Skill-driven summary of weekly Statehelm gift progress:
 

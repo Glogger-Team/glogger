@@ -26,6 +26,7 @@ import HoplologyWidget from "./widgets/HoplologyWidget.vue";
 import VendorCouncilWidget from "./widgets/VendorCouncilWidget.vue";
 import RouletteWidget from "./widgets/RouletteWidget.vue";
 import ArenaWidget from "./widgets/ArenaWidget.vue";
+import StatehelmSummaryWidget from "./widgets/StatehelmSummaryWidget.vue";
 export type WidgetSize = "small" | "medium" | "large";
 
 export interface DashboardWidget {
@@ -116,8 +117,12 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     component: CriticalResourcesWidget,
     defaultSize: "small",
   },
-  // Statehelm: weekly gift counts are Player.log-only (dark on the current
-  // client) — removed from the registry until LocalPlayer: lines recur.
+  {
+    id: "statehelm-summary",
+    name: "Statehelm Gifts",
+    component: StatehelmSummaryWidget,
+    defaultSize: "medium",
+  },
   {
     id: "watchword-detections",
     name: "Watchword Alerts",

@@ -87,13 +87,6 @@ const knownIssues: KnownIssue[] = [
       'Items with TSys mod prefixes/suffixes (e.g., "Amazing Iron Sword") may not always link to their base item in the CDN. We\'ve added prefix/suffix stripping as a fallback, but some edge cases may remain.',
   },
   {
-    id: "statehelm-gift-counts",
-    severity: "bug",
-    title: "Statehelm gift counts aren't shown",
-    description:
-      "The Statehelm page shows favor tiers but not per-NPC weekly gift counts — the view doesn't pass counts to its NPC cards, and the dashboard summary widget was removed. Favor data itself still refreshes in the background.",
-  },
-  {
     id: "item-quantities",
     severity: "bug",
     title: "Item quantities may be inaccurate",
