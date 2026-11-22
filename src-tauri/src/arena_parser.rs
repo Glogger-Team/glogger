@@ -31,8 +31,9 @@
 /// seeds its roster from this list; additional names are learned at runtime.
 pub const SEED_ROSTER: &[&str] = &["Corrrak", "Dura", "Gloz", "Leo", "Otis", "Ushug", "Vizlark"];
 
-/// Phrases that mark a *win* for the fighter named in the same line.
-const WIN_MARKERS: &[&str] = &[" wins!", "is Undefeated!", "victory for"];
+/// Phrases that mark a *win* for the fighter named in the same line. "done it"
+/// covers the repeated "Gloz/Leo has done it (again)!" closers.
+const WIN_MARKERS: &[&str] = &[" wins!", "is Undefeated!", "victory for", "done it"];
 
 /// Phrases that mark a *loss* for the fighter named in the same line. These are
 /// deliberately specific so mid-fight taunts don't false-trigger: e.g. `Neither
@@ -42,6 +43,8 @@ const LOSS_MARKERS: &[&str] = &[
     "been defeated!",
     "has fallen",
     "has collapsed",
+    "has lost",
+    "shut down",
     " is down",
     " is out",
 ];
@@ -96,14 +99,19 @@ impl ArenaTracker {
         }
 
         // ── Intro line 1: names the first fighter, resets any half-formed pair.
-        if text.starts_with("Introducing") {
+        // Observed openers: "Introducing ..." and "Here our are warriors now! ..."
+        if text.starts_with("Introducing") || text.starts_with("Here our are warriors now!") {
             self.pending_a = self.extract_known(text);
             self.pending_b = None;
             return None;
         }
 
         // ── Intro line 2: names the second fighter, completing the matchup.
-        if text.starts_with("And on the side") {
+        // Observed shapes ("side nearest|closer to me", "near side", and any
+        // other "And on the <x> side" variant): the prefix alone gates, and
+        // extract_known finds the fighter. The pending_a guard stays: without
+        // a first fighter there is no pair to complete.
+        if text.starts_with("And on the ") {
             if self.pending_a.is_some() {
                 self.pending_b = self.extract_known(text);
             }
@@ -205,15 +213,35 @@ impl ArenaTracker {
     }
 }
 
+/// Collapse maximal runs of the same ASCII letter ("Corrrak" → "corak",
+/// "Corrrrrrrraaaaaaaaak" → "corak"): Kuzavek elongates names for emphasis.
+/// Corpus method: a sweep of all 131 Chat-*.log files found exactly two
+/// elongated tokens, both Corrrak — re-run that sweep before adding any
+/// further fuzzy matching here. Applied to roster matching only; the
+/// canonical stored name is untouched.
+fn collapse_runs(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev: Option<char> = None;
+    for c in s.chars() {
+        let lower = c.to_ascii_lowercase();
+        if !(lower.is_ascii_alphabetic() && Some(lower) == prev) {
+            out.push(lower);
+        }
+        prev = Some(lower);
+    }
+    out
+}
+
 /// Case-insensitive whole-word containment: is `word` present in `haystack`
 /// bounded by non-alphanumeric characters (or string ends)? Guards against
-/// `Leo` matching inside a longer token.
+/// `Leo` matching inside a longer token. Both sides are run-collapsed first
+/// so elongated spellings ("Corrrrrrrraaaaaaaaak") still match the roster.
 fn contains_word(haystack: &str, word: &str) -> bool {
     if word.is_empty() {
         return false;
     }
-    let hay = haystack.to_ascii_lowercase();
-    let needle = word.to_ascii_lowercase();
+    let hay = collapse_runs(haystack);
+    let needle = collapse_runs(word);
     let bytes = hay.as_bytes();
     let mut start = 0;
     while let Some(pos) = hay[start..].find(&needle) {
@@ -371,6 +399,111 @@ mod tests {
         // A brand-new fighter wins with the clean phrasing → learned.
         t.observe(CH, KZ, "Newcomer wins!", TS);
         assert!(t.roster().iter().any(|n| n == "Newcomer"));
+    }
+
+    #[test]
+    fn near_side_intro_variant_resolves() {
+        // Live lines 26-11-22 15:02-15:03: the intro-2 "near side" phrasing
+        // (no "the side ... me") previously left pending_b unset, so the
+        // "Gloz loses!" result resolved nothing.
+        let m = run(
+            "Introducing our two competitors! On the far side is Gloz the Bear! She only understands goblinese commands, but she loves to hear you cheer!",
+            "And on the near side is Leo The Lion-Man!",
+            "Gloz's claws were not enough to score a victory. Gloz loses!",
+        )
+        .unwrap();
+        assert_eq!(m.fighter_a, "Gloz");
+        assert_eq!(m.fighter_b, "Leo");
+        assert_eq!(m.winner, "Leo");
+    }
+
+    #[test]
+    fn done_it_marks_a_win() {
+        // Live line 26-11-22 11:12:11 (and "Leo has done it again!" variants).
+        let m = run(
+            "Here our are warriors now! On the far side is the mighty ogre OTIS!",
+            "And on the side nearest me is Gloz 'Claws' the Bear!",
+            "Gloz has done it!",
+        )
+        .unwrap();
+        assert_eq!(m.fighter_a, "Otis");
+        assert_eq!(m.fighter_b, "Gloz");
+        assert_eq!(m.winner, "Gloz");
+    }
+
+    #[test]
+    fn undefeatable_loss_stays_green() {
+        // Live line 26-11-21 20:17:57: "loses!" still resolves through noise.
+        let m = run(
+            "Introducing our two competitors! On the far side is the staff fighter from the frozen lands, Ushug the Undefeatable!",
+            "And on the near side is the ferocious Gloz!",
+            "Apparently calling yourself Undefeatable does not protect you from defeat! Ushug loses!",
+        )
+        .unwrap();
+        assert_eq!(m.fighter_a, "Ushug");
+        assert_eq!(m.fighter_b, "Gloz");
+        assert_eq!(m.winner, "Gloz");
+    }
+
+    #[test]
+    fn shutdown_marks_a_loss() {
+        // Live line 26-11-22 10:22:01: shutdown of Vizlark's mind ends the
+        // battle, so Corrrak (unnamed in the line) wins.
+        let m = run(
+            "Here our are warriors now! On the far side is Corrrrrrrraaaaaaaaak!!!",
+            "And on the side closer to me is the violent, the vicious, the very very angry... VIZLARK!",
+            "Vizlark's mind has just shut down... that's the end of the battle!",
+        )
+        .unwrap();
+        assert_eq!(m.fighter_a, "Corrrak");
+        assert_eq!(m.fighter_b, "Vizlark");
+        assert_eq!(m.winner, "Corrrak");
+    }
+
+    #[test]
+    fn neither_fighter_line_still_resolves_nothing() {
+        // Taunt guard: none of the win/loss markers fire here, so the pair
+        // survives for the real result — which exercises "has lost".
+        let mut t = ArenaTracker::new();
+        t.observe(
+            CH,
+            KZ,
+            "Here our are warriors now! On the far side is Leo The Lion-Man!",
+            TS,
+        );
+        t.observe(CH, KZ, "And on the near side is Dura The Destroyer!", TS);
+        assert!(t
+            .observe(CH, KZ, "Neither fighter is defeated yet!", TS)
+            .is_none());
+        let m = t.observe(CH, KZ, "Dura has lost!", TS).unwrap();
+        assert_eq!(m.fighter_a, "Leo");
+        assert_eq!(m.fighter_b, "Dura");
+        assert_eq!(m.winner, "Leo");
+    }
+
+    #[test]
+    fn collapsed_roster_names_stay_distinct() {
+        // Run-collapse must not merge any two roster names into one.
+        let mut collapsed: Vec<String> =
+            SEED_ROSTER.iter().map(|n| collapse_runs(n)).collect();
+        collapsed.sort();
+        collapsed.dedup();
+        assert_eq!(collapsed.len(), SEED_ROSTER.len());
+    }
+
+    #[test]
+    fn elongated_corrrak_intro_resolves() {
+        // Live block 26-11-22 15:12-15:13: the elongated Corrrak intro needs
+        // run-collapse matching to complete the pair.
+        let m = run(
+            "Introducing our warriors! On the side farthest from me is the mighty ogre OTIS!",
+            "And on the near side is Corrrrrrrraaaaaaaaak!!!",
+            "Corrrak wins!",
+        )
+        .unwrap();
+        assert_eq!(m.fighter_a, "Otis");
+        assert_eq!(m.fighter_b, "Corrrak");
+        assert_eq!(m.winner, "Corrrak");
     }
 
     #[test]

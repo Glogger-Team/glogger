@@ -1,160 +1,96 @@
 <template>
   <div class="flex flex-col gap-3 text-sm h-full">
-    <div v-if="tips.length > 0" class="flex flex-col gap-1.5 rounded border border-border-default p-2">
+    <div class="flex gap-1" role="tablist" aria-label="Arena views">
+      <button
+        v-for="tab in tabs"
+        :key="tab"
+        role="tab"
+        :aria-selected="activeTab === tab"
+        class="flex-1 cursor-pointer rounded border px-2 py-1 text-xs transition-colors"
+        :class="activeTab === tab
+          ? 'border-border-default bg-bg-secondary font-semibold text-text-primary'
+          : 'border-transparent text-text-dim hover:text-text-secondary'"
+        @click="activeTab = tab">
+        {{ tab }}
+      </button>
+    </div>
+
+    <template v-if="activeTab === 'Today'">
+    <div class="flex flex-col gap-1.5">
       <span class="text-[11px] text-text-dim uppercase tracking-wide">Today's fight tips</span>
-      <div v-for="(tip, i) in tips" :key="tip.received_at + '|' + tip.tipster + '|' + i" class="flex flex-col gap-0.5">
-        <div class="flex items-baseline justify-between gap-2">
-          <span class="text-xs font-medium">{{ tip.tipster }}</span>
-          <span class="text-[11px] text-text-dim font-mono whitespace-nowrap">{{ tip.received_at }}</span>
+      <DataTable
+        :columns="tipColumns"
+        :rows="tipsTableRows"
+        :row-key="(row) => row.tipster as string"
+        :row-class="tipRowClass"
+        :compact="true"
+        :hoverable="false">
+        <template #cell-tip="{ value, row }">
+          <span :title="(row.fullBody as string) || undefined">{{ value }}</span>
+        </template>
+      </DataTable>
+    </div>
+
+    <div class="flex flex-col gap-1.5">
+      <span class="text-[11px] text-text-dim uppercase tracking-wide">Today's record</span>
+      <DataTable
+        :columns="recordColumns"
+        :rows="todayRecordRows"
+        :row-key="(row) => row.fighter as string"
+        :row-class="recordRowClass"
+        :compact="true"
+        :hoverable="false"
+        empty-variant="compact"
+        empty-text="No fights today yet"
+        empty-hint="Records appear as Kuzavek's results land." />
+    </div>
+    </template>
+
+    <template v-else-if='activeTab === "Full Day&apos;s Results"'>
+    <div class="flex flex-col gap-1.5">
+      <span class="text-[11px] text-text-dim uppercase tracking-wide">Today's results</span>
+      <div v-if="todayMatches.length > 0" class="flex flex-col gap-1">
+        <div
+          v-for="m in todayMatches"
+          :key="m.fought_at + '|' + m.fighter_a + '|' + m.fighter_b"
+          class="flex items-baseline justify-between gap-2 text-xs"
+          :title="m.fought_at">
+          <span class="truncate">
+            {{ m.fighter_a }} vs {{ m.fighter_b }} —
+            <span class="font-semibold">{{ m.winner }}</span>
+          </span>
+          <span class="text-text-dim tabular-nums shrink-0">{{ shortTime(m.fought_at) }}</span>
         </div>
-        <p class="text-xs whitespace-pre-line">{{ stripTags(tip.body) }}</p>
+      </div>
+      <div v-else class="text-[11px] text-text-dim italic">
+        No arena fights recorded today yet. Stand in the casino arena while Kuzavek
+        narrates — today's winners appear here.
       </div>
     </div>
-    <div v-if="tips.length === 0 && stats.total_matches > 0" class="text-[11px] text-text-dim italic">
-      No arena tips recorded today yet — Eveline's tip appears here when the chat log records one.
-    </div>
-    <div class="text-[11px] text-text-dim italic"
-      title="Personal bets are read from Player.log talk screens, which the current game client no longer writes. Match results still track via chat.">
-      No new bets can be recorded on the current game client — betting figures here cover historic bets only.
-    </div>
-    <div v-if="stats.total_matches === 0" class="text-xs text-text-dim italic">
-      No arena fights recorded yet. Stand in the casino arena while Kuzavek
-      narrates — matchups and winners are read from the chat log's
-      <span class="font-mono">[NPC Chatter] Kuzavek</span> lines. Eveline's daily
-      tip appears above when the chat log records one; rankings build themselves
-      from what actually happened on your server.
-    </div>
+    </template>
 
     <template v-else>
-      <!-- Header: sample size + personal betting rate -->
-      <div class="flex items-baseline justify-between gap-2 flex-wrap">
-        <span class="text-xs text-text-dim uppercase tracking-wide">Fighter rankings</span>
-        <span class="flex items-baseline gap-3 text-xs text-text-dim tabular-nums">
-          <span
-            v-if="stats.betting.total > 0"
-            class="cursor-help"
-            :title="bettingTooltip">
-            <span class="text-sm font-semibold" :style="{ color: rateColor(stats.betting.win_pct) }">
-              {{ stats.betting.win_pct.toFixed(0) }}%
-            </span>
-            Betting Rate
-          </span>
-          <span
-            v-else
-            class="cursor-help italic"
-            title="Personal bets are read from Player.log talk screens, which the current game client no longer writes. Match results below still track via chat.">
-            No bets tracked
-          </span>
-          <span>
-            <span class="text-sm font-semibold text-accent-gold">{{ stats.total_matches.toLocaleString() }}</span>
-            fights tracked
-          </span>
-        </span>
-      </div>
-
-      <!-- Matchup predictor: pick any two fighters → most likely winner. -->
-      <div class="flex flex-col gap-1.5 rounded border border-border-default p-2">
-        <span class="text-[11px] text-text-dim uppercase tracking-wide">Who would win?</span>
-        <div class="flex items-center gap-2">
-          <StyledSelect
-            v-model="pickA"
-            :options="fighterOptions"
-            size="xs"
-            full-width
-            class="flex-1 min-w-0" />
-          <span class="text-text-dim text-xs shrink-0">vs</span>
-          <StyledSelect
-            v-model="pickB"
-            :options="fighterOptions"
-            size="xs"
-            full-width
-            class="flex-1 min-w-0" />
-        </div>
-        <div v-if="prediction" class="flex items-baseline justify-between gap-2">
-          <span class="text-xs">
-            Favored:
-            <span class="font-semibold" :style="{ color: winColor }">{{ prediction.favored }}</span>
-          </span>
-          <span class="text-[11px] text-text-dim tabular-nums">
-            {{ prediction.pct }}% · {{ prediction.basisLabel }}
-          </span>
-        </div>
-        <div v-else class="text-[11px] text-text-dim italic">
-          Pick two different fighters.
-        </div>
-      </div>
-
-      <!-- Rankings table -->
-      <div class="flex flex-col gap-1 min-w-0">
-        <div
-          v-for="(f, i) in stats.fighters"
-          :key="f.name"
-          class="flex items-center gap-2">
-          <span class="text-text-dim tabular-nums w-4 text-right text-xs">{{ i + 1 }}</span>
-          <span class="text-text-primary truncate flex-1 min-w-0">{{ f.name }}</span>
-          <span class="text-[11px] text-text-dim tabular-nums whitespace-nowrap">
-            {{ f.wins }}–{{ f.losses }}
-          </span>
-          <!-- win% bar -->
-          <div class="h-2 w-20 rounded-full bg-bg-secondary overflow-hidden shrink-0">
-            <div
-              class="h-full rounded-full"
-              :style="{ width: f.win_pct + '%', backgroundColor: rateColor(f.win_pct) }" />
-          </div>
-          <span class="text-xs tabular-nums w-10 text-right" :style="{ color: rateColor(f.win_pct) }">
-            {{ f.win_pct.toFixed(0) }}%
-          </span>
-        </div>
-      </div>
-
-      <div class="h-px bg-border-default" />
-
-      <!-- Head-to-head matrix: row fighter's win% vs column fighter. -->
-      <div class="flex flex-col gap-1 min-h-0">
-        <div class="flex items-baseline justify-between gap-2">
-          <span class="text-xs text-text-dim uppercase tracking-wide">Head-to-head</span>
-          <span class="text-[10px] text-text-dim/80">row beats column</span>
-        </div>
-        <div class="overflow-x-auto">
-          <table class="border-collapse text-[11px]">
-            <thead>
-              <tr>
-                <th class="p-1"></th>
-                <th
-                  v-for="c in fighterNames"
-                  :key="c"
-                  class="p-1 font-medium text-text-dim text-center whitespace-nowrap"
-                  :title="c">
-                  {{ abbr(c) }}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="r in fighterNames" :key="r">
-                <td class="p-1 pr-2 text-text-dim text-right whitespace-nowrap font-medium">
-                  {{ abbr(r) }}
-                </td>
-                <td
-                  v-for="c in fighterNames"
-                  :key="c"
-                  class="p-0.5 text-center tabular-nums"
-                  :style="cellStyle(r, c)"
-                  :title="cellTitle(r, c)">
-                  {{ cellLabel(r, c) }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+    <div class="flex flex-col gap-1.5">
+      <span class="text-[11px] text-text-dim uppercase tracking-wide">Lifetime</span>
+      <DataTable
+        :columns="recordColumns"
+        :rows="lifetimeRows"
+        :row-key="(row) => row.fighter as string"
+        :row-class="recordRowClass"
+        :compact="true"
+        :hoverable="false"
+        empty-variant="compact"
+        empty-text="No fights recorded yet"
+        empty-hint="Lifetime records build from Kuzavek's results." />
+    </div>
     </template>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useGameStateStore } from '../../../stores/gameStateStore'
-import StyledSelect from '../../Shared/StyledSelect.vue'
+import DataTable from '../../Shared/DataTable.vue'
 
 const store = useGameStateStore()
 
@@ -165,6 +101,11 @@ onMounted(() => {
 
 const stats = computed(() => store.arenaStats)
 const tips = computed(() => store.arenaTips)
+
+/** Arena views: Today first (default), then the fight log, then lifetime. */
+const tabs = ['Today', "Full Day's Results", 'Lifetime Results'] as const
+type ArenaTab = (typeof tabs)[number]
+const activeTab = ref<ArenaTab>('Today')
 
 /** Tip bodies carry chat markup (`<i>…</i>`); render plain text.
  *  Loops tag-removal to a fixpoint (one pass lets nested-tag smuggling
@@ -181,157 +122,198 @@ function stripTags(s: string): string {
   return out.replace(/[<>]/g, '')
 }
 
-/** Fighter names, ranked (highest win% first) — the display/matrix order. */
-const fighterNames = computed(() => stats.value.fighters.map((f) => f.name))
+interface ParsedTip {
+  favored: string
+  other: string | null
+  edge: number
+}
 
-/** Fighter names as StyledSelect options for the matchup predictor. */
-const fighterOptions = computed(() =>
-  fighterNames.value.map((n) => ({ value: n, label: n })),
+/** Best-effort parse of Eveline's daily tip after tag-stripping.
+ *  Returns null when the body doesn't match — the caller falls back to
+ *  plain-text display so an unrecognized tip is never hidden. */
+function parseTip(body: string): ParsedTip | null {
+  const m =
+    /If (.+?) and (.+?) fight today.*?that ([A-Z][\w '.\-]*?) will have the upper hand\.\s*\(\+(\d+)%\)/.exec(
+      stripTags(body),
+    )
+  if (!m) return null
+  const a = m[1].trim()
+  const b = m[2].trim()
+  const favored = m[3].trim()
+  const edge = Number(m[4])
+  return { favored, other: favored === a ? b : favored === b ? a : null, edge }
+}
+
+/** Closed arena roster (per the Gorgon wiki's casino arena page): the only
+ *  fighters a tip can name. Single-fighter tips ("…Leo… (+5%)", applies to
+ *  every fight that day) name exactly one of these; anything else falls
+ *  through to first-sentence display. */
+const ROSTER = ['Otis', 'Leo', 'Corrrak', 'Dura', 'Ushug', 'Vizlark', 'Gloz']
+
+/** Best-effort parse of a single-fighter tip: the edge plus the one roster
+ *  name in the body. Returns null when the edge is absent or when zero or
+ *  2+ distinct roster names appear — the caller falls back to first-sentence
+ *  display so the tip is never hidden or misattributed. */
+function parseSingleTip(body: string): { favored: string; edge: number } | null {
+  const text = stripTags(body)
+  const edge = /\(\+(\d+)%\)/.exec(text)
+  if (!edge) return null
+  const present = ROSTER.filter((name) => new RegExp(`\\b${name}\\b`).test(text))
+  if (present.length !== 1) return null
+  return { favored: present[0], edge: Number(edge[1]) }
+}
+
+/** Lossless fallback: plain text minus the boilerplate opener, clamped to
+ *  the first sentence / 140 chars. The full body stays in the row tooltip. */
+function fallbackTip(body: string): string {
+  let text = stripTags(body).trim().replace(/^(Here's a hot tip|Gotta hot tip for ya):\s*/i, '')
+  const first = /[^.!?]*[.!?]/.exec(text)
+  if (first) text = first[0].trim()
+  if (text.length > 140) text = `${text.slice(0, 137).trimEnd()}…`
+  return text
+}
+
+/** Naive-UTC "YYYY-MM-DD HH:MM:SS" → "HH:MM" for display. */
+function shortTime(ts: string): string {
+  return ts.length >= 16 ? ts.slice(11, 16) : ts
+}
+
+/** Fixed tipster roster in stable display order (exact other_player values).
+ *  The tips table left-joins today's tips against this roster, frontend-only. */
+const TIPSTER_ROSTER = [
+  'Arianna Fangblade',
+  'Eveline Rastin',
+  'Irkima',
+  'Mandibles',
+  'Qatik',
+]
+
+/** Tips-table columns: who said it, the matchup, and the edge. */
+const tipColumns = [
+  { key: 'tipster', label: 'Tipster' },
+  { key: 'tip', label: 'Tip' },
+  { key: 'edge', label: '+/-', numeric: true },
+]
+
+/** Compact tip text + edge for a body (time + boilerplate dropped; the full
+ *  stripped body stays in the row tooltip). The edge lives in its own column,
+ *  so the Tip text carries the matchup without the embedded percentage.
+ *  Unparseable tips get first-sentence text with a blank edge. */
+function tipText(body: string): { tip: string; edge: string } {
+  const parsed = parseTip(body)
+  if (parsed && parsed.other)
+    return { tip: `${parsed.favored} over ${parsed.other}`, edge: `+${parsed.edge}%` }
+  if (parsed) return { tip: parsed.favored, edge: `+${parsed.edge}%` }
+  const single = parseSingleTip(body)
+  if (single) return { tip: `${single.favored} all fights`, edge: `+${single.edge}%` }
+  return { tip: fallbackTip(body), edge: '' }
+}
+
+/** One row per roster tipster: today's tip, or a muted placeholder naming
+ *  who to visit. Placeholders carry no edge text and are dim italic so they
+ *  can never be mistaken for a tip. */
+const tipsTableRows = computed(() =>
+  TIPSTER_ROSTER.map((tipster) => {
+    const tip = tips.value.find((t) => t.tipster === tipster)
+    if (!tip) {
+      const first = tipster.split(' ')[0]
+      return { tipster, tip: `No tip yet — talk to ${first}`, edge: '', fullBody: '', placeholder: true }
+    }
+    const { tip: text, edge } = tipText(tip.body)
+    return { tipster, tip: text, edge, fullBody: stripTags(tip.body), placeholder: false }
+  }),
 )
+/** Placeholder rows render dim italic; real tips keep default text. */
+function tipRowClass(row: Record<string, unknown>): string {
+  return row.placeholder ? 'italic text-text-dim' : ''
+}
 
-/** P&L tooltip for the personal betting rate in the header. */
-const bettingTooltip = computed(() => {
-  const b = stats.value.betting
-  const net = b.net_profit
-  const sign = net >= 0 ? '+' : '−'
-  const netStr = `${sign}${Math.abs(net).toLocaleString()}`
-  return (
-    `${b.won}/${b.total} bets won\n` +
-    `Wagered: ${b.total_wagered.toLocaleString()} councils\n` +
-    `Won back: ${b.total_won.toLocaleString()} councils\n` +
-    `Net: ${netStr} councils`
+/** Eastern calendar day of a date ("YYYY-MM-DD"), machine-tz independent. */
+function easternDay(d: Date): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(d)
+}
+
+/** Today's Kuzavek-narrated results. fought_at is log-local wall clock
+ *  ("YYYY-MM-DD HH:MM:SS"), so parse it as machine-local and compare its
+ *  Eastern date — correct on any machine tz (mirrors the store's
+ *  America/New_York server-time anchor). */
+const todayMatches = computed(() => {
+  const today = easternDay(new Date())
+  return stats.value.recent.filter(
+    (m) => easternDay(new Date(m.fought_at.replace(' ', 'T'))) === today,
   )
 })
 
-// ── Matchup predictor state ───────────────────────────────────────────────
-const pickA = ref('')
-const pickB = ref('')
-
-// Seed the two picks with the top two fighters once data arrives / changes.
-watch(
-  fighterNames,
-  (names) => {
-    if (names.length >= 2) {
-      if (!names.includes(pickA.value)) pickA.value = names[0]
-      if (!names.includes(pickB.value) || pickB.value === pickA.value)
-        pickB.value = names[1]
+/** Today's per-fighter W-L, tallied from today's Eastern-day matches. Only
+ *  fighters who fought today appear. */
+const todayRecords = computed(() => {
+  const map = new Map<string, { wins: number; losses: number }>()
+  for (const m of todayMatches.value) {
+    for (const name of [m.fighter_a, m.fighter_b]) {
+      if (!map.has(name)) map.set(name, { wins: 0, losses: 0 })
     }
-  },
-  { immediate: true },
-)
-
-// ── Lookup helpers ─────────────────────────────────────────────────────────
-/** Overall win pct by fighter name. */
-const overallPct = computed(
-  () => new Map(stats.value.fighters.map((f) => [f.name, f.win_pct])),
-)
-
-/** Directed H2H record: "A|B" → { wins, losses } (A's record vs B). */
-const h2hMap = computed(() => {
-  const m = new Map<string, { wins: number; losses: number }>()
-  for (const c of stats.value.head_to_head) {
-    m.set(`${c.fighter}|${c.opponent}`, { wins: c.wins, losses: c.losses })
+    const w = map.get(m.winner)
+    if (w) w.wins += 1
+    else map.set(m.winner, { wins: 1, losses: 0 })
+    for (const name of [m.fighter_a, m.fighter_b]) {
+      if (name !== m.winner) map.get(name)!.losses += 1
+    }
   }
-  return m
+  return [...map]
+    .map(([name, r]) => ({ name, ...r, ratio: r.wins / (r.wins + r.losses) }))
+    .sort((a, b) => b.wins - a.wins || a.losses - b.losses || a.name.localeCompare(b.name))
 })
 
-function h2h(a: string, b: string) {
-  return h2hMap.value.get(`${a}|${b}`) ?? { wins: 0, losses: 0 }
+/** Shared record-table columns: Fighter | W | L | Win%. */
+const recordColumns = [
+  { key: 'fighter', label: 'Fighter' },
+  { key: 'w', label: 'W', numeric: true },
+  { key: 'l', label: 'L', numeric: true },
+  { key: 'winPct', label: 'Win%', numeric: true },
+]
+
+/** Today's rows for the record table. */
+const todayRecordRows = computed(() =>
+  todayRecords.value.map((r) => ({
+    fighter: r.name,
+    w: r.wins,
+    l: r.losses,
+    winPct: `${Math.round(r.ratio * 100)}%`,
+    ratio: r.ratio,
+  })),
+)
+
+/** Win-ratio row tint from the theme's value semantics (no painted
+ *  backgrounds): undefeated strongest green, winless red, .500 default text.
+ *  (--success/--error do not exist in the theme; value-positive/negative are
+ *  its gain/loss equivalents.) */
+function recordRowClass(row: Record<string, unknown>): string {
+  const ratio = row.ratio as number
+  if (ratio >= 1) return 'text-value-positive'
+  if (ratio <= 0) return 'text-value-negative'
+  return ''
 }
 
-/** Minimum head-to-head samples before we trust it over overall win rates. */
-const H2H_MIN_SAMPLES = 3
+/** Lifetime standings: all known fighters, most wins first. */
+const standings = computed(() =>
+  [...stats.value.fighters].sort(
+    (a, b) => b.wins - a.wins || b.win_pct - a.win_pct || a.name.localeCompare(b.name),
+  ),
+)
 
-/**
- * Predict the favored fighter for a matchup. Uses the direct head-to-head
- * record when enough games exist; otherwise falls back to overall win rates.
- */
-const prediction = computed(() => {
-  const a = pickA.value
-  const b = pickB.value
-  if (!a || !b || a === b) return null
-
-  const rec = h2h(a, b)
-  const played = rec.wins + rec.losses
-  if (played >= H2H_MIN_SAMPLES) {
-    const aRate = (rec.wins / played) * 100
-    const favored = aRate >= 50 ? a : b
-    const pct = Math.round(aRate >= 50 ? aRate : 100 - aRate)
-    return { favored, pct, basisLabel: `head-to-head (${played})` }
-  }
-
-  // Fallback: overall win rates.
-  const aPct = overallPct.value.get(a) ?? 0
-  const bPct = overallPct.value.get(b) ?? 0
-  const favored = aPct >= bPct ? a : b
-  // Express confidence as the favorite's share of the two overall rates.
-  const sum = aPct + bPct
-  const pct = sum > 0 ? Math.round((Math.max(aPct, bPct) / sum) * 100) : 50
-  const basis = played > 0 ? `overall (only ${played} h2h)` : 'overall win rate'
-  return { favored, pct, basisLabel: basis }
-})
-
-// ── Colors: matte / pastel diverging scale (loss → win) ────────────────────
-const C_LOW = '#c97b7b' // pastel red  (low win rate)
-const C_MID = '#cbb56b' // pastel amber (even)
-const C_HIGH = '#7bab86' // pastel green (high win rate)
-
-function lerp(a: number, b: number, t: number) {
-  return Math.round(a + (b - a) * t)
-}
-function hexToRgb(h: string) {
-  return [
-    parseInt(h.slice(1, 3), 16),
-    parseInt(h.slice(3, 5), 16),
-    parseInt(h.slice(5, 7), 16),
-  ] as const
-}
-/** Map a 0..100 win rate onto the red→amber→green pastel ramp. */
-function rateColor(pct: number): string {
-  const t = Math.max(0, Math.min(100, pct)) / 100
-  const [c1, c2] = t < 0.5 ? [C_LOW, C_MID] : [C_MID, C_HIGH]
-  const tt = t < 0.5 ? t / 0.5 : (t - 0.5) / 0.5
-  const a = hexToRgb(c1)
-  const b = hexToRgb(c2)
-  return `rgb(${lerp(a[0], b[0], tt)}, ${lerp(a[1], b[1], tt)}, ${lerp(a[2], b[2], tt)})`
-}
-
-const winColor = computed(() => rateColor(prediction.value?.pct ?? 50))
-
-// ── Matrix cell rendering ──────────────────────────────────────────────────
-function abbr(name: string): string {
-  return name.length <= 4 ? name : name.slice(0, 4)
-}
-
-/** Row fighter's win% vs column fighter, or null when they've never met. */
-function cellRate(row: string, col: string): number | null {
-  const rec = h2h(row, col)
-  const total = rec.wins + rec.losses
-  return total === 0 ? null : (rec.wins / total) * 100
-}
-
-function cellStyle(row: string, col: string) {
-  if (row === col) return { backgroundColor: 'var(--color-bg-secondary)' }
-  const rate = cellRate(row, col)
-  if (rate === null) return { color: 'var(--color-text-dim)', opacity: 0.4 }
-  return {
-    backgroundColor: rateColor(rate),
-    color: '#1a1a1a',
-    fontWeight: '600',
-  }
-}
-
-function cellLabel(row: string, col: string): string {
-  if (row === col) return '·'
-  const rate = cellRate(row, col)
-  return rate === null ? '–' : `${Math.round(rate)}`
-}
-
-function cellTitle(row: string, col: string): string {
-  if (row === col) return row
-  const rec = h2h(row, col)
-  const total = rec.wins + rec.losses
-  if (total === 0) return `${row} vs ${col}: never met`
-  return `${row} beats ${col}: ${rec.wins}–${rec.losses} (${Math.round((rec.wins / total) * 100)}%)`
-}
+/** Lifetime rows for the record table. */
+const lifetimeRows = computed(() =>
+  standings.value.map((f) => ({
+    fighter: f.name,
+    w: f.wins,
+    l: f.losses,
+    winPct: `${f.win_pct.toFixed(0)}%`,
+    ratio: f.win_pct / 100,
+  })),
+)
 </script>
