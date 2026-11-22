@@ -7,6 +7,7 @@ import { tierIndex } from './useFavorTiers'
 import { hasStorage } from './useNpcServices'
 import type { NpcInfo } from '../types/gameData/npcs'
 import type { SkillInfo } from '../types/gameData/skills'
+import type { CharacterSnapshotSummary, SnapshotNpcFavor } from '../types/database'
 
 export interface GiftLogEntry {
   npc_key: string
@@ -158,6 +159,14 @@ const weekStartDb = computed(() => {
   return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`
 })
 
+/** Normalize any stored timestamp to the gift log's `YYYY-MM-DD HH:MM:SS` UTC
+ *  shape so plain string comparisons stay chronological: snapshot stamps arrive
+ *  as ISO (`…T…Z`, with or without millis), gift rows as DB stamps. Both cut
+ *  to the same 19 chars, so `T` vs ` ` can never misorder a same-day row. */
+function toDbStamp(s: string): string {
+  return s.replace('T', ' ').slice(0, 19)
+}
+
 export function useStatehelmTracker() {
   const gameData = useGameDataStore()
   const gameState = useGameStateStore()
@@ -165,6 +174,12 @@ export function useStatehelmTracker() {
 
   const giftLog = ref<GiftLogEntry[]>([])
   const loading = ref(false)
+  /** Authoritative export anchor for weekly gift counts: the latest character
+   *  snapshot's per-NPC `gifts_this_week` plus the snapshot's own timestamp.
+   *  Gifts given while glogger was closed never reach `game_state_gift_log`
+   *  (the chat path is dead then), so the export is the only source for them.
+   *  Refreshed with every gift-log load; `null` while no snapshot exists. */
+  const exportBaseline = ref<{ anchorDb: string; counts: Record<string, number> } | null>(null)
 
   const statehelmNpcs = computed<NpcInfo[]>(() => {
     const allNpcs = Object.values(gameData.npcsByKey)
@@ -198,14 +213,41 @@ export function useStatehelmTracker() {
     const cutoff = weekStartDb.value
     const counts: Record<string, GiftLogEntry[]> = {}
     for (const entry of giftLog.value) {
-      // Normalized: rows written by older builds carry ISO stamps, and 'T' > ' '
-      // would count a same-date row earlier in the day as in-week.
-      if (entry.gifted_at.replace('T', ' ').slice(0, 19) >= cutoff) {
+      // Normalized via toDbStamp: rows written by older builds carry ISO stamps,
+      // and 'T' > ' ' would count a same-date row earlier in the day as in-week.
+      if (toDbStamp(entry.gifted_at) >= cutoff) {
         if (!counts[entry.npc_key]) counts[entry.npc_key] = []
         counts[entry.npc_key].push(entry)
       }
     }
     return counts
+  })
+
+  /** Per-NPC weekly gift totals: the export baseline (authoritative for every
+   *  gift given up to the export) plus live gift-log rows detected after it.
+   *  The baseline applies only while its snapshot is in the current week — an
+   *  older snapshot's counts belong to a previous cap window, so all live rows
+   *  count. Pips, widget priority, and summary totals all read this; the
+   *  drill-down `giftLog` keeps the live rows only (no fabricated rows). */
+  const mergedGiftsThisWeek = computed<Record<string, number>>(() => {
+    const cutoff = weekStartDb.value
+    const baseline = exportBaseline.value
+    // Reactive against the Monday reset: an app left open across it drops a
+    // now-stale baseline without waiting for the next gift-log load.
+    const anchor = baseline && baseline.anchorDb >= cutoff ? baseline.anchorDb : null
+    const base = anchor !== null && baseline ? baseline.counts : {}
+    const live = giftsThisWeek.value
+    const out: Record<string, number> = {}
+    for (const key of new Set([...Object.keys(live), ...Object.keys(base)])) {
+      const rows = live[key] ?? []
+      // Rows at or before the export are already inside its counts; only later
+      // live gifts append. Without an in-week baseline every live row counts.
+      const postExport = anchor === null
+        ? rows.length
+        : rows.filter((e) => toDbStamp(e.gifted_at) > anchor).length
+      out[key] = (base[key] ?? 0) + postExport
+    }
+    return out
   })
 
   const npcStatuses = computed<StatehelmNpcStatus[]>(() => {
@@ -214,7 +256,10 @@ export function useStatehelmTracker() {
       const favorData = gameState.favorByNpc[npc.key]
       return {
         npc,
-        giftsThisWeek: gifts.length,
+        // Merged total: the export anchor plus post-export live gifts. The
+        // drill-down list stays the live rows — the export is the anchor, not
+        // a source of fabricated `game_state_gift_log` rows.
+        giftsThisWeek: mergedGiftsThisWeek.value[npc.key] ?? 0,
         maxGifts: MAX_GIFTS_PER_WEEK,
         giftLog: gifts,
         favorTier: favorData?.favor_tier ?? null,
@@ -440,6 +485,33 @@ export function useStatehelmTracker() {
         characterName,
         serverName,
       })
+      // Anchor to the latest character export: gifts given while glogger was
+      // closed never reach the gift log, so the snapshot's `gifts_this_week`
+      // is authoritative for everything up to the export. Best-effort — a
+      // snapshot failure still leaves the live rows rendering.
+      try {
+        const snapshots = await invoke<CharacterSnapshotSummary[]>('get_character_snapshots', {
+          characterName,
+          serverName,
+        })
+        const latest = snapshots[0]
+        if (latest) {
+          const favorRows = await invoke<SnapshotNpcFavor[]>('get_snapshot_npc_favor', {
+            snapshotId: latest.id,
+          })
+          const counts: Record<string, number> = {}
+          for (const row of favorRows) {
+            const n = row.gifts_this_week ?? 0
+            if (n > 0) counts[row.npc_key] = n
+          }
+          exportBaseline.value = { anchorDb: toDbStamp(latest.snapshot_timestamp), counts }
+        } else {
+          exportBaseline.value = null
+        }
+      } catch (e) {
+        console.error('Failed to load snapshot gift baseline:', e)
+        exportBaseline.value = null
+      }
     } catch (e) {
       console.error('Failed to load gift log:', e)
     } finally {
