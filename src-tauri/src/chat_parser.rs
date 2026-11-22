@@ -313,8 +313,8 @@ pub fn parse_chat_lines_tagged(text: &str) -> Vec<(ChatMessage, Option<ChatSessi
             });
             continue;
         }
-        // Same strictness for logout (watcher matches `"******** Logged Out"`,
-        // the game's own marker): a chat line mentioning logging out must not
+        // Same strictness for logout (the watcher's `check_session_marker`
+        // applies the same gate): a chat line mentioning logging out must not
         // close the session or be swallowed. Scope to non-JSON system lines:
         // a `[JSON:*]` body (pigeon text, book content) can mention the
         // marker while the player is still logged in, and player chat can
@@ -346,6 +346,30 @@ pub fn parse_chat_lines_tagged(text: &str) -> Vec<(ChatMessage, Option<ChatSessi
     }
 
     tagged
+}
+
+/// Whether a physical line starts a new entry in [`parse_chat_lines_tagged`].
+///
+/// Same push conditions as that loop, in the same priority (login, then
+/// strict-logout, then timestamped, else continuation/empty): the chat
+/// watcher's file-ordered poll consumes the tagged stream line by line, so
+/// this predicate and that loop must agree on every line. Keep them in sync.
+pub fn line_starts_tagged_message(line: &str) -> bool {
+    if line.trim().is_empty() {
+        return false;
+    }
+    if parse_chat_login_line(line).is_some() {
+        return parse_chat_line(line).is_some();
+    }
+    if let Some(m) = parse_chat_line(line)
+        && m.is_system && m.json_type.is_none() && m.message.contains("******** Logged Out")
+    {
+        return true;
+    }
+    if is_timestamped_line(line) {
+        return parse_chat_line(line).is_some();
+    }
+    false
 }
 
 /// Extract item links from a chat message

@@ -1,4 +1,4 @@
-use crate::chat_parser::{parse_chat_lines_tagged, parse_chat_login_line, ChatMessage};
+use crate::chat_parser::{line_starts_tagged_message, parse_chat_line, parse_chat_lines_tagged, parse_chat_login_line, ChatMessage};
 use chrono::NaiveDateTime;
 /// Log file watching infrastructure
 ///
@@ -508,15 +508,29 @@ impl ChatLogWatcher {
             return events;
         }
 
-        // Check for logout marker: ******** Logged Out
-        if line.contains("******** Logged Out")
-            && let Some(player) = &self.player_name {
-                events.push(LogEvent::CharacterLogout {
-                    character_name: player.clone(),
-                    timestamp: chrono::Utc::now().naive_utc(),
-                });
-                self.current_session_start = None;
+        // Check for logout marker: ******** Logged Out. Gated on the
+        // parser's strict shape (parsed system non-JSON record carrying
+        // the marker) — the same condition `parse_chat_lines_tagged`
+        // uses to close the session. A bare `contains` also fires on
+        // player chat quoting the marker, JSON bodies, and continuation
+        // lines; those spurious events were inert until the drain grew a
+        // CharacterLogout arm, which clears the live identity.
+        match parse_chat_line(line) {
+            Some(m)
+                if m.is_system
+                    && m.json_type.is_none()
+                    && m.message.contains("******** Logged Out") =>
+            {
+                if let Some(player) = &self.player_name {
+                    events.push(LogEvent::CharacterLogout {
+                        character_name: player.clone(),
+                        timestamp: chrono::Utc::now().naive_utc(),
+                    });
+                    self.current_session_start = None;
+                }
             }
+            _ => {}
+        }
 
         events
     }
@@ -589,45 +603,52 @@ impl LogFileWatcher for ChatLogWatcher {
             }
         }
 
-        let mut events = Vec::new();
+        let lines: Vec<&str> = content_str.lines().collect();
 
-        // Check each line for session markers, but only keep the LAST login
-        // marker found in the batch. When reading from position 0 the chat log
-        // contains every historical login — we only care about the most recent.
-        let mut last_login_events: Option<Vec<LogEvent>> = None;
-        let mut non_login_marker_events: Vec<LogEvent> = Vec::new();
-
-        for line in content_str.lines() {
-            let marker_events = self.check_session_marker(line);
-            if !marker_events.is_empty() {
-                // Check if this batch contains a login (ServerDetected + CharacterLogin)
-                let has_login = marker_events
-                    .iter()
-                    .any(|e| matches!(e, LogEvent::CharacterLogin { .. }));
-                if has_login {
-                    // Replace any previous login — we only want the last one
-                    last_login_events = Some(marker_events);
-                } else {
-                    non_login_marker_events.extend(marker_events);
-                }
+        // Pre-scan: the index of the last login line. Reading from position
+        // 0 the file holds every historical login — only the most recent
+        // marker survives the collapse below. Pure scan: no watcher state
+        // moves here.
+        let mut last_login_idx: Option<usize> = None;
+        for (idx, line) in lines.iter().enumerate() {
+            if parse_chat_login_line(line).is_some() {
+                last_login_idx = Some(idx);
             }
         }
 
-        // Emit the last login events first, then any non-login markers (logouts)
-        if let Some(login_events) = last_login_events {
-            events.extend(login_events);
-        }
-        events.extend(non_login_marker_events);
+        // The tagged message stream in file order, consumed line by line
+        // below (`line_starts_tagged_message` mirrors its push conditions).
+        let tagged = parse_chat_lines_tagged(&content_str);
+        let mut tagged_iter = tagged.into_iter();
 
-        // Parse all chat messages with the multiline-aware parser, tagged by
-        // the login session that produced each one. Login lines were consumed
-        // above as markers (only the last survives the collapse) — the tagged
-        // parser re-derives the full per-line session sequence, so gains in
-        // earlier sessions keep their own identity. Resume-from-offset polls
-        // yield `None` tags until the next login line, by design.
-        for (msg, session) in parse_chat_lines_tagged(&content_str) {
-            events.push(LogEvent::ChatMessage(msg, session));
+        let mut events = Vec::new();
+
+        // One ordered pass: markers at their file position (watcher session
+        // state mutates in file order too), each followed by that line's own
+        // message. Leading untagged lines stay ahead of the login marker,
+        // so the drain resolves them against the pre-batch identity;
+        // trailing post-logout lines stay behind the logout, so they see
+        // the cleared identity instead of the stale session.
+        for (idx, line) in lines.iter().enumerate() {
+            let marker_events = self.check_session_marker(line);
+            let collapsed = marker_events
+                .iter()
+                .any(|e| matches!(e, LogEvent::CharacterLogin { .. }))
+                && Some(idx) != last_login_idx;
+            // A collapsed login still advanced the watcher session state
+            // above (which session a logout names); only its events are dropped.
+            if !collapsed {
+                events.extend(marker_events);
+            }
+            if line_starts_tagged_message(line)
+                && let Some((msg, session)) = tagged_iter.next() {
+                events.push(LogEvent::ChatMessage(msg, session));
+            }
         }
+        debug_assert!(
+            tagged_iter.next().is_none(),
+            "tagged message stream outlived its lines"
+        );
 
         Ok(events)
     }
@@ -763,7 +784,10 @@ mod tests {
         let mut watcher = ChatLogWatcher::new(PathBuf::from("test.log"));
         watcher.player_name = Some("TestCharacter".to_string());
 
-        let events = watcher.check_session_marker("******** Logged Out");
+        // Real logout line: timestamped system record carrying the marker.
+        let events = watcher.check_session_marker(
+            "26-03-09 05:05:00\t**************************************** Logged Out",
+        );
         assert_eq!(events.len(), 1);
 
         if let LogEvent::CharacterLogout { character_name, .. } = &events[0] {
@@ -773,6 +797,21 @@ mod tests {
         }
 
         assert!(watcher.current_session_start.is_none());
+
+        // Quoted marker in player chat, JSON body, and untimestamped
+        // continuation lines are not logouts: no event, session untouched.
+        watcher.current_session_start = Some(chrono::Utc::now().naive_utc());
+        let quoted = watcher.check_session_marker(
+            "26-03-09 05:06:00\t[Guild] Bob: ******** Logged Out, see you tomorrow",
+        );
+        assert!(quoted.is_empty());
+        let json = watcher.check_session_marker(
+            "26-03-09 05:06:00\t[JSON:PigeonReceived] {\"Title\": \"Gossip\", \"Body\": \"saw ******** Logged Out\"}",
+        );
+        assert!(json.is_empty());
+        let bare = watcher.check_session_marker("******** Logged Out");
+        assert!(bare.is_empty());
+        assert!(watcher.current_session_start.is_some());
     }
 
     #[test]
@@ -912,6 +951,96 @@ mod tests {
                 character_name: "AltB".to_string(),
                 server_name: "Legacy".to_string(),
             })
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn test_chat_poll_emits_file_ordered_with_collapsed_login() {
+        // D5-48 residual: markers ride at their file position instead of
+        // sorting first. Leading lines stay ahead of the login marker (the
+        // drain resolves them against the pre-batch identity), the logout
+        // stays ahead of the trailing lines (they see the cleared identity),
+        // and only the last login's markers survive the collapse.
+        use crate::chat_parser::ChatSessionTag;
+        use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "glogger_chat_order_test_{}_{nanos}_{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Chat-26-03-09.log");
+        let mut file = std::fs::File::create(&path).unwrap();
+        writeln!(
+            file,
+            "26-03-09 05:01:46\t**************************************** Logged In As AltA. Server Dreva. Timezone Offset -07:00:00.\n\
+             26-03-09 05:02:00\t[Status] Fluorite x5 added to inventory.\n\
+             26-03-09 05:05:00\t**************************************** Logged Out\n\
+             26-03-09 05:06:00\t[Status] Fluorite x9 added to inventory.\n\
+             \n\
+             26-03-09 06:01:46\t**************************************** Logged In As AltB. Server Legacy. Timezone Offset -07:00:00.\n\
+             26-03-09 06:02:00\t[Guild] Bob: hello\n\
+             still talking here\n\
+             26-03-09 06:04:00\t[Status] Fluorite x3 added to inventory."
+        )
+        .unwrap();
+        drop(file);
+
+        let mut watcher = ChatLogWatcher::new(path.clone());
+        watcher.start().unwrap();
+        let events = watcher.poll().unwrap();
+
+        fn tag(tag: &Option<ChatSessionTag>) -> String {
+            tag.as_ref()
+                .map(|t| format!("{}/{}", t.character_name, t.server_name))
+                .unwrap_or_else(|| "none".to_string())
+        }
+        let described: Vec<String> = events
+            .iter()
+            .map(|e| match e {
+                LogEvent::ChatMessage(msg, t) => {
+                    let head: String = msg.message.chars().take(20).collect();
+                    format!("msg[{}]:{head}", tag(t))
+                }
+                LogEvent::ServerDetected { character_name, server_name, .. } => {
+                    format!("server:{character_name}/{server_name}")
+                }
+                LogEvent::CharacterLogin { character_name, .. } => {
+                    format!("login:{character_name}")
+                }
+                LogEvent::CharacterLogout { character_name, .. } => {
+                    format!("logout:{character_name}")
+                }
+                other => format!("other:{other:?}"),
+            })
+            .collect();
+
+        // Markers at their file position: AltA's login markers are collapsed
+        // away, its messages keep its tag, the logout precedes the trailing
+        // untagged gain, and AltB's markers precede only AltB's lines. The
+        // continuation line stays glued to its guild message (tagged-stream
+        // alignment), and the empty line emits nothing.
+        assert_eq!(
+            described,
+            vec![
+                "msg[none]:********************".to_string(),
+                "msg[AltA/Dreva]:Fluorite x5 added to".to_string(),
+                "logout:AltA".to_string(),
+                "msg[AltA/Dreva]:********************".to_string(),
+                "msg[none]:Fluorite x9 added to".to_string(),
+                "server:AltB/Legacy".to_string(),
+                "login:AltB".to_string(),
+                "msg[none]:********************".to_string(),
+                "msg[AltB/Legacy]:hello\nstill talking ".to_string(),
+                "msg[AltB/Legacy]:Fluorite x3 added to".to_string(),
+            ]
         );
 
         let _ = std::fs::remove_dir_all(&dir);
