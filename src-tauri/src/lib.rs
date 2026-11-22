@@ -578,8 +578,10 @@ pub fn run() {
                         Err(e) => eprintln!("Roulette backfill failed: {e}"),
                     }
                     match db::arena_commands::backfill_from_chat_logs(&sm, &dbp) {
+                        Ok(0) => {}
                         Ok(n) => {
                             startup_log!("Arena backfill: {} new match(es)", n);
+                            ah.emit("game-state-updated", vec!["arena"]).ok();
                         }
                         Err(e) => eprintln!("Arena backfill failed: {e}"),
                     }
