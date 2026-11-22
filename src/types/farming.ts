@@ -1,46 +1,6 @@
 // TypeScript types for the Farming Calculator feature
-
-// === Active Session State ===
-// Frozen: the 10/21 game client stopped loot/XP tracking, so no new live
-// sessions accumulate. The Combat view covers live kills/deaths/XP. These
-// aliases stay so historic readers keep compiling; the wide session shape is
-// intentionally not rebuilt.
-
-export interface FarmingSkillEntry {
-  baseline: number
-  baselineTnl: number
-  gained: number
-  level: number
-  tnl: number
-  levelsGained: number
-}
-
-export interface FarmingFavorEntry {
-  delta: number
-}
-
-// Per-item loot tally from a single enemy type, this session.
-export interface FarmingKillLoot {
-  quantity: number  // total amount of the item looted from this enemy
-  drops: number     // number of distinct corpse pickups that yielded the item
-}
-
-export interface FarmingKillEntry {
-  count: number
-  loot: Record<string, FarmingKillLoot>  // item_name -> loot tally from this enemy type
-}
-
-// Per-item extract tally from skinning/butchering a corpse, this session.
-export interface FarmingExtractLoot {
-  quantity: number  // total amount extracted from this enemy type
-  drops: number     // number of distinct extract events
-  skill: string     // "Butchering" | "Skinning"
-  // Harvest conditions (latest observed this session), parsed from Player.log.
-  skillLevel?: number       // Butchering/Skinning level at harvest time
-  equipmentBonus?: number   // "+N skill bonus from equipment"
-  anatomyFamily?: string    // e.g. "Canines" — the monster's anatomy family
-  anatomyLevel?: number     // your anatomy level for that family
-}
+// (historic loot/drop-rate database + corpse-extract details; live
+// sessions are frozen — the Combat view covers live kills/deaths/XP).
 
 // Per-corpse butchering detail for an item, from the `get_corpse_extract_details`
 // backend command (lifetime, persisted) — used by the History tab hover.
@@ -55,7 +15,7 @@ export interface ExtractDetail {
   anatomy_level: number | null
 }
 
-// === Loot drop breakdown (session tab item popover) ===
+// === Loot drop breakdown (hover popover) ===
 
 // All-time per-enemy loot stats returned by the `get_enemy_kill_stats` backend command.
 export interface EnemyLootStat {
@@ -140,54 +100,6 @@ export interface ItemDropBreakdownRow {
   equipmentBonus?: number
   anatomyFamily?: string
   anatomyLevel?: number
-}
-
-// Frozen alias: the wide live-session object is gone (see note at top), but
-// historic code paths still name it. Kept minimal on purpose.
-export type FarmingSession = Record<string, unknown>;
-
-// === Activity Log ===
-// Frozen: the live session log is gone; Combat view keeps its own log type.
-
-export type FarmingLogKind =
-  | 'session-start'
-  | 'item-gained'
-  | 'item-lost'
-  | 'xp-gain'
-  | 'level-up'
-  | 'favor-change'
-  | 'vendor-sale'
-  | 'enemy-killed'
-  | 'session-end'
-
-export interface FarmingLogEntry {
-  kind: FarmingLogKind
-  timestamp: string
-  label: string
-  detail?: string
-}
-
-// === Persistence (save to DB) ===
-// Frozen: no new rows are written (Combat view is read-only over old rows),
-// but the invoke payloads in DatabaseTab/import paths still name the shape.
-
-export interface SaveFarmingSessionInput {
-  /** When set, update this existing session row instead of inserting a new one
-   *  (used by the periodic auto-save of an in-progress session). */
-  session_id?: number | null
-  name: string
-  notes: string
-  start_time: string
-  end_time: string | null
-  elapsed_seconds: number
-  total_paused_seconds: number
-  vendor_gold: number
-  skills: Array<{ skill_id: number; skill_name: string; xp_gained: number; levels_gained: number }>
-  items: Array<{ item_name: string; net_quantity: number }>
-  favors: Array<{ npc_key: string; npc_name: string; delta: number }>
-  kills: Array<{ enemy_name: string; kill_count: number }>
-  character_name?: string | null
-  server_name?: string | null
 }
 
 // === Historical (loaded from DB) ===

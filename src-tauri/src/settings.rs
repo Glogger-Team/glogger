@@ -510,7 +510,6 @@ impl SettingsManager {
     }
 
     /// Whether automatic Player-prev.log backfill is enabled.
-    #[allow(dead_code)]
     pub fn get_auto_ingest_player_prev(&self) -> bool {
         self.settings.read().unwrap().auto_ingest_player_prev
     }

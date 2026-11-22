@@ -529,9 +529,10 @@ pub fn run() {
             ));
             startup_log!("Background polling thread spawned (paused)");
 
-            // Step 5c: Spawn the Player-prev.log backfill watcher — captures
-            // sessions played without glogger running by ingesting Player-prev.log
-            // into the kill/loot database when the game rotates it.
+            // Step 5c: Spawn the Player-prev.log archive watcher — saves the
+            // game's rotated Player-prev.log copy under <app data>/player-logs
+            // for the poems backfill and the Statehelm gift tracker (kill/loot
+            // ingestion is frozen: the current client writes no loot lines).
             replay::spawn_player_prev_watcher(settings_manager.clone(), db_pool.clone());
 
             // Step 5c+1: Books-dir backfill watcher — ingests the game's
@@ -705,6 +706,7 @@ pub fn run() {
             db::roulette_commands::get_roulette_stats,
             db::roulette_commands::backfill_roulette_from_chat_logs,
             db::arena_commands::get_arena_stats,
+            db::arena_commands::get_arena_tips,
             db::arena_commands::backfill_arena_from_chat_logs,
             // CDN management
             get_cache_status,
