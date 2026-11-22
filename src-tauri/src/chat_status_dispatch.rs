@@ -167,6 +167,18 @@ impl DispatchOutcome {
     }
 }
 
+/// Twin-collapse for unresolvable-skill sightings. An English `LevelUp` and
+/// its JSON `Xp` twin arrive as consecutive messages, so the second sighting
+/// of the same skill is the same event, not a second skip. Callers keep the
+/// `last` slot for their whole message batch and only count/log on `true`.
+/// Non-adjacent repeats (different polls) still count separately — one skip
+/// event per sighting, twins excepted.
+pub(crate) fn note_unknown_skill(last: &mut Option<String>, skill: String) -> bool {
+    let fresh = last.as_deref() != Some(skill.as_str());
+    *last = Some(skill);
+    fresh
+}
+
 /// Callback into the coordinator's survey attribution (`attribute_chat_gain`):
 /// resolved internal item name, quantity, UTC timestamp → linked loot row id.
 pub type SurveyHook<'a> = Option<&'a mut dyn FnMut(Option<&str>, u32, &str) -> Option<i64>>;
@@ -2282,6 +2294,18 @@ mod tests {
     fn json_msg(json_type: &str, body: &str, ts: &str) -> ChatMessage {
         let line = format!("{ts}\t[JSON:{json_type}] {body}");
         crate::chat_parser::parse_chat_line(&line).unwrap()
+    }
+
+    #[test]
+    fn note_unknown_skill_collapses_adjacent_twins_only() {
+        let mut last: Option<String> = None;
+        // English `LevelUp` + JSON `Xp` twin: one event, one skip.
+        assert!(note_unknown_skill(&mut last, "Fungiculture".to_string()));
+        assert!(!note_unknown_skill(&mut last, "Fungiculture".to_string()));
+        // A different skill right after is a separate event.
+        assert!(note_unknown_skill(&mut last, "Mycology".to_string()));
+        // A non-adjacent repeat (later poll) counts again.
+        assert!(note_unknown_skill(&mut last, "Fungiculture".to_string()));
     }
 
     fn seed_npc(gd: &GameDataState, key: &str, name: &str, area: Option<&str>, tastes: bool) {
