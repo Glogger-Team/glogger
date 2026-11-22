@@ -31,7 +31,7 @@
             placeholder="Search in channel..."
             class="px-4 py-2 bg-surface-elevated border border-border-light rounded text-text-primary w-62.5 focus:outline-none focus:border-accent-gold"
           />
-          <button v-if="selectedChannel && pendingCount > 0" @click="reset" class="px-3 h-9 bg-surface-elevated border border-accent-gold rounded text-accent-gold text-sm font-medium cursor-pointer transition-all flex items-center hover:bg-border-default" title="Show new messages">↓ {{ pendingCount }} new</button>
+          <button v-if="selectedChannel && pendingCount > 0" @click="showNewest" class="px-3 h-9 bg-surface-elevated border border-accent-gold rounded text-accent-gold text-sm font-medium cursor-pointer transition-all flex items-center hover:bg-border-default" title="Show new messages">↓ {{ pendingCount }} new</button>
           <button
             v-if="selectedChannel"
             @click="reset"
@@ -74,11 +74,12 @@ const channels = ref<ChannelStat[]>([])
 const loading = ref(false)
 const hasMore = ref(true)
 const offset = ref(0)
+const hasOlderPages = ref(false)
 const searchText = ref('')
 const sortOrder = ref<'asc' | 'desc'>('desc')
 const LIMIT = 100
 
-const { pendingCount } = useChatLiveRefresh({ sortOrder, offset, dateNav, reset })
+const { pendingCount, showNewest } = useChatLiveRefresh({ sortOrder, hasOlderPages, dateNav, reset, onInsert: () => loadChannels() })
 
 let searchTimeout: number | null = null
 
@@ -109,6 +110,7 @@ async function selectChannel(channel: string) {
   selectedChannel.value = channel
   messages.value = []
   pendingCount.value = 0
+  hasOlderPages.value = false
   offset.value = 0
   searchText.value = ''
   hasMore.value = true
@@ -151,12 +153,14 @@ async function loadMessages() {
 
 function loadMore() {
   if (loading.value) return
+  hasOlderPages.value = true
   loadMessages()
 }
 
 /** Restart the window at the top (refresh / search / day / sort changes) */
 function reset() {
   pendingCount.value = 0
+  hasOlderPages.value = false
   if (!selectedChannel.value) return
   offset.value = 0
   hasMore.value = true
