@@ -63,16 +63,20 @@ def git(args, root):
     )
 
 
-def parse_approved_lines(text, rows):
+def parse_approved_lines(text, rows, tag=None):
     """Parse editor-format triage text into [(section, text)] pairs.
 
     Same format $EDITOR produces: `[n] edited text` keeps the draft's
     section, bare lines go to Improved, `#`/blank lines ignored, and a
-    `[n]` with deleted text drops the row.
+    `[n]` with deleted text drops the row. A leading bullet (`-`/`*`) on
+    an approved line is stripped: write_notes_file adds its own, so a
+    pre-bulleted file would double-bullet (seen on v1.17.3). A bare
+    version-title line matching the tag is dropped, not bulleted.
     """
     import re as _re
 
     tag_re = _re.compile(r"^\[(\d+)\]\s*(.*)$")
+    bullet_re = _re.compile(r"^([-*])\s+")
     pairs = []
     for ln in text.splitlines():
         stripped = ln.strip()
@@ -84,7 +88,13 @@ def parse_approved_lines(text, rows):
         elif not m or m.group(2).strip():
             pairs.append(("impv", tag_re.sub(r"\2", stripped)))
         # else: [n] with deleted text — dropped, not an empty bullet.
-    return pairs
+    cleaned = []
+    for section, t in pairs:
+        t = bullet_re.sub("", t.strip(), count=1)
+        if tag and t.lstrip("v") == tag.lstrip("v"):
+            continue
+        cleaned.append((section, t))
+    return cleaned
 
 
 def write_notes_file(root, tag, prev_tag, pairs, raw_count=None):
@@ -537,7 +547,7 @@ def triage_editor_path(rows, root, tag):
             return 1
         with open(triage_path, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
-        pairs = parse_approved_lines(text, rows)
+        pairs = parse_approved_lines(text, rows, tag)
         raw_count = sum(
             1
             for ln in text.splitlines()
@@ -569,7 +579,7 @@ def triage_notes_file(rows, root, tag, prev_tag, notes_path):
     except OSError as e:
         print(f"Error: cannot read --notes-file {notes_path}: {e}")
         return 1
-    pairs = parse_approved_lines(text, rows)
+    pairs = parse_approved_lines(text, rows, tag)
     raw_lines = [
         ln for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")
     ]
