@@ -148,6 +148,12 @@ export interface ArenaStats {
   betting: ArenaBettingSummary
 }
 
+export interface ArenaTip {
+  received_at: string
+  tipster: string
+  body: string
+}
+
 export interface CombatWisdomMonster {
   name: string
   verb: string
@@ -291,6 +297,10 @@ export const useGameStateStore = defineStore('gameState', () => {
       net_profit: 0,
     },
   })
+
+  /** Today's casino arena tips (chat EntityReport rows for the active
+   *  character+server). Per-character, unlike the global fight history. */
+  const arenaTips = ref<ArenaTip[]>([])
 
   // ── Council-wallet estimate (anchored on last export + live deltas) ───
   const currencyEstimate = ref<CurrencyEstimate | null>(null)
@@ -735,6 +745,18 @@ export const useGameStateStore = defineStore('gameState', () => {
     }
   }
 
+  /** Fetch today's casino arena tips for the active character+server. */
+  async function fetchArenaTips() {
+    const characterName = getCharacterName()
+    const serverName = getServerName()
+    if (!characterName || !serverName) return
+    try {
+      arenaTips.value = await invoke<ArenaTip[]>('get_arena_tips', { characterName, serverName })
+    } catch (e) {
+      console.error('[gameStateStore] Failed to load arena tips:', e)
+    }
+  }
+
   /** Reconcile the council-wallet estimate from the DB (anchor + delta_since).
    *  Call on load/login and after a fresh export re-anchors it. */
   async function fetchCurrencyEstimate() {
@@ -1175,6 +1197,8 @@ export const useGameStateStore = defineStore('gameState', () => {
       loadCombatSkillNames()
       // Load the council-wallet estimate (anchor + live deltas) (non-blocking)
       fetchCurrencyEstimate()
+      // Load today's arena tips for the new identity (non-blocking)
+      fetchArenaTips()
       // Flush domains stashed while identity was missing — the full load just
       // covered the store-owned set, so re-emit the rest (widget-owned
       // domains heal via their own listeners on mount).
@@ -1274,6 +1298,9 @@ export const useGameStateStore = defineStore('gameState', () => {
           if (fresh()) vendor.value = v
           break
         }
+        case 'player_messages':
+          await fetchArenaTips()
+          break
         case 'currency_estimate':
           await fetchCurrencyEstimate()
           break
@@ -1443,6 +1470,8 @@ export const useGameStateStore = defineStore('gameState', () => {
     fetchRouletteStats,
     arenaStats,
     fetchArenaStats,
+    arenaTips,
+    fetchArenaTips,
 
     // Council-wallet estimate
     currencyEstimate,

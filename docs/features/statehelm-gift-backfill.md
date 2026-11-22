@@ -20,7 +20,7 @@ count to the game's number.
   `Statehelm gift backfill skipped: npcs table is empty` in that case.
   **On demand**: `backfill_statehelm_gifts`, the "Rescan logs" button on
   Character → Statehelm. The command is `async` + `spawn_blocking`
-  (`replay::ingest_player_log`'s pattern) because the scan can read the whole
+  because the scan can read the whole
   archive — 512 MiB by default — and a non-async Tauri command would do that on
   the main thread.
 - Sources, in order: archived rotated copies in

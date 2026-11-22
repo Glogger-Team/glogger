@@ -1,5 +1,15 @@
 <template>
   <div class="flex flex-col gap-3 text-sm h-full">
+    <div v-if="tips.length > 0" class="flex flex-col gap-1.5 rounded border border-border-default p-2">
+      <span class="text-[11px] text-text-dim uppercase tracking-wide">Today's fight tips</span>
+      <div v-for="tip in tips" :key="tip.received_at + tip.tipster" class="flex flex-col gap-0.5">
+        <div class="flex items-baseline justify-between gap-2">
+          <span class="text-xs font-medium">{{ tip.tipster }}</span>
+          <span class="text-[11px] text-text-dim font-mono whitespace-nowrap">{{ tip.received_at }}</span>
+        </div>
+        <p class="text-xs whitespace-pre-line">{{ stripTags(tip.body) }}</p>
+      </div>
+    </div>
     <div class="text-[11px] text-text-dim italic"
       title="Personal bets are read from Player.log talk screens, which the current game client no longer writes. Match results still track via chat.">
       No new bets can be recorded on the current game client — historic bets below, if any.
@@ -7,8 +17,9 @@
     <div v-if="stats.total_matches === 0" class="text-xs text-text-dim italic">
       No arena fights recorded yet. Stand in the casino arena while Kuzavek
       narrates — matchups and winners are read from the chat log's
-      <span class="font-mono">[NPC Chatter] Kuzavek</span> lines. No fight tips to
-      enter; rankings build themselves from what actually happened on your server.
+      <span class="font-mono">[NPC Chatter] Kuzavek</span> lines. Eveline's daily
+      tip appears above when the chat log records one; rankings build themselves
+      from what actually happened on your server.
     </div>
 
     <template v-else>
@@ -146,9 +157,16 @@ const store = useGameStateStore()
 
 onMounted(() => {
   store.fetchArenaStats()
+  store.fetchArenaTips()
 })
 
 const stats = computed(() => store.arenaStats)
+const tips = computed(() => store.arenaTips)
+
+/** Tip bodies carry chat markup (`<i>…</i>`); render plain text. */
+function stripTags(s: string): string {
+  return s.replace(/<[^>]*>/g, '')
+}
 
 /** Fighter names, ranked (highest win% first) — the display/matrix order. */
 const fighterNames = computed(() => stats.value.fighters.map((f) => f.name))

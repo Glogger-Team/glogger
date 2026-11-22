@@ -45,7 +45,6 @@ export const useCombatStore = defineStore("combat", () => {
   const log = ref<CombatLogEntry[]>([]);
   const startedAt = ref<string | null>(null);
   const historicKills = ref<Record<string, number>>({});
-  const historicXp = ref<Record<string, number>>({});
   const baselineLoaded = ref(false);
 
   async function loadHistoricBaseline() {
@@ -64,17 +63,12 @@ export const useCombatStore = defineStore("combat", () => {
         serverName,
       });
       const killTotals: Record<string, number> = {};
-      const xpTotals: Record<string, number> = {};
       for (const s of sessions) {
         for (const k of s.kills ?? []) {
           killTotals[k.enemy_name] = (killTotals[k.enemy_name] ?? 0) + k.kill_count;
         }
-        for (const sk of s.skills ?? []) {
-          xpTotals[sk.skill_name] = (xpTotals[sk.skill_name] ?? 0) + sk.xp_gained;
-        }
       }
       historicKills.value = killTotals;
-      historicXp.value = xpTotals;
       baselineLoaded.value = true;
     } catch (e) {
       console.error("[combat] Failed to load historic baseline:", e);
@@ -172,7 +166,6 @@ export const useCombatStore = defineStore("combat", () => {
   function resetForCharacter() {
     reset();
     historicKills.value = {};
-    historicXp.value = {};
     baselineLoaded.value = false;
   }
 
@@ -243,7 +236,6 @@ export const useCombatStore = defineStore("combat", () => {
     log,
     startedAt,
     historicKills,
-    historicXp,
     baselineLoaded,
     loadHistoricBaseline,
     handleEnemyKilled,

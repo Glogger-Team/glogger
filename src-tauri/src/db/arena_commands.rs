@@ -81,6 +81,51 @@ pub struct ArenaStats {
     pub betting: ArenaBettingSummary,
 }
 
+/// One arena tip for the current day, via the chat `EntityReport` twin
+/// (observed tipster: Eveline Rastin). Tips land in `player_messages`
+/// (message_type `entity_report`); the widget shows only today's.
+#[derive(Debug, Serialize, Clone)]
+pub struct ArenaTip {
+    pub received_at: String,
+    pub tipster: String,
+    pub body: String,
+}
+
+/// Today's arena tips for one character+server, newest first. Tips are
+/// per-character rows (like pigeons), unlike the global fight history, so
+/// callers pass the active identity. `date(timestamp)` is UTC, matching the
+/// chat stamps the dispatch writes.
+pub fn get_today_tips<C: DbRead + ?Sized>(
+    conn: &C,
+    character_name: &str,
+    server_name: &str,
+) -> Result<Vec<ArenaTip>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT timestamp, other_player, body FROM player_messages
+             WHERE character_name = ?1 AND server_name = ?2
+               AND message_type = 'entity_report'
+               AND date(timestamp) = date('now')
+             ORDER BY timestamp DESC",
+        )
+        .map_err(|e| format!("Tips query prepare error: {e}"))?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![character_name, server_name],
+            |row| {
+                Ok(ArenaTip {
+                    received_at: row.get(0)?,
+                    tipster: row.get(1)?,
+                    body: row.get(2)?,
+                })
+            },
+        )
+        .map_err(|e| format!("Tips query error: {e}"))?;
+    rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Tips row error: {e}"))
+}
+
 /// Persist a single resolved match. Idempotent via `idx_arena_dedup`.
 pub fn record_arena_match(
     conn: &rusqlite::Connection,
@@ -257,6 +302,19 @@ pub fn get_arena_stats(db: State<'_, DbPool>) -> Result<ArenaStats, String> {
         .get()
         .map_err(|e| format!("Database connection error: {e}"))?;
     aggregate_stats(&conn)
+}
+
+/// Today's arena tips for the dashboard widget (active character+server).
+#[tauri::command(rename_all = "camelCase")]
+pub fn get_arena_tips(
+    db: State<'_, DbPool>,
+    character_name: String,
+    server_name: String,
+) -> Result<Vec<ArenaTip>, String> {
+    let conn = db
+        .get()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    get_today_tips(&conn, &character_name, &server_name)
 }
 
 /// Read every `Chat-*.log` in the ChatLogs directory and persist any arena
@@ -471,5 +529,40 @@ mod tests {
         assert_eq!(b.total_wagered, 22_500); // 3 × 7500
         assert_eq!(b.total_won, 28_500); // 2 × 14250
         assert_eq!(b.net_profit, 6_000); // 28500 - 22500
+    }
+
+    #[test]
+    fn today_tips_filters_day_type_and_identity() {
+        let conn = setup();
+        conn.execute_batch(
+            "CREATE TABLE player_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_name TEXT NOT NULL,
+                server_name TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                message_type TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                other_player TEXT NOT NULL,
+                body TEXT NOT NULL DEFAULT '',
+                item_name TEXT
+            );",
+        )
+        .unwrap();
+        // One tip today (kept), one yesterday (stale), one pigeon today
+        // (wrong type), one tip today for another character (wrong identity).
+        conn.execute_batch(
+            "INSERT INTO player_messages
+                (character_name, server_name, timestamp, message_type, direction, other_player, body) VALUES
+                ('Aka', 'Dreva', datetime('now'), 'entity_report', 'in', 'Eveline Rastin', 'Ushug has the upper hand.'),
+                ('Aka', 'Dreva', datetime('now', '-1 day'), 'entity_report', 'in', 'Eveline Rastin', 'stale tip'),
+                ('Aka', 'Dreva', datetime('now'), 'pigeon', 'in', 'Friend', 'hello'),
+                ('Other', 'Dreva', datetime('now'), 'entity_report', 'in', 'Eveline Rastin', 'not mine');",
+        )
+        .unwrap();
+
+        let tips = get_today_tips(&conn, "Aka", "Dreva").unwrap();
+        assert_eq!(tips.len(), 1);
+        assert_eq!(tips[0].tipster, "Eveline Rastin");
+        assert!(tips[0].body.contains("Ushug"));
     }
 }
