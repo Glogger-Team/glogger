@@ -1,0 +1,58 @@
+# chat_replay_guard_session.log — compact full-session Chat.log for the
+# dataset-scale chat replay guard (see src-tauri/src/chat_replay_guard.rs).
+#
+# Session A: GuardHero @ Dreva (login 08:00:01). Session B: OtherAlt @
+# OtherAltServer (login 08:30:01) — its gains must not bleed into A's tallies.
+# Lines starting with '#' are harness comments, never dispatched.
+#
+# GROUND TRUTH — Session A (GuardHero@Dreva):
+#   LEDGER_ROWS (item_transactions, source='chat_status'): 11
+#   LEDGER_QTY: Tiny Brain Bug Meat=1, Mandrake Root=6 (2 rows),
+#     Silver Ring=2, Toxic Sludge=2 (1 twin-stamped row), Serpentine=3
+#     (1 twin row), Peridot=4 (1 row; same-second resend collapses),
+#     Copper Ore=6, Oak Wood=8, Spider Silk=1, Button Mushroom=5.
+#     TOTAL_QTY=38.
+#   STAGED_GAINS pass 1: 11 pushes (10 English + 1 JSON-first twin), qty sum 38.
+#     Pass 2 (rescan): 0 pushes, 0 new rows.
+#   CURRENCY delta_since (GOLD, anchor 1000 @ 2026-11-22 07:00:00): +16
+#     (+10 received, +5 coins, -4 used, -2 sent, +7 recovered).
+#   SKILLS: Sword L5 xp=192 (single level-up; English XP lines have no writer
+#     and persist nothing). Endurance L3 xp=600 (250+350 JSON awards).
+#   XP_OUTCOMES (emission only, no DB row): 2 events, amount sum 102.
+#   LEVELUP_OUTCOMES: 1 event (Sword L5).
+# GROUND TRUTH — Session B (OtherAlt@OtherAltServer):
+#   LEDGER_ROWS: 1 (Mandrake Root x5). Hero tallies unchanged.
+#   Councils +100 with no anchor row: accrue no-op (no bleed into hero delta).
+26-11-22 08:00:01	**************************************** Logged In As GuardHero. Server Dreva. Timezone Offset -05:00:00.
+26-11-22 08:01:10	[Status] Tiny Brain Bug Meat added to inventory.
+26-11-22 08:02:15	[Status] Mandrake Root x3 added to inventory.
+26-11-22 08:03:20	[Status] Silver Ring x2 added to inventory.
+26-11-22 08:04:30	[Status] Toxic Sludge x2 added to inventory.
+26-11-22 08:04:30	[JSON:AddItem] {"Name": "Toxic Sludge", "Stack": 2, "FromName": "Olugax The Ever-Pudding", "FromEntityId": 257400}
+26-11-22 08:05:40	[JSON:AddItem] {"Name": "Serpentine", "Stack": 3, "FromName": "Olugax The Ever-Pudding", "FromEntityId": 257400}
+26-11-22 08:05:40	[Status] Serpentine x3 added to inventory.
+26-11-22 08:06:12	[Status] Peridot x4 added to inventory.
+26-11-22 08:06:12	[Status] Peridot x4 added to inventory.
+26-11-22 08:07:25	[Status] Mandrake Root x3 added to inventory.
+26-11-22 08:08:01	[Status] You earned 62 XP in Sword.
+26-11-22 08:09:02	[Status] You earned 40 XP in Sword.
+26-11-22 08:10:03	[Status] You earned 192 XP and reached level 5 in Sword!
+26-11-22 08:11:04	[JSON:EarnedXP] {"Skill": "Endurance", "XP": 250, "OldLevel": 3, "NewLevel": 3}
+26-11-22 08:12:05	[JSON:EarnedXP] {"Skill": "Endurance", "XP": 350, "OldLevel": 3, "NewLevel": 3}
+26-11-22 08:13:06	[Status] You received 10 Councils.
+26-11-22 08:14:07	[Status] You receive 5 coins.
+26-11-22 08:15:08	[Status] You used 4 councils.
+26-11-22 08:16:09	[Status] Sent 2 coins to Bob.
+26-11-22 08:17:10	[Status] You recovered 7 Councils stolen by Ratkin Mugger.
+26-11-22 08:18:11	[Guild] Bob: anyone running Gazluk tonight?
+26-11-22 08:19:12	[Tell] Alice->GuardHero: gl on the survey grind
+26-11-22 08:20:13	[Guild] GuardHero: one more loop then turn-in
+26-11-22 08:21:14	[Status] Copper Ore x6 added to inventory.
+26-11-22 08:22:15	[Status] Oak Wood x8 added to inventory.
+26-11-22 08:23:16	[Status] Spider Silk added to inventory.
+26-11-22 08:24:17	[Status] Button Mushroom x5 added to inventory.
+26-11-22 08:25:18	[Guild] Bob: nice haul
+26-11-22 08:30:01	**************************************** Logged In As OtherAlt. Server OtherAltServer. Timezone Offset -05:00:00.
+26-11-22 08:31:10	[Status] Mandrake Root x5 added to inventory.
+26-11-22 08:32:11	[Status] You received 100 Councils.
+26-11-22 08:33:12	[Guild] OtherAlt: alt session check
