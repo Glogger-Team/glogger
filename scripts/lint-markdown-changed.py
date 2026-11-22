@@ -9,15 +9,16 @@ by `scripts/release.py`, consumed verbatim by CI release.yml).
 
 Grandfathering: only changed files are linted; pre-existing findings in
 untouched files stay out of scope until the full `--fix` cleanup pass. CI
-passes `--base <sha>` (PR base or push `before`; an all-zero sha, as on
-manual dispatch, falls back to `HEAD~1`). A local run with no `--base`
-lints staged + unstaged + untracked files PLUS files changed in unpushed
-commits (base via unpushed_base(); when neither ref resolves, worktree
-files only). `--push` (the pre-push hook) lints ONLY unpushed-commit
-files, and fails closed listing any file that also has uncommitted
-worktree changes — the linter reads the worktree, so checking those files
-would mask the committed content actually being pushed. The commit hook
-never runs `--push`, so amend/refine flows are unaffected.
+passes `--base <sha>` (PR base or push `before`; an all-zero sha, as on manual dispatch, falls back to `HEAD~1`).
+A local run with no `--base` lints staged + unstaged files PLUS files
+changed in unpushed commits (base via unpushed_base(); when neither ref
+resolves, worktree files only). Untracked files are out of scope: scratch
+notes that were never committed must not fail the gate. `--push` (the
+pre-push hook) lints ONLY unpushed-commit files, and fails closed listing
+any file that also has uncommitted worktree changes — the linter reads the
+worktree, so checking those files would mask the committed content
+actually being pushed. The commit hook never runs `--push`, so
+amend/refine flows are unaffected.
 
 The linter command defaults to `markdownlint-cli2` from PATH; override
 with `MARKDOWNLINT`. Full-tree cleanup (not gated):
@@ -138,7 +139,6 @@ def main() -> int:
             return 1
     elif args.base is None:
         files = git("diff", "--name-only", "HEAD")
-        files += git("ls-files", "--others", "--exclude-standard")
         # Unpushed commits: invisible to the worktree diff above, but
         # exactly what the pre-push hook must check on a clean tree.
         base = unpushed_base()
