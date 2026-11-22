@@ -496,6 +496,10 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         migration_v92_farming_session_character(conn)?;
         super::record_migration(conn, 92)?;
     }
+    if current_version < 93 {
+        migration_v93_chat_null_sender_dedup(conn)?;
+        super::record_migration(conn, 93)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1501,6 +1505,46 @@ fn migration_v92_farming_session_character(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    Ok(())
+}
+/// Migration V93: make the chat dedup key NULL-proof + collapse rescan dupes.
+///
+/// The UNIQUE key on `(timestamp, channel, sender, message)` never fires for
+/// sender-less lines (every `[JSON:*]` event, `[Status]` line, and sender-less
+/// system line): SQLite treats NULL as distinct from everything, so
+/// `INSERT OR IGNORE` re-inserted them on every file rescan (live 2026-11
+/// case: 6,120 excess rows in 3,165 groups, worst a 35x `JSON:EarnedXP` twin;
+/// zero dupes among sender-bearing lines). `channel` is nullable too
+/// (non-channeled system lines store NULL/NULL), so both columns get the
+/// `COALESCE(..., '')` coat or area-transition lines would reduplicate.
+/// Collapse keeps the lowest id per group (GROUP BY already unites NULLs);
+/// the expression index makes future rescans idempotent. Scoped to
+/// `sender IS NULL` — non-null rows cannot duplicate under the old key,
+/// so they are never touched.
+fn migration_v93_chat_null_sender_dedup(conn: &Connection) -> Result<()> {
+    // Minimal-fixture guard (same as v87-v92): skip when chat_messages absent.
+    let table_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chat_messages')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !table_exists {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "DELETE FROM chat_messages
+          WHERE sender IS NULL
+            AND id NOT IN (
+                  SELECT MIN(id) FROM chat_messages
+                   WHERE sender IS NULL
+                   GROUP BY timestamp, channel, message
+            );
+         DROP INDEX IF EXISTS idx_chat_messages_unique;
+         CREATE UNIQUE INDEX idx_chat_messages_unique
+             ON chat_messages(timestamp, COALESCE(channel, ''), COALESCE(sender, ''), message);",
+    )?;
     Ok(())
 }
 
@@ -4758,13 +4802,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            92,
+            93,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 92);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 93);
     }
 
     #[test]
@@ -4887,13 +4931,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 92) plus the purge itself on the three aggregate source tables.
+        // 93) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 92, "migration chain head");
+        assert_eq!(head, 93, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -4939,8 +4983,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 92 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character). Repair: a
+        // Chain wiring: full run_migrations head must be 93 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -4948,7 +4992,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 92, "migration chain head");
+        assert_eq!(head, 93, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -5635,6 +5679,58 @@ mod tests {
         .unwrap();
         backfill_gifts_this_week(&c).unwrap();
         assert_eq!(gifts(1, "Elune"), Some(9));
+    }
+    #[test]
+    fn v93_collapses_null_sender_dupes_and_hardens_key() {
+        // Pre-v93 shape: plain UNIQUE key that never fires on NULL sender.
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE chat_messages (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 timestamp TIMESTAMP NOT NULL,
+                 channel TEXT,
+                 sender TEXT,
+                 message TEXT NOT NULL,
+                 is_system BOOLEAN NOT NULL DEFAULT 0,
+                 log_file TEXT NOT NULL,
+                 from_player BOOLEAN DEFAULT NULL,
+                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+             );
+             CREATE UNIQUE INDEX idx_chat_messages_unique
+                 ON chat_messages(timestamp, channel, sender, message);",
+        )
+        .unwrap();
+        // Two rescans' worth of sender-less rows (JSON event + Status line +
+        // a non-channeled system line, which stores NULL channel too), one
+        // sender-bearing control, and a genuine same-second repeat of a
+        // *different* message (must survive — the key compares the body).
+        c.execute_batch(
+            "INSERT INTO chat_messages (timestamp, channel, sender, message, is_system, log_file)
+             VALUES ('2026-11-22 15:23:16', 'JSON:Tip', NULL, '{\"a\":1}', 1, 'Chat-26-11-22.log'),
+                    ('2026-11-22 15:23:16', 'JSON:Tip', NULL, '{\"a\":1}', 1, 'Chat-26-11-22.log'),
+                    ('2026-11-22 15:23:16', 'Status', NULL, 'You gain 10 XP.', 1, 'Chat-26-11-22.log'),
+                    ('2026-11-22 15:23:16', 'Status', NULL, 'You gain 10 XP.', 1, 'Chat-26-11-22.log'),
+                    ('2026-11-22 15:23:16', 'Status', NULL, 'You gain 11 XP.', 1, 'Chat-26-11-22.log'),
+                    ('2026-11-22 15:23:16', NULL, NULL, 'You enter the Casino.', 1, 'Chat-26-11-22.log'),
+                    ('2026-11-22 15:23:16', NULL, NULL, 'You enter the Casino.', 1, 'Chat-26-11-22.log'),
+                    ('2026-11-22 15:23:16', 'NPC Chatter', 'Kuzavek', 'Corrrak wins!', 0, 'Chat-26-11-22.log');",
+        )
+        .unwrap();
+        migration_v93_chat_null_sender_dedup(&c).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM chat_messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 5, "each dupe group collapses to one row; distinct rows stay");
+        // The hardened key holds going forward: re-inserting the same
+        // sender-less line is a no-op.
+        let dupes = c
+            .execute(
+                "INSERT OR IGNORE INTO chat_messages (timestamp, channel, sender, message, is_system, log_file)
+                 VALUES ('2026-11-22 15:23:16', 'JSON:Tip', NULL, '{\"a\":1}', 1, 'Chat-26-11-22.log')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(dupes, 0, "hardened key must ignore the rescan row");
     }
 }
 
