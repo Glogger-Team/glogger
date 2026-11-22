@@ -1499,4 +1499,36 @@ mod tests {
         let messages = get_chat_messages(&*conn, &filter_with(Some("rebuild"))).unwrap();
         assert_eq!(messages.len(), 1);
     }
+    #[test]
+    fn test_rescan_does_not_duplicate_sender_less_lines() {
+        // Live bug: the UNIQUE key never fired on NULL sender, so every
+        // file rescan re-inserted every JSON event / Status / sender-less
+        // system line. Feed the real parser output through the real insert
+        // path twice (a re-read of the same file) — the second pass must be
+        // a complete no-op.
+        let conn = setup();
+        let lines = [
+            "26-11-22 15:23:16\t[JSON:Tip] {\"Tipster\":\"Eveline\"}",
+            "26-11-22 15:23:16\t[Status] You gain 10 XP.",
+            "26-11-22 15:23:16\tYou enter the Casino.",
+            "26-11-22 15:23:16\t[NPC Chatter] Kuzavek: Corrrak wins!",
+        ];
+        let msgs: Vec<crate::chat_parser::ChatMessage> = lines
+            .iter()
+            .map(|l| crate::chat_parser::parse_chat_line(l).unwrap())
+            .collect();
+        assert_eq!(
+            insert_chat_messages(&conn, &msgs, "Chat-26-11-22.log", &[]).unwrap(),
+            4
+        );
+        assert_eq!(
+            insert_chat_messages(&conn, &msgs, "Chat-26-11-22.log", &[]).unwrap(),
+            0,
+            "re-reading the same file must import nothing"
+        );
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chat_messages", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 4);
+    }
 }
