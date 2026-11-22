@@ -303,34 +303,50 @@ impl SurveySessionAggregator {
             }
         }
 
-        // Chat-loot gating for Basic surveys: claim rows already in the
-        // ledger within the same-tick window (chat loot lands in the same
-        // game tick as the map's consumption).
-        if kind == SurveyUseKind::Basic {
-            if let Some(used_at) = parse_utc_datetime(now_iso) {
-                remember_bounded(
-                    &mut self.recent_basic_uses,
-                    (use_id, used_at, character.to_string(), server.to_string()),
-                );
-            }
-            // One write transaction for the retro-claim: the row links and
-            // the quantity/status updates commit together. If any step
-            // fails, the rollback leaves the rows untagged so a later
-            // pass can reclaim them — never linked rows with a wrong
-            // `loot_qty`. Same unchecked-transaction shape as the use
-            // insert above: no outer transaction is open here.
-            let claim_outcome = (|| -> Result<u32, String> {
-                let tx = rusqlite::Transaction::new_unchecked(
-                    conn,
-                    rusqlite::TransactionBehavior::Immediate,
-                )
-                .map_err(|e| format!("claim txn begin failed: {e}"))?;
-                // Claim-time speed-bonus (issue #211): a Basic use recorded
-                // back-to-back after a prior Basic use earned the game's
-                // speed bonus — stamp the claimed rows. Same transaction:
-                // a failure rolls back to untagged rows a later pass can
-                // reclaim, never half-tagged rows.
-                let is_bonus = persistence::basic_use_is_chained(
+        // Chat-loot retro-claim for every kind: claim untagged rows already
+        // in the ledger within the same-tick window. Live ordering (loot
+        // after the use) attributes through `attribute_chat_gain`; this
+        // covers the cross order — rows landed before the use was recorded
+        // (scan/rescan, or a first yield the user was slow to frame).
+        // Design (TODO backlog): extend the claim to non-Basic kinds rather
+        // than relaxing the `used_at <= gain` fallback bound — that bound is
+        // load-bearing against delayed-gain misattribution
+        // (`delayed_gain_lands_on_preceding_use_not_newer_one`). The claim
+        // window stays the tight Basic ±5s for every kind: it covers the
+        // first-yield-before-framing case without vacuuming unrelated
+        // mining/kill loot into Motherlode/Multihit uses. Basic uses queue
+        // for the live same-tick window AND complete on the claim;
+        // Motherlode/Multihit stay pending — their loot drips across swings
+        // and the live identity fallback (windowless) keeps attributing
+        // after this. Speed bonus is Basic-only (see survey-mechanics.md).
+        if kind == SurveyUseKind::Basic
+            && let Some(used_at) = parse_utc_datetime(now_iso)
+        {
+            remember_bounded(
+                &mut self.recent_basic_uses,
+                (use_id, used_at, character.to_string(), server.to_string()),
+            );
+        }
+        // One write transaction for the retro-claim: the row links and the
+        // quantity/status updates commit together. If any step fails, the
+        // rollback leaves the rows untagged so a later pass can reclaim
+        // them — never linked rows with a wrong `loot_qty`. Same
+        // unchecked-transaction shape as the use insert above: no outer
+        // transaction is open here.
+        let claim_outcome = (|| -> Result<u32, String> {
+            let tx = rusqlite::Transaction::new_unchecked(
+                conn,
+                rusqlite::TransactionBehavior::Immediate,
+            )
+            .map_err(|e| format!("claim txn begin failed: {e}"))?;
+            // Claim-time speed-bonus (issue #211): a Basic use recorded
+            // back-to-back after a prior Basic use earned the game's speed
+            // bonus — stamp the claimed rows. Non-Basic kinds never chain
+            // (Motherlode/Multihit have no speed bonus). Same transaction:
+            // a failure rolls back to untagged rows a later pass can
+            // reclaim, never half-tagged rows.
+            let is_bonus = kind == SurveyUseKind::Basic
+                && persistence::basic_use_is_chained(
                     &tx,
                     character,
                     server,
@@ -339,33 +355,37 @@ impl SurveySessionAggregator {
                     SPEED_BONUS_CHAIN_WINDOW_SECS,
                 )
                 .map_err(|e| format!("bonus chain check failed: {e}"))?;
-                let claimed = persistence::claim_unlinked_chat_loot_near(
-                    &tx,
-                    use_id,
-                    character,
-                    server,
-                    now_iso,
-                    CHAT_BASIC_WINDOW_SECS as u32,
-                    is_bonus,
-                )
-                .map_err(|e| format!("claim rows failed: {e}"))?;
-                if claimed > 0 {
-                    persistence::add_loot_qty(&tx, use_id, claimed)
-                        .map_err(|e| format!("claim qty update failed: {e}"))?;
+            let claimed = persistence::claim_unlinked_chat_loot_near(
+                &tx,
+                use_id,
+                character,
+                server,
+                now_iso,
+                CHAT_BASIC_WINDOW_SECS as u32,
+                is_bonus,
+            )
+            .map_err(|e| format!("claim rows failed: {e}"))?;
+            if claimed > 0 {
+                persistence::add_loot_qty(&tx, use_id, claimed)
+                    .map_err(|e| format!("claim qty update failed: {e}"))?;
+                // Basic completes on its same-tick loot; mining uses stay
+                // pending — completing on the first yield would close the
+                // node cycle the live fallback still feeds.
+                if kind == SurveyUseKind::Basic {
                     persistence::set_use_status(&tx, use_id, SurveyUseStatus::Completed)
                         .map_err(|e| format!("claim status update failed: {e}"))?;
                 }
-                tx.commit().map_err(|e| format!("claim txn commit failed: {e}"))?;
-                Ok(claimed)
-            })();
-            match claim_outcome {
-                Ok(0) => {}
-                Ok(_) => {
-                    update_session_loot_timestamps(conn, use_id, now_iso);
-                }
-                Err(e) => {
-                    eprintln!("[survey-aggregator] retro-claim rolled back: {e}");
-                }
+            }
+            tx.commit().map_err(|e| format!("claim txn commit failed: {e}"))?;
+            Ok(claimed)
+        })();
+        match claim_outcome {
+            Ok(0) => {}
+            Ok(_) => {
+                update_session_loot_timestamps(conn, use_id, now_iso);
+            }
+            Err(e) => {
+                eprintln!("[survey-aggregator] retro-claim rolled back: {e}");
             }
         }
 
@@ -1309,5 +1329,105 @@ mod tests {
             persistence::get_use(&conn, a).unwrap().unwrap().loot_qty,
             3
         );
+    }
+
+    fn record_mining_use(
+        agg: &mut SurveySessionAggregator,
+        conn: &Connection,
+        kind: SurveyUseKind,
+        map: &str,
+        now_iso: &str,
+    ) -> i64 {
+        let (use_id, _) = agg
+            .record_manual_use(
+                conn,
+                ManualUse {
+                    character: "Zenith",
+                    server: "Dreva",
+                    area: None,
+                    map_internal_name: map,
+                    kind,
+                    now_iso,
+                },
+            )
+            .expect("record manual mining use");
+        use_id
+    }
+
+    #[test]
+    fn retro_claim_covers_motherlode_first_yield() {
+        // Scan order: the first yield lands in the ledger before the user
+        // frames the Motherlode use. The all-kinds retro-claim tags it and
+        // bumps loot_qty — but the use stays pending: Motherlode loot
+        // arrives across the node cycle and must not complete on the first
+        // ore, and Motherlode never earns a speed bonus.
+        let conn = fresh_db();
+        let mut agg = empty_aggregator();
+        insert_chat_loot(&conn, "2026-04-15 12:00:10", "Iron Ore", 2);
+        let m = record_mining_use(
+            &mut agg,
+            &conn,
+            SurveyUseKind::Motherlode,
+            "SimpleMetalMotherlodeKur1",
+            "2026-04-15 12:00:12",
+        );
+        let stored = persistence::get_use(&conn, m).unwrap().unwrap();
+        assert_eq!(stored.loot_qty, 2);
+        assert_eq!(stored.status, SurveyUseStatus::PendingLoot);
+        assert_eq!(speed_bonus_flag(&conn, "Iron Ore"), None);
+        let tag: Option<String> = conn
+            .query_row(
+                "SELECT source_kind FROM item_transactions WHERE item_name = 'Iron Ore'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tag.as_deref(), Some("survey_chat"));
+    }
+
+    #[test]
+    fn retro_claim_covers_multihit_first_yield() {
+        // Same cross-order shape for Multihit: pre-stamped first yield is
+        // claimed, the use stays pending for the remaining swings.
+        let conn = fresh_db();
+        let mut agg = empty_aggregator();
+        insert_chat_loot(&conn, "2026-04-15 12:00:10", "Iron Ore", 1);
+        let m = record_mining_use(
+            &mut agg,
+            &conn,
+            SurveyUseKind::Multihit,
+            "MiningSurveyPovus7Y",
+            "2026-04-15 12:00:13",
+        );
+        let stored = persistence::get_use(&conn, m).unwrap().unwrap();
+        assert_eq!(stored.loot_qty, 1);
+        assert_eq!(stored.status, SurveyUseStatus::PendingLoot);
+    }
+
+    #[test]
+    fn retro_claim_ignores_far_rows_for_non_basic() {
+        // The tight ±5s window binds non-Basic claims too: an ordinary
+        // mining gain a minute before the framed use is not vacuumed in.
+        let conn = fresh_db();
+        let mut agg = empty_aggregator();
+        insert_chat_loot(&conn, "2026-04-15 12:00:00", "Iron Ore", 2);
+        let m = record_mining_use(
+            &mut agg,
+            &conn,
+            SurveyUseKind::Motherlode,
+            "SimpleMetalMotherlodeKur1",
+            "2026-04-15 12:01:00",
+        );
+        let stored = persistence::get_use(&conn, m).unwrap().unwrap();
+        assert_eq!(stored.loot_qty, 0);
+        assert_eq!(stored.status, SurveyUseStatus::PendingLoot);
+        let tag: Option<String> = conn
+            .query_row(
+                "SELECT source_kind FROM item_transactions WHERE item_name = 'Iron Ore'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tag, None);
     }
 }

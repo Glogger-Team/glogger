@@ -53,8 +53,8 @@
 /// gating. Scan-inserted loot rows instead land untagged
 /// (`source_kind IS NULL`), which is exactly the shape the tracker's
 /// `claim_unlinked_chat_loot_near` retro-tag step consumes: the next
-/// Player.log DeleteItem for a Basic survey within ±5s of the chat row
-/// claims it, bumps `loot_qty` once, and stamps `source_kind =
+/// recorded survey use of any kind within ±5s of the chat row claims it,
+/// bumps `loot_qty` once, and stamps `source_kind =
 /// 'survey_chat'`. Mining-swing-window and identity-fallback attribution do
 /// not apply retroactively — accepted gap, same as any late-arriving log.
 ///
@@ -204,6 +204,13 @@ pub struct ItemLedgerCtx<'a> {
     pub quantity: u32,
     pub context: &'a str,
     pub survey_use_id: Option<i64>,
+    /// Looted-from entity when the caller knows it. The English `[Status]`
+    /// line carries no entity, so the dispatch arm passes `None` — and
+    /// `None` matches any existing row (see the guard): an English twin
+    /// arriving after the JSON receipt stamped the row still skips, and a
+    /// resend still collapses. Pass `Some` only when the gain is keyed by
+    /// entity; then only the exact-entity row suppresses the insert.
+    pub from_entity_id: Option<i64>,
     /// Mirrors `DispatchCtx::is_scan`: scans skip provisional rows that
     /// are already past the link-up window instead of writing-then-sweeping.
     pub is_scan: bool,
@@ -465,6 +472,13 @@ fn dispatch_status_event(
                         quantity: *quantity,
                         context,
                         survey_use_id,
+                        // English lines carry no looted-from entity: the
+                        // guard treats `None` as "match any row" (replay and
+                        // JSON-first twin-second both skip), so twin
+                        // convergence is unchanged. A second entity's
+                        // English-only gain still collapses here — inherent:
+                        // the line has no entity to key on.
+                        from_entity_id: None,
                         is_scan: ctx.is_scan,
                     },
                 ) {
@@ -716,15 +730,22 @@ fn insert_item_transaction_guarded(db: &DbPool, item: ItemLedgerCtx<'_>) -> bool
         Some(id) => (Some("survey_chat"), Some(format!("{{\"survey_use_id\":{id}}}"))),
         None => (None, None),
     };
-    // Replay guard: the full natural key of a chat ledger row. No UNIQUE
-    // index exists (adding one would reindex every install), so the check
-    // is an explicit SELECT — same-connection, no race on the single writer.
+    // Replay guard: the natural key of a chat ledger row plus the looted-from
+    // entity when the caller knows it. `None` (every English line — the line
+    // carries no entity) matches any row, preserving replay collapse and
+    // JSON-first twin-second skip exactly as before: the twin tests prove a
+    // NULL-only key would duplicate there. `Some` matches only the
+    // exact-entity row, so a second entity's gain records instead of
+    // collapsing while its own resend still collapses. No UNIQUE index
+    // exists (adding one would reindex every install), so the check is an
+    // explicit SELECT — same-connection, no race on the single writer.
     let exists: bool = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM item_transactions
              WHERE timestamp = ?1 AND character_name = ?2 AND server_name = ?3
-               AND item_name = ?4 AND quantity = ?5 AND context = ?6 AND source = 'chat_status')",
-            rusqlite::params![item.timestamp, item.character, item.server, item.item_name, item.quantity as i32, item.context],
+               AND item_name = ?4 AND quantity = ?5 AND context = ?6 AND source = 'chat_status'
+               AND (?7 IS NULL OR from_entity_id IS ?7))",
+            rusqlite::params![item.timestamp, item.character, item.server, item.item_name, item.quantity as i32, item.context, item.from_entity_id],
             |r| r.get(0),
         )
         .unwrap_or(false);
@@ -735,11 +756,12 @@ fn insert_item_transaction_guarded(db: &DbPool, item: ItemLedgerCtx<'_>) -> bool
         "INSERT INTO item_transactions
             (timestamp, character_name, server_name, item_name,
              internal_name, item_type_id, quantity, context,
-             source, source_kind, source_details)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'chat_status', ?9, ?10)",
+             source, source_kind, source_details, from_entity_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'chat_status', ?9, ?10, ?11)",
         rusqlite::params![
             item.timestamp, item.character, item.server, item.item_name, item.internal_name,
             item.item_type_id, item.quantity as i32, item.context, source_kind, source_details,
+            item.from_entity_id,
         ],
     )
     .is_ok()
@@ -2489,6 +2511,136 @@ mod tests {
         let rows = item_rows(&pool);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].2.as_deref(), Some("Olugax The Ever-Pudding"));
+    }
+
+    const LOOT_BODY_B: &str = "{\"Name\": \"Toxic Sludge\", \"TypeId\": 1137, \"Stack\": 1, \"Flags\": [], \"FromName\": \"Slime B\", \"FromEntityId\": 257401}";
+
+    #[test]
+    fn twins_two_entities_converge_english_first() {
+        // Two slimes, one Toxic Sludge each, same second, English-first
+        // interleave. Both gains must survive with their entities, and each
+        // gain stages exactly once across its twin pair.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:50:27";
+        let english = status_msg("Toxic Sludge added to inventory.", ts);
+        let json_a = json_msg("AddItem", LOOT_BODY, ts);
+        let json_b = json_msg("AddItem", LOOT_BODY_B, ts);
+        let mut staged = 0;
+        for m in [&english, &json_a, &english, &json_b] {
+            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            staged += dispatch(&pool, &gd, Some(&id()), m, ts, &mut st).staged_gains.len();
+        }
+        assert_eq!(staged, 2, "each entity's gain stages exactly once");
+        let rows = item_rows(&pool);
+        assert_eq!(rows.len(), 2, "second entity's gain survives its English twin's skip");
+        let mut entities: Vec<Option<i64>> = rows.iter().map(|r| r.3).collect();
+        entities.sort_unstable();
+        assert_eq!(entities, vec![Some(257400), Some(257401)]);
+    }
+
+    #[test]
+    fn twins_two_entities_converge_json_first() {
+        // Mirror order: both receipts land before either English twin. The
+        // English twins must not insert a third row, and staging stays at
+        // one per entity.
+        let (pool, _guard) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:50:27";
+        let english = status_msg("Toxic Sludge added to inventory.", ts);
+        let json_a = json_msg("AddItem", LOOT_BODY, ts);
+        let json_b = json_msg("AddItem", LOOT_BODY_B, ts);
+        let mut staged = 0;
+        for m in [&json_a, &json_b, &english, &english] {
+            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            staged += dispatch(&pool, &gd, Some(&id()), m, ts, &mut st).staged_gains.len();
+        }
+        assert_eq!(staged, 2, "each entity's gain stages exactly once");
+        let rows = item_rows(&pool);
+        assert_eq!(rows.len(), 2, "English twins add no rows past the receipts");
+        let mut entities: Vec<Option<i64>> = rows.iter().map(|r| r.3).collect();
+        entities.sort_unstable();
+        assert_eq!(entities, vec![Some(257400), Some(257401)]);
+    }
+
+    fn english_ctx(entity: Option<i64>) -> ItemLedgerCtx<'static> {
+        ItemLedgerCtx {
+            timestamp: "26-11-17 08:50:27",
+            character: "Alice",
+            server: "Dreva",
+            item_name: "Toxic Sludge",
+            internal_name: None,
+            item_type_id: None,
+            quantity: 1,
+            context: "loot",
+            survey_use_id: None,
+            from_entity_id: entity,
+            is_scan: false,
+        }
+    }
+
+    #[test]
+    fn english_guard_collapses_identical_second_gain() {
+        // `None` (every production English line) matches any row: an
+        // identical resend collapses, exactly as before the entity key.
+        let (pool, _guard) = test_pool();
+        assert!(insert_item_transaction_guarded(&pool, english_ctx(None)));
+        assert!(
+            !insert_item_transaction_guarded(&pool, english_ctx(None)),
+            "identical English resend collapses"
+        );
+        assert_eq!(item_rows(&pool).len(), 1);
+    }
+
+    #[test]
+    fn english_guard_records_second_entity_when_known() {
+        // Entity-aware key: two same-second same-item+qty gains from
+        // different entities both record; a byte-identical resend of one
+        // still collapses. Production English passes `None` (no entity on
+        // the line), so this exercises the key for entity-knowing callers.
+        let (pool, _guard) = test_pool();
+        assert!(insert_item_transaction_guarded(&pool, english_ctx(Some(1001))));
+        assert!(
+            insert_item_transaction_guarded(&pool, english_ctx(Some(1002))),
+            "second entity's gain is a distinct gain"
+        );
+        assert!(
+            !insert_item_transaction_guarded(&pool, english_ctx(Some(1001))),
+            "exact-entity resend collapses"
+        );
+        let rows = item_rows(&pool);
+        assert_eq!(rows.len(), 2);
+        let mut entities: Vec<Option<i64>> = rows.iter().map(|r| r.3).collect();
+        entities.sort_unstable();
+        assert_eq!(entities, vec![Some(1001), Some(1002)]);
+    }
+
+    #[test]
+    fn english_guard_null_skips_stamped_twin() {
+        // JSON-first fence at guard level: once the twin claim stamps the
+        // row's entity, a `None`-entity English insert (the English twin, or
+        // a resend) still skips instead of duplicating. A NULL-only key
+        // would insert a second row here and break twin convergence.
+        let (pool, _guard) = test_pool();
+        assert!(insert_item_transaction_guarded(&pool, english_ctx(None)));
+        pool.get_write()
+            .unwrap()
+            .execute(
+                "UPDATE item_transactions SET from_name = 'Olugax', from_entity_id = 257400",
+                [],
+            )
+            .unwrap();
+        assert!(
+            !insert_item_transaction_guarded(&pool, english_ctx(None)),
+            "None matches the stamped twin: skip, no duplicate"
+        );
+        assert_eq!(item_rows(&pool).len(), 1);
     }
 
     #[test]

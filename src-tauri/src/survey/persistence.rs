@@ -339,24 +339,29 @@ pub fn mark_live_chat_gain_as_speed_bonus(
     Ok(updated)
 }
 
-/// Claim untagged chat-status loot rows near a Basic survey use's `used_at`
-/// and link them to the use. Returns the total quantity claimed.
+/// Claim untagged chat-status loot rows near a survey use's `used_at` and
+/// link them to the use. Returns the total quantity claimed.
 ///
-/// Basic-survey loot lands in the same game tick as the map's consumption,
-/// and the chat rows may already be in `item_transactions` (untagged) by
-/// the time the manual use is recorded. This retroactively tags those rows
-/// as `survey_chat` so the loot summary counts them, mirroring what the
-/// live gate in `attribute_chat_gain` does when the ordering goes the
-/// other way.
+/// Survey loot lands in the same game tick as the map's consumption (Basic)
+/// or within seconds of it (a Motherlode/Multihit first yield framed just
+/// after the chat line), and the chat rows may already be in
+/// `item_transactions` (untagged) by the time the manual use is recorded.
+/// This retroactively tags those rows as `survey_chat` so the loot summary
+/// counts them, mirroring what the live gate in `attribute_chat_gain` does
+/// when the ordering goes the other way. The caller keeps the window tight
+/// (±5s): a wider window would vacuum unrelated mining/kill loot into
+/// mining uses.
+///
+/// Completion and speed-bonus stamping are the caller's job, not this
+/// function's: Basic uses complete on the claim and chained Basic uses
+/// stamp `$.is_speed_bonus` (via `is_speed_bonus`, resolved with
+/// [`basic_use_is_chained`]) — the same `json('true')` shape the retired
+/// Player.log marker path wrote, so readers (`= 1` checks) treat them
+/// identically. Mining uses stay pending: their loot drips across swings.
 ///
 /// Survey maps themselves are excluded by internal-name prefix — crafting a
 /// map emits the same "added to inventory" chat line as loot, and players
 /// commonly craft the next map within seconds of using one.
-///
-/// When `is_speed_bonus` is set (the caller resolved a back-to-back chain
-/// via [`basic_use_is_chained`]), claimed rows also stamp
-/// `$.is_speed_bonus` — same `json('true')` shape the retired Player.log
-/// marker path wrote, so readers (`= 1` checks) treat them identically.
 pub fn claim_unlinked_chat_loot_near(
     conn: &Connection,
     survey_use_id: i64,
