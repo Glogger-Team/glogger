@@ -2,7 +2,7 @@
   <div class="flex flex-col gap-3 text-sm h-full">
     <div v-if="tips.length > 0" class="flex flex-col gap-1.5 rounded border border-border-default p-2">
       <span class="text-[11px] text-text-dim uppercase tracking-wide">Today's fight tips</span>
-      <div v-for="tip in tips" :key="tip.received_at + tip.tipster" class="flex flex-col gap-0.5">
+      <div v-for="(tip, i) in tips" :key="tip.received_at + '|' + tip.tipster + '|' + i" class="flex flex-col gap-0.5">
         <div class="flex items-baseline justify-between gap-2">
           <span class="text-xs font-medium">{{ tip.tipster }}</span>
           <span class="text-[11px] text-text-dim font-mono whitespace-nowrap">{{ tip.received_at }}</span>
@@ -10,9 +10,12 @@
         <p class="text-xs whitespace-pre-line">{{ stripTags(tip.body) }}</p>
       </div>
     </div>
+    <div v-if="tips.length === 0 && stats.total_matches > 0" class="text-[11px] text-text-dim italic">
+      No arena tips recorded today yet — Eveline's tip appears here when the chat log records one.
+    </div>
     <div class="text-[11px] text-text-dim italic"
       title="Personal bets are read from Player.log talk screens, which the current game client no longer writes. Match results still track via chat.">
-      No new bets can be recorded on the current game client — historic bets below, if any.
+      No new bets can be recorded on the current game client — betting figures here cover historic bets only.
     </div>
     <div v-if="stats.total_matches === 0" class="text-xs text-text-dim italic">
       No arena fights recorded yet. Stand in the casino arena while Kuzavek
@@ -39,7 +42,7 @@
           <span
             v-else
             class="cursor-help italic"
-            title="Personal bets are read from Player.log talk screens, which the current game client no longer writes. Match results above still track via chat.">
+            title="Personal bets are read from Player.log talk screens, which the current game client no longer writes. Match results below still track via chat.">
             No bets tracked
           </span>
           <span>
