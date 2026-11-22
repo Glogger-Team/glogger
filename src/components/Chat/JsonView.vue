@@ -10,6 +10,7 @@
           placeholder="Search JSON lines..."
           class="px-4 py-2 bg-surface-elevated border border-border-light rounded text-text-primary w-75 focus:outline-none focus:border-accent-gold"
         />
+        <button v-if="pendingCount > 0" @click="showNewest" class="px-3 h-9 bg-surface-elevated border border-accent-gold rounded text-accent-gold text-sm font-medium cursor-pointer transition-all flex items-center hover:bg-border-default" title="Show new messages">↓ {{ pendingCount }} new</button>
         <button
           @click="reset"
           :disabled="loading"
@@ -40,6 +41,7 @@ import type { ChatMessage, ChatFilter } from '../../types/database'
 import ChatMessageList from './ChatMessageList.vue'
 import { useChatDateNav } from '../../composables/useChatDateNav'
 import { useChatRequestGuard } from '../../composables/useChatRequestGuard'
+import { useChatLiveRefresh } from '../../composables/useChatLiveRefresh'
 
 const dateNav = useChatDateNav('only')
 const reqGuard = useChatRequestGuard()
@@ -48,9 +50,12 @@ const messages = ref<ChatMessage[]>([])
 const loading = ref(false)
 const hasMore = ref(true)
 const offset = ref(0)
+const hasOlderPages = ref(false)
 const searchText = ref('')
 const sortOrder = ref<'asc' | 'desc'>('desc')
 const LIMIT = 100
+
+const { pendingCount, showNewest } = useChatLiveRefresh({ sortOrder, hasOlderPages, dateNav, reset })
 
 let searchTimeout: number | null = null
 
@@ -87,11 +92,14 @@ async function loadMessages() {
 
 function loadMore() {
   if (loading.value) return
+  hasOlderPages.value = true
   loadMessages()
 }
 
 /** Restart the window at the top (manual reload / search / day / sort changes) */
 function reset() {
+  pendingCount.value = 0
+  hasOlderPages.value = false
   offset.value = 0
   hasMore.value = true
   loadMessages()

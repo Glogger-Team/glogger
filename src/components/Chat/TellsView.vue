@@ -27,6 +27,7 @@
       <div v-if="selectedConversation" class="px-6 py-4 border-b border-border-default flex justify-between items-center bg-surface-base">
         <h2 class="screen-title m-0">{{ selectedConversation }}</h2>
         <div class="flex gap-2">
+          <button v-if="pendingCount > 0" @click="showNewest" class="px-3 h-9 bg-surface-elevated border border-accent-gold rounded text-accent-gold text-sm font-medium cursor-pointer transition-all flex items-center hover:bg-border-default" title="Show new messages">↓ {{ pendingCount }} new</button>
           <button
             @click="reset"
             :disabled="loading"
@@ -61,6 +62,7 @@ import type { ChatMessage, ChatFilter } from '../../types/database'
 import ChatMessageList from './ChatMessageList.vue'
 import { useChatDateNav } from '../../composables/useChatDateNav'
 import { useChatRequestGuard } from '../../composables/useChatRequestGuard'
+import { useChatLiveRefresh } from '../../composables/useChatLiveRefresh'
 
 const dateNav = useChatDateNav('exclude')
 const reqGuard = useChatRequestGuard()
@@ -76,8 +78,11 @@ const conversations = ref<Conversation[]>([])
 const loading = ref(false)
 const hasMore = ref(true)
 const offset = ref(0)
+const hasOlderPages = ref(false)
 const sortOrder = ref<'asc' | 'desc'>('desc')
 const LIMIT = 100
+
+const { pendingCount, showNewest } = useChatLiveRefresh({ sortOrder, hasOlderPages, dateNav, reset, onInsert: () => loadConversations() })
 
 async function loadConversations() {
   try {
@@ -90,6 +95,8 @@ async function loadConversations() {
 
 async function selectConversation(name: string) {
   selectedConversation.value = name
+  pendingCount.value = 0
+  hasOlderPages.value = false
   messages.value = []
   offset.value = 0
   hasMore.value = true
@@ -131,11 +138,14 @@ async function loadMessages() {
 
 function loadMore() {
   if (loading.value) return
+  hasOlderPages.value = true
   loadMessages()
 }
 
 /** Restart the window at the top (refresh / day / sort changes) */
 function reset() {
+  pendingCount.value = 0
+  hasOlderPages.value = false
   if (!selectedConversation.value) return
   offset.value = 0
   hasMore.value = true
