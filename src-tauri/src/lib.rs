@@ -566,14 +566,18 @@ pub fn run() {
                 let ah = app_handle.clone();
                 tauri::async_runtime::spawn(async move {
                     match db::combat_wisdom_commands::backfill_from_chat_logs(&sm, &dbp) {
+                        Ok(0) => {}
                         Ok(n) => {
                             startup_log!("Combat Wisdom backfill: {} new award(s)", n);
+                            ah.emit("game-state-updated", vec!["combat_wisdom"]).ok();
                         }
                         Err(e) => eprintln!("Combat Wisdom backfill failed: {e}"),
                     }
                     match db::roulette_commands::backfill_from_chat_logs(&sm, &dbp) {
+                        Ok(0) => {}
                         Ok(n) => {
                             startup_log!("Roulette backfill: {} new spin(s)", n);
+                            ah.emit("game-state-updated", vec!["roulette"]).ok();
                         }
                         Err(e) => eprintln!("Roulette backfill failed: {e}"),
                     }

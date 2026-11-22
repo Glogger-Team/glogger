@@ -1351,10 +1351,18 @@ export const useGameStateStore = defineStore('gameState', () => {
   listen<string[]>('game-state-updated', (event) => {
     const unique = [...new Set(event.payload)]
     for (const domain of unique) {
-      // Arena history is global (not character-scoped), so it bypasses
+      // Casino history is global (not character-scoped), so it bypasses
       // refreshDomain's active-character guard.
       if (domain === 'arena') {
         void fetchArenaStats()
+        continue
+      }
+      if (domain === 'roulette') {
+        void fetchRouletteStats()
+        continue
+      }
+      if (domain === 'combat_wisdom') {
+        void fetchCombatWisdomMonsters()
         continue
       }
       refreshDomain(domain)
