@@ -15,8 +15,8 @@ Frozen since the 10/21 game client: the client stopped writing the verbose `Loca
 
 **Frontend (Vue/TS):**
 
-- `src/types/farming.ts` — frozen aliases kept so historic readers compile; live-session shape intentionally not rebuilt
-- `src/stores/farmingStore.ts` — trimmed to `fetchEnemyStats` + cache (currently unreferenced; readers invoke `get_enemy_kill_stats` directly)
+- `src/types/farming.ts` — live DB-read types only (`EnemyKillStats`, drop-rate search/result rows, `ExtractDetail`, `HistoricalFarmingSession`); the frozen live-session aliases are deleted
+- `src/stores/farmingStore.ts` — empty shell (HMR registration only); loot readers invoke `get_enemy_kill_stats` directly
 - `src/components/Economics/EconomicsFarmingView.vue` — 2-tab shell (Session History / Database)
 - `src/components/Farming/HistoricalTab.vue` — past sessions from DB
 - `src/components/Farming/DatabaseTab.vue` — historic + imported drop-rate database (export/import, no scan)
