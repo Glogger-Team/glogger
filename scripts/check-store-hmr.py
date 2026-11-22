@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Gate: every Pinia store touched by this commit must accept HMR updates.
 
-Scope (commit-stage semantics, mirroring scripts/lint-markdown-changed.py's
-no---base behavior): worktree files (staged + unstaged + untracked) PLUS
-files changed in unpushed commits (fork point via @{u} then origin/HEAD,
-unpushed_base() logic). No --push variant: the commit hook is the contract,
-and push certifies the same worktree-or-committed content it already gated.
+Scope (commit-stage semantics): worktree files (staged + unstaged +
+untracked) PLUS files changed in unpushed commits (fork point via @{u}
+then origin/HEAD, unpushed_base() logic). No --push variant: the commit
+hook is the contract, and push certifies the same worktree-or-committed
+content it already gated.
 
 CI passes --base <sha> (the PR base / push `before`; the one sanctioned
 invocation difference, same as the markdown job): scope is then exactly the

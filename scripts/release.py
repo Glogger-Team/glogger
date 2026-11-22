@@ -370,10 +370,24 @@ def entry_gates(args, root, tag):
     """Branch, tree, sync, and tag-existence gates. Returns 0 to proceed."""
     branch = git(["rev-parse", "--abbrev-ref", "HEAD"], root)
     if branch.stdout.strip() != "main" and not args.dry_run:
-        print(
-            f"Error: must be on the 'main' branch (currently '{branch.stdout.strip()}')"
+        # --tag-only from a clean detached worktree pinned at origin/main
+        # tags exactly the content the gate protects (re-verified by the
+        # HEAD-vs-origin check below). The tag path commits nothing and
+        # creates no branch, so no checkout state is assumed. Triage still
+        # requires main (it commits the notes + cuts a branch).
+        detached_ok = (
+            args.tag_only
+            and branch.stdout.strip() == "HEAD"
+            and git(["fetch", "origin"], root).returncode == 0
+            and git(["rev-parse", "HEAD"], root).stdout.strip()
+            == git(["rev-parse", "origin/main"], root).stdout.strip()
         )
-        return 1
+        if not detached_ok:
+            print(
+                f"Error: must be on the 'main' branch "
+                f"(currently '{branch.stdout.strip()}')"
+            )
+            return 1
     branch_name = branch.stdout.strip()
     if branch_name != "main":
         print(
