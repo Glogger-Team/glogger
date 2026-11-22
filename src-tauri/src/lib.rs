@@ -7,6 +7,7 @@ mod chat_combat_parser;
 mod chat_commands;
 mod chat_json_parser;
 mod chat_parser;
+mod chat_replay_guard;
 mod chat_resuscitate_parser;
 mod chat_status_dispatch;
 mod chat_status_parser;
