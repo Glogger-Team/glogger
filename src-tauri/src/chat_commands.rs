@@ -519,6 +519,8 @@ fn run_scan_dispatch(
     let mut last_rez_dedup = std::collections::HashMap::new();
     let mut recent_damage: Vec<crate::chat_combat_parser::ChatCombatEvent> = Vec::new();
     let mut domains: Vec<String> = Vec::new();
+    // Batch-local twin-collapse slot for unresolvable-skill sightings.
+    let mut last_unknown_skill: Option<String> = None;
     for (idx, (utc_msg, local_msg)) in utc_messages.iter().zip(local_messages.iter()).enumerate() {
         let identity: Option<DispatchIdentity> = match session_at_line.get(idx).and_then(|s| s.clone()) {
             Some(id) => Some(id),
@@ -639,7 +641,10 @@ fn run_scan_dispatch(
             eprintln!("[run_scan_dispatch] Skipping scan ReportSaved import (live-only): {path}");
         }
         for skill in std::mem::take(&mut outcome.unknown_skills) {
-            eprintln!("[run_scan_dispatch] Skipping scan chat level-up for unresolvable skill: {skill}");
+            // Same twin-collapse as the live drain (batch-local slot above).
+            if crate::chat_status_dispatch::note_unknown_skill(&mut last_unknown_skill, skill.clone()) {
+                eprintln!("[run_scan_dispatch] Skipping scan chat level-up for unresolvable skill: {skill}");
+            }
         }
 
         for t in std::mem::take(&mut outcome.malformed_json) {

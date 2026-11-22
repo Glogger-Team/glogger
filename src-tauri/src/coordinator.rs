@@ -966,7 +966,9 @@ impl DataIngestCoordinator {
             .manual_timezone_override
             .or(self.settings.get().timezone_offset_seconds)
             .unwrap_or(0);
-
+        // Batch-local twin-collapse slot for unresolvable-skill sightings
+        // (English `LevelUp` + JSON `Xp` arrive as consecutive messages).
+        let mut last_unknown_skill: Option<String> = None;
         for event in events {
             match event {
                 LogEvent::ChatMessage(msg, session_tag) => {
@@ -1237,9 +1239,15 @@ impl DataIngestCoordinator {
                         // the old inline arm); failures just log.
                         self.import_report_saved(&path);
                     }
-                    if !outcome.unknown_skills.is_empty() {
-                        self.skipped_unknown_skills += outcome.unknown_skills.len() as u64;
-                        for skill in &outcome.unknown_skills {
+                    // Twin-collapse: an English `LevelUp` and its JSON `Xp`
+                    // twin arrive as consecutive messages for one event.
+                    // `last_unknown_skill` lives for the whole poll batch.
+                    for skill in std::mem::take(&mut outcome.unknown_skills) {
+                        if crate::chat_status_dispatch::note_unknown_skill(
+                            &mut last_unknown_skill,
+                            skill.clone(),
+                        ) {
+                            self.skipped_unknown_skills += 1;
                             eprintln!(
                                 "[coordinator] Skipping chat level-up for unresolvable skill: {skill}"
                             );
