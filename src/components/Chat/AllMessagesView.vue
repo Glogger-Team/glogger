@@ -26,6 +26,7 @@
           />
           Item links only
         </label>
+        <button v-if="pendingCount > 0" @click="reset" class="px-3 h-9 bg-surface-elevated border border-accent-gold rounded text-accent-gold text-sm font-medium cursor-pointer transition-all flex items-center hover:bg-border-default" title="Show new messages">↓ {{ pendingCount }} new</button>
         <button
           @click="reset"
           :disabled="loading"
@@ -56,6 +57,7 @@ import type { ChatMessage, ChatFilter } from '../../types/database'
 import ChatMessageList from './ChatMessageList.vue'
 import { useChatDateNav } from '../../composables/useChatDateNav'
 import { useChatRequestGuard } from '../../composables/useChatRequestGuard'
+import { useChatLiveRefresh } from '../../composables/useChatLiveRefresh'
 
 const dateNav = useChatDateNav('exclude')
 const reqGuard = useChatRequestGuard()
@@ -69,6 +71,8 @@ const itemNameFilter = ref('')
 const hasItemLinksFilter = ref(false)
 const sortOrder = ref<'asc' | 'desc'>('desc')
 const LIMIT = 100
+
+const { pendingCount } = useChatLiveRefresh({ sortOrder, offset, dateNav, reset })
 
 let searchTimeout: number | null = null
 
@@ -112,6 +116,7 @@ function loadMore() {
 
 /** Restart the window at the top (manual reload / search / filter / day / sort changes) */
 function reset() {
+  pendingCount.value = 0
   offset.value = 0
   hasMore.value = true
   loadMessages()

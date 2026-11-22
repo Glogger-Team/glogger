@@ -27,6 +27,7 @@
       <div v-if="selectedConversation" class="px-6 py-4 border-b border-border-default flex justify-between items-center bg-surface-base">
         <h2 class="screen-title m-0">{{ selectedConversation }}</h2>
         <div class="flex gap-2">
+          <button v-if="pendingCount > 0" @click="reset" class="px-3 h-9 bg-surface-elevated border border-accent-gold rounded text-accent-gold text-sm font-medium cursor-pointer transition-all flex items-center hover:bg-border-default" title="Show new messages">↓ {{ pendingCount }} new</button>
           <button
             @click="reset"
             :disabled="loading"
@@ -61,6 +62,7 @@ import type { ChatMessage, ChatFilter } from '../../types/database'
 import ChatMessageList from './ChatMessageList.vue'
 import { useChatDateNav } from '../../composables/useChatDateNav'
 import { useChatRequestGuard } from '../../composables/useChatRequestGuard'
+import { useChatLiveRefresh } from '../../composables/useChatLiveRefresh'
 
 const dateNav = useChatDateNav('exclude')
 const reqGuard = useChatRequestGuard()
@@ -79,6 +81,8 @@ const offset = ref(0)
 const sortOrder = ref<'asc' | 'desc'>('desc')
 const LIMIT = 100
 
+const { pendingCount } = useChatLiveRefresh({ sortOrder, offset, dateNav, reset })
+
 async function loadConversations() {
   try {
     const convs = await invoke<Array<{ channel: string, count: number }>>('get_tell_conversations')
@@ -90,6 +94,7 @@ async function loadConversations() {
 
 async function selectConversation(name: string) {
   selectedConversation.value = name
+  pendingCount.value = 0
   messages.value = []
   offset.value = 0
   hasMore.value = true
@@ -136,6 +141,7 @@ function loadMore() {
 
 /** Restart the window at the top (refresh / day / sort changes) */
 function reset() {
+  pendingCount.value = 0
   if (!selectedConversation.value) return
   offset.value = 0
   hasMore.value = true

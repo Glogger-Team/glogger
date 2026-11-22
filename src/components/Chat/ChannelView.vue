@@ -31,6 +31,7 @@
             placeholder="Search in channel..."
             class="px-4 py-2 bg-surface-elevated border border-border-light rounded text-text-primary w-62.5 focus:outline-none focus:border-accent-gold"
           />
+          <button v-if="selectedChannel && pendingCount > 0" @click="reset" class="px-3 h-9 bg-surface-elevated border border-accent-gold rounded text-accent-gold text-sm font-medium cursor-pointer transition-all flex items-center hover:bg-border-default" title="Show new messages">↓ {{ pendingCount }} new</button>
           <button
             v-if="selectedChannel"
             @click="reset"
@@ -62,6 +63,7 @@ import type { ChatMessage, ChatFilter, ChannelStat } from '../../types/database'
 import ChatMessageList from './ChatMessageList.vue'
 import { useChatDateNav } from '../../composables/useChatDateNav'
 import { useChatRequestGuard } from '../../composables/useChatRequestGuard'
+import { useChatLiveRefresh } from '../../composables/useChatLiveRefresh'
 
 const dateNav = useChatDateNav('exclude')
 const reqGuard = useChatRequestGuard()
@@ -75,6 +77,8 @@ const offset = ref(0)
 const searchText = ref('')
 const sortOrder = ref<'asc' | 'desc'>('desc')
 const LIMIT = 100
+
+const { pendingCount } = useChatLiveRefresh({ sortOrder, offset, dateNav, reset })
 
 let searchTimeout: number | null = null
 
@@ -104,6 +108,7 @@ async function loadChannels() {
 async function selectChannel(channel: string) {
   selectedChannel.value = channel
   messages.value = []
+  pendingCount.value = 0
   offset.value = 0
   searchText.value = ''
   hasMore.value = true
@@ -151,6 +156,7 @@ function loadMore() {
 
 /** Restart the window at the top (refresh / search / day / sort changes) */
 function reset() {
+  pendingCount.value = 0
   if (!selectedChannel.value) return
   offset.value = 0
   hasMore.value = true
