@@ -313,8 +313,8 @@ pub fn parse_chat_lines_tagged(text: &str) -> Vec<(ChatMessage, Option<ChatSessi
             });
             continue;
         }
-        // Same strictness for logout (watcher matches `"******** Logged Out"`,
-        // the game's own marker): a chat line mentioning logging out must not
+        // Same strictness for logout (the watcher's `check_session_marker`
+        // applies the same gate): a chat line mentioning logging out must not
         // close the session or be swallowed. Scope to non-JSON system lines:
         // a `[JSON:*]` body (pigeon text, book content) can mention the
         // marker while the player is still logged in, and player chat can

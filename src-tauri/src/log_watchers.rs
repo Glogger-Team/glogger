@@ -1,4 +1,4 @@
-use crate::chat_parser::{line_starts_tagged_message, parse_chat_lines_tagged, parse_chat_login_line, ChatMessage};
+use crate::chat_parser::{line_starts_tagged_message, parse_chat_line, parse_chat_lines_tagged, parse_chat_login_line, ChatMessage};
 use chrono::NaiveDateTime;
 /// Log file watching infrastructure
 ///
@@ -508,15 +508,29 @@ impl ChatLogWatcher {
             return events;
         }
 
-        // Check for logout marker: ******** Logged Out
-        if line.contains("******** Logged Out")
-            && let Some(player) = &self.player_name {
-                events.push(LogEvent::CharacterLogout {
-                    character_name: player.clone(),
-                    timestamp: chrono::Utc::now().naive_utc(),
-                });
-                self.current_session_start = None;
+        // Check for logout marker: ******** Logged Out. Gated on the
+        // parser's strict shape (parsed system non-JSON record carrying
+        // the marker) — the same condition `parse_chat_lines_tagged`
+        // uses to close the session. A bare `contains` also fires on
+        // player chat quoting the marker, JSON bodies, and continuation
+        // lines; those spurious events were inert until the drain grew a
+        // CharacterLogout arm, which clears the live identity.
+        match parse_chat_line(line) {
+            Some(m)
+                if m.is_system
+                    && m.json_type.is_none()
+                    && m.message.contains("******** Logged Out") =>
+            {
+                if let Some(player) = &self.player_name {
+                    events.push(LogEvent::CharacterLogout {
+                        character_name: player.clone(),
+                        timestamp: chrono::Utc::now().naive_utc(),
+                    });
+                    self.current_session_start = None;
+                }
             }
+            _ => {}
+        }
 
         events
     }
@@ -770,7 +784,10 @@ mod tests {
         let mut watcher = ChatLogWatcher::new(PathBuf::from("test.log"));
         watcher.player_name = Some("TestCharacter".to_string());
 
-        let events = watcher.check_session_marker("******** Logged Out");
+        // Real logout line: timestamped system record carrying the marker.
+        let events = watcher.check_session_marker(
+            "26-03-09 05:05:00\t**************************************** Logged Out",
+        );
         assert_eq!(events.len(), 1);
 
         if let LogEvent::CharacterLogout { character_name, .. } = &events[0] {
@@ -780,6 +797,21 @@ mod tests {
         }
 
         assert!(watcher.current_session_start.is_none());
+
+        // Quoted marker in player chat, JSON body, and untimestamped
+        // continuation lines are not logouts: no event, session untouched.
+        watcher.current_session_start = Some(chrono::Utc::now().naive_utc());
+        let quoted = watcher.check_session_marker(
+            "26-03-09 05:06:00\t[Guild] Bob: ******** Logged Out, see you tomorrow",
+        );
+        assert!(quoted.is_empty());
+        let json = watcher.check_session_marker(
+            "26-03-09 05:06:00\t[JSON:PigeonReceived] {\"Title\": \"Gossip\", \"Body\": \"saw ******** Logged Out\"}",
+        );
+        assert!(json.is_empty());
+        let bare = watcher.check_session_marker("******** Logged Out");
+        assert!(bare.is_empty());
+        assert!(watcher.current_session_start.is_some());
     }
 
     #[test]
