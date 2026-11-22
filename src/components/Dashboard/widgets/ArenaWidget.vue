@@ -163,9 +163,19 @@ onMounted(() => {
 const stats = computed(() => store.arenaStats)
 const tips = computed(() => store.arenaTips)
 
-/** Tip bodies carry chat markup (`<i>…</i>`); render plain text. */
+/** Tip bodies carry chat markup (`<i>…</i>`); render plain text.
+ *  Loops tag-removal to a fixpoint (one pass lets nested-tag smuggling
+ *  through: `<scr<script>ipt>` collapses toward `<script>`), then strips
+ *  any leftover angle brackets so smuggled residue (`ipt>`) cannot survive
+ *  either. Bare `<`/`>` in prose are not preserved — chat tips need none. */
 function stripTags(s: string): string {
-  return s.replace(/<[^>]*>/g, '')
+  let prev: string
+  let out = s
+  do {
+    prev = out
+    out = prev.replace(/<[^>]*>/g, '')
+  } while (out !== prev)
+  return out.replace(/[<>]/g, '')
 }
 
 /** Fighter names, ranked (highest win% first) — the display/matrix order. */
