@@ -202,9 +202,7 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     component: RouletteWidget,
     defaultSize: "medium",
   },
-  // Arena: personal bets are Player.log-only (dark on the current client,
-  // banner inside the widget says so) but match history tracks via Kuzavek
-  // chat narration — keep the widget so matches stay visible.
+  // Arena: Today/Fights/Lifetime tabs — daily tips + today's results, with lifetime standings.
   {
     id: "arena",
     name: "Arena",

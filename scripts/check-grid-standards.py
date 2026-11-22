@@ -16,7 +16,6 @@ RAW_TABLE_EXEMPT = {
     "src/components/Character/DeathsView.vue": "parent row expands into a full-width colspan row",
     "src/components/Crafting/BreweryRecipeDetail.vue": "columns are the recipe's variable_slots",
     "src/components/Dashboard/AggregateView.vue": "skills-across-characters pivot (runtime columns)",
-    "src/components/Dashboard/widgets/ArenaWidget.vue": "pivot with runtime columns",
     "src/components/StallTracker/StallRevenueTab.vue": "pivot with a tfoot",
     "src/components/Settings/GameStateDebug.vue": "raw debug dump",
     "src/dev-panel/tabs/GameStateTab.vue": "raw debug dump",

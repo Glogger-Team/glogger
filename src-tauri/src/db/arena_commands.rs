@@ -93,25 +93,49 @@ pub struct ArenaTip {
 
 /// Today's arena tips for one character+server, newest first. Tips are
 /// per-character rows (like pigeons), unlike the global fight history, so
-/// callers pass the active identity. `date(timestamp)` is UTC, matching the
-/// chat stamps the dispatch writes.
+/// callers pass the active identity. The game day resets at midnight
+/// America/New_York, so "today" is the current Eastern calendar day: the
+/// UTC-converted stamps the dispatch writes (see `crate::chat_json_parser`)
+/// are compared against the Eastern-midnight UTC range as fixed-format
+/// strings (no schema change; `timestamp` stays `"%Y-%m-%d %H:%M:%S"`).
 pub fn get_today_tips<C: DbRead + ?Sized>(
     conn: &C,
     character_name: &str,
     server_name: &str,
 ) -> Result<Vec<ArenaTip>, String> {
+    // Eastern-midnight UTC range for the current Eastern day (precedent:
+    // `get_current_moon_phase` in cdn_commands.rs). String comparison is
+    // exact on the fixed-format stamps the dispatch writes.
+    let eastern = chrono_tz::US::Eastern;
+    let eastern_today = chrono::Utc::now().with_timezone(&eastern).date_naive();
+    let day_start = eastern_today
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| "Eastern midnight is not a valid NaiveTime".to_string())?;
+    let start_utc = chrono::TimeZone::from_local_datetime(&eastern, &day_start)
+        .single()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .ok_or_else(|| "Eastern midnight did not resolve to a single UTC instant".to_string())?;
+    let next_start = (eastern_today + chrono::Duration::days(1))
+        .and_hms_opt(0, 0, 0)
+        .ok_or_else(|| "Eastern midnight is not a valid NaiveTime".to_string())?;
+    let end_utc = chrono::TimeZone::from_local_datetime(&eastern, &next_start)
+        .single()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .ok_or_else(|| "Eastern midnight did not resolve to a single UTC instant".to_string())?;
+    let start_s = start_utc.format("%Y-%m-%d %H:%M:%S").to_string();
+    let end_s = end_utc.format("%Y-%m-%d %H:%M:%S").to_string();
     let mut stmt = conn
         .prepare(
             "SELECT timestamp, other_player, body FROM player_messages
              WHERE character_name = ?1 AND server_name = ?2
                AND message_type = 'entity_report'
-               AND date(timestamp) = date('now')
+               AND timestamp >= ?3 AND timestamp < ?4
              ORDER BY timestamp DESC",
         )
         .map_err(|e| format!("Tips query prepare error: {e}"))?;
     let rows = stmt
         .query_map(
-            rusqlite::params![character_name, server_name],
+            rusqlite::params![character_name, server_name, start_s, end_s],
             |row| {
                 Ok(ArenaTip {
                     received_at: row.get(0)?,
@@ -560,9 +584,44 @@ mod tests {
         )
         .unwrap();
 
+        // Eastern-midnight boundary: stamps an hour inside either side of
+        // today's Eastern midnight, expressed in UTC as the dispatch writes
+        // them. The 01:00 UTC shape lands on the previous Eastern day
+        // (20:00/21:00 Eastern) and must be excluded.
+        let eastern = chrono_tz::US::Eastern;
+        let eastern_today = chrono::Utc::now()
+            .with_timezone(&eastern)
+            .date_naive();
+        let eastern_midnight_utc = chrono::TimeZone::from_local_datetime(
+            &eastern,
+            &eastern_today.and_hms_opt(0, 0, 0).unwrap(),
+        )
+        .single()
+        .expect("eastern midnight resolves")
+        .with_timezone(&chrono::Utc);
+        let just_after = (eastern_midnight_utc + chrono::Duration::hours(1))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let just_before = (eastern_midnight_utc - chrono::Duration::hours(1))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        conn.execute(
+            "INSERT INTO player_messages
+                (character_name, server_name, timestamp, message_type, direction, other_player, body) VALUES
+                ('Aka', 'Dreva', ?1, 'entity_report', 'in', 'Eveline Rastin', 'boundary kept'),
+                ('Aka', 'Dreva', ?2, 'entity_report', 'in', 'Eveline Rastin', 'boundary stale'),
+                ('Aka', 'Dreva', '2026-06-15 01:00:00', 'entity_report', 'in', 'Eveline Rastin', '01:00 utc stale')",
+            rusqlite::params![just_after, just_before],
+        )
+        .unwrap();
+
         let tips = get_today_tips(&conn, "Aka", "Dreva").unwrap();
-        assert_eq!(tips.len(), 1);
-        assert_eq!(tips[0].tipster, "Eveline Rastin");
-        assert!(tips[0].body.contains("Ushug"));
+        assert_eq!(tips.len(), 2);
+        let bodies: Vec<&str> = tips.iter().map(|t| t.body.as_str()).collect();
+        assert!(bodies.iter().any(|b| b.contains("Ushug")));
+        assert!(bodies.iter().any(|b| b.contains("boundary kept")));
+        // 2026-06-15 01:00 UTC is 2026-06-14 21:00 EDT: previous Eastern
+        // day, so the 01:00 UTC shape is always excluded.
+        assert!(!tips.iter().any(|t| t.body.contains("01:00 utc")));
     }
 }
