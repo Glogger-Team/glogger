@@ -934,12 +934,15 @@ impl DataIngestCoordinator {
     fn process_chat_events(&mut self, events: Vec<LogEvent>) -> Result<(), String> {
         let mut messages = Vec::new();
 
-        // Pre-batch identity for leading untagged lines: login/server events
-        // sort first and mutate the active pair mid-batch, so a line that
-        // precedes the first marker resolves against the session in force
-        // when the batch arrived — not the one the batch switches to.
-        // Batches without markers never mutate mid-batch, so this equals the
-        // live fallback below and resume-from-offset behavior is unchanged.
+        // Pre-batch identity for leading untagged lines: the watcher emits
+        // file-ordered, so a line ahead of the first marker resolves against
+        // the session in force when the batch arrived — not the one the
+        // batch switches to. Gated on `identity_mutated`: past the first
+        // marker, lines carry their own session tag — except trailing
+        // post-logout lines, which must see the cleared live pair (drop)
+        // rather than the pre-batch session. Batches without markers never
+        // mutate mid-batch, so this equals the live fallback below and
+        // resume-from-offset behavior is unchanged.
         let preceding_identity: Option<DispatchIdentity> =
             match (
                 self.game_state.get_active_character(),
@@ -951,6 +954,10 @@ impl DataIngestCoordinator {
                 }),
                 _ => None,
             };
+        // Whether a session signal (login, server, logout) already moved or
+        // cleared the active pair mid-batch. Leading lines consult the
+        // pre-batch pair; everything after the first marker resolves live.
+        let mut identity_mutated = false;
 
         // Get timezone offset for converting Chat.log local timestamps to UTC
         let tz_offset = self
@@ -984,10 +991,10 @@ impl DataIngestCoordinator {
                     // only when the file was resumed mid-session (`None`) do
                     // we fall back to the drain identity. Live resolves the
                     // same way: a poll batch can span a login boundary (the
-                    // watcher sorts the login marker first), so a pre-login
-                    // line must keep its own tag instead of inheriting the
-                    // new active identity. Tag-less live lines
-                    // (resume-from-offset polls) use the active identity.
+                    // watcher emits file-ordered), so a pre-login line must
+                    // keep its own tag instead of inheriting the new active
+                    // identity. Tag-less live lines (resume-from-offset
+                    // polls) use the active identity.
                     let is_live = self.game_state.is_live();
                     let identity: Option<DispatchIdentity> = session_tag
                         .as_ref()
@@ -997,10 +1004,17 @@ impl DataIngestCoordinator {
                         })
                         // Leading lines of a boundary-spanning batch carry no
                         // tag for the session that produced them; resolve
-                        // against the pre-batch pair first. Marker-free
-                        // batches never moved the active pair, so this is the
-                        // same value the live fallback below would read.
-                        .or_else(|| preceding_identity.clone())
+                        // against the pre-batch pair first — but only ahead
+                        // of the first marker. Marker-free batches never
+                        // moved the active pair, so this is the same value
+                        // the live fallback below would read.
+                        .or_else(|| {
+                            if identity_mutated {
+                                None
+                            } else {
+                                preceding_identity.clone()
+                            }
+                        })
                         .or_else(|| {
                             match (
                                 self.game_state.get_active_character(),
@@ -1358,6 +1372,9 @@ impl DataIngestCoordinator {
 
                     // Update game state so the chat drain attributes to this server
                     self.game_state.set_active_server_name(&server_name);
+                    // A session signal moved the active pair: later untagged
+                    // lines resolve live, never against the pre-batch pair.
+                    identity_mutated = true;
 
                     // Emit to frontend
                     self.app_handle.emit("server-detected", &server_name).ok();
@@ -1400,6 +1417,28 @@ impl DataIngestCoordinator {
 
                     self.game_state
                         .set_active_character(&character_name, &server, &self.db_pool, Some(&timestamp.format("%Y-%m-%d %H:%M:%S").to_string()));
+                    // A session signal moved the active pair: later untagged
+                    // lines resolve live, never against the pre-batch pair.
+                    identity_mutated = true;
+                }
+                LogEvent::CharacterLogout { character_name, .. } => {
+                    // A logout ends the session: trailing `None`-tagged lines
+                    // must not inherit the stale pair. Clear the server half
+                    // of the in-memory identity, so every pair read below
+                    // (`active_character_server`, the drain fallbacks) is
+                    // `None` and identity-less lines drop until the next
+                    // login re-arms both halves. The character slot keeps its
+                    // last name (same half-clear shape as the Player.log
+                    // re-arm path) — no pair read consults it alone. Only
+                    // the owning session clears: a foreign logout never
+                    // wipes the live identity.
+                    if logout_clears_identity(
+                        self.game_state.get_active_character(),
+                        &character_name,
+                    ) {
+                        self.game_state.clear_active_server_name();
+                    }
+                    identity_mutated = true;
                 }
                 _ => {}
             }
@@ -2351,6 +2390,16 @@ fn apply_catch_up_login(
     }
     source
 }
+/// Whether a `CharacterLogout` clears the in-memory ingest identity.
+///
+/// Free function (not a method) so the routing is testable without a
+/// coordinator or an `AppHandle`, like [`apply_catch_up_login`]. Only the
+/// owning session clears: a foreign logout (stale batch, crossed sessions)
+/// never wipes the live identity.
+fn logout_clears_identity(active_character: Option<&str>, logout_name: &str) -> bool {
+    active_character == Some(logout_name)
+}
+
 
 /// Server to attribute a Player.log session to: [`SessionServerLookup`].
 ///
@@ -3025,5 +3074,17 @@ mod bind_freshness_tests {
     #[test]
     fn unparseable_stored_stamp_never_blocks() {
         assert!(bind_capture_is_fresh(Some("not-a-timestamp"), dt("2026-11-18 12:00:00")));
+    }
+}
+
+#[cfg(test)]
+mod logout_identity_tests {
+    use super::logout_clears_identity;
+
+    #[test]
+    fn owning_session_clears_foreign_logout_does_not() {
+        assert!(logout_clears_identity(Some("Zenith"), "Zenith"));
+        assert!(!logout_clears_identity(Some("Zenith"), "AltB"));
+        assert!(!logout_clears_identity(None, "Zenith"));
     }
 }
