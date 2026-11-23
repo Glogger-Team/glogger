@@ -9,7 +9,7 @@ description: Fan out N small disjoint TODO slices, one branch + git worktree + w
 
 - Parent NEVER works a slice directly: no edits, no gates, no pushes, no bot commands in any slice checkout. Parent cuts worktrees, launches workers, writes briefs, dispatches prompts AND review rounds, polls verdicts, merges clean slices, tears down.
 - All slice execution (A gates, C/D loops, fix batches, pushes, PR bodies, bot posts) happens in the owning worker. B reviewers are parent-spawned (`task` scout/reviewer, non-isolated, read-only) — workers never review. A worker blocked on a parent decision (rebase, merge order, scope call) states the decision needed and stops — parent decides, worker resumes.
-- One worker per slice, one slice per checkout. No second writer in a slice checkout: two writers in one checkout caused the 11-08 over-close (parent closed a mirror it owned, killing the worker's tab).
+- One worker per slice, one slice per checkout — no second writer (see §4 Traps).
 
 ## 1. Pick slices
 
@@ -22,7 +22,7 @@ description: Fan out N small disjoint TODO slices, one branch + git worktree + w
 ## 2. Cut worktrees (plain git) + launch one worker each
 
 - Two transports. Default is **2A (`hc`, headless)** — no visible panes unless the user asked to watch. **2B (TUI)** is legacy, only when `herdr status` shows a running server (verified down on this box 2026-11-10 — 2B is dead until the user starts Herdr).
-- Worktree cut is identical on both paths: `mise run worktree feature/<slug> main` from the `main` checkout via `eval` (`scripts/new_worktree.py` verifies the branch on neither side, cuts under `.herdr/worktrees/glogger/`, installs `node_modules`; an existing branch is checked out as-is, stale commits included — never reuse a slug). Confirm with `git worktree list`. Do NOT use `herdr worktree create` / `open`: both make a sidebar workspace, not a worker.
+- Worktree cut is identical on both paths: `mise run worktree feature/<slug> main` from the `main` checkout via `eval` (`scripts/new_worktree.py` verifies the branch on neither side, cuts under `.herdr/worktrees/glogger/`, installs `node_modules`; an existing branch is checked out as-is, stale commits included — never reuse a slug). Confirm with `git worktree list`. Do NOT use `herdr worktree create` / `open`: both make a sidebar workspace, not a worker. Do NOT hand-cut with plain `git worktree add` either — it skips the `node_modules` install and the first push dies in `lint:typecheck`; always `mise run worktree`.
 
 ### 2A. `hc` headless workers (default)
 
@@ -33,12 +33,9 @@ description: Fan out N small disjoint TODO slices, one branch + git worktree + w
 - Read/steer: `hc read --lines 100 <t>`, `hc get <t>`, `hc send <t> "<follow-up>"`. Fix batches go via `send` (same no-blind-resend rule: `read` before re-`send` after a stall/timeout).
 - Visibility — when the user asked to watch, visible placement is part of launch, not a later fix: in the same turn as `run`, take space/tab IDs from `herdr-app ls`, then `hc label <t> herdr.space=<id> herdr.tab=<id>` per worker (retro-adoption is a recovery path only). Skip labels only when no space/tab exists or the user asked for background-only. Alternative: `herdr-app do tab.new --name <slice> --argv ... --task ...` (confirm exact shape via `herdr-app commands` first). Never add labels just for background workers.
 
-### 2B. TUI visible panes (legacy)
+### 2B. TUI visible panes (legacy — stub)
 
-- Split one pane per slice into the current tab: `herdr pane split --current --direction right|down --cwd <worktree-path> --no-focus` (wide→right, narrow/tall→down; read the new pane ID back from `.result.pane.pane_id`). The split `--cwd` is the agent's session root — verified live (`w2N:pG` opened visibly at the scratch checkout). No later shell `cd` can move the omp session root.
-- Start one agent per pane: `herdr agent start <name> --kind omp --pane <id> --timeout 120000` (`omp` is this repo's kind — verify against `herdr agent start --help`; `muse-spark` is a model, not a `--kind` value). If the pane sits at a bare shell prompt the start still binds (idle/unknown → interactive_ready).
-- Dispatch every brief first (`herdr agent prompt <name> "<brief>"`, no `--wait`), then monitor (`herdr agent wait <name>` takes `--until <state>` — `--state` is rejected — and bare `wait` matches idle/done/blocked). Sequential `--wait` stalls each slice behind the last; `wait` can return before a fresh turn starts, so `herdr pane read <id>` each agent before treating its work as done.
-- Read pane buffers with flags: `herdr pane read <id> --lines 60 --format text` (bare JSON mode breaks on terminal graphics — `Unrecognized token '│'`; `--format text` is the only parseable form).
+- Only when the user starts Herdr (`herdr status` serving; down on this box since 2026-11-10): split one pane per slice into the current tab, `herdr agent start <name> --kind omp --pane <id>`, dispatch every brief first (`herdr agent prompt`, no `--wait`), monitor with `herdr agent wait --until <state>`, read buffers with `pane read --format text` (bare JSON breaks on terminal graphics).
 
 ## 3. Brief shape (paste verbatim slots)
 
