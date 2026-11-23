@@ -533,7 +533,7 @@ pub fn run() {
             // Step 5c: Spawn the Player-prev.log archive watcher — saves the
             // game's rotated Player-prev.log copy under <app data>/player-logs
             // for the poems backfill and the Statehelm gift tracker (kill/loot
-            // ingestion is frozen: the current client writes no loot lines).
+            // ingestion is removed: the current client writes no loot lines).
             replay::spawn_player_prev_watcher(settings_manager.clone(), db_pool.clone());
 
             // Step 5c+1: Books-dir backfill watcher — ingests the game's

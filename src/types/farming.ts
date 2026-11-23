@@ -55,12 +55,6 @@ export interface HarvestSearchResult {
   total_extracts: number
 }
 
-export interface IngestResult {
-  kills_added: number
-  loot_added: number
-  already_ingested: boolean
-}
-
 export interface ItemDropSource {
   enemy_name: string
   zone: string | null   // internal area key (null = unknown zone)
@@ -81,25 +75,6 @@ export interface ImportedSource {
   display_name: string
   imported_at: string
   enemy_count: number
-}
-
-// One row of the per-item drop breakdown shown in the hover popover.
-export interface ItemDropBreakdownRow {
-  enemyName: string
-  // This session
-  sessionQuantity: number
-  sessionDrops: number
-  sessionKills: number
-  // All-time (from DB) — null until stats load
-  allTimeKills: number | null
-  allTimeDropRate: number | null      // 0..1, times_dropped / total_kills
-  lootTableSharePct: number | null    // item's share of this enemy's full loot table, by quantity
-  // Extract-mode harvest conditions (skinning/butchering only)
-  skill?: string             // "Skinning" | "Butchering"
-  skillLevel?: number
-  equipmentBonus?: number
-  anatomyFamily?: string
-  anatomyLevel?: number
 }
 
 // === Historical (loaded from DB) ===
