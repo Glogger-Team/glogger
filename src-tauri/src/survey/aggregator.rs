@@ -188,7 +188,10 @@ impl SurveySessionAggregator {
         }: ManualUse<'_>,
     ) -> Result<(i64, Option<i64>), String> {
         // Explicit user action — always create a session when none is active.
-        let session_id = match self.fetch_active_session(conn, character, server) {
+        // A lookup failure propagates (`?`) instead of falling through to
+        // `insert_session`: treating "unknown" as "absent" would fragment
+        // sessions with a second active row on a transient DB/decode error.
+        let session_id = match self.fetch_active_session(conn, character, server)? {
             Some(id) => Some(id),
             None => {
                 let id = persistence::insert_session(
@@ -266,7 +269,7 @@ impl SurveySessionAggregator {
                     retried = true;
                     drop(tx);
                     self.cached_active_session = None;
-                    session_id = match self.fetch_active_session(conn, character, server) {
+                    session_id = match self.fetch_active_session(conn, character, server)? {
                         Some(id) => Some(id),
                         None => {
                             let id = persistence::insert_session(
@@ -504,8 +507,12 @@ impl SurveySessionAggregator {
         // ordinary mining gain minutes after a Basic use would land on it,
         // bypassing the 5s rule above. Other kinds have no window mechanism,
         // so the fallback is their only attribution path — preserve it.
+        // A failed session lookup skips attribution (healable via retro-claim);
+        // it must never read as "no session" anywhere near an insert — the
+        // chat path inserts nothing, so `let Ok(Some(..))` failing closed is
+        // the safe shape here.
         if internal_name.is_some_and(|internal| self.is_survey_loot_item(internal))
-            && let Some(session_id) = self.fetch_active_session(conn, character, server)
+            && let Ok(Some(session_id)) = self.fetch_active_session(conn, character, server)
             && let Ok(Some((use_id, kind, used_at))) =
                 persistence::latest_use_for_session(conn, session_id, timestamp)
             && (kind != SurveyUseKind::Basic || {
@@ -742,28 +749,30 @@ impl SurveySessionAggregator {
         conn: &Connection,
         character: &str,
         server: &str,
-    ) -> Option<i64> {
+    ) -> Result<Option<i64>, String> {
         // Identity-keyed: a cached id only answers for the identity that
         // stored it. Anything else re-resolves from the DB.
         if let Some((c, s, id)) = &self.cached_active_session
             && c == character
             && s == server
         {
-            return *id;
+            return Ok(*id);
         }
-        // A failed lookup is NOT cached: caching `None` on a transient DB
-        // error would pin "no session" (and route every later event down
-        // the create-new-session path) until the next invalidation.
+        // A failed lookup is NOT cached and NOT treated as "no session":
+        // returning `None` here would route the caller down the
+        // create-new-session path and fragment sessions on a transient
+        // DB/decode failure. Propagate so `record_manual_use` fails the
+        // attempt instead of inserting a second active session.
         match persistence::active_session(conn, character, server) {
             Ok(s) => {
                 let id = s.map(|s| s.id);
                 self.cached_active_session =
                     Some((character.to_string(), server.to_string(), id));
-                id
+                Ok(id)
             }
             Err(e) => {
                 eprintln!("[survey-aggregator] active-session lookup failed, not caching: {e}");
-                None
+                Err(e.to_string())
             }
         }
     }
