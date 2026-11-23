@@ -165,6 +165,9 @@ def test_module_lines(text: str) -> set[int]:
             )
         )
         if is_test_mod:
+            # A lone `#[cfg(test)]` above a `mod` line must not leak past
+            # the block and swallow the first live item after it.
+            pending_cfg_test = False
             skip_depth = opens - closes
             out.add(i)
             if stripped:
@@ -307,8 +310,8 @@ def collect_live_symbols(
 ) -> tuple[set[str], set[str], set[str]]:
     """(defined, live_pairs, live_strings) over per-file live scans.
 
-    Single call site shared by `main` and `self_test`: reverting either
-    caller to a raw inline scan breaks the self-test pin below.
+    Single call site shared by `main` and `self_test`: mutating this
+    shared function breaks the self-test pin below.
     """
     defined: set[str] = set()
     live_pairs: set[str] = set()
@@ -839,6 +842,24 @@ def self_test() -> int:
         "bare-attribute lines fully skipped",
         test_module_lines(bare_attr_src) == {1, 2, 3, 4, 5, 6, 7},
     )
+    # Stale-pending probe: `#[cfg(test)]` on its own line directly above
+    # a `mod` block must not leak past the block — the live item after
+    # it stays a live definition (coordinator `report_kind_tests` shape).
+    pending_mod_src = (
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        "    fn only_in_tests() {}\n"
+        "}\n"
+        "pub fn live_after() {}\n"
+    )
+    check(
+        "attr-mod block does not swallow live fn",
+        "live_after" in live_definitions(pending_mod_src),
+    )
+    check(
+        "attr-mod test fn still skipped",
+        "only_in_tests" not in live_definitions(pending_mod_src),
+    )
     # Multi-line signature (`from_pools` shape): the body stays skipped
     # too, so test-only strings inside never count as live — while the
     # live method after the block stays visible.
@@ -867,9 +888,9 @@ def self_test() -> int:
         "live method after attr block stays live",
         "live_method" in live_definitions(multiline_attr_src),
     )
-    # The `main` call site stays pinned: the per-file collector is one
-    # shared function, so reverting either caller to a raw inline scan
-    # breaks this fixture.
+    # The shared collector stays pinned: mutating `collect_live_symbols`
+    # breaks this fixture (a caller reverting to a raw inline scan would
+    # not).
     with tempfile.TemporaryDirectory() as tmp:
         probe = Path(tmp) / "probe.rs"
         probe.write_text(test_mod_src, encoding="utf-8")
