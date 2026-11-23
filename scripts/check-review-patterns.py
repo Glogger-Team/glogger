@@ -623,6 +623,18 @@ fn claim_receipt(
     check("open-char ignored", code_braces("if c == '{' {") == (1, 0))
     check("close-char ignored", code_braces("if c == '}' {") == (1, 0))
     check("escaped char ignored", code_braces("let c = '\\n'; {") == (1, 0))
+    check(
+        "string-position prefix-brace stripped first",
+        code_braces("    let q = \"SELECT 'prefix {'\"; {") == (1, 0),
+    )
+    check(
+        "continuation brace-quote stays balanced",
+        code_braces("        let sql = \"LIKE 'prefix {}%' \\") == (1, 1),
+    )
+    check(
+        "unicode escape char ignored",
+        code_braces("let c = '\\u{1F600}'; {") == (1, 0),
+    )
 
     for literal in [
         '"C:/Users/TestUser/AppData/Reports/x.json"',
