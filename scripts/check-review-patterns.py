@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 
 _STR_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/")
+_UNTERM_STR_RE = re.compile(r'"(?:\\.|[^"\\])*\\?$')
 _CHAR_RE = re.compile(
     r"'(?:[^'\\\n]|\\(?:[nrt\\0'\x22]|x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}))'"
 )
@@ -14,6 +16,10 @@ _CHAR_RE = re.compile(
 def code_braces(line: str) -> tuple[int, int]:
     """(opens, closes) ignoring string/char literals and // comments."""
     no_strings = _CHAR_RE.sub("", _STR_RE.sub("", line))
+    # A `"` with no closer on this line (a backslash-newline continuation)
+    # runs to end of line: strip the tail so braces inside string content
+    # never skew the multiline depth tracked by code_lines/functions.
+    no_strings = _UNTERM_STR_RE.sub("", no_strings)
     code = no_strings.split("//", 1)[0]
     return code.count("{"), code.count("}")
 
@@ -45,14 +51,18 @@ FINDING_LET_DISCARD = (
 # (the class rule — AGENTS documents `conn`/`tx`/`stmt` handles, so `tx`-only
 # args trip branch 3 too). Read-verb callees (get/fetch/...) are excluded.
 # Multi-line rustfmt-wrapped writes are joined (cap 5) before matching. Test modules
-# (`mod \w*tests?`, cfg(test) mod blocks) are skipped. Drops write/link
+# (`mod \w*tests?`, cfg(test) mod blocks) are skipped. Matching runs on
+# discard_match_text(joined) — string contents blanked and /*...*/ removed —
+# so a handle word inside a literal or comment never counts as an arg; the
+# ROLLBACK guard therefore also runs on the raw joined line in findings_for_tree.
+# Drops write/link
 # failures with no log and no retry (kill-loot link lesson, PR #202).
 # Emits, fs ops, and test cleanup are deliberately out of scope.
 # Sanctioned shape (like the migration gate's EXISTS guards): ROLLBACK
 # cleanup in an already-failing path — the real error is propagated
 # either way, so only the compensation can fail silently.
 DB_SILENCE_RE = re.compile(
-    r"let\s+_\s*=\s*(?!.*\bROLLBACK\b)"
+    r"let\s+_\s*=\s*(?!.*\bROLLBACK\b)(?!.*\?\s*;?\s*$)"
     r"(?:"
     r".*\.\s*(?:execute|execute_batch|query_row|query_map|query|transaction|prepare|commit)\b"
     r"|(?:::)?(?:(?:crate|super|self|db|[a-z_][a-z0-9_]*)::)*"
@@ -61,7 +71,7 @@ DB_SILENCE_RE = re.compile(
     r"_[a-z0-9_]*\s*\("
     r"|\b(?:[a-z_][a-z0-9_]*::)*+"
     r"(?!(?:get|fetch|load|read|find|search|list|check|exists|count|lookup|validate)(?:_|\b))"
-    r"[a-z_][a-z0-9_]*\s*\([^;()]*\b(?:conn|tx)\b[^;()]*\)"
+    r"[a-z_][a-z0-9_]*\s*\([^;()]*(?:\([^;()]*\)[^;()]*)*\b(?:conn|tx)\b[^;()]*(?:\([^;()]*\)[^;()]*)*\)"
     r")"
 )
 MOD_TESTS_RE = re.compile(r"^\s*(?:pub\s+)?mod\s+\w*tests?\b")
@@ -247,6 +257,35 @@ def split_statements(text: str) -> list[str]:
     if "".join(cur).strip():
         out.append("".join(cur))
     return out
+
+
+def first_stmt(text: str) -> str:
+    """The first `;`-terminated statement of joined Rust text, ignoring `;`
+    inside double-quoted strings (SQL text). The DB-silence continuation join
+    must not consume past the first complete statement: a later ROLLBACK (or
+    trailing `?`) belongs to the next statement, not this discard."""
+    in_str = False
+    esc = False
+    for idx, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch == ";":
+            return text[: idx + 1]
+    return text
+
+
+def discard_match_text(joined: str) -> str:
+    """joined with string contents blanked and /*...*/ comments removed —
+    DB-silence shape matching runs on this (string-aware, like first_stmt),
+    so handle words inside literals or comments never count as args."""
+    return _BLOCK_COMMENT_RE.sub("", _STR_RE.sub('""', joined))
 
 
 def execute_call_end(text: str, open_idx: int) -> int | None:
@@ -435,10 +474,15 @@ def findings_for_tree(root: Path) -> list[str]:
                         cur = cur + " " + ncode
                         opens += ncode.count("(") - ncode.count(")")
                         consumed += 1
-                        if opens <= 0:
+                        if opens <= 0 and first_stmt(cur) != cur:
                             break
-                    joined = cur
-            if DB_SILENCE_RE.search(joined):
+                    joined = first_stmt(cur)
+                else:
+                    joined = first_stmt(code)
+            stripped = discard_match_text(joined)
+            if re.search(r"\bROLLBACK\b", joined) is None and DB_SILENCE_RE.search(
+                stripped
+            ):
                 findings.append(
                     FINDING_DB_SILENCE.format(
                         path=path.relative_to(root), lineno=lineno
@@ -628,12 +672,60 @@ fn claim_receipt(
         code_braces("    let q = \"SELECT 'prefix {'\"; {") == (1, 0),
     )
     check(
-        "continuation brace-quote stays balanced",
-        code_braces("        let sql = \"LIKE 'prefix {}%' \\") == (1, 1),
+        "continuation string tail stripped",
+        code_braces("        let sql = \"LIKE 'prefix {}%' \\") == (0, 0),
     )
+    check(
+        "unbalanced brace in continuation stays hidden",
+        code_braces('        let sql = "SELECT { \\') == (0, 0),
+    )
+    check(
+        "trailing-backslash tail stripped",
+        code_braces('    let s = "tail { brace \\') == (0, 0),
+    )
+    check(
+        "escaped-quote span preserved to end of line",
+        code_braces('    let s = "a \\" { b') == (0, 0),
+    )
+    import time as _time
+
+    _evil = '"' + "\\" * 30 + "{"
+    _t0 = _time.monotonic()
+    _evil_res = code_braces(_evil)
+    _evil_dt = _time.monotonic() - _t0
+    check("pathological quote-backslash returns instantly", _evil_dt < 1.0)
+    check("pathological tail still stripped", _evil_res == (0, 0))
     check(
         "unicode escape char ignored",
         code_braces("let c = '\\u{1F600}'; {") == (1, 0),
+    )
+    check(
+        "nested-call tx arg fires",
+        DB_SILENCE_RE.search("let _ = stash_backup(tx, build_rows());") is not None,
+    )
+    check(
+        "rollback past first statement no longer suppresses",
+        DB_SILENCE_RE.search(
+            first_stmt(
+                "let _ = stash_backup( tx, build_rows() );"
+                ' conn.execute("ROLLBACK", [])?;'
+            )
+        )
+        is not None,
+    )
+    check(
+        "trailing ? propagation stays silent",
+        DB_SILENCE_RE.search("let _ = stash_backup(tx)?;") is None,
+    )
+    check(
+        "top-level string arg still fires",
+        DB_SILENCE_RE.search(discard_match_text('let _ = stash_backup(tx, "label");'))
+        is not None,
+    )
+    check(
+        "trailing block comment keeps ? silent",
+        DB_SILENCE_RE.search(discard_match_text("let _ = stash_backup(tx)?; /* ok */"))
+        is None,
     )
 
     for literal in [
