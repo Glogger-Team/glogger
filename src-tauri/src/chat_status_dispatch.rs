@@ -1832,7 +1832,23 @@ fn persist_rez_event(
 mod tests {
     use super::*;
 
-    fn test_pool() -> (DbPool, std::path::PathBuf) {
+    struct TempDb {
+        path: std::path::PathBuf,
+    }
+
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            // Call sites bind as `let (_guard, pool)`: pool drops first,
+            // releasing the Windows file handle, then this removes db + journals.
+            let _ = std::fs::remove_file(&self.path);
+            let wal = std::path::PathBuf::from(format!("{}-wal", self.path.display()));
+            let shm = std::path::PathBuf::from(format!("{}-shm", self.path.display()));
+            let _ = std::fs::remove_file(wal);
+            let _ = std::fs::remove_file(shm);
+        }
+    }
+
+    fn test_pool() -> (TempDb, DbPool) {
         // Named temp file so the read and write pools share one database.
         // Unique per call: SystemTime nanos repeat when parallel tests start
         // in the same tick, so a pid + atomic counter carry uniqueness.
@@ -1848,7 +1864,7 @@ mod tests {
             std::process::id()
         ));
         let pool = crate::db::init_pool(path.clone(), Some(0)).expect("init pool");
-        (pool, path)
+        (TempDb { path }, pool)
     }
 
     fn game_data() -> GameDataState {
@@ -1980,7 +1996,7 @@ mod tests {
 
     #[test]
     fn scan_persists_status_lines_like_live_drain() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         seed_skill(&gd, "Sword", 7);
         let mut arena = ArenaTracker::new();
@@ -2085,7 +2101,7 @@ mod tests {
 
     #[test]
     fn per_file_identity_two_sessions() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         seed_skill(&gd, "Sword", 7);
         let mut arena = ArenaTracker::new();
@@ -2121,7 +2137,7 @@ mod tests {
 
     #[test]
     fn skips_dispatch_without_identity() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2139,7 +2155,7 @@ mod tests {
 
     #[test]
     fn death_persists_once_and_rez_dedups_pair() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2175,7 +2191,7 @@ mod tests {
         // Live shape (Chat-26-06-11, Bumblebutt 8s apart): a pet rezzed,
         // alive mid-fight, dead again. Same-phrasing repeats are genuine
         // re-rezzes and must both persist — only cross-phrasing pairs dedup.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2197,7 +2213,7 @@ mod tests {
     fn rez_cross_phrasing_reverse_order_dedups() {
         // Mirror of death_persists_once_and_rez_dedups_pair: suppression is
         // symmetric, so Unknown→named collapses too, not just named→Unknown.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2219,7 +2235,7 @@ mod tests {
     fn wisdom_records_once_with_local_key() {
         // Regression: CombatWisdomEarned used to hit `unreachable!` in the
         // shared arm (live catch-up with real wisdom lines aborted the app).
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2240,7 +2256,7 @@ mod tests {
     fn rescan_stays_silent_for_chat_status_event() {
         // Rescan dedup gate: the frontend event fires only when the line's
         // persist advanced, so a re-scan never double-accrues session XP.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         seed_skill(&gd, "Sword", 7);
         let mut arena = ArenaTracker::new();
@@ -2278,7 +2294,7 @@ mod tests {
 
     #[test]
     fn report_saved_is_reported_not_imported() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2346,7 +2362,7 @@ mod tests {
 
     #[test]
     fn json_additem_twins_converge_english_first() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2377,7 +2393,7 @@ mod tests {
         // whole enrichment key. Live English lines dedupe, so two NULL rows
         // can only arise from out-of-band writes — but the UPDATE must still
         // stamp exactly one (earliest) and leave the other for its own twin.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         {
             // Scope the seed writes: the pool has a single writer, and the
             // function under test checks out its own.
@@ -2428,7 +2444,7 @@ mod tests {
     fn json_additem_enriches_twin_on_entity_id_without_name() {
         // T43: a receipt carrying FromEntityId but no FromName must still
         // enrich the English twin — not write a second row.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2452,7 +2468,7 @@ mod tests {
         // T44: sourced + unsourced rows coexist; replaying the sourced
         // receipt must hit the exact-entity guard first and leave the
         // unsourced row unstamped (no third row on the next replay).
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2482,7 +2498,7 @@ mod tests {
         // so the sourced receipt must insert its own row instead of stamping
         // the JSON row — stamping would destroy the NULL-entity marker the
         // unsourced replay needs, inserting a duplicate third row.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2513,7 +2529,7 @@ mod tests {
     }
     #[test]
     fn json_additem_twins_converge_json_first() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2544,7 +2560,7 @@ mod tests {
         // Two slimes, one Toxic Sludge each, same second, English-first
         // interleave. Both gains must survive with their entities, and each
         // gain stages exactly once across its twin pair.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2571,7 +2587,7 @@ mod tests {
         // Mirror order: both receipts land before either English twin. The
         // English twins must not insert a third row, and staging stays at
         // one per entity.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2613,7 +2629,7 @@ mod tests {
     fn english_guard_collapses_identical_second_gain() {
         // `None` (every production English line) matches any row: an
         // identical resend collapses, exactly as before the entity key.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         assert!(insert_item_transaction_guarded(&pool, english_ctx(None)));
         assert!(
             !insert_item_transaction_guarded(&pool, english_ctx(None)),
@@ -2628,7 +2644,7 @@ mod tests {
         // different entities both record; a byte-identical resend of one
         // still collapses. Production English passes `None` (no entity on
         // the line), so this exercises the key for entity-knowing callers.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         assert!(insert_item_transaction_guarded(&pool, english_ctx(Some(1001))));
         assert!(
             insert_item_transaction_guarded(&pool, english_ctx(Some(1002))),
@@ -2651,7 +2667,7 @@ mod tests {
         // row's entity, a `None`-entity English insert (the English twin, or
         // a resend) still skips instead of duplicating. A NULL-only key
         // would insert a second row here and break twin convergence.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         assert!(insert_item_transaction_guarded(&pool, english_ctx(None)));
         pool.get_write()
             .unwrap()
@@ -2669,7 +2685,7 @@ mod tests {
 
     #[test]
     fn json_additem_rescan_applies_once() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2693,7 +2709,7 @@ mod tests {
         // writer checkout fails, so the fix is skipped. The replay finds the
         // ledger row (no new attribution) but still reports the correction,
         // and applying it twice lands the real quantity — never doubled.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2761,7 +2777,7 @@ mod tests {
         // correction true-path (`quantity > 1` with the ledger row present).
         // A wrong entity predicate in `ledger_receipt_present` would degrade
         // via `unwrap_or(false)` to silent skip, the exact class fixed here.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2825,7 +2841,7 @@ mod tests {
     fn json_receipt_same_second_second_entity_records() {
         // Two slimes, one Coin Sack each, same second: entity-scoped EXISTS
         // keeps both gains; a byte-identical resend still collapses.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let ts = "26-11-17 08:50:27";
         let first = insert_json_receipt_guarded(
             &pool, ts, "Alice", "Dreva", "Coin Sack", None, None, 1,
@@ -2853,7 +2869,7 @@ mod tests {
         // Kill-only ledger: a scan of an old English loot line with no
         // survey tag writes nothing (the end-of-scan sweep would delete it
         // in the same pass). Pinned old date stays old forever.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2870,7 +2886,7 @@ mod tests {
     fn scan_keeps_old_sourced_json_receipt() {
         // A sourced receipt always writes, even old and on a scan: it
         // carries the kill link the ledger keeps.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2888,7 +2904,7 @@ mod tests {
     #[test]
     fn scan_skips_old_bare_json_receipt() {
         // A bare old receipt could never attribute: skip it.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2906,7 +2922,7 @@ mod tests {
     fn live_keeps_old_unsourced_english_gain() {
         // The live drain writes provisional rows regardless of age; the
         // sweeper owns aging them out. Pinned old date proves the point.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -2921,7 +2937,7 @@ mod tests {
 
     #[test]
     fn json_xp_upserts_without_level_up() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         seed_skill(&gd, "Teleportation", 4242);
         let mut arena = ArenaTracker::new();
@@ -2981,7 +2997,7 @@ mod tests {
     }
     #[test]
     fn json_xp_level_up_uses_chat_writer() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         seed_skill(&gd, "Sword", 4243);
         let mut arena = ArenaTracker::new();
@@ -3012,7 +3028,7 @@ mod tests {
 
     #[test]
     fn json_favor_delta_accrues_once_with_gift_row() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         seed_npc(&gd, "NPC_Elune", "Elune", Some("AreaSerbule"), true);
         let mut arena = ArenaTracker::new();
@@ -3059,7 +3075,7 @@ mod tests {
 
     #[test]
     fn json_favor_negative_delta_accrues_but_writes_no_gift_row() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         seed_npc(&gd, "NPC_Elune", "Elune", Some("AreaSerbule"), true);
         let mut arena = ArenaTracker::new();
@@ -3094,7 +3110,7 @@ mod tests {
         // recency guard compares against it, so a rewind would let a later
         // older report replace a newer tier. The event row itself still
         // lands (the ledger is append-only); only the watermark is guarded.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         seed_npc(&gd, "NPC_Elune", "Elune", Some("AreaSerbule"), true);
         let conn = pool.get_write().unwrap();
@@ -3148,7 +3164,7 @@ mod tests {
         // skill is known, or any out-of-order line) must not rewind the
         // stored level. The conflicting update is skipped whole, matching
         // the level-up writer's drop semantics.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let conn = pool.get_write().unwrap();
         conn.execute(
             "INSERT INTO game_state_skills
@@ -3185,7 +3201,7 @@ mod tests {
 
     #[test]
     fn upsert_chat_xp_same_level_awards_accumulate() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let conn = pool.get_write().unwrap();
         conn.execute(
             "INSERT INTO game_state_skills
@@ -3209,7 +3225,7 @@ mod tests {
 
     #[test]
     fn json_favor_delta_skips_gift_row_when_capped_or_tasteless() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         seed_npc(&gd, "NPC_Goss", "Goss", Some("AreaStatehelm"), true);
         seed_npc(&gd, "NPC_Card", "Card", Some("AreaSerbule"), false);
@@ -3249,7 +3265,7 @@ mod tests {
 
     #[test]
     fn json_recipe_used_sets_absolute_count() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -3302,7 +3318,7 @@ mod tests {
     }
     #[test]
     fn json_book_upserts_and_reports_trigger() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -3343,7 +3359,7 @@ mod tests {
 
     #[test]
     fn json_book_identical_recapture_advances_observation() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -3395,7 +3411,7 @@ mod tests {
 
     #[test]
     fn json_unknown_and_malformed_are_accounted() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -3415,7 +3431,7 @@ mod tests {
 
     #[test]
     fn json_pigeon_records_message_rescan_safe() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -3481,7 +3497,7 @@ mod tests {
 
     #[test]
     fn json_pigeon_unparseable_title_is_counted_not_dropped() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -3498,7 +3514,7 @@ mod tests {
 
     #[test]
     fn json_entity_report_records_message() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -3525,7 +3541,7 @@ mod tests {
 
     #[test]
     fn json_tip_discovery_records_word_rescan_safe() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -3571,7 +3587,7 @@ mod tests {
     fn json_paragonxp_is_counted_not_stored() {
         // No DB home: the English Status twin owns the live tally. Typed so
         // the shape is pinned and `unknown_json` stays clean.
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -3590,7 +3606,7 @@ mod tests {
 
     #[test]
     fn combat_fatality_records_kill_rescan_safe() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -3625,7 +3641,7 @@ mod tests {
     }
     #[test]
     fn non_live_kill_records_null_zone() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -3671,7 +3687,7 @@ mod tests {
 
     #[test]
     fn json_receipt_links_loot_to_kill() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
@@ -3714,7 +3730,7 @@ mod tests {
 
     #[test]
     fn unlooted_kill_leaves_no_loot_rows() {
-        let (pool, _guard) = test_pool();
+        let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut rez = std::collections::HashMap::new();
