@@ -68,11 +68,14 @@ pub struct ReplayResult {
     pub chat_status_events_emitted: usize,
 }
 
-/// Envelope tagging replay-originated status events so the live session
-/// feed skips accumulation: existing listeners switch on `payload.kind`,
-/// which an envelope lacks (no `kind` key), so replayed XP/wisdom never
-/// feeds live combat/session totals. The preview keeps working off
-/// `replay-progress` + `ReplayResult` counts, not this payload.
+/// Envelope tagging replay-originated status events so the live session feed
+/// skips accumulation: `gameStateStore.handleChatStatusEvent` returns early
+/// on `is_replay` (the same unconditional-skip shape as its startup
+/// catch-up guard), so replayed gains/XP/wisdom never feed live session
+/// totals. The envelope carries no top-level `kind` key, so even a
+/// kind-switching consumer that never learned the tag falls through. The
+/// preview keeps working off `replay-progress` + `ReplayResult` counts, not
+/// this payload.
 #[derive(Debug, Clone, serde::Serialize)]
 struct ReplayChatStatusEnvelope<'a> {
     is_replay: bool,
@@ -268,9 +271,10 @@ fn run_replay<R: Runtime>(
                 result.chat_messages_processed += 1;
 
                 // Status channel → ChatStatusParser. The preview wraps each
-                // event in the `is_replay` envelope so the live session feed
-                // skips it (existing listeners switch on `payload.kind`,
-                // which the envelope lacks). Emit-only: never writes, never
+                // event in the `is_replay` envelope, which the gameStateStore
+                // `chat-status-event` listener checks first and returns
+                // before any session accumulation (same skip shape as the
+                // startup catch-up guard). Emit-only: never writes, never
                 // imports reports — no report path exists here. The shadow
                 // keeps the emit line byte-identical: the event name is
                 // unchanged, only the payload is tagged.
@@ -313,7 +317,8 @@ fn run_replay<R: Runtime>(
 /// This is a parse-and-preview tool for debugging, NOT a backfill path: it
 /// never writes to the database and never emits live identity events. The
 /// message branch parses status lines and emits the `is_replay`-enveloped
-/// `chat-status-event` (which the live session feed skips) plus
+/// `chat-status-event` (the gameStateStore listener returns on `is_replay`
+/// before any session accumulation, mirroring its startup catch-up skip) plus
 /// `replay-progress`; `character-login` / `server-detected` are deliberately
 /// absent because the frontend answers each with report auto-imports.
 /// Identity: this is a debug preview only. All login lines are forced to
@@ -719,5 +724,87 @@ mod tests {
             })
             .expect("snapshot count");
         assert_eq!(snapshots, 0, "preview must write no report rows");
+    }
+
+    /// Fixture whose status lines WOULD feed the live session if emitted
+    /// untagged: an item gain (itemsIncoming activity feed) and a level-up
+    /// (sessionSkills + combat XP rate).
+    fn tagged_fixture_log() -> PathBuf {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "replay_tag_test_{}_{}",
+            std::process::id(),
+            n
+        ));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let path = dir.join("Chat.log");
+        std::fs::write(
+            &path,
+            "26-03-26 15:12:48\t[Status] Tundra Rye Seeds added to inventory.\n\
+             26-03-26 15:13:02\t[Status] You earned 192 XP and reached level 87 in Cartography!\n\
+             26-03-26 15:13:05\t[Guild] Mate: hello\n",
+        )
+        .expect("fixture");
+        path
+    }
+
+    /// The preview re-emits on the LIVE `chat-status-event` channel, so the
+    /// `is_replay` tag is the only thing standing between a replay and the
+    /// live session feed: `gameStateStore.handleChatStatusEvent` returns on
+    /// `is_replay` before any accumulation (same skip shape as its startup
+    /// catch-up guard). This test pins the producer half of that contract
+    /// by capturing every emitted payload: each carries `is_replay: true`
+    /// at the top level with NO `kind` key (so a kind-switching consumer
+    /// that never learned the tag still falls through), wrapping an inner
+    /// event whose kind is feed-affecting. Dropping the envelope and
+    /// emitting the raw event fails this test — and would pollute the live
+    /// feed (ItemGained → itemsIncoming, LevelUp → sessionSkills + XP rate).
+    #[test]
+    fn replay_chat_status_events_are_tagged_so_live_feed_skips() {
+        let path = tagged_fixture_log();
+        let db = pool();
+        let game_data = empty_game_data();
+        let app = tauri::test::mock_app();
+
+        let seen: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        // Bind the id so the listener outlives the replay below (EventId is
+        // Copy; registration itself lives on the app's listener map).
+        let _status_listener = app.listen("chat-status-event", {
+            let seen = seen.clone();
+            move |event| {
+                seen.lock()
+                    .expect("payload lock")
+                    .push(event.payload().to_string());
+            }
+        });
+
+        let result = run_replay(path, app.handle(), &db, game_data).expect("replay");
+        assert_eq!(result.chat_messages_processed, 3);
+        assert_eq!(result.chat_status_events_emitted, 2);
+
+        let seen = seen.lock().expect("payload lock");
+        assert_eq!(seen.len(), 2, "preview must emit one payload per status line");
+        for raw in seen.iter() {
+            let v: serde_json::Value = serde_json::from_str(raw).expect("payload is JSON");
+            assert_eq!(
+                v.get("is_replay"),
+                Some(&serde_json::Value::Bool(true)),
+                "every replayed status event must carry the is_replay tag"
+            );
+            assert!(
+                v.get("kind").is_none(),
+                "envelope must not look like a live event: {raw}"
+            );
+            let kind = v
+                .get("event")
+                .and_then(|e| e.get("kind"))
+                .and_then(|k| k.as_str())
+                .expect("envelope wraps an inner event with a kind");
+            assert!(
+                matches!(kind, "ItemGained" | "LevelUp"),
+                "fixture lines must stay feed-affecting, got {kind}"
+            );
+        }
     }
 }

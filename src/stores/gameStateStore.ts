@@ -75,6 +75,28 @@ export type ChatStatusEvent =
   // switch intentionally has no case for them.
   | { kind: 'MilkedBy'; timestamp: string; milker: string }
 
+// Replay preview envelope — matches Rust ReplayChatStatusEnvelope in
+// src-tauri/src/replay.rs. replay_chat_log re-emits parsed status events on
+// the live chat-status-event channel tagged `is_replay: true` so the preview
+// stays observable, but they must never accumulate into the live session
+// feed (see handleChatStatusEvent's replay guard).
+export interface ReplayChatStatusEnvelope {
+  is_replay: boolean
+  event: ChatStatusEvent
+}
+
+/** True when the payload is a replay-preview envelope, never live tailing. */
+export function isReplayChatStatusEvent(
+  payload: ChatStatusEvent | ReplayChatStatusEnvelope,
+): payload is ReplayChatStatusEnvelope {
+  return (
+    typeof payload === 'object' &&
+    payload !== null &&
+    'is_replay' in payload &&
+    payload.is_replay === true
+  )
+}
+
 // ── Currency Estimate ─────────────────────────────────────────────────────
 // Matches Rust CurrencyEstimate (db/game_state_commands.rs). Running estimate
 // of the council wallet (GOLD): last export's balance + live chat deltas.
@@ -1042,7 +1064,13 @@ export const useGameStateStore = defineStore('gameState', () => {
 
   // ── Activity Feed: Chat Status Events ──────────────────────────────
 
-  function handleChatStatusEvent(event: ChatStatusEvent) {
+  function handleChatStatusEvent(event: ChatStatusEvent | ReplayChatStatusEnvelope) {
+    // Replay preview emits on the live channel tagged `is_replay` — never
+    // feed the live session (wallet, XP rates, wisdom, level-ups, activity
+    // feeds). Unconditional, unlike the catch-up guard below it: replay runs
+    // after startup, when startupComplete is already true.
+    if (isReplayChatStatusEvent(event)) return
+
     // Skip session feed accumulation during startup catch-up — historical
     // replay may include events from other characters or stale sessions.
     if (!startupComplete.value) return
@@ -1376,7 +1404,7 @@ export const useGameStateStore = defineStore('gameState', () => {
     }
   })
 
-  listen<ChatStatusEvent>('chat-status-event', (event) => {
+  listen<ChatStatusEvent | ReplayChatStatusEnvelope>('chat-status-event', (event) => {
     handleChatStatusEvent(event.payload)
   })
 
