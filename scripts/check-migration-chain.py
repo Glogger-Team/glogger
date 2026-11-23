@@ -19,10 +19,10 @@ Two checks over `src-tauri/src/db/migrations.rs` (pure-text scan, stdlib only):
    pre-merge squash of same-branch iterations (the V91-V94 sprawl this
    gate exists to prevent — four versions for one release batch, one of
    them a never-shipped marker its successor dropped).
-
 Usage:
     python scripts/check-migration-chain.py
     python scripts/check-migration-chain.py --added-since [<ref>]
+    python scripts/check-migration-chain.py --self-test
 
 With no <ref>, the base is the merge-base of HEAD with the PR target
 (`origin/HEAD`, then `main`, then `@{u}` — NOT the feature upstream first:
@@ -32,6 +32,8 @@ undercount). CI passes an explicit base (PR base / push `before`).
 
 from __future__ import annotations
 
+import contextlib
+import io
 import re
 import subprocess
 import sys
@@ -40,8 +42,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 MIGRATIONS = ROOT / "src-tauri" / "src" / "db" / "migrations.rs"
 
-FN_RE = re.compile(r"fn\s+migration_v(\d+)_\w+\s*\(")
-CHAIN_RE = re.compile(r"if\s+current_version\s*<\s*(\d+)\s*\{")
+FN_RE = re.compile(r"^[ \t]*fn\s+migration_v(\d+)_\w+\s*\(", re.MULTILINE)
+CHAIN_RE = re.compile(r"^[ \t]*if\s+current_version\s*<\s*(\d+)\s*\{", re.MULTILINE)
 
 
 def fail(msg: str) -> int:
@@ -49,7 +51,19 @@ def fail(msg: str) -> int:
     return 1
 
 
+def _strip_line_comments(text: str) -> str:
+    """Remove `//`/`///` comments so doc examples cannot match code patterns.
+
+    `migrations.rs` documents the chain idiom inside a `///` doc comment
+    (the `if current_version < 2` example); that line must never count as
+    a chained version. No `://` sequence occurs inside a string literal in
+    the scanned file, so a per-line cut at the first `//` is safe here.
+    """
+    return "\n".join(line.split("//", 1)[0] for line in text.split("\n"))
+
+
 def check_integrity(text: str) -> int:
+    text = _strip_line_comments(text)
     fns = set(FN_RE.findall(text))
     chained = set(CHAIN_RE.findall(text))
     errors = []
@@ -109,8 +123,9 @@ def check_added_since(ref: str | None, limit: int = 1) -> int:
         base_text = git("show", f"{base}:src-tauri/src/db/migrations.rs")
     except (OSError, subprocess.TimeoutExpired, RuntimeError) as e:
         return fail(str(e))
-    base_chained = set(CHAIN_RE.findall(base_text))
-    worktree_chained = set(CHAIN_RE.findall(MIGRATIONS.read_text(encoding="utf-8")))
+    base_chained = set(CHAIN_RE.findall(_strip_line_comments(base_text)))
+    worktree_text = _strip_line_comments(MIGRATIONS.read_text(encoding="utf-8"))
+    worktree_chained = set(CHAIN_RE.findall(worktree_text))
     added = worktree_chained - base_chained
     if len(added) > limit:
         return fail(
@@ -121,7 +136,91 @@ def check_added_since(ref: str | None, limit: int = 1) -> int:
     return 0
 
 
+def self_test() -> int:
+    """Regression fixtures: doc/comment lines must not satisfy the chain."""
+    # Verbatim `src-tauri/src/db/migrations.rs:11-17` doc example, plus the
+    # real code pair it documents: the `///` lines must not count.
+    doc_pair = (
+        "/// Example of adding a new migration:\n"
+        "/// ```text\n"
+        "/// if current_version < 2 {\n"
+        "///     migration_v2_add_foo(conn)?;\n"
+        "///     super::record_migration(conn, 2)?;\n"
+        "/// }\n"
+        "/// ```\n"
+        "fn migration_v2_add_foo(conn: &Connection) -> Result<()> {\n"
+        "}\n"
+        "    if current_version < 2 {\n"
+        "        migration_v2_add_foo(conn)?;\n"
+        "    }\n"
+    )
+    cases = [
+        # (name, text, expected check_integrity rc)
+        ("paired fn and indented chain passes", doc_pair, 0),
+        (
+            "doc-comment guard alone does not chain the fn",
+            (
+                "/// if current_version < 2 {\n"
+                "fn migration_v2_add_foo(conn: &Connection) -> Result<()> {\n"
+                "}\n"
+            ),
+            1,
+        ),
+        (
+            "commented-out fn does not satisfy a chain block",
+            (
+                "// fn migration_v9_old_thing(conn: &Connection) -> Result<()> {\n"
+                "    if current_version < 9 {\n"
+                "    }\n"
+            ),
+            1,
+        ),
+        (
+            "unchained fn still fails",
+            ("fn migration_v3_fix_things(conn: &Connection) -> Result<()> {\n}\n"),
+            1,
+        ),
+    ]
+    passed = 0
+    for name, text, expect in cases:
+        # Mute the gate's own stdout/stderr; only the verdict matters here.
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            got = check_integrity(text)
+        if got != expect:
+            print(f"self-test FAIL: {name}: exited {got}, want {expect}")
+            continue
+        passed += 1
+    stripped_live = _strip_line_comments(MIGRATIONS.read_text(encoding="utf-8"))
+    # Real sites still match after stripping, and the line-13 doc example
+    # contributes no phantom version on its own.
+    phantom_ok = (
+        CHAIN_RE.findall(_strip_line_comments("/// if current_version < 2 {\n")) == []
+        and CHAIN_RE.findall("/// if current_version < 2 {\n") == []
+        and FN_RE.findall("/// fn migration_v2_add_foo(conn: &Connection) {\n") == []
+        and bool(FN_RE.findall(stripped_live))
+        and set(CHAIN_RE.findall(stripped_live)) == set(FN_RE.findall(stripped_live))
+    )
+    if not phantom_ok:
+        print("self-test FAIL: live-tree strip sanity check failed")
+    else:
+        passed += 1
+    total = len(cases) + 1
+    print(f"migration-chain self-test: {passed}/{total} passed")
+    return 0 if passed == total else 1
+
+
 def main(argv: list[str]) -> int:
+    if argv[:1] == ["--self-test"]:
+        if check_integrity(MIGRATIONS.read_text(encoding="utf-8")) != 0:
+            print(
+                "migration-chain self-test: live tree gate failed first",
+                file=sys.stderr,
+            )
+            return 1
+        return self_test()
     text = MIGRATIONS.read_text(encoding="utf-8")
     rc = check_integrity(text)
     if rc:
