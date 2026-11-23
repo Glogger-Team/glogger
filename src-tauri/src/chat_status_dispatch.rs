@@ -167,6 +167,59 @@ impl DispatchOutcome {
     }
 }
 
+/// Identity-scoped twin slot for unresolvable-skill sightings.
+///
+/// `note_unknown_skill`'s `Option<String>` slot keys on skill name only, so
+/// one character's half arms a slot that another character's same-skill half
+/// then collapses (cross-character collision undercounts one skip). This slot
+/// keys on the full identity (character, server, skill): only the same
+/// character's same-skill consecutive sighting collapses. Consecutive genuine
+/// repeats on one identity still collapse by adjacency (indistinguishable
+/// from a twin at this layer); the coordinator counts those suppressions in
+/// its observability-only counter rather than re-bumping the skip total.
+/// The scan path keeps the skill-only slot (batch-local, out of slice scope).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UnknownSkillSlot {
+    pub character: String,
+    pub server: String,
+    pub skill: String,
+}
+
+/// Identity-scoped twin-collapse for unresolvable-skill sightings. Same
+/// adjacency contract as [`note_unknown_skill`], but the slot carries the
+/// sighting identity: a same-skill sighting from another character/server
+/// counts as a new skip instead of collapsing into the armed slot. A twin
+/// consumes the slot (`None` after the pair). Returns `true` when the caller
+/// should count/log the skip; `false` is a suppression (twin second or a
+/// genuine repeat — observability only, never a recount, no ledger rows).
+pub(crate) fn note_unknown_skill_for(
+    last: &mut Option<UnknownSkillSlot>,
+    identity: Option<&DispatchIdentity>,
+    skill: String,
+) -> bool {
+    let slot = UnknownSkillSlot {
+        character: identity
+            .map(|i| i.character.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        server: identity
+            .map(|i| i.server.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        skill,
+    };
+    if last.as_ref() == Some(&slot) {
+        // Twin second sighting (or a consecutive genuine repeat on the same
+        // identity — indistinguishable here): same event shape, not a second
+        // skip. Consume the slot so the next same-skill event counts again.
+        *last = None;
+        false
+    } else {
+        *last = Some(slot);
+        true
+    }
+}
+
 /// Twin-collapse for unresolvable-skill sightings. An English `LevelUp` and
 /// its JSON `Xp` twin arrive as consecutive messages, so the second sighting
 /// of the same skill is the same event, not a second skip. Callers keep the
@@ -2444,6 +2497,164 @@ mod tests {
             }
         }
         assert_eq!(count, 2);
+    }
+
+    fn id_bob() -> DispatchIdentity {
+        DispatchIdentity {
+            character: "Bob".to_string(),
+            server: "Dreva".to_string(),
+        }
+    }
+
+    #[test]
+    fn unknown_skill_slot_twins_both_orders_same_identity() {
+        // Identity-scoped slot through real dispatch, both arrival orders:
+        // English-first and JSON-first each collapse to one skip with one
+        // observability-only suppression (no recount, no ledger rows — the
+        // function returns bool only and writes nothing).
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-04-01 05:30:53";
+        let alice = id();
+        let english = status_msg("You earned 62 XP and reached level 5 in Fungiculture!", ts);
+        let json = json_msg(
+            "EarnedXP",
+            r#"{"Skill":"Fungiculture","XP":62,"OldLevel":4,"NewLevel":5}"#,
+            ts,
+        );
+        for (first, second) in [(&english, &json), (&json, &english)] {
+            let mut last: Option<UnknownSkillSlot> = None;
+            let mut skipped = 0;
+            let mut suppressed = 0;
+            for m in [first, second] {
+                let mut st = state(&mut arena, &mut rez, &mut dmg);
+                let out = dispatch(&pool, &gd, Some(&alice), m, ts, &mut st);
+                assert_eq!(out.unknown_skills.len(), 1);
+                for skill in out.unknown_skills {
+                    if note_unknown_skill_for(&mut last, Some(&alice), skill) {
+                        skipped += 1;
+                    } else {
+                        suppressed += 1;
+                    }
+                }
+            }
+            assert_eq!(skipped, 1);
+            assert_eq!(suppressed, 1);
+        }
+    }
+
+    #[test]
+    fn unknown_skill_slot_cross_identity_counts_twice() {
+        // Cross-character same-skill collision: Alice's half must not swallow
+        // Bob's same-skill sighting. Bob's own twin still collapses after.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-04-01 05:30:53";
+        let alice = id();
+        let bob = id_bob();
+        let english = status_msg("You earned 62 XP and reached level 5 in Fungiculture!", ts);
+        let json = json_msg(
+            "EarnedXP",
+            r#"{"Skill":"Fungiculture","XP":62,"OldLevel":4,"NewLevel":5}"#,
+            ts,
+        );
+        let mut last: Option<UnknownSkillSlot> = None;
+        let mut skipped = 0;
+        let mut suppressed = 0;
+        // Alice English arms the slot.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&alice), &english, ts, &mut st);
+        assert_eq!(out.unknown_skills.len(), 1);
+        for skill in out.unknown_skills {
+            if note_unknown_skill_for(&mut last, Some(&alice), skill) {
+                skipped += 1;
+            } else {
+                suppressed += 1;
+            }
+        }
+        // Bob same-skill English is a new skip, not a twin collapse.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&bob), &english, ts, &mut st);
+        assert_eq!(out.unknown_skills.len(), 1);
+        for skill in out.unknown_skills {
+            if note_unknown_skill_for(&mut last, Some(&bob), skill) {
+                skipped += 1;
+            } else {
+                suppressed += 1;
+            }
+        }
+        // Bob's JSON twin collapses into Bob's arming.
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&bob), &json, ts, &mut st);
+        assert_eq!(out.unknown_skills.len(), 1);
+        for skill in out.unknown_skills {
+            if note_unknown_skill_for(&mut last, Some(&bob), skill) {
+                skipped += 1;
+            } else {
+                suppressed += 1;
+            }
+        }
+        assert_eq!(skipped, 2);
+        assert_eq!(suppressed, 1);
+    }
+
+    #[test]
+    fn unknown_skill_slot_cross_server_counts_twice() {
+        // Same character on two servers is two identities: no collapse.
+        let mut last: Option<UnknownSkillSlot> = None;
+        let dreva = id();
+        let legacy = DispatchIdentity {
+            character: "Alice".to_string(),
+            server: "Legacy".to_string(),
+        };
+        assert!(note_unknown_skill_for(
+            &mut last,
+            Some(&dreva),
+            "Fungiculture".to_string()
+        ));
+        assert!(note_unknown_skill_for(
+            &mut last,
+            Some(&legacy),
+            "Fungiculture".to_string()
+        ));
+    }
+
+    #[test]
+    fn unknown_skill_slot_genuine_repeat_suppresses_without_recount() {
+        // Same identity, two consecutive genuine sightings (no twin between):
+        // adjacency still collapses — the suppression is observability-only
+        // (suppressed bumps, skipped does not, no ledger rows written).
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-04-01 05:30:53";
+        let alice = id();
+        let english = status_msg("You earned 62 XP and reached level 5 in Fungiculture!", ts);
+        let mut last: Option<UnknownSkillSlot> = None;
+        let mut skipped = 0;
+        let mut suppressed = 0;
+        for _ in 0..2 {
+            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            let out = dispatch(&pool, &gd, Some(&alice), &english, ts, &mut st);
+            assert_eq!(out.unknown_skills.len(), 1);
+            for skill in out.unknown_skills {
+                if note_unknown_skill_for(&mut last, Some(&alice), skill) {
+                    skipped += 1;
+                } else {
+                    suppressed += 1;
+                }
+            }
+        }
+        assert_eq!(skipped, 1);
+        assert_eq!(suppressed, 1);
     }
 
     fn seed_npc(gd: &GameDataState, key: &str, name: &str, area: Option<&str>, tastes: bool) {
