@@ -45,3 +45,7 @@ flatpak/generated-cargo-sources.json
 flatpak/generated-node-sources.json
 # Python bytecode from script self-tests (regenerated on every run)
 scripts/__pycache__/
+
+# Local MCP overrides (per-machine server denylist, never commit)
+.mcp.json
+mcp.json
