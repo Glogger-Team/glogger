@@ -166,14 +166,24 @@ pub struct DataIngestCoordinator {
     /// process; logged with each skip so a growing total signals staleness.
     /// The row is deliberately not written (skill_id 0 would collide PKs).
     skipped_unknown_skills: u64,
-    /// Last unresolvable-skill sighting awaiting its twin (`note_unknown_skill`
-    /// slot). Lives on the coordinator — not in the poll batch — so an
-    /// English `LevelUp` at the end of one batch and its JSON `Xp` twin at
-    /// the start of the next still collapse to one skip. A twin consumes the
-    /// slot, so a later same-skill event counts again. A poll that drains
-    /// chat lines without any unknown-skill sighting expires a stale arming
-    /// (an unpaired half is dead); empty polls preserve the slot.
-    last_unknown_skill: Option<String>,
+    /// Suppressed unknown-skill repeats (twin seconds and consecutive genuine
+    /// repeats on one identity — indistinguishable at this layer).
+    /// Observability only: incremented when the twin slot collapses a
+    /// sighting, never re-bumps `skipped_unknown_skills`, writes no ledger
+    /// rows. A growing total beside a flat skip total means real repeats are
+    /// being hidden by the adjacency contract, not new-skill drift.
+    suppressed_unknown_skill_repeats: u64,
+    /// Last unresolvable-skill sighting awaiting its twin
+    /// (`note_unknown_skill_for` slot, keyed by character + server + skill).
+    /// Lives on the coordinator — not in the poll batch — so an English
+    /// `LevelUp` at the end of one batch and its JSON `Xp` twin at the start
+    /// of the next still collapse to one skip. Identity scoping keeps one
+    /// character's half from collapsing another character's same-skill
+    /// sighting. A twin consumes the slot, so a later same-skill event
+    /// counts again. A poll that drains chat lines without any unknown-skill
+    /// sighting expires a stale arming (an unpaired half is dead); empty
+    /// polls preserve the slot.
+    last_unknown_skill: Option<chat_status_dispatch::UnknownSkillSlot>,
     /// `[JSON:Type]` lines whose body failed to parse. Monotonic within the
     /// process; the raw chat row is still stored, so this only signals format
     /// drift in the game's JSON output.
@@ -221,6 +231,7 @@ impl DataIngestCoordinator {
             catch_up_servers_scanned: false,
             staged_chat_gains: Vec::new(),
             skipped_unknown_skills: 0,
+            suppressed_unknown_skill_repeats: 0,
             last_unknown_skill: None,
             skipped_json_malformed: 0,
         })
@@ -980,14 +991,17 @@ impl DataIngestCoordinator {
         // coordinator across polls: a twin split over a batch boundary still
         // collapses, since the slot carries over. Taken locally for the drain
         // (the loop also borrows other `self` fields) and stored back below.
-        // An unpaired sighting must not arm the slot forever (a lone English
-        // half whose JSON twin malformed, or a half dropped by a session
-        // marker, would swallow a genuine lone sighting N polls later), so
-        // the drain reports whether it saw any unknown skill: a poll that
-        // drained chat lines but saw none expires the slot. Empty polls
-        // (zero chat lines) preserve it — a twin split across idle polls is
-        // still consecutive in log order.
-        let mut last_unknown_skill: Option<String> = std::mem::take(&mut self.last_unknown_skill);
+        // The slot is keyed by character + server + skill, so one
+        // character's half never collapses another character's same-skill
+        // sighting. An unpaired sighting must not arm the slot forever (a
+        // lone English half whose JSON twin malformed, or a half dropped by
+        // a session marker, would swallow a genuine lone sighting N polls
+        // later), so the drain reports whether it saw any unknown skill: a
+        // poll that drained chat lines but saw none expires the slot. Empty
+        // polls (zero chat lines) preserve it — a twin split across idle
+        // polls is still consecutive in log order.
+        let mut last_unknown_skill: Option<chat_status_dispatch::UnknownSkillSlot> =
+            std::mem::take(&mut self.last_unknown_skill);
         let mut saw_unknown_skill = false;
         for event in events {
             match event {
@@ -1263,17 +1277,30 @@ impl DataIngestCoordinator {
                     // twin arrive as consecutive messages for one event.
                     // `last_unknown_skill` is the coordinator-owned slot taken
                     // above, so twins split across poll batches still collapse.
-                    // Any sighting (counted or collapsed) marks the drain, so
-                    // the writeback can expire a stale arming below.
+                    // The slot is identity-scoped (character + server + skill):
+                    // a same-skill sighting from another identity counts as a
+                    // new skip instead of collapsing. Any sighting (counted
+                    // or collapsed) marks the drain, so the writeback can
+                    // expire a stale arming below.
                     for skill in std::mem::take(&mut outcome.unknown_skills) {
                         saw_unknown_skill = true;
-                        if crate::chat_status_dispatch::note_unknown_skill(
+                        if crate::chat_status_dispatch::note_unknown_skill_for(
                             &mut last_unknown_skill,
+                            identity.as_ref(),
                             skill.clone(),
                         ) {
                             self.skipped_unknown_skills += 1;
                             eprintln!(
                                 "[coordinator] Skipping chat level-up for unresolvable skill: {skill}"
+                            );
+                        } else {
+                            // Observability only: a twin second (or a
+                            // consecutive genuine repeat on the same identity
+                            // — indistinguishable here). Never re-bumps
+                            // `skipped_unknown_skills`, writes no ledger rows.
+                            self.suppressed_unknown_skill_repeats += 1;
+                            eprintln!(
+                                "[coordinator] Suppressed repeat for unresolvable skill (twin or genuine repeat, no recount): {skill}"
                             );
                         }
                     }
