@@ -6,7 +6,9 @@ import sys
 from pathlib import Path
 
 _STR_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
-_CHAR_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
+_CHAR_RE = re.compile(
+    r"'(?:[^'\\\n]|\\(?:[nrt\\0'\x22]|x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}))'"
+)
 
 
 def code_braces(line: str) -> tuple[int, int]:
@@ -606,6 +608,34 @@ fn claim_receipt(
         and "INSERT INTO t" in fns_multi[0][1]
         and update_ok_findings(fns_multi[0][1]) == ["t"],
     )
+    check(
+        "lifetime pair keeps braces",
+        code_braces("impl<'a, 'b> Foo<'a, 'b> {") == (1, 0),
+    )
+    check(
+        "lifetime plus close-char keeps opens",
+        code_braces("fn f(x: &'a str) { if c == '}' {") == (2, 0),
+    )
+    check(
+        "lifetime plus open-char keeps opens",
+        code_braces("fn f(x: &'a str, c: char) { if c == '{' {") == (2, 0),
+    )
+    check("open-char ignored", code_braces("if c == '{' {") == (1, 0))
+    check("close-char ignored", code_braces("if c == '}' {") == (1, 0))
+    check("escaped char ignored", code_braces("let c = '\\n'; {") == (1, 0))
+    check(
+        "string-position prefix-brace stripped first",
+        code_braces("    let q = \"SELECT 'prefix {'\"; {") == (1, 0),
+    )
+    check(
+        "continuation brace-quote stays balanced",
+        code_braces("        let sql = \"LIKE 'prefix {}%' \\") == (1, 1),
+    )
+    check(
+        "unicode escape char ignored",
+        code_braces("let c = '\\u{1F600}'; {") == (1, 0),
+    )
+
     for literal in [
         '"C:/Users/TestUser/AppData/Reports/x.json"',
         '"C:/Users/Test/ChatLogs/Chat-26-03-06.log"',
