@@ -24,6 +24,8 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -58,6 +60,9 @@ STOPWORDS = {
     "fromentityid",
 }
 MOD_TESTS_RE = re.compile(r"^\s*(?:pub\s+)?mod\s+\w*tests?\b")
+
+_CFG_TEST_ATTR_RE = re.compile(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
+_ITEM_START_RE = re.compile(r"\b(?:fn|struct|enum)\s+[A-Za-z_][A-Za-z0-9_]*")
 
 
 def git(*args: str) -> list[str]:
@@ -94,11 +99,35 @@ def code_braces(line: str) -> tuple[int, int]:
     return code.count("{"), code.count("}")
 
 
+def _start_attr_item(
+    code: str, opens: int, closes: int
+) -> tuple[bool, int, bool, int, int]:
+    """(track, depth, open_seen, paren, bracket) for an attributed item line.
+
+    Keep tracking while the body is open; a `;` before any `{` ends a
+    bodyless declaration (`fn f();`), unless nested in parens/brackets
+    (`[u8; 4]` params).
+    """
+    depth = opens - closes
+    open_seen = opens > 0
+    paren = code.count("(") - code.count(")")
+    bracket = code.count("[") - code.count("]")
+    bodyless = ";" in code and paren <= 0 and bracket <= 0
+    track = (open_seen and depth > 0) or (not open_seen and not bodyless)
+    return track, depth, open_seen, paren, bracket
+
+
 def test_module_lines(text: str) -> set[int]:
     """1-based line numbers that fall inside a `mod tests` / cfg(test) block."""
     out: set[int] = set()
     skip_depth = 0
     prev_sig = ""
+    pending_cfg_test = False
+    in_attr_item = False
+    attr_depth = 0
+    attr_open_seen = False
+    attr_paren = 0
+    attr_bracket = 0
     for i, raw in enumerate(text.splitlines(), 1):
         opens, closes = code_braces(raw)
         if skip_depth:
@@ -106,6 +135,24 @@ def test_module_lines(text: str) -> set[int]:
             out.add(i)
             continue
         stripped = raw.strip()
+        if in_attr_item:
+            # Brace-balanced body of a bare `#[cfg(test)]` item: a `;`
+            # before any `{` ends a bodyless declaration (`fn f();`),
+            # unless it sits inside parens/brackets (`[u8; 4]` params).
+            out.add(i)
+            no_strings = _CHAR_RE.sub("", _STR_RE.sub("", raw))
+            code = no_strings.split("//", 1)[0]
+            attr_depth += opens - closes
+            attr_open_seen = attr_open_seen or opens > 0
+            attr_paren += code.count("(") - code.count(")")
+            attr_bracket += code.count("[") - code.count("]")
+            if (attr_open_seen and attr_depth <= 0) or (
+                not attr_open_seen
+                and ";" in code
+                and attr_paren <= 0
+                and attr_bracket <= 0
+            ):
+                in_attr_item = False
         is_test_mod = (
             MOD_TESTS_RE.match(raw) is not None
             or (
@@ -113,13 +160,49 @@ def test_module_lines(text: str) -> set[int]:
                 and prev_sig == "#[cfg(test)]"
             )
             or (
-                re.search(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]", raw) is not None
+                _CFG_TEST_ATTR_RE.search(raw) is not None
                 and re.search(r"\bmod\b\s+\w+\s*\{", raw) is not None
             )
         )
         if is_test_mod:
             skip_depth = opens - closes
             out.add(i)
+            if stripped:
+                prev_sig = stripped
+            continue
+        if pending_cfg_test:
+            if not stripped or stripped.startswith(("#", "//", "/*", "*")):
+                if stripped.startswith("#"):
+                    out.add(i)
+                if stripped:
+                    prev_sig = stripped
+                continue
+            no_strings = _CHAR_RE.sub("", _STR_RE.sub("", raw))
+            code = no_strings.split("//", 1)[0]
+            pending_cfg_test = False
+            if _ITEM_START_RE.search(code) is not None:
+                out.add(i)
+                state = _start_attr_item(code, opens, closes)
+                in_attr_item, attr_depth = state[0], state[1]
+                attr_open_seen, attr_paren, attr_bracket = state[2:]
+                if stripped:
+                    prev_sig = stripped
+                continue
+            # A non-item line ends the attribute's reach; fall through.
+        if _CFG_TEST_ATTR_RE.search(raw) is not None:
+            # Bare `#[cfg(test)]` on a `fn`/`struct`/`enum` (same line or,
+            # via pending, the item below): the item line and its
+            # brace-balanced body are test-only, so both live scans
+            # (`live_definitions`, `live_string_literals`) inherit it.
+            out.add(i)
+            no_strings = _CHAR_RE.sub("", _STR_RE.sub("", raw))
+            code = no_strings.split("//", 1)[0]
+            if _ITEM_START_RE.search(code) is not None:
+                state = _start_attr_item(code, opens, closes)
+                in_attr_item, attr_depth = state[0], state[1]
+                attr_open_seen, attr_paren, attr_bracket = state[2:]
+            else:
+                pending_cfg_test = True
             if stripped:
                 prev_sig = stripped
             continue
@@ -217,6 +300,29 @@ def live_definitions(text: str) -> set[str]:
         for m in re.finditer(r"\b(?:fn|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)", line):
             out.add(m.group(1))
     return out
+
+
+def collect_live_symbols(
+    rs_files: Iterable[Path],
+) -> tuple[set[str], set[str], set[str]]:
+    """(defined, live_pairs, live_strings) over per-file live scans.
+
+    Single call site shared by `main` and `self_test`: reverting either
+    caller to a raw inline scan breaks the self-test pin below.
+    """
+    defined: set[str] = set()
+    live_pairs: set[str] = set()
+    live_strings: set[str] = set()
+    for rs in rs_files:
+        try:
+            text = rs.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        defined |= live_definitions(text)
+        for m in PAIR_RE.finditer(text):
+            live_pairs.add(m.group(0))
+        live_strings |= live_string_literals(text)
+    return defined, live_pairs, live_strings
 
 
 _RAW_STR_RE = re.compile(r"r(#+)?\"")
@@ -493,18 +599,9 @@ def main() -> int:
     # Live definitions likewise skip `#[cfg(test)]` / `mod tests` lines:
     # a helper that survives only in tests never counts as a live
     # definition, so it cannot suppress a docs-orphan hit.
-    defined: set[str] = set()
-    live_pairs: set[str] = set()
-    live_strings: set[str] = set()
-    for rs in (ROOT / "src-tauri" / "src").rglob("*.rs"):
-        try:
-            text = rs.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        defined |= live_definitions(text)
-        for m in PAIR_RE.finditer(text):
-            live_pairs.add(m.group(0))
-        live_strings |= live_string_literals(text)
+    defined, live_pairs, live_strings = collect_live_symbols(
+        (ROOT / "src-tauri" / "src").rglob("*.rs")
+    )
     idents -= defined
     for pair in removed_pairs & live_pairs:
         idents.discard(pair.split("::", 1)[1])
@@ -707,6 +804,83 @@ def self_test() -> int:
         "pure test file defines nothing live",
         live_definitions("#[cfg(test)]\nmod tests {\n    fn only_in_tests() {}\n}\n")
         == set(),
+    )
+    # Bare `#[cfg(test)]` items (no `mod tests` wrapper): the attribute
+    # line, the item line, and its brace-balanced body are all skipped,
+    # so neither live scan sees them — while a neighboring live item
+    # stays visible.
+    bare_attr_src = (
+        "#[cfg(test)]\n"
+        "pub fn bare_test_helper() {}\n"
+        "#[cfg(test)] pub struct BareTestStruct {}\n"
+        "#[cfg(test)]\n"
+        "enum BareTestEnum {\n"
+        "    A,\n"
+        "}\n"
+        "pub fn live_fn() {}\n"
+    )
+    check(
+        "bare-attribute fn not a live definition",
+        "bare_test_helper" not in live_definitions(bare_attr_src),
+    )
+    check(
+        "same-line attributed struct not live",
+        "BareTestStruct" not in live_definitions(bare_attr_src),
+    )
+    check(
+        "next-line attributed enum not live",
+        "BareTestEnum" not in live_definitions(bare_attr_src),
+    )
+    check(
+        "live fn beside attributes stays live",
+        "live_fn" in live_definitions(bare_attr_src),
+    )
+    check(
+        "bare-attribute lines fully skipped",
+        test_module_lines(bare_attr_src) == {1, 2, 3, 4, 5, 6, 7},
+    )
+    # Multi-line signature (`from_pools` shape): the body stays skipped
+    # too, so test-only strings inside never count as live — while the
+    # live method after the block stays visible.
+    multiline_attr_src = (
+        "impl DbPool {\n"
+        "    /// Test/dev constructor.\n"
+        "    #[cfg(test)]\n"
+        "    pub fn from_pools(\n"
+        "        reads: u8,\n"
+        "    ) -> Self {\n"
+        '        emit("test-only-string");\n'
+        "        Self {}\n"
+        "    }\n"
+        "    pub fn live_method() {}\n"
+        "}\n"
+    )
+    check(
+        "multiline-signature attr fn not live",
+        "from_pools" not in live_definitions(multiline_attr_src),
+    )
+    check(
+        "attr-fn body strings not live",
+        "test-only-string" not in live_string_literals(multiline_attr_src),
+    )
+    check(
+        "live method after attr block stays live",
+        "live_method" in live_definitions(multiline_attr_src),
+    )
+    # The `main` call site stays pinned: the per-file collector is one
+    # shared function, so reverting either caller to a raw inline scan
+    # breaks this fixture.
+    with tempfile.TemporaryDirectory() as tmp:
+        probe = Path(tmp) / "probe.rs"
+        probe.write_text(test_mod_src, encoding="utf-8")
+        shared_defined, _, _ = collect_live_symbols([probe])
+    check(
+        "shared collector excludes test-only fn",
+        "only_in_tests" not in shared_defined,
+    )
+    check(
+        "shared collector keeps live fn",
+        "live_helper" in shared_defined,
     )
     keep, _, _ = code_only('    x = "a // b"; // c', False, None, True)
     check("keep strings blanks comment", keep == '    x = "a // b"; ')
