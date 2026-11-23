@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 _STR_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/")
 _UNTERM_STR_RE = re.compile(r'"(?:[^"\\]|\\.?)*$')
 _CHAR_RE = re.compile(
     r"'(?:[^'\\\n]|\\(?:[nrt\\0'\x22]|x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}))'"
@@ -50,7 +51,11 @@ FINDING_LET_DISCARD = (
 # (the class rule — AGENTS documents `conn`/`tx`/`stmt` handles, so `tx`-only
 # args trip branch 3 too). Read-verb callees (get/fetch/...) are excluded.
 # Multi-line rustfmt-wrapped writes are joined (cap 5) before matching. Test modules
-# (`mod \w*tests?`, cfg(test) mod blocks) are skipped. Drops write/link
+# (`mod \w*tests?`, cfg(test) mod blocks) are skipped. Matching runs on
+# discard_match_text(joined) — string contents blanked and /*...*/ removed —
+# so a handle word inside a literal or comment never counts as an arg; the
+# ROLLBACK guard therefore also runs on the raw joined line in findings_for_tree.
+# Drops write/link
 # failures with no log and no retry (kill-loot link lesson, PR #202).
 # Emits, fs ops, and test cleanup are deliberately out of scope.
 # Sanctioned shape (like the migration gate's EXISTS guards): ROLLBACK
@@ -66,7 +71,7 @@ DB_SILENCE_RE = re.compile(
     r"_[a-z0-9_]*\s*\("
     r"|\b(?:[a-z_][a-z0-9_]*::)*+"
     r"(?!(?:get|fetch|load|read|find|search|list|check|exists|count|lookup|validate)(?:_|\b))"
-    r"[a-z_][a-z0-9_]*\s*\([^;()\"]*(?:\([^;()\"]*\)[^;()\"]*)*\b(?:conn|tx)\b[^;()\"]*(?:\([^;()\"]*\)[^;()\"]*)*\)"
+    r"[a-z_][a-z0-9_]*\s*\([^;()]*(?:\([^;()]*\)[^;()]*)*\b(?:conn|tx)\b[^;()]*(?:\([^;()]*\)[^;()]*)*\)"
     r")"
 )
 MOD_TESTS_RE = re.compile(r"^\s*(?:pub\s+)?mod\s+\w*tests?\b")
@@ -276,6 +281,13 @@ def first_stmt(text: str) -> str:
     return text
 
 
+def discard_match_text(joined: str) -> str:
+    """joined with string contents blanked and /*...*/ comments removed —
+    DB-silence shape matching runs on this (string-aware, like first_stmt),
+    so handle words inside literals or comments never count as args."""
+    return _BLOCK_COMMENT_RE.sub("", _STR_RE.sub('""', joined))
+
+
 def execute_call_end(text: str, open_idx: int) -> int | None:
     """Index just past the `)` matching the `(` at open_idx, skipping
     double-quoted regions (SQL parens like MIN(rowid) must not count).
@@ -467,7 +479,10 @@ def findings_for_tree(root: Path) -> list[str]:
                     joined = first_stmt(cur)
                 else:
                     joined = first_stmt(code)
-            if DB_SILENCE_RE.search(joined):
+            stripped = discard_match_text(joined)
+            if re.search(r"\bROLLBACK\b", joined) is None and DB_SILENCE_RE.search(
+                stripped
+            ):
                 findings.append(
                     FINDING_DB_SILENCE.format(
                         path=path.relative_to(root), lineno=lineno
@@ -685,6 +700,16 @@ fn claim_receipt(
     check(
         "trailing ? propagation stays silent",
         DB_SILENCE_RE.search("let _ = stash_backup(tx)?;") is None,
+    )
+    check(
+        "top-level string arg still fires",
+        DB_SILENCE_RE.search(discard_match_text('let _ = stash_backup(tx, "label");'))
+        is not None,
+    )
+    check(
+        "trailing block comment keeps ? silent",
+        DB_SILENCE_RE.search(discard_match_text("let _ = stash_backup(tx)?; /* ok */"))
+        is None,
     )
 
     for literal in [
