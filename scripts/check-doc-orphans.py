@@ -62,7 +62,9 @@ STOPWORDS = {
 MOD_TESTS_RE = re.compile(r"^\s*(?:pub\s+)?mod\s+\w*tests?\b")
 
 _CFG_TEST_ATTR_RE = re.compile(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
-_ITEM_START_RE = re.compile(r"\b(?:fn|struct|enum|use)\s+[A-Za-z_][A-Za-z0-9_]*")
+_ITEM_START_RE = re.compile(
+    r"\b(?:fn|struct|enum|use|const|static)\s+[A-Za-z_][A-Za-z0-9_]*"
+)
 
 
 def git(*args: str) -> list[str]:
@@ -89,14 +91,6 @@ def unpushed_base() -> str | None:
 
 
 _STR_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
-_CHAR_RE = re.compile(r"'(?:[^'\\]|\\.)*'")
-
-
-def code_braces(line: str) -> tuple[int, int]:
-    """(opens, closes) ignoring string/char literals and // comments."""
-    no_strings = _CHAR_RE.sub("", _STR_RE.sub("", line))
-    code = no_strings.split("//", 1)[0]
-    return code.count("{"), code.count("}")
 
 
 def _start_attr_item(
@@ -128,8 +122,15 @@ def test_module_lines(text: str) -> set[int]:
     attr_open_seen = False
     attr_paren = 0
     attr_bracket = 0
+    in_block = False
+    raw_closer: str | None = None
     for i, raw in enumerate(text.splitlines(), 1):
-        opens, closes = code_braces(raw)
+        # Thread block-comment/raw-string state through the whole file so
+        # braces inside them (`/* { */`, multi-line raw strings) never
+        # move depth tracking; `code` is the same string/char/comment
+        # blanked view the live scans use.
+        code, in_block, raw_closer = code_only(raw, in_block, raw_closer)
+        opens, closes = code.count("{"), code.count("}")
         if skip_depth:
             skip_depth = max(0, skip_depth + opens - closes)
             out.add(i)
@@ -140,8 +141,6 @@ def test_module_lines(text: str) -> set[int]:
             # before any `{` ends a bodyless declaration (`fn f();`),
             # unless it sits inside parens/brackets (`[u8; 4]` params).
             out.add(i)
-            no_strings = _CHAR_RE.sub("", _STR_RE.sub("", raw))
-            code = no_strings.split("//", 1)[0]
             attr_depth += opens - closes
             attr_open_seen = attr_open_seen or opens > 0
             attr_paren += code.count("(") - code.count(")")
@@ -180,8 +179,6 @@ def test_module_lines(text: str) -> set[int]:
                 if stripped:
                     prev_sig = stripped
                 continue
-            no_strings = _CHAR_RE.sub("", _STR_RE.sub("", raw))
-            code = no_strings.split("//", 1)[0]
             pending_cfg_test = False
             if _ITEM_START_RE.search(code) is not None:
                 out.add(i)
@@ -193,13 +190,11 @@ def test_module_lines(text: str) -> set[int]:
                 continue
             # A non-item line ends the attribute's reach; fall through.
         if _CFG_TEST_ATTR_RE.search(raw) is not None:
-            # Bare `#[cfg(test)]` on a `fn`/`struct`/`enum` (same line or,
-            # via pending, the item below): the item line and its
-            # brace-balanced body are test-only, so both live scans
-            # (`live_definitions`, `live_string_literals`) inherit it.
+            # Bare `#[cfg(test)]` on a `fn`/`struct`/`enum`/`use`/
+            # `const`/`static` (same line or, via pending, the item below):
+            # the item line and its brace-balanced body are test-only, so
+            # both live scans inherit it.
             out.add(i)
-            no_strings = _CHAR_RE.sub("", _STR_RE.sub("", raw))
-            code = no_strings.split("//", 1)[0]
             if _ITEM_START_RE.search(code) is not None:
                 state = _start_attr_item(code, opens, closes)
                 in_attr_item, attr_depth = state[0], state[1]
@@ -341,7 +336,7 @@ def collect_live_symbols(
     return defined, live_pairs, live_strings
 
 
-_RAW_STR_RE = re.compile(r"r(#+)?\"")
+_RAW_STR_RE = re.compile(r"(?:br|cr|r)(#+)?\"")
 _CHAR_LIT_RE = re.compile(r"'(?:[^'\\]|\\.)'")
 
 
@@ -413,8 +408,8 @@ def code_only(
     return "".join(out), in_block, raw_closer
 
 
-_HASHED_RAW_RE = re.compile(r'r(#+)"(.*?)"\1')
-_UNHASHED_RAW_RE = re.compile(r'r"([^"]*)"')
+_HASHED_RAW_RE = re.compile(r"(?<![A-Za-z0-9_])(?:br|cr|r)(#+)\"(.*?)\"\1")
+_UNHASHED_RAW_RE = re.compile(r"(?<![A-Za-z0-9_])(?:br|cr|r)\"([^\"]*)\"")
 _QUOTED_RE = re.compile(r'"([^"]*)"')
 
 
@@ -1003,6 +998,52 @@ def self_test() -> int:
         )
         _, e2_pairs, _ = collect_live_symbols([probe2])
     check("E2 test-only pair not live", "Foo::Bar" not in e2_pairs)
+    # T1 mutant-killing: a byte-raw `br#"..."#` holding a bare quote
+    # mis-splits under the prefix-blind opener (pre-fix code view
+    # `br#bhi";` swallows the following string; plain `r` stays clean).
+    t1_line = '    let s = br#"a"b"#; let t = "hi";'
+    t1_code, _, _ = code_only(t1_line, False, None, False)
+    check(
+        "T1 byte-raw with quote blanks like plain raw",
+        t1_code == "    let s = ; let t = ;",
+    )
+    t1_plain, _, _ = code_only('    let s = r#"a"b"#; let t = "hi";', False, None, True)
+    t1_kept, _, _ = code_only(t1_line, False, None, True)
+    check(
+        "T1 byte-raw quoted contents match plain raw",
+        _quoted_contents(t1_kept) == _quoted_contents(t1_plain),
+    )
+    # T2 mutant-killing: `const`/`static` with a string init under bare
+    # `#[cfg(test)]` leaks a live literal (pre-fix: line 2 unskipped),
+    # definition side and pair side alike.
+    check(
+        "T2 const with string init under bare cfg skipped",
+        2 in test_module_lines('#[cfg(test)]\nconst X: &str = "kebab-lit";\n'),
+    )
+    check(
+        "T2 const string init not live",
+        "kebab-lit"
+        not in live_string_literals('#[cfg(test)]\nconst X: &str = "kebab-lit";\n'),
+    )
+    with tempfile.TemporaryDirectory() as tmp3:
+        probe3 = Path(tmp3) / "const_pair.rs"
+        probe3.write_text(
+            "#[cfg(test)]\nconst Y: Foo = Foo::Bar;\n",
+            encoding="utf-8",
+        )
+        _, t2_pairs, _ = collect_live_symbols([probe3])
+    check("T2 const pair under bare cfg not live", "Foo::Bar" not in t2_pairs)
+    # T3 mutant-killing: `/* { */` inside a bare-attr item body
+    # double-counts braces (pre-fix: the skip swallows the live fn after).
+    t3_src = "#[cfg(test)]\nfn foo() { /* { */ }\nfn live_after() {}\n"
+    check(
+        "T3 block-comment braces do not extend attr item",
+        test_module_lines(t3_src) == {1, 2},
+    )
+    check(
+        "T3 live fn after comment-brace attr stays live",
+        "live_after" in live_definitions(t3_src),
+    )
     return 1 if failures else 0
 
 
