@@ -202,6 +202,23 @@ def live_string_literals(text: str) -> set[str]:
     return out
 
 
+def live_definitions(text: str) -> set[str]:
+    """Live `fn`/`struct`/`enum` definition names in one source file.
+
+    Lines inside `#[cfg(test)]` / `mod tests` blocks (per
+    `test_module_lines`) are skipped, so a test-only helper never counts
+    as a live definition that would suppress a docs-orphan hit.
+    """
+    skip = test_module_lines(text)
+    out: set[str] = set()
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if lineno in skip:
+            continue
+        for m in re.finditer(r"\b(?:fn|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)", line):
+            out.add(m.group(1))
+    return out
+
+
 _RAW_STR_RE = re.compile(r"r(#+)?\"")
 _CHAR_LIT_RE = re.compile(r"'(?:[^'\\]|\\.)'")
 
@@ -473,6 +490,9 @@ def main() -> int:
     # symbol on the definition path (sim-D). Live strings come from the
     # keep-strings lexer with test modules skipped, so comment prose or
     # test-only occurrences never count as live (sim-D, fail-closed).
+    # Live definitions likewise skip `#[cfg(test)]` / `mod tests` lines:
+    # a helper that survives only in tests never counts as a live
+    # definition, so it cannot suppress a docs-orphan hit.
     defined: set[str] = set()
     live_pairs: set[str] = set()
     live_strings: set[str] = set()
@@ -481,8 +501,7 @@ def main() -> int:
             text = rs.read_text(encoding="utf-8")
         except OSError:
             continue
-        for m in re.finditer(r"\b(?:fn|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)", text):
-            defined.add(m.group(1))
+        defined |= live_definitions(text)
         for m in PAIR_RE.finditer(text):
             live_pairs.add(m.group(0))
         live_strings |= live_string_literals(text)
@@ -663,6 +682,31 @@ def self_test() -> int:
     check(
         "char quote forges nothing",
         live_string_literals("let c = '\"';\n") == set(),
+    )
+    # Test-module fns are not live definitions: a helper surviving only
+    # in `#[cfg(test)]` must not suppress its docs-orphan hit, while a
+    # live `fn` with the same name still suppresses (no false-positive
+    # flip when both exist).
+    test_mod_src = (
+        "pub fn live_helper() {}\n"
+        "#[cfg(test)]\n"
+        "mod tests {\n"
+        "    fn only_in_tests() {}\n"
+        "    fn live_helper() {}\n"
+        "}\n"
+    )
+    check(
+        "test-only fn not a live definition",
+        "only_in_tests" not in live_definitions(test_mod_src),
+    )
+    check(
+        "live fn still a live definition",
+        "live_helper" in live_definitions(test_mod_src),
+    )
+    check(
+        "pure test file defines nothing live",
+        live_definitions("#[cfg(test)]\nmod tests {\n    fn only_in_tests() {}\n}\n")
+        == set(),
     )
     keep, _, _ = code_only('    x = "a // b"; // c', False, None, True)
     check("keep strings blanks comment", keep == '    x = "a // b"; ')
