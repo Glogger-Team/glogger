@@ -114,23 +114,31 @@ Full details: [`economics-surveying.md`](../features/screens/economics/economics
 ## Subscribing to Events (Frontend)
 
 All events use Tauri's event system. `ChatStatusEvent` uses `#[serde(tag = "kind")]`, so its payload includes a `kind` field for discriminating variants; `game-state-updated` carries a plain string array of changed domain names.
++
+`"chat-status-event"` also carries replay-preview payloads: `replay_chat_log` re-emits parsed status events on the live channel wrapped as `ReplayChatStatusEnvelope` (`{ is_replay: true, event }`, `src-tauri/src/replay.rs`). The envelope has no top-level `kind`, so always narrow the union and return early on `is_replay` before touching live state — `gameStateStore.handleChatStatusEvent` (`src/stores/gameStateStore.ts`) does exactly this via `isReplayChatStatusEvent`. Kind-switching consumers without the explicit guard stay safe by shape: the `startupStore` XP forwarder (`src/stores/startupStore.ts`) and the `HoplologyWidget` `ItemStudied` refresh (`src/components/Dashboard/widgets/HoplologyWidget.vue`) match on `payload.kind`, which is absent on the envelope, so replay payloads fall through.
 
 ```typescript
 import { listen } from '@tauri-apps/api/event'
 import type { UnlistenFn } from '@tauri-apps/api/event'
+import type { ChatStatusEvent, ReplayChatStatusEnvelope } from '@/stores/gameStateStore'
 
-// Listen to chat status events
-const unlistenStatus: UnlistenFn = await listen<ChatStatusEvent>('chat-status-event', (event) => {
-  const e = event.payload
-  switch (e.kind) {
-    case 'ItemGained':
-      console.log(`Got ${e.quantity}x ${e.item_name}`)
-      break
-    case 'XpGained':
-      console.log(`+${e.amount} XP in ${e.skill}`)
-      break
-  }
-})
+// Listen to chat status events (live gains + replay-preview envelopes)
+const unlistenStatus: UnlistenFn = await listen<ChatStatusEvent | ReplayChatStatusEnvelope>(
+  'chat-status-event',
+  (event) => {
+    const p = event.payload
+    if ('is_replay' in p && p.is_replay === true) return // replay preview, not live
+    const e: ChatStatusEvent = p
+    switch (e.kind) {
+      case 'ItemGained':
+        console.log(`Got ${e.quantity}x ${e.item_name}`)
+        break
+      case 'XpGained':
+        console.log(`+${e.amount} XP in ${e.skill}`)
+        break
+    }
+  },
+)
 
 // Listen to domain refresh notifications
 const unlistenState: UnlistenFn = await listen<string[]>('game-state-updated', (event) => {
@@ -178,10 +186,12 @@ listen<string[]>('game-state-updated', async (event) => {
   }
 })
 
-listen<ChatStatusEvent>('chat-status-event', (event) => {
-  if (event.payload.kind === 'ItemGained' && event.payload.quantity > 1) {
+listen<ChatStatusEvent | ReplayChatStatusEnvelope>('chat-status-event', (event) => {
+  const p = event.payload
+  if ('is_replay' in p && p.is_replay === true) return // replay preview, not live
+  if (p.kind === 'ItemGained' && p.quantity > 1) {
     // Correct the quantity using the name-matched item
-    updateItemQuantity(event.payload.item_name, event.payload.quantity)
+    updateItemQuantity(p.item_name, p.quantity)
   }
 })
 ```
