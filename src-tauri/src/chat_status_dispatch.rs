@@ -170,13 +170,22 @@ impl DispatchOutcome {
 /// Twin-collapse for unresolvable-skill sightings. An English `LevelUp` and
 /// its JSON `Xp` twin arrive as consecutive messages, so the second sighting
 /// of the same skill is the same event, not a second skip. Callers keep the
-/// `last` slot for their whole message batch and only count/log on `true`.
-/// Non-adjacent repeats (different polls) still count separately — one skip
-/// event per sighting, twins excepted.
+/// `last` slot across poll batches (the coordinator owns it as a field) and
+/// only count/log on `true`. A twin consumes the slot (`None` after the
+/// pair), so a later same-skill event counts again — `E,J,E,J` is two skips,
+/// split across batches or not. An unpaired half arms the slot only until a
+/// poll that drains chat lines sees no unknown skill (the coordinator
+/// expires it there); empty polls preserve it.
 pub(crate) fn note_unknown_skill(last: &mut Option<String>, skill: String) -> bool {
-    let fresh = last.as_deref() != Some(skill.as_str());
-    *last = Some(skill);
-    fresh
+    if last.as_deref() == Some(skill.as_str()) {
+        // Twin second sighting: same event, not a second skip. Consume the
+        // slot so the next same-skill event counts as a new skip.
+        *last = None;
+        false
+    } else {
+        *last = Some(skill);
+        true
+    }
 }
 
 /// Callback into the coordinator's survey attribution (`attribute_chat_gain`):
@@ -2322,6 +2331,119 @@ mod tests {
         assert!(note_unknown_skill(&mut last, "Mycology".to_string()));
         // A non-adjacent repeat (later poll) counts again.
         assert!(note_unknown_skill(&mut last, "Fungiculture".to_string()));
+    }
+
+    #[test]
+    fn unknown_skill_twin_english_first_counts_once() {
+        // Cross-batch twin, English first: the coordinator owns the slot
+        // across polls, so the JSON twin collapsing needs no batch locality.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-04-01 05:30:53";
+        // `Fungiculture` stays unseeded: both sightings land in
+        // `unknown_skills` like a new game skill on stale CDN data.
+        let english = status_msg("You earned 62 XP and reached level 5 in Fungiculture!", ts);
+        let json = json_msg(
+            "EarnedXP",
+            r#"{"Skill":"Fungiculture","XP":62,"OldLevel":4,"NewLevel":5}"#,
+            ts,
+        );
+        let mut last: Option<String> = None;
+        let mut count = 0;
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &english, ts, &mut st);
+        assert_eq!(out.unknown_skills.len(), 1);
+        for skill in out.unknown_skills {
+            if note_unknown_skill(&mut last, skill) {
+                count += 1;
+            }
+        }
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert_eq!(out.unknown_skills.len(), 1);
+        for skill in out.unknown_skills {
+            if note_unknown_skill(&mut last, skill) {
+                count += 1;
+            }
+        }
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn unknown_skill_twin_json_first_counts_once() {
+        // Mirror twin, JSON first: collapse is order-independent.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-04-01 05:30:53";
+        let english = status_msg("You earned 62 XP and reached level 5 in Fungiculture!", ts);
+        let json = json_msg(
+            "EarnedXP",
+            r#"{"Skill":"Fungiculture","XP":62,"OldLevel":4,"NewLevel":5}"#,
+            ts,
+        );
+        let mut last: Option<String> = None;
+        let mut count = 0;
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert_eq!(out.unknown_skills.len(), 1);
+        for skill in out.unknown_skills {
+            if note_unknown_skill(&mut last, skill) {
+                count += 1;
+            }
+        }
+        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &english, ts, &mut st);
+        assert_eq!(out.unknown_skills.len(), 1);
+        for skill in out.unknown_skills {
+            if note_unknown_skill(&mut last, skill) {
+                count += 1;
+            }
+        }
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn unknown_skill_second_twin_pair_counts_again() {
+        // Pair consumption: `E,J,E,J` is two events, two skips — a blind
+        // never-recount collapse would undercount the second event.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut rez = std::collections::HashMap::new();
+        let mut dmg = Vec::new();
+        let ts = "26-04-01 05:30:53";
+        let ts2 = "26-04-01 06:30:53";
+        let english = status_msg("You earned 62 XP and reached level 5 in Fungiculture!", ts);
+        let json = json_msg(
+            "EarnedXP",
+            r#"{"Skill":"Fungiculture","XP":62,"OldLevel":4,"NewLevel":5}"#,
+            ts,
+        );
+        let english2 = status_msg("You earned 70 XP and reached level 6 in Fungiculture!", ts2);
+        let json2 = json_msg(
+            "EarnedXP",
+            r#"{"Skill":"Fungiculture","XP":70,"OldLevel":5,"NewLevel":6}"#,
+            ts2,
+        );
+        let mut last: Option<String> = None;
+        let mut count = 0;
+        for (m, t) in [(&english, ts), (&json, ts), (&english2, ts2), (&json2, ts2)] {
+            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            let out = dispatch(&pool, &gd, Some(&id()), m, t, &mut st);
+            assert_eq!(out.unknown_skills.len(), 1);
+            for skill in out.unknown_skills {
+                if note_unknown_skill(&mut last, skill) {
+                    count += 1;
+                }
+            }
+        }
+        assert_eq!(count, 2);
     }
 
     fn seed_npc(gd: &GameDataState, key: &str, name: &str, area: Option<&str>, tastes: bool) {
