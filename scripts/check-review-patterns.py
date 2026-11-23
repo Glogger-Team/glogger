@@ -71,7 +71,7 @@ DB_SILENCE_RE = re.compile(
     r"_[a-z0-9_]*\s*\("
     r"|\b(?:[a-z_][a-z0-9_]*::)*+"
     r"(?!(?:get|fetch|load|read|find|search|list|check|exists|count|lookup|validate)(?:_|\b))"
-    r"[a-z_][a-z0-9_]*\s*\([^;()]*(?:\([^;()]*\)[^;()]*)*\b(?:conn|tx)\b[^;()]*(?:\([^;()]*\)[^;()]*)*\)"
+    r"[a-z_][a-z0-9_]*\s*\(.*\b(?:conn|tx)\b.*\)"
     r")"
 )
 MOD_TESTS_RE = re.compile(r"^\s*(?:pub\s+)?mod\s+\w*tests?\b")
@@ -229,11 +229,15 @@ FN_RE = re.compile(
 
 def split_statements(text: str) -> list[str]:
     """Split Rust text into `;`-terminated statements, ignoring `;` inside
-    double-quoted strings (SQL text). Good enough for statement classification."""
+    double-quoted strings (SQL text) and inside nested `()[]{}` groups
+    (closure bodies like `|| { ...; ... }`, call args, `[x; N]` repeats).
+    Callers pass a whole `fn` item, so the outer `{` puts body-level `;`
+    at depth 1 — split there, suppress deeper."""
     out: list[str] = []
     cur: list[str] = []
     in_str = False
     esc = False
+    depth = 0
     for ch in text:
         if in_str:
             cur.append(ch)
@@ -248,7 +252,11 @@ def split_statements(text: str) -> list[str]:
             in_str = True
             cur.append(ch)
             continue
-        if ch == ";" and not in_str:
+        if ch in "({[":
+            depth += 1
+        elif ch in ")}]":
+            depth = max(0, depth - 1)
+        if ch == ";" and depth <= 1:
             cur.append(ch)
             out.append("".join(cur))
             cur = []
@@ -261,11 +269,13 @@ def split_statements(text: str) -> list[str]:
 
 def first_stmt(text: str) -> str:
     """The first `;`-terminated statement of joined Rust text, ignoring `;`
-    inside double-quoted strings (SQL text). The DB-silence continuation join
+    inside double-quoted strings (SQL text) and inside balanced `()[]{}` groups
+    (closure bodies like `|| { ...; ... }`). The DB-silence continuation join
     must not consume past the first complete statement: a later ROLLBACK (or
     trailing `?`) belongs to the next statement, not this discard."""
     in_str = False
     esc = False
+    depth = 0
     for idx, ch in enumerate(text):
         if in_str:
             if esc:
@@ -276,7 +286,11 @@ def first_stmt(text: str) -> str:
                 in_str = False
         elif ch == '"':
             in_str = True
-        elif ch == ";":
+        elif ch in "({[":
+            depth += 1
+        elif ch in ")}]":
+            depth = max(0, depth - 1)
+        elif ch == ";" and depth == 0:
             return text[: idx + 1]
     return text
 
@@ -727,6 +741,54 @@ fn claim_receipt(
         DB_SILENCE_RE.search(discard_match_text("let _ = stash_backup(tx)?; /* ok */"))
         is None,
     )
+    # A1 mutant-killing (pre-fix FAIL 2026-11-23 probe: single-level unwrap
+    # kept tx at the top arg level only — `f(g(tx))`, `f(g(h(tx)))` both
+    # silent pre-fix, fire post-fix; `f(g(h(x)))` silent both).
+    check(
+        "A1 mutant-killing: depth-1 tx fires",
+        DB_SILENCE_RE.search(discard_match_text("let _ = f(g(tx));")) is not None,
+    )
+    check(
+        "A1 mutant-killing: depth-2 tx fires",
+        DB_SILENCE_RE.search(discard_match_text("let _ = f(g(h(tx)));")) is not None,
+    )
+    check(
+        "A1 mutant-killing: depth-2 without handle stays silent",
+        DB_SILENCE_RE.search(discard_match_text("let _ = f(g(h(x)));")) is None,
+    )
+    check(
+        "A1 mutant-killing: read-verb outer stays silent at depth",
+        DB_SILENCE_RE.search(discard_match_text("let _ = get_data(wrap(tx));")) is None,
+    )
+    _deep = "let _ = f(" * 50 + "tx" + ")" * 50 + ";"
+    _t1 = _time.monotonic()
+    _deep_hit = DB_SILENCE_RE.search(discard_match_text(_deep)) is not None
+    _deep_dt = _time.monotonic() - _t1
+    check("A1 mutant-killing: depth-50 tx fires", _deep_hit)
+    check("A1 mutant-killing: depth-50 returns instantly", _deep_dt < 1.0)
+    # A3 mutant-killing (pre-fix FAIL 2026-11-23 probe: first_stmt cut at the
+    # closure-internal `;` → `let _ = foo(|| { bar();` missed tx downstream;
+    # split_statements fragmented the closure into 4 pieces).
+    _closure = "let _ = foo(|| { bar(); baz(tx) });"
+    check(
+        "A3 mutant-killing: closure semicolon does not truncate",
+        first_stmt(_closure + ' conn.execute("ROLLBACK", [])?;') == _closure,
+    )
+    check(
+        "A3 mutant-killing: closure tx fires end to end",
+        DB_SILENCE_RE.search(discard_match_text(first_stmt(_closure))) is not None,
+    )
+    _split = split_statements("fn f(){ foo(|| { bar(); }); baz(); }")
+    check(
+        "A3 mutant-killing: split keeps closure together",
+        len(_split) == 3 and "bar();" in _split[0] and "baz();" in _split[1],
+    )
+    _many = "fn f(){ foo(|| { " + "bar(); " * 200 + "}); baz(); }"
+    _t2 = _time.monotonic()
+    _many_split = split_statements(_many)
+    _many_dt = _time.monotonic() - _t2
+    check("A3 mutant-killing: many-closure semis stay grouped", len(_many_split) == 3)
+    check("A3 mutant-killing: many-closure split returns instantly", _many_dt < 1.0)
 
     for literal in [
         '"C:/Users/TestUser/AppData/Reports/x.json"',
