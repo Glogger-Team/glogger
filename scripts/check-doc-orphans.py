@@ -62,7 +62,7 @@ STOPWORDS = {
 MOD_TESTS_RE = re.compile(r"^\s*(?:pub\s+)?mod\s+\w*tests?\b")
 
 _CFG_TEST_ATTR_RE = re.compile(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
-_ITEM_START_RE = re.compile(r"\b(?:fn|struct|enum)\s+[A-Za-z_][A-Za-z0-9_]*")
+_ITEM_START_RE = re.compile(r"\b(?:fn|struct|enum|use)\s+[A-Za-z_][A-Za-z0-9_]*")
 
 
 def git(*args: str) -> list[str]:
@@ -271,9 +271,9 @@ def live_string_literals(text: str) -> set[str]:
     Comments are blanked via the keep-strings lexer (same block/raw-string
     threading as the extractor side) and test-module lines are skipped, so
     a removed literal surviving only in a comment or test never counts as
-    live — it still fires (sim-D on #212, fail-closed). The naive quote
-    regex matches the removed-line extractor's, so both sides miss
-    identically on escaped/multiline shapes.
+    live — it still fires (sim-D on #212, fail-closed). Raw-aware
+    `_quoted_contents` matches the removed-line extractor's, so both sides
+    see nested-JSON raw strings identically (B1).
     """
     skip = test_module_lines(text)
     out: set[str] = set()
@@ -283,8 +283,8 @@ def live_string_literals(text: str) -> set[str]:
         kept, in_block, raw_closer = code_only(line, in_block, raw_closer, True)
         if lineno in skip:
             continue
-        for m in re.finditer(r'"([^"]*)"', kept):
-            out.add(m.group(1))
+        for s in _quoted_contents(kept):
+            out.add(s)
     return out
 
 
@@ -293,11 +293,15 @@ def live_definitions(text: str) -> set[str]:
 
     Lines inside `#[cfg(test)]` / `mod tests` blocks (per
     `test_module_lines`) are skipped, so a test-only helper never counts
-    as a live definition that would suppress a docs-orphan hit.
+    as a live definition that would suppress a docs-orphan hit. The scan
+    runs over the code-only view (`lex_source`), so `//` / block-comment
+    prose mentioning `fn foo` never forges a live def that would shield
+    a truly orphaned docs mention (E1).
     """
     skip = test_module_lines(text)
+    cleaned = lex_source(text)
     out: set[str] = set()
-    for lineno, line in enumerate(text.splitlines(), 1):
+    for lineno, line in enumerate(cleaned, 1):
         if lineno in skip:
             continue
         for m in re.finditer(r"\b(?:fn|struct|enum)\s+([A-Za-z_][A-Za-z0-9_]*)", line):
@@ -322,8 +326,17 @@ def collect_live_symbols(
         except OSError:
             continue
         defined |= live_definitions(text)
-        for m in PAIR_RE.finditer(text):
-            live_pairs.add(m.group(0))
+        # E2: test-module pairs are not live consumers — a pair surviving
+        # only in `#[cfg(test)]` / `mod tests` must not suppress a removed
+        # arm. Scan the code-only view with the same test skip the
+        # definition and string scans use, so comment/string pairs never
+        # count either.
+        pair_skip = test_module_lines(text)
+        for lineno, line in enumerate(lex_source(text), 1):
+            if lineno in pair_skip:
+                continue
+            for m in PAIR_RE.finditer(line):
+                live_pairs.add(m.group(0))
         live_strings |= live_string_literals(text)
     return defined, live_pairs, live_strings
 
@@ -345,10 +358,10 @@ def code_only(
 
     With `keep_strings`, comments are still blanked but double-quoted
     and raw string spans are preserved verbatim (char literals stay
-    blanked so `'"'` cannot forge a quote pair): the live-string scan
-    extracts quoted contents from this view with the same naive regex
-    the removed-line extractor uses, so both sides miss identically
-    (fail-closed) while comment prose never counts as live (sim-D #212).
+    blanked so `'"'` cannot forge a quote pair): both string scans
+    extract quoted contents from this view with raw-aware
+    `_quoted_contents`, so nested-JSON raw strings agree on both sides
+    (B1) while comment prose never counts as live (sim-D #212).
     """
     out: list[str] = []
     i, n = 0, len(line)
@@ -398,6 +411,46 @@ def code_only(
         out.append(line[i])
         i += 1
     return "".join(out), in_block, raw_closer
+
+
+_HASHED_RAW_RE = re.compile(r'r(#+)"(.*?)"\1')
+_UNHASHED_RAW_RE = re.compile(r'r"([^"]*)"')
+_QUOTED_RE = re.compile(r'"([^"]*)"')
+
+
+def _quoted_contents(kept: str) -> list[str]:
+    """Quoted contents in a comment-blanked line, raw-aware (B1).
+
+    `kept` is a `code_only(..., keep_strings=True)` view: comments are
+    blanked, string spans preserved. Hashed raw strings (`r#"..."#`)
+    may contain nested `"..."` (e.g. JSON `r#"{"event": "kebab"}"#`):
+    the naive first-quote scan pairs the outer opener with the first
+    inner opener and misses the inner kebab. Extract nested quotes
+    from inside hashed-raw spans first (whole inner when it holds no
+    nested quotes, e.g. `r#"game-state-updated"#`), blank those spans,
+    then scan the remainder for normal/unhashed-raw strings.
+    """
+    out: list[str] = []
+    spans: list[tuple[int, int]] = []
+    for m in _HASHED_RAW_RE.finditer(kept):
+        inner = m.group(2)
+        nested = _QUOTED_RE.findall(inner)
+        if nested:
+            out.extend(nested)
+        else:
+            out.append(inner)
+        spans.append((m.start(), m.end()))
+    if spans:
+        buf = list(kept)
+        for s, e in spans:
+            for i in range(s, e):
+                buf[i] = " "
+        kept = "".join(buf)
+    for m in _UNHASHED_RAW_RE.finditer(kept):
+        out.append(m.group(1))
+    kept = _UNHASHED_RAW_RE.sub(lambda m: " " * (m.end() - m.start()), kept)
+    out.extend(m.group(1) for m in _QUOTED_RE.finditer(kept))
+    return out
 
 
 PAIR_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]*)::([A-Z][A-Za-z0-9_]*)\b")
@@ -454,11 +507,14 @@ def extract_identifiers(
     for line in cleaned:
         for m in PAIR_RE.finditer(line):
             pairs.add(m.group(0))
-    # String literals: kebab-case or PascalCase (original lines — the
-    # code-only view blanks these).
+    # String literals: kebab-case or PascalCase. Run per-line `code_only`
+    # (keep-strings) first so `//` / `/* */` comment quotes never count,
+    # then raw-aware `_quoted_contents` so nested-JSON raw strings
+    # (`r#"{"event": "kebab"}"#`) yield their inner kebabs instead of
+    # empty (B1) — same helper the live scan uses, so both sides agree.
     for line in removed_lines:
-        for m in re.finditer(r'"([^"]*)"', line):
-            s = m.group(1)
+        kept, _, _ = code_only(line, False, None, True)
+        for s in _quoted_contents(kept):
             if len(s) < 4:
                 continue
             if s.lower() in STOPWORDS:
@@ -909,6 +965,44 @@ def self_test() -> int:
     check("keep raw string span", keep2 == '    let s = r#"x"#;')
     keep3, _, _ = code_only('    /* c "q" */ let a = 1;', False, None, True)
     check("keep blanks comment quotes", keep3 == "     let a = 1;")
+    # B1 mutant-killing: nested-JSON raw string hides an inner kebab
+    # from the naive first-quote scan (pre-fix: empty literal set).
+    b1_line = '    emit(r#"{"event": "game-state-updated"}"#);'
+    b1_idents, _, b1_lits, _ = extract_identifiers([(1, b1_line)], lex_source(b1_line))
+    check(
+        "B1 nested-json raw inner kebab extracted",
+        "game-state-updated" in b1_lits and "game-state-updated" in b1_idents,
+    )
+    check(
+        "B1 nested-json raw inner live",
+        "game-state-updated" in live_string_literals(b1_line + "\n"),
+    )
+    # B2 mutant-killing: braceless `use` under bare `#[cfg(test)]` leaks
+    # (pre-fix: line 2 not skipped).
+    check(
+        "B2 braceless use under bare cfg skipped",
+        2 in test_module_lines("#[cfg(test)]\nuse foo::bar;\n"),
+    )
+    # E1 mutant-killing: line-comment `fn` mention forges a live def
+    # (pre-fix: comment shields the orphan).
+    check(
+        "E1 comment fn forgery suppressed",
+        live_definitions("// fn shielded_orphan() {}\n") == set(),
+    )
+    check(
+        "E1 block-comment fn forgery suppressed",
+        live_definitions("/* fn blocked_orphan() {} */\n") == set(),
+    )
+    # E2 mutant-killing: test-only `Enum::Variant` pair counted as live
+    # (pre-fix: pair suppresses the removal).
+    with tempfile.TemporaryDirectory() as tmp2:
+        probe2 = Path(tmp2) / "pair_test.rs"
+        probe2.write_text(
+            "#[cfg(test)]\nmod tests {\n    fn f() { let x = Foo::Bar; }\n}\n",
+            encoding="utf-8",
+        )
+        _, e2_pairs, _ = collect_live_symbols([probe2])
+    check("E2 test-only pair not live", "Foo::Bar" not in e2_pairs)
     return 1 if failures else 0
 
 
