@@ -166,6 +166,12 @@ pub struct DataIngestCoordinator {
     /// process; logged with each skip so a growing total signals staleness.
     /// The row is deliberately not written (skill_id 0 would collide PKs).
     skipped_unknown_skills: u64,
+    /// Last unresolvable-skill sighting awaiting its twin (`note_unknown_skill`
+    /// slot). Lives on the coordinator — not in the poll batch — so an
+    /// English `LevelUp` at the end of one batch and its JSON `Xp` twin at
+    /// the start of the next still collapse to one skip. A twin consumes the
+    /// slot, so a later same-skill event counts again.
+    last_unknown_skill: Option<String>,
     /// `[JSON:Type]` lines whose body failed to parse. Monotonic within the
     /// process; the raw chat row is still stored, so this only signals format
     /// drift in the game's JSON output.
@@ -213,6 +219,7 @@ impl DataIngestCoordinator {
             catch_up_servers_scanned: false,
             staged_chat_gains: Vec::new(),
             skipped_unknown_skills: 0,
+            last_unknown_skill: None,
             skipped_json_malformed: 0,
         })
     }
@@ -966,9 +973,12 @@ impl DataIngestCoordinator {
             .manual_timezone_override
             .or(self.settings.get().timezone_offset_seconds)
             .unwrap_or(0);
-        // Batch-local twin-collapse slot for unresolvable-skill sightings
-        // (English `LevelUp` + JSON `Xp` arrive as consecutive messages).
-        let mut last_unknown_skill: Option<String> = None;
+        // Twin-collapse slot for unresolvable-skill sightings (English
+        // `LevelUp` + JSON `Xp` arrive as consecutive messages). Owned by the
+        // coordinator across polls: a twin split over a batch boundary still
+        // collapses, since the slot carries over. Taken locally for the drain
+        // (the loop also borrows other `self` fields) and stored back below.
+        let mut last_unknown_skill: Option<String> = std::mem::take(&mut self.last_unknown_skill);
         for event in events {
             match event {
                 LogEvent::ChatMessage(msg, session_tag) => {
@@ -1241,7 +1251,8 @@ impl DataIngestCoordinator {
                     }
                     // Twin-collapse: an English `LevelUp` and its JSON `Xp`
                     // twin arrive as consecutive messages for one event.
-                    // `last_unknown_skill` lives for the whole poll batch.
+                    // `last_unknown_skill` is the coordinator-owned slot taken
+                    // above, so twins split across poll batches still collapse.
                     for skill in std::mem::take(&mut outcome.unknown_skills) {
                         if crate::chat_status_dispatch::note_unknown_skill(
                             &mut last_unknown_skill,
@@ -1439,6 +1450,10 @@ impl DataIngestCoordinator {
                 _ => {}
             }
         }
+
+        // Store the twin slot back before any fallible tail: the skips above
+        // already counted, so a later insert failure must not replay them.
+        self.last_unknown_skill = last_unknown_skill;
 
         // Batch insert messages (watch rules already evaluated per message
         // through the shared dispatch, which forwards what fired).
