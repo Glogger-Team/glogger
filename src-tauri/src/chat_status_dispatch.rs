@@ -173,7 +173,9 @@ impl DispatchOutcome {
 /// `last` slot across poll batches (the coordinator owns it as a field) and
 /// only count/log on `true`. A twin consumes the slot (`None` after the
 /// pair), so a later same-skill event counts again — `E,J,E,J` is two skips,
-/// split across batches or not. Non-adjacent repeats still count separately.
+/// split across batches or not. An unpaired half arms the slot only until a
+/// poll that drains chat lines sees no unknown skill (the coordinator
+/// expires it there); empty polls preserve it.
 pub(crate) fn note_unknown_skill(last: &mut Option<String>, skill: String) -> bool {
     if last.as_deref() == Some(skill.as_str()) {
         // Twin second sighting: same event, not a second skip. Consume the
