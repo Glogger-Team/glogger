@@ -19,10 +19,9 @@ Three mechanical defect shapes:
    just missing checks); likewise replacing a `changes` output mapping
    (e.g. `version_sync` → `migration_chain`) while downstream jobs still
    gate on the removed output. Every `needs.<J>.outputs.*` dereference
-   inside a flow-form `needs: [...]` job requires `J` in that job's
-   `needs:` list, and every `needs.changes.outputs.<N>` requires `N` in
-   the `changes` job outputs. Block-form `needs:` lists are not parsed —
-   jobs using them are skipped (none in-tree; see TODO backlog).
+   inside a job requires `J` in that job's `needs:` list (flow-form,
+   scalar, and block-form lists are all parsed), and every
+   `needs.changes.outputs.<N>` requires `N` in the `changes` job outputs.
 
 Stdlib only (matches check-lint-parity.py conventions).
 """
@@ -40,11 +39,13 @@ VALID_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # `needs.<job>.outputs.<name>` — job and output name per dereference.
 NEEDS_DEREF_RE = re.compile(r"needs\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_.-]+)")
 # Two-space `job:` headers, their four-space `needs:` lists (flow
-# `[...]`, scalar `name`, or quoted variants), and the `changes` job's
-# six-space `outputs:` mappings (`name: ${{ steps... }}`).
+# `[...]`, scalar `name`, quoted variants, or block-form `- name` items),
+# and the `changes` job's six-space `outputs:` mappings
+# (`name: ${{ steps... }}`).
 JOB_RE = re.compile(r"^  ([A-Za-z0-9_-]+):\s*$")
 NEEDS_LIST_RE = re.compile(r"^    needs: \[(.*?)\]\s*$")
 NEEDS_SCALAR_RE = re.compile(r"^    needs: (\S+)\s*$")
+NEEDS_BLOCK_ITEM_RE = re.compile(r"^      - (\S+)\s*$")
 OUTPUT_MAP_RE = re.compile(r"^      ([A-Za-z0-9_-]+): \$\{\{")
 
 
@@ -88,9 +89,9 @@ def check_file(path: Path) -> list[str]:
 
 
 def check_wiring(path: Path, text: str) -> list[str]:
-    """Every `needs.<J>.outputs.*` deref in a flow-form `needs: [...]` job
-    must resolve: J in the reader's `needs:` list, and (for J == changes)
-    the output mapped by changes. Block-form `needs:` jobs are skipped."""
+    """Every `needs.<J>.outputs.*` deref in a job must resolve: J in the
+    reader's `needs:` list, and (for J == changes) the output mapped by
+    changes. Flow-form, scalar, and block-form `needs:` are all parsed."""
     findings: list[str] = []
     in_jobs = False
     job: str | None = None
@@ -148,9 +149,17 @@ def check_wiring(path: Path, text: str) -> list[str]:
         needs = set()
         needs_block = False
         for _, line in lines:
-            if re.match(r"^    needs:\s*$", line):
-                needs_block = True  # block form: unparseable by regex, skip job
+            if needs_block:
+                m = NEEDS_BLOCK_ITEM_RE.match(line)
+                if m:
+                    needs.add(strip_quotes(m.group(1)))
+                    continue
+                if line.strip() == "" or line.strip().startswith("#"):
+                    continue
                 break
+            if re.match(r"^    needs:\s*$", line):
+                needs_block = True
+                continue
             m = NEEDS_LIST_RE.match(line)
             if m:
                 needs = {strip_quotes(n) for n in m.group(1).split(",") if n.strip()}
@@ -159,8 +168,6 @@ def check_wiring(path: Path, text: str) -> list[str]:
             if m:
                 needs = {strip_quotes(m.group(1))}
                 break
-        if needs_block:
-            continue
         for i, line in lines:
             for d in NEEDS_DEREF_RE.finditer(line):
                 dep, name = d.group(1), d.group(2)
