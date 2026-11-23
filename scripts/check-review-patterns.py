@@ -14,12 +14,16 @@ _CHAR_RE = re.compile(
 
 
 def code_braces(line: str) -> tuple[int, int]:
-    """(opens, closes) ignoring string/char literals and // comments."""
+    """(opens, closes) ignoring string/char literals, /*...*/ and // comments."""
     no_strings = _CHAR_RE.sub("", _STR_RE.sub("", line))
     # A `"` with no closer on this line (a backslash-newline continuation)
     # runs to end of line: strip the tail so braces inside string content
     # never skew the multiline depth tracked by code_lines/functions.
     no_strings = _UNTERM_STR_RE.sub("", no_strings)
+    # Single-line block comments next (strings-first mirrors
+    # discard_match_text, so `/*` inside a literal never opens a comment),
+    # then the // tail: `/* // */` is one comment, not a line comment.
+    no_strings = _BLOCK_COMMENT_RE.sub("", no_strings)
     code = no_strings.split("//", 1)[0]
     return code.count("{"), code.count("}")
 
@@ -54,7 +58,9 @@ FINDING_LET_DISCARD = (
 # (`mod \w*tests?`, cfg(test) mod blocks) are skipped. Matching runs on
 # discard_match_text(joined) — string contents blanked and /*...*/ removed —
 # so a handle word inside a literal or comment never counts as an arg; the
-# ROLLBACK guard therefore also runs on the raw joined line in findings_for_tree.
+# ROLLBACK guard runs on the discarded call's own SQL text instead
+# (is_rollback_cleanup: a ROLLBACK word as a data arg to a non-SQL helper
+# is not compensation, so the gate still fires there).
 # Drops write/link
 # failures with no log and no retry (kill-loot link lesson, PR #202).
 # Emits, fs ops, and test cleanup are deliberately out of scope.
@@ -402,6 +408,23 @@ def sql_text_of(stmt: str) -> str:
     return "\n".join(parts)
 
 
+_ROLLBACK_SQL_RE = re.compile(r"\bROLLBACK\b")
+_EXEC_METHOD_RE = re.compile(
+    r"\.\s*(?:execute|execute_batch|query_row|query_map|query|transaction|prepare|commit)\b"
+)
+
+
+def is_rollback_cleanup(joined: str) -> bool:
+    """Same-statement ROLLBACK compensation: the discarded call is itself an
+    execute-family call whose SQL text says ROLLBACK (the sanctioned
+    `let _ = conn.execute_batch("ROLLBACK")` in an already-failing path).
+    A ROLLBACK word as a data arg to a non-SQL helper (`stash_backup(tx,
+    "ROLLBACK")`) is not compensation — the gate fires there."""
+    if _ROLLBACK_SQL_RE.search(sql_text_of(joined)) is None:
+        return False
+    return _EXEC_METHOD_RE.search(discard_match_text(joined)) is not None
+
+
 def has_blob_overwrite(fn_text: str) -> bool:
     """An UPDATE statement assigning `source_details = ?N` in its SET clause
     instead of merging with `json_set` (WHERE-predicate comparisons are
@@ -494,9 +517,7 @@ def findings_for_tree(root: Path) -> list[str]:
                 else:
                     joined = first_stmt(code)
             stripped = discard_match_text(joined)
-            if re.search(r"\bROLLBACK\b", joined) is None and DB_SILENCE_RE.search(
-                stripped
-            ):
+            if not is_rollback_cleanup(joined) and DB_SILENCE_RE.search(stripped):
                 findings.append(
                     FINDING_DB_SILENCE.format(
                         path=path.relative_to(root), lineno=lineno
@@ -740,6 +761,37 @@ fn claim_receipt(
         "trailing block comment keeps ? silent",
         DB_SILENCE_RE.search(discard_match_text("let _ = stash_backup(tx)?; /* ok */"))
         is None,
+    )
+    # Block-comment braces (2026-11-23 probe: code_braces counted `}`/`{`
+    # inside /*...*/, so `/* } */` closed the fn early and truncated the
+    # body the update-ok/blob rules needed to see).
+    check(
+        "block-comment close-brace ignored",
+        code_braces("/* } */ {") == (1, 0),
+    )
+    check(
+        "block-comment open-brace ignored",
+        code_braces("let x = 1; /* { */") == (0, 0),
+    )
+    check(
+        "block-comment close does not end fn early",
+        functions([(1, "fn foo() {"), (2, "/* } */"), (3, "}")])
+        == [(1, "fn foo() {\n/* } */\n}")],
+    )
+    # String-contained ROLLBACK (2026-11-23 probe: the raw-joined guard
+    # suppressed `stash_backup(tx, "ROLLBACK")` though no compensation
+    # exists; the sanctioned `execute_batch("ROLLBACK")` cleanup stays silent).
+    check(
+        "rollback string arg is not compensation",
+        not is_rollback_cleanup('let _ = stash_backup(tx, "ROLLBACK");')
+        and DB_SILENCE_RE.search(
+            discard_match_text('let _ = stash_backup(tx, "ROLLBACK");')
+        )
+        is not None,
+    )
+    check(
+        "own-SQL rollback stays sanctioned",
+        is_rollback_cleanup('let _ = conn.execute_batch("ROLLBACK");'),
     )
     # A1 mutant-killing (pre-fix FAIL 2026-11-23 probe: single-level unwrap
     # kept tx at the top arg level only — `f(g(tx))`, `f(g(h(tx)))` both
