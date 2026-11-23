@@ -148,7 +148,7 @@ Frozen-review + CodeRabbit rounds on the `todo-burndown` series (22 commits, ~ha
 | `vite.config.ts` | Two HTML inputs (`index.html`, `dev-panel.html`), port 1420 strict |
 | `.github/workflows/release.yml` | Tag-only release pipeline: version from the tag → test gate → tauri-action direct-mode signed Windows/macOS(aarch64)/Linux builds → channel job attaches `latest.json` + refreshes `updater-latest` (`workflow_dispatch` with `publish=false` = dry run, no release); calls `flatpak.yml` to attach `glogger.flatpak` |
 | `.github/workflows/flatpak.yml` | Flatpak bundle build (gnome-50 builder container + offline cargo/npm source lists) driven from `flatpak/io.github.cprivitere.glogger.yml` |
-| `TODO.md` | Backlog: small tasks and notes that don't belong in a dedicated plan |
+| `TODO.md` | Open backlog only, not a merge log: shipped items close as `[x] FIXED + PR ref` on their entry; no completed-slices narration lines. Official backlog tracker — all AI work follow-ups go here, not as GitHub issues (issues are for user/non-contributor reports) |
 | `scripts/release.py` | Release tag cutter: suggests tag via `next-version.py`, triage pass in `$EDITOR` (`.txt` temp — use a raw-text editor: `code --wait`, Notepad++ (`notepad++.exe -multiInst -nosession`, close that window after saving); not formatted-markdown Notepad), `release-notes/<tag>.md` commit, annotated tag push. `--dry-run` previews triage read-only (skips clean-tree + sync gates); `--yes` approves drafts as-is. Direct `main` push blocked by branch protection falls back to `release/<tag>-notes` branch + PR — merge, then re-run to tag. |
 
 ## Testing & QA
@@ -230,7 +230,7 @@ Not installed, add only if wanted: stylelint (CSS), eslint-plugin-jsonc (JSON va
 
 ### Issue tracker
 
-Issues live in GitHub Issues for Glogger-Team/glogger. See `docs/agents/issue-tracker.md`.
+Issues live in GitHub Issues for Glogger-Team/glogger — user and non-contributor reports only; AI work follow-ups and backlog go in TODO.md. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

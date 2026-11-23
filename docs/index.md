@@ -2,7 +2,7 @@
 
 ## [TODO.md](../TODO.md)
 
-Backlog: small tasks and notes that don't belong in a dedicated plan.
+Open backlog only, not a merge log — the official backlog tracker for all AI work follow-ups (GitHub issues are for user and non-contributor reports).
 
 ## [flatpak-build.md](flatpak-build.md)
 
