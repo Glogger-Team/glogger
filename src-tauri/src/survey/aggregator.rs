@@ -448,7 +448,15 @@ impl SurveySessionAggregator {
         // A survey map entering inventory is a craft, never survey loot.
         // Exclusion when (lookup says map) OR (game data unavailable AND
         // the display name carries the verified "survey" signal).
-        let data_available = self.game_data.try_read().is_ok_and(|gd| !gd.items.is_empty());
+        let data_available = match self.game_data.try_read() {
+            Ok(gd) => !gd.items.is_empty(),
+            Err(e) => {
+                eprintln!(
+                    "[survey-aggregator] game-data lock failed, treating as unavailable for {character}@{server}: {e}"
+                );
+                false
+            }
+        };
         let lookup_map = internal_name
             .and_then(|i| self.lookup_survey_kind(i))
             .is_some();
@@ -458,7 +466,12 @@ impl SurveySessionAggregator {
         if lookup_map || (!data_available && display_signal) {
             return None;
         }
-        let chat_ts = parse_utc_datetime(timestamp)?;
+        let Some(chat_ts) = parse_utc_datetime(timestamp) else {
+            eprintln!(
+                "[survey-aggregator] chat timestamp parse failed, skipping attribution for {character}@{server}: {timestamp}"
+            );
+            return None;
+        };
 
         // Basic window: same-tick loot around a recent Basic consumption
         // (newest first — back-to-back speed-bonus chains resolve to the
@@ -507,33 +520,53 @@ impl SurveySessionAggregator {
         // ordinary mining gain minutes after a Basic use would land on it,
         // bypassing the 5s rule above. Other kinds have no window mechanism,
         // so the fallback is their only attribution path — preserve it.
-        // A failed session lookup skips attribution (healable via retro-claim);
+        // A failed lookup skips attribution (healable via retro-claim);
         // it must never read as "no session" anywhere near an insert — the
-        // chat path inserts nothing, so `let Ok(Some(..))` failing closed is
-        // the safe shape here.
-        if internal_name.is_some_and(|internal| self.is_survey_loot_item(internal))
-            && let Ok(Some(session_id)) = self.fetch_active_session(conn, character, server)
-            && let Ok(Some((use_id, kind, used_at))) =
-                persistence::latest_use_for_session(conn, session_id, timestamp)
-            && (kind != SurveyUseKind::Basic || {
-                parse_utc_datetime(&used_at).is_some_and(|used| {
-                    (chat_ts - used).num_seconds().abs() <= CHAT_BASIC_WINDOW_SECS
-                })
-            })
-        {
-            return self.record_chat_attribution(
-                conn,
-                ChatAttribution {
-                    character,
-                    server,
-                    use_id,
-                    quantity,
-                    timestamp,
-                    item_name: internal_name,
-                    display_name,
-                    mark_completed: false,
-                },
-            );
+        // chat path inserts nothing, so failing closed is the safe shape
+        // here. Every error collapse below logs with identity context;
+        // session-lookup errors are already logged at the source
+        // (`fetch_active_session`).
+        if internal_name.is_some_and(|internal| self.is_survey_loot_item(internal)) {
+            let Ok(Some(session_id)) = self.fetch_active_session(conn, character, server) else {
+                return None;
+            };
+            let latest = match persistence::latest_use_for_session(conn, session_id, timestamp) {
+                Ok(latest) => latest,
+                Err(e) => {
+                    eprintln!(
+                        "[survey-aggregator] latest-use lookup failed, skipping chat attribution for {character}@{server} item {}: {e}",
+                        internal_name.unwrap_or("?")
+                    );
+                    return None;
+                }
+            };
+            if let Some((use_id, kind, used_at)) = latest {
+                let in_window = kind != SurveyUseKind::Basic || match parse_utc_datetime(&used_at)
+                {
+                    Some(used) => (chat_ts - used).num_seconds().abs() <= CHAT_BASIC_WINDOW_SECS,
+                    None => {
+                        eprintln!(
+                            "[survey-aggregator] use timestamp parse failed, skipping chat attribution for {character}@{server} use {use_id}: {used_at}"
+                        );
+                        false
+                    }
+                };
+                if in_window {
+                    return self.record_chat_attribution(
+                        conn,
+                        ChatAttribution {
+                            character,
+                            server,
+                            use_id,
+                            quantity,
+                            timestamp,
+                            item_name: internal_name,
+                            display_name,
+                            mark_completed: false,
+                        },
+                    );
+                }
+            }
         }
 
         None
@@ -1025,6 +1058,81 @@ mod tests {
         .expect("insert skipped gain");
         // Retro-claim sweep: the same calls record_manual_use makes for
         // Basic uses (claim rows, then bump the use).
+        let claimed = persistence::claim_unlinked_chat_loot_near(
+            &conn,
+            use_id,
+            "Zenith",
+            "Dreva",
+            "2026-04-15 12:00:00",
+            CHAT_BASIC_WINDOW_SECS as u32,
+            false,
+        )
+        .expect("retro-claim");
+        assert_eq!(claimed, 2);
+        persistence::add_loot_qty(&conn, use_id, claimed).expect("heal bump");
+        let stored = persistence::get_use(&conn, use_id)
+            .expect("read use")
+            .expect("use present");
+        assert_eq!(stored.loot_qty, 2);
+    }
+
+    #[test]
+    fn latest_use_error_skips_attribution_and_retro_claim_heals() {
+        // Identity-fallback collapse regression: with `survey_uses`
+        // hidden, `latest_use_for_session` fails → attribution returns
+        // None and loot_qty stays 0 (fail-closed, no blind bump; the
+        // collapse point logs with identity context). Restoring the
+        // table and running the retro-claim sweep heals the same gain
+        // onto the use. A Motherlode use keeps the tier-1 Basic window
+        // out of the picture (it never queues), so `None` proves the
+        // fallback failed closed.
+        let conn = fresh_db();
+        let mut agg = seeded_aggregator();
+        let (use_id, _) = agg
+            .record_manual_use(
+                &conn,
+                ManualUse {
+                    character: "Zenith",
+                    server: "Dreva",
+                    area: None,
+                    map_internal_name: "MiningSurveySerbule1",
+                    kind: SurveyUseKind::Motherlode,
+                    now_iso: "2026-04-15 12:00:00",
+                },
+            )
+            .expect("record manual Motherlode use");
+        conn.execute(
+            "ALTER TABLE survey_uses RENAME TO survey_uses_hidden",
+            [],
+        )
+        .expect("hide uses table");
+        let hit = agg.attribute_chat_gain(
+            &conn,
+            "Zenith",
+            "Dreva",
+            Some("IronOre"),
+            2,
+            "2026-04-15 12:00:00",
+            None,
+        );
+        assert_eq!(hit, None);
+        conn.execute(
+            "ALTER TABLE survey_uses_hidden RENAME TO survey_uses",
+            [],
+        )
+        .expect("restore uses table");
+        let stored = persistence::get_use(&conn, use_id)
+            .expect("read use")
+            .expect("use present");
+        assert_eq!(stored.loot_qty, 0);
+        // The skipped gain's ledger row, still untagged.
+        conn.execute(
+            "INSERT INTO item_transactions
+                (timestamp, character_name, server_name, item_name, quantity, context, source)
+             VALUES ('2026-04-15 12:00:00', 'Zenith', 'Dreva', 'Iron Ore', 2, 'loot', 'chat_status')",
+            [],
+        )
+        .expect("insert skipped gain");
         let claimed = persistence::claim_unlinked_chat_loot_near(
             &conn,
             use_id,
