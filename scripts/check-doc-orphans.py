@@ -454,6 +454,7 @@ PAIR_RE = re.compile(r"\b([A-Z][A-Za-z0-9_]*)::([A-Z][A-Za-z0-9_]*)\b")
 def extract_identifiers(
     numbered: list[tuple[int, str]],
     cleaned_full: list[str],
+    kept_full: list[str] | None = None,
 ) -> tuple[set[str], set[str], set[str], set[str]]:
     """Candidate doc-orphan names + `Enum::Variant` pairs from removed lines.
 
@@ -502,13 +503,16 @@ def extract_identifiers(
     for line in cleaned:
         for m in PAIR_RE.finditer(line):
             pairs.add(m.group(0))
-    # String literals: kebab-case or PascalCase. Run per-line `code_only`
-    # (keep-strings) first so `//` / `/* */` comment quotes never count,
+
+    # String literals: kebab-case or PascalCase. With `kept_full` (the
+    # keep-strings view of the COMPLETE old source) literals come from the
+    # threaded line, so a removed line inside multi-line `/*...*/` yields
+    # nothing — #279 residual. Without it (legacy self-tests) fall back to
+    # per-line `code_only` so `//` / single-line `/* */` quotes never count,
     # then raw-aware `_quoted_contents` so nested-JSON raw strings
     # (`r#"{"event": "kebab"}"#`) yield their inner kebabs instead of
     # empty (B1) — same helper the live scan uses, so both sides agree.
-    for line in removed_lines:
-        kept, _, _ = code_only(line, False, None, True)
+    def _collect_from_kept(kept: str) -> None:
         for s in _quoted_contents(kept):
             if len(s) < 4:
                 continue
@@ -519,6 +523,15 @@ def extract_identifiers(
             if (is_kebab or is_pascal) and s.lower() not in STOPWORDS:
                 idents.add(s)
                 lit_names.add(s)
+
+    if kept_full is not None:
+        for n, _ in numbered:
+            if 1 <= n <= len(kept_full):
+                _collect_from_kept(kept_full[n - 1])
+    else:
+        for line in removed_lines:
+            kept, _, _ = code_only(line, False, None, True)
+            _collect_from_kept(kept)
     literals = lit_names - def_names
     return idents, pairs, literals, def_names
 
@@ -607,7 +620,10 @@ def main() -> int:
             old = old_content_for(path, "HEAD")
             numbered = parse_minus_lines(diff, old)
             cleaned_full = lex_source(old) if old is not None else []
-            names, pairs, lits, defs = extract_identifiers(numbered, cleaned_full)
+            kept_full = lex_source(old, True) if old is not None else []
+            names, pairs, lits, defs = extract_identifiers(
+                numbered, cleaned_full, kept_full
+            )
             idents |= names
             removed_pairs |= pairs
             removed_literals |= lits
@@ -629,7 +645,10 @@ def main() -> int:
             old = old_content_for(path, base)
             numbered = parse_minus_lines(diff, old)
             cleaned_full = lex_source(old) if old is not None else []
-            names, pairs, lits, defs = extract_identifiers(numbered, cleaned_full)
+            kept_full = lex_source(old, True) if old is not None else []
+            names, pairs, lits, defs = extract_identifiers(
+                numbered, cleaned_full, kept_full
+            )
             idents |= names
             removed_pairs |= pairs
             removed_literals |= lits
@@ -1043,6 +1062,39 @@ def self_test() -> int:
     check(
         "T3 live fn after comment-brace attr stays live",
         "live_after" in live_definitions(t3_src),
+    )
+    # 279 residual mutant-killing: removed line inside multi-line `/*...*/`
+    # yields a literal via the per-line fallback (pre-fix FAIL: the
+    # disconnected lex with `in_block=False` extracts `game-state-updated`
+    # from inside the comment); the threaded `kept_full` view suppresses it.
+    _ml_old = '/* heading\nemit("game-state-updated");\n*/\nreal = 1\n'
+    _ml_cleaned = lex_source(_ml_old)
+    _ml_kept = lex_source(_ml_old, True)
+    _ml_fallback_idents, _, _ml_fallback_lits, _ = extract_identifiers(
+        [(2, 'emit("game-state-updated");')], _ml_cleaned
+    )
+    check(
+        "279 fallback extracts inside multi-line comment (documents gap)",
+        "game-state-updated" in _ml_fallback_lits,
+    )
+    _ml_idents, _, _ml_lits, _ = extract_identifiers(
+        [(2, 'emit("game-state-updated");')], _ml_cleaned, _ml_kept
+    )
+    check(
+        "279 threaded kept suppresses inside multi-line comment",
+        "game-state-updated" not in _ml_lits and "game-state-updated" not in _ml_idents,
+    )
+    # 281-analogue preservation: live single-line literal still extracts via
+    # the threaded view (comment stripping must not hide real code).
+    _live_old = 'emit("game-state-updated");\n'
+    _live_idents, _, _live_lits, _ = extract_identifiers(
+        [(1, 'emit("game-state-updated");')],
+        lex_source(_live_old),
+        lex_source(_live_old, True),
+    )
+    check(
+        "281-analogue live literal still extracted via threaded kept",
+        "game-state-updated" in _live_lits and "game-state-updated" in _live_idents,
     )
     return 1 if failures else 0
 

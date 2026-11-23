@@ -11,21 +11,83 @@ _UNTERM_STR_RE = re.compile(r'"(?:\\.|[^"\\])*\\?$')
 _CHAR_RE = re.compile(
     r"'(?:[^'\\\n]|\\(?:[nrt\\0'\x22]|x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}))'"
 )
+_RAW_STR_RE = re.compile(r"(?:br|cr|r)(#+)?\"")
+
+
+def _code_only(
+    line: str, in_block: bool, raw_closer: str | None, keep_strings: bool = False
+) -> tuple[str, bool, str | None]:
+    """Blank comments (threading multi-line state) with string awareness.
+
+    Same shape as check-doc-orphans `code_only` (#293 precedent): `//`
+    starts a comment only outside strings/blocks, `/*` opens only outside
+    strings, quotes inside blocks never open strings. `keep_strings`
+    preserves double-quoted/raw spans but blanks comments (char literals
+    stay blanked so `'"'` cannot forge a quote). An unterminated `"`
+    runs to EOL (backslash-newline continuation) so braces in the tail
+    never skew depth. Lifetimes survive via `_CHAR_RE` (needs closing
+    `'`, handles `\\u{...}`).
+    """
+    out: list[str] = []
+    i, n = 0, len(line)
+    while i < n:
+        if raw_closer is not None:
+            end = line.find(raw_closer, i)
+            if end == -1:
+                if keep_strings:
+                    out.append(line[i:])
+                return "".join(out), in_block, raw_closer
+            if keep_strings:
+                out.append(line[i : end + len(raw_closer)])
+            i = end + len(raw_closer)
+            raw_closer = None
+            continue
+        if in_block:
+            end = line.find("*/", i)
+            if end == -1:
+                return "".join(out), True, None
+            i = end + 2
+            in_block = False
+            continue
+        if line.startswith("//", i):
+            break
+        if line.startswith("/*", i):
+            in_block = True
+            i += 2
+            continue
+        m = _STR_RE.match(line, i)
+        if m:
+            if keep_strings:
+                out.append(line[i : m.end()])
+            i = m.end()
+            continue
+        if line[i] == '"':
+            if keep_strings:
+                out.append(line[i:])
+            return "".join(out), in_block, raw_closer
+        m = _RAW_STR_RE.match(line, i)
+        if m and (i == 0 or not (line[i - 1].isalnum() or line[i - 1] == "_")):
+            hashes = m.group(1) or ""
+            raw_closer = '"' + "#" * len(hashes)
+            if keep_strings:
+                out.append(line[i : m.end()])
+            i = m.end()
+            continue
+        m = _CHAR_RE.match(line, i)
+        if m:
+            i = m.end()
+            continue
+        out.append(line[i])
+        i += 1
+    return "".join(out), in_block, raw_closer
 
 
 def code_braces(line: str) -> tuple[int, int]:
     """(opens, closes) ignoring string/char literals, /*...*/ and // comments."""
-    no_strings = _CHAR_RE.sub("", _STR_RE.sub("", line))
-    # A `"` with no closer on this line (a backslash-newline continuation)
-    # runs to end of line: strip the tail so braces inside string content
-    # never skew the multiline depth tracked by code_lines/functions.
-    no_strings = _UNTERM_STR_RE.sub("", no_strings)
-    # Single-line block comments next (strings-first mirrors
-    # discard_match_text, so `/*` inside a literal never opens a comment),
-    # then the // tail: `/* // */` is one comment, not a line comment.
-    no_strings = _BLOCK_COMMENT_RE.sub("", no_strings)
-    code = no_strings.split("//", 1)[0]
-    return code.count("{"), code.count("}")
+    # Single-line view (callers thread `in_block`/`raw_closer` across lines
+    # via `_code_only` for multi-line `/*...*/`/raw spans — #279).
+    blanked, _, _ = _code_only(line, False, None, False)
+    return blanked.count("{"), blanked.count("}")
 
 
 FILTER_MAP_RE = re.compile(
@@ -200,8 +262,11 @@ def code_lines(path: Path) -> list[tuple[int, str]]:
     out: list[tuple[int, str]] = []
     skip_depth = 0
     prev_sig = ""
+    in_block = False
+    raw_closer: str | None = None
     for i, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        opens, closes = code_braces(raw)
+        blanked, in_block, raw_closer = _code_only(raw, in_block, raw_closer, False)
+        opens, closes = blanked.count("{"), blanked.count("}")
         if skip_depth:
             skip_depth = max(0, skip_depth + opens - closes)
             continue
@@ -400,8 +465,18 @@ def sql_text_of(stmt: str) -> str:
     with Rust backslash-newline continuations removed per language semantics.
     Keyword/column matching runs on this, never on Rust code — `SET`/`WHERE`
     live at SQL depth 0 here while the literals sat inside `execute(` parens."""
+    # Strip `//`/`/*...*/` first (string-aware, multi-line state threaded)
+    # so commented-out SQL never yields literals — #281. `//` inside a
+    # string (`"http://x"`) stays intact.
+    kept: list[str] = []
+    in_block = False
+    raw_closer: str | None = None
+    for line in stmt.splitlines() or [stmt]:
+        code, in_block, raw_closer = _code_only(line, in_block, raw_closer, True)
+        kept.append(code)
+    cleaned = "\n".join(kept)
     parts: list[str] = []
-    for m in SQL_STR_RE.finditer(stmt):
+    for m in SQL_STR_RE.finditer(cleaned):
         content = m.group(1)
         content = re.sub(r"\\\r?\n[ \t]*", "", content)
         parts.append(content)
@@ -453,15 +528,18 @@ def functions(cl: list[tuple[int, str]]) -> list[tuple[int, str]]:
     start = 0
     base = 0
     opened = False
+    in_block = False
+    raw_closer: str | None = None
     for lineno, line in cl:
-        opens, closes = code_braces(line)
-        if cur is None and FN_RE.match(line):
+        blanked, in_block, raw_closer = _code_only(line, in_block, raw_closer, False)
+        opens, closes = blanked.count("{"), blanked.count("}")
+        if cur is None and FN_RE.match(blanked):
             cur = []
             start = lineno
             base = depth
             opened = False
         if cur is not None:
-            cur.append(line.split("//")[0])
+            cur.append(line)
         depth += opens - closes
         if depth > base:
             opened = True
@@ -489,11 +567,21 @@ def findings_for_tree(root: Path) -> list[str]:
     src = root / "src-tauri" / "src"
     for path in sorted(src.rglob("*.rs")):
         cl = code_lines(path)
+        # Comment-stripped view (strings preserved) threaded in file order
+        # so `//` inside `"http://x"` stays and `/*...*/` multi-lines stay
+        # hidden — #279/#281. `discard_match_text`/`sql_text_of` strip the
+        # rest; paren joining stays naive (pre-existing).
+        kept_lines: list[str] = []
+        _ib = False
+        _rc: str | None = None
+        for _, _ln in cl:
+            _kc, _ib, _rc = _code_only(_ln, _ib, _rc, True)
+            kept_lines.append(_kc)
         i = 0
         n = len(cl)
         while i < n:
             lineno, line = cl[i]
-            code = line.split("//")[0]
+            code = kept_lines[i]
             joined = code
             consumed = 1
             if "let _" in code and "=" in code:
@@ -506,8 +594,8 @@ def findings_for_tree(root: Path) -> list[str]:
                 if opens > 0:
                     cur = code
                     while opens > 0 and consumed < 5 and i + consumed < n:
-                        _nlineno, nline = cl[i + consumed]
-                        ncode = nline.split("//")[0]
+                        _nlineno, _nline = cl[i + consumed]
+                        ncode = kept_lines[i + consumed]
                         cur = cur + " " + ncode
                         opens += ncode.count("(") - ncode.count(")")
                         consumed += 1
@@ -841,6 +929,70 @@ fn claim_receipt(
     _many_dt = _time.monotonic() - _t2
     check("A3 mutant-killing: many-closure semis stay grouped", len(_many_split) == 3)
     check("A3 mutant-killing: many-closure split returns instantly", _many_dt < 1.0)
+    # 279 mutant-killing (pre-fix FAIL 2026-11-24 probe: per-line `code_braces`
+    # counted braces inside multi-line `/*...*/`, so `}` in the comment
+    # closed the fn early and `{` swallowed the next fn — live UPDATE after
+    # the comment invisible pre-fix).
+    _ml_close = [
+        (1, "fn foo() {"),
+        (2, "/* start"),
+        (3, "} still in comment"),
+        (4, "*/"),
+        (
+            5,
+            '    tx.execute("UPDATE t SET source_details = ?1 WHERE x=1", []).unwrap();',
+        ),
+        (6, "}"),
+    ]
+    _ml_fns = functions(_ml_close)
+    check(
+        "279 mutant-killing: close in multi-line comment does not end fn",
+        len(_ml_fns) == 1 and has_blob_overwrite(_ml_fns[0][1]),
+    )
+    _ml_open = [
+        (1, "fn foo() {"),
+        (2, "/* start"),
+        (3, " { still comment"),
+        (4, "*/"),
+        (5, "}"),
+        (6, "fn bar() {"),
+        (
+            7,
+            '    tx.execute("UPDATE t SET source_details = ?1 WHERE x=1", []).unwrap();',
+        ),
+        (8, "}"),
+    ]
+    _ml_fns2 = functions(_ml_open)
+    check(
+        "279 mutant-killing: open in multi-line comment does not swallow next fn",
+        len(_ml_fns2) == 2 and has_blob_overwrite(_ml_fns2[1][1]),
+    )
+    check(
+        "279 http preserved: // inside string is not a comment",
+        functions([(1, "fn foo() {"), (2, '    let u = "http://x";'), (3, "}")])
+        == [(1, 'fn foo() {\n    let u = "http://x";\n}')],
+    )
+    # 281 mutant-killing (pre-fix FAIL 2026-11-24 probe: `sql_text_of`
+    # extracted literals from commented-out SQL, so a commented
+    # `source_details = ?1` tripped `has_blob_overwrite`).
+    check(
+        "281 mutant-killing: block-commented SQL silent",
+        not has_blob_overwrite(
+            'fn foo() {\n/* tx.execute("UPDATE t SET source_details = ?1 WHERE x=1", []) */\n}'
+        ),
+    )
+    check(
+        "281 mutant-killing: line-commented SQL silent",
+        not has_blob_overwrite(
+            'fn foo() {\n// tx.execute("UPDATE t SET source_details = ?1 WHERE x=1", [])\n}'
+        ),
+    )
+    check(
+        "281 preservation: live SQL still fires",
+        has_blob_overwrite(
+            'fn foo() {\n tx.execute("UPDATE t SET source_details = ?1 WHERE x=1", []).unwrap();\n}'
+        ),
+    )
 
     for literal in [
         '"C:/Users/TestUser/AppData/Reports/x.json"',
