@@ -7,7 +7,7 @@ from pathlib import Path
 
 _STR_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/")
-_UNTERM_STR_RE = re.compile(r'"(?:[^"\\]|\\.?)*$')
+_UNTERM_STR_RE = re.compile(r'"(?:\\.|[^"\\])*\\?$')
 _CHAR_RE = re.compile(
     r"'(?:[^'\\\n]|\\(?:[nrt\\0'\x22]|x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}))'"
 )
@@ -679,6 +679,22 @@ fn claim_receipt(
         "unbalanced brace in continuation stays hidden",
         code_braces('        let sql = "SELECT { \\') == (0, 0),
     )
+    check(
+        "trailing-backslash tail stripped",
+        code_braces('    let s = "tail { brace \\') == (0, 0),
+    )
+    check(
+        "escaped-quote span preserved to end of line",
+        code_braces('    let s = "a \\" { b') == (0, 0),
+    )
+    import time as _time
+
+    _evil = '"' + "\\" * 30 + "{"
+    _t0 = _time.monotonic()
+    _evil_res = code_braces(_evil)
+    _evil_dt = _time.monotonic() - _t0
+    check("pathological quote-backslash returns instantly", _evil_dt < 1.0)
+    check("pathological tail still stripped", _evil_res == (0, 0))
     check(
         "unicode escape char ignored",
         code_braces("let c = '\\u{1F600}'; {") == (1, 0),
