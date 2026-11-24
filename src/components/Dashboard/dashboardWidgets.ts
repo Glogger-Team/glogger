@@ -11,6 +11,7 @@ import CouncilsWidget from "./widgets/CouncilsWidget.vue";
 import CriticalResourcesWidget from "./widgets/CriticalResourcesWidget.vue";
 import WatchwordDetectionsWidget from "./widgets/WatchwordDetectionsWidget.vue";
 import DeathTrackerWidget from "./widgets/DeathTrackerWidget.vue";
+import BossKillTimersWidget from "./widgets/BossKillTimersWidget.vue";
 import RecipeItemsWidget from "./widgets/RecipeItemsWidget.vue";
 import ZoneNpcsWidget from "./widgets/ZoneNpcsWidget.vue";
 import GiftWatcherWidget from "./widgets/GiftWatcherWidget.vue";
@@ -207,6 +208,12 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     id: "arena",
     name: "Arena",
     component: ArenaWidget,
+    defaultSize: "medium",
+  },
+  {
+    id: "boss-kill-timers",
+    name: "Boss Kill Timers",
+    component: BossKillTimersWidget,
     defaultSize: "medium",
   },
 ];

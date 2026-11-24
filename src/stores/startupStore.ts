@@ -11,7 +11,9 @@ import { useCoordinatorStore } from "./coordinatorStore";
 import { useMarketStore } from "./marketStore";
 import { useStallTrackerStore } from "./stallTrackerStore";
 import { useDeathStore } from "./deathStore";
+import type { EnemyKilledPayload } from "./combatStore";
 import { useCombatStore } from "./combatStore";
+import { useFarmingStore } from "./farmingStore";
 import { useResuscitateStore } from "./resuscitateStore";
 import { useWatchwordAlertStore } from "./watchwordAlertStore";
 import type { WatchRuleTriggered } from "../types/database";
@@ -230,6 +232,7 @@ export const useStartupStore = defineStore("startup", () => {
     const stallTrackerStore = useStallTrackerStore();
     const deathStore = useDeathStore();
     const combatStore = useCombatStore();
+    const farmingStore = useFarmingStore();
     const resuscitateStore = useResuscitateStore();
     const watchwordAlertStore = useWatchwordAlertStore();
 
@@ -279,7 +282,9 @@ export const useStartupStore = defineStore("startup", () => {
       });
       await listen("enemy-killed", (event) => {
         if (!gameState.startupComplete) return;
-        combatStore.handleEnemyKilled(event.payload as never);
+        const payload = event.payload as EnemyKilledPayload;
+        combatStore.handleEnemyKilled(payload);
+        farmingStore.handleEnemyKilled(payload);
       });
       await listen<ChatStatusEvent | ReplayChatStatusEnvelope>("chat-status-event", (event) => {
         // Replay preview re-emits on the live channel tagged `is_replay` — never

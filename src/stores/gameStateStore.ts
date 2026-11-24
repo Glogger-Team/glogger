@@ -5,6 +5,7 @@ import { listen } from '@tauri-apps/api/event'
 import { useSettingsStore } from './settingsStore'
 import { useCharacterStore } from './characterStore'
 import { useCombatStore } from './combatStore'
+import { useFarmingStore } from './farmingStore'
 import { useDeathStore } from './deathStore'
 import {
   skillTotalLevel,
@@ -1357,9 +1358,11 @@ export const useGameStateStore = defineStore('gameState', () => {
   function clearSessionForCharacter() {
     const combatStore = useCombatStore()
     const deathStore = useDeathStore()
+    const farmingStore = useFarmingStore()
     resetSessionSkills()
     clearLiveInventory()
     combatStore.resetForCharacter()
+    farmingStore.resetForCharacter()
     deathStore.deathsGeneration++
     deathStore.deaths = []
     deathStore.loaded = false
