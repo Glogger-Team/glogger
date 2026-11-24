@@ -17,4 +17,4 @@ Brief description of what this PR does and why.
 
 Any additional context for reviewers.
 
-<!-- CodeRabbit D-gate: bot is silent by default (enabled:false, no auto-incremental, drafts skipped) — ordinary pushes never trigger it. D entry = `@coderabbitai full review` alone on its line (first D / reset); re-checks = `@coderabbitai review`. Stage C follows the pinned upstream code-review URL and stage D fixes follow `skill://autofix`; see AGENTS.md stage order. -->
+<!-- Review stages: Red-team pre-push (written break-it brief, major bar), Closeout post-push final pass (written closeout brief, verifies every fix holds). No bot commands; fixes land as receipt-first batches with B-delta re-checks; see AGENTS.md stage order. -->
