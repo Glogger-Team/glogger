@@ -513,10 +513,7 @@ fn dispatch_status_event(
                 // JSON-first order the JSON twin already staged it, and the
                 // English twin's guard skips the insert — staging again would
                 // double-count downstream (previously masked only by the
-                // survey `already_counted` guard). The stack correction
-                // reports separately below: it is idempotent (only
-                // `stack_size = 1` placeholder rows match), so a replay still
-                // repairs a correction whose writer checkout failed.
+                // survey `already_counted` guard).
                 let survey_use_id = if context == "loot" {
                     match survey_hook {
                         Some(hook) => hook(internal_name.as_deref(), *quantity, timestamp),
@@ -2613,7 +2610,7 @@ mod tests {
         let out1 = dispatch(&pool, &gd, Some(&id()), &english, ts, &mut st);
         let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out2 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
-        // Exactly one staging across the pair: no double stack correction.
+        // Exactly one staging across the pair: no double attribution.
         assert_eq!(out1.staged_gains.len(), 1);
         assert!(out2.staged_gains.is_empty());
         let rows = item_rows(&pool);
