@@ -572,6 +572,104 @@ impl SurveySessionAggregator {
         None
     }
 
+    /// Attribute a live chat loot gain AND tag its ledger row in one write
+    /// transaction: the qty bump plus the `source_details` tag commit
+    /// together. If the tag fails, the bump rolls back with it, leaving the
+    /// row untagged with no qty behind it (a later pass heals cleanly) —
+    /// never a bumped qty on an untagged row that a later claim would
+    /// double-count. Same unchecked-transaction shape as the dispatch arms
+    /// and the retro-claim tail: fresh pool checkout, no outer transaction
+    /// open here.
+    ///
+    /// Returns `Ok(None)` when the gain is not survey loot (nothing to
+    /// retry — the caller moves on), `Ok(Some(use_id))` when the row is
+    /// tagged exactly once, and `Err` when the unit rolled back. `Err` is
+    /// retry-safe: the rollback removed the bump, so re-running this whole
+    /// method re-bumps exactly once and a later pass never double-counts.
+    /// The caller stages the inputs on `Err` for a bounded retry at batch
+    /// end (TODO 53).
+#[allow(clippy::too_many_arguments)]
+    pub fn attribute_and_tag_chat_gain(
+        &mut self,
+        conn: &Connection,
+        character: &str,
+        server: &str,
+        internal_name: Option<&str>,
+        quantity: u32,
+        timestamp: &str,
+        display_name: Option<&str>,
+    ) -> Result<Option<i64>, String> {
+        let tx = rusqlite::Transaction::new_unchecked(
+            conn,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .map_err(|e| format!("survey attr txn begin failed: {e}"))?;
+        let use_id = match self.attribute_chat_gain(
+            &tx,
+            character,
+            server,
+            internal_name,
+            quantity,
+            timestamp,
+            display_name,
+        ) {
+            Some(use_id) => use_id,
+            // Not survey loot: no writes happened, so dropping the untouched
+            // transaction is a no-op (never staged, never retried).
+            None => return Ok(None),
+        };
+        // Merge into source_details (never overwrite):
+        // JSON receipts carry a `json_twin` provenance
+        // marker that the twin-claim guard relies on —
+        // replacing the blob would drop the marker and
+        // re-open the unsourced-first duplicate hole.
+        let tag_rows = tx
+            .execute(
+                "UPDATE item_transactions
+                                        SET source_kind = 'survey_chat',
+                                            source_details = json_set(
+                                                COALESCE(source_details, '{}'),
+                                                '$.survey_use_id', ?1)
+                                      WHERE rowid = (
+                                        SELECT rowid FROM item_transactions
+                                         WHERE timestamp = ?2
+                                           AND character_name = ?3
+                                           AND server_name = ?4
+                                           AND source = 'chat_status'
+                                           AND source_kind IS NULL
+                                           -- staged survey gains are loot only
+                                           -- (summoned rows share source='chat_status'
+                                           -- / source_kind NULL); exclude them.
+                                           AND context = 'loot'
+                                           AND item_name = ?5
+                                           AND quantity = ?6
+                                         ORDER BY rowid DESC LIMIT 1
+                                      )",
+                rusqlite::params![
+                    use_id,
+                    timestamp,
+                    character,
+                    server,
+                    display_name,
+                    quantity as i64,
+                ],
+            )
+            .map_err(|e| format!("survey row tag failed: {e}"))?;
+        // The tag must land on exactly one untagged
+        // ledger row: zero means the row vanished (or
+        // never matched) between checkouts — commit
+        // would bump a use with no provenance, so roll
+        // back and let a later pass reclaim the gain.
+        if tag_rows != 1 {
+            return Err(format!(
+                "survey row tag matched {tag_rows} rows, rolled back"
+            ));
+        }
+        tx.commit()
+            .map_err(|e| format!("survey attr txn commit failed: {e}"))?;
+        Ok(Some(use_id))
+    }
+
     /// Is this item identifiable as survey yield by its CDN identity alone?
     /// - `Ore` keyword: metal-survey loot (Copper/Silver/Gold Ore, Rhodium,
     ///   Stibnite, Paladium, Iridium, Pyrite, Cinnabar, Tungsten,
@@ -1547,4 +1645,160 @@ mod tests {
             .unwrap();
         assert_eq!(tag, None);
     }
+
+    #[test]
+    fn survey_tag_failure_rolls_back_and_retry_heals_both_twin_orders() {
+        // TODO 53: the tag UPDATE is DB-error-only, so force it with a
+        // failing UPDATE trigger. The first attempt must roll the whole
+        // unit back (loot_qty untouched, row untagged); dropping the
+        // trigger and re-running the unit — what the coordinator's
+        // batch-end retry does — heals exactly once. Both twin orders: a
+        // JSON-first row carries the `json_twin` marker the merge must
+        // preserve, an English-first row starts from NULL details.
+        for json_first in [false, true] {
+            let conn = fresh_db();
+            let mut agg = empty_aggregator();
+            let use_id = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+            conn.execute(
+                "INSERT INTO item_transactions
+                    (timestamp, character_name, server_name, item_name, quantity,
+                     context, source, source_details)
+                 VALUES ('2026-04-15 12:00:00', 'Zenith', 'Dreva', 'Iron Ore', 2,
+                         'loot', 'chat_status', ?1)",
+                rusqlite::params![json_first.then_some("{\"json_twin\":true}")],
+            )
+            .expect("insert engrafted gain");
+            conn.execute(
+                "CREATE TEMP TRIGGER fail_tag BEFORE UPDATE OF source_kind
+                 ON item_transactions
+                 BEGIN SELECT RAISE(ABORT, 'injected tag failure'); END",
+                [],
+            )
+            .expect("install failing tag trigger");
+            let err = agg
+                .attribute_and_tag_chat_gain(
+                    &conn,
+                    "Zenith",
+                    "Dreva",
+                    Some("IronOre"),
+                    2,
+                    "2026-04-15 12:00:00",
+                    Some("Iron Ore"),
+                )
+                .expect_err("tag UPDATE failure must roll back");
+            assert!(
+                err.contains("survey row tag failed"),
+                "unexpected error (json_first={json_first}): {err}"
+            );
+            let stored = persistence::get_use(&conn, use_id)
+                .expect("read use")
+                .expect("use present");
+            assert_eq!(stored.loot_qty, 0, "json_first={json_first}");
+            let tag: Option<String> = conn
+                .query_row(
+                    "SELECT source_kind FROM item_transactions WHERE item_name = 'Iron Ore'",
+                    [],
+                    |row| row.get(0),
+                )
+                .expect("read tag");
+            assert_eq!(tag, None, "json_first={json_first}");
+            conn.execute("DROP TRIGGER fail_tag", [])
+                .expect("drop failing tag trigger");
+            // Batch-end retry: same inputs, whole unit re-runs.
+            assert_eq!(
+                agg.attribute_and_tag_chat_gain(
+                    &conn,
+                    "Zenith",
+                    "Dreva",
+                    Some("IronOre"),
+                    2,
+                    "2026-04-15 12:00:00",
+                    Some("Iron Ore"),
+                ),
+                Ok(Some(use_id)),
+                "json_first={json_first}"
+            );
+            let stored = persistence::get_use(&conn, use_id)
+                .expect("read use")
+                .expect("use present");
+            assert_eq!(stored.loot_qty, 2, "json_first={json_first}");
+            let (kind, linked, twin): (Option<String>, Option<i64>, Option<i64>) = conn
+                .query_row(
+                    "SELECT source_kind,
+                            json_extract(source_details, '$.survey_use_id'),
+                            json_extract(source_details, '$.json_twin')
+                     FROM item_transactions WHERE item_name = 'Iron Ore'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .expect("read tagged row");
+            assert_eq!(kind.as_deref(), Some("survey_chat"));
+            assert_eq!(linked, Some(use_id));
+            assert_eq!(twin, json_first.then_some(1));
+            // A later pass over the now-tagged row matches nothing and rolls
+            // its own bump back: loot_qty must not move (never double-count).
+            assert!(
+                agg.attribute_and_tag_chat_gain(
+                    &conn,
+                    "Zenith",
+                    "Dreva",
+                    Some("IronOre"),
+                    2,
+                    "2026-04-15 12:00:00",
+                    Some("Iron Ore"),
+                )
+                .is_err()
+            );
+            let stored = persistence::get_use(&conn, use_id)
+                .expect("read use")
+                .expect("use present");
+            assert_eq!(stored.loot_qty, 2, "json_first={json_first}");
+        }
+    }
+
+    #[test]
+    fn survey_tag_zero_match_rolls_back_and_retry_heals() {
+        // The tag matches no row (gain staged before its ledger row
+        // landed): committing would bump a use with no provenance, so the
+        // unit rolls back instead. The row arriving later plus a re-run —
+        // what the batch-end retry and a later rescan both do — heals
+        // exactly once.
+        let conn = fresh_db();
+        let mut agg = empty_aggregator();
+        let use_id = record_basic(&mut agg, &conn, "2026-04-15 12:00:00");
+        let err = agg
+            .attribute_and_tag_chat_gain(
+                &conn,
+                "Zenith",
+                "Dreva",
+                Some("IronOre"),
+                2,
+                "2026-04-15 12:00:00",
+                Some("Iron Ore"),
+            )
+            .expect_err("zero-match tag must roll back");
+        assert!(err.contains("matched 0 rows"), "unexpected error: {err}");
+        let stored = persistence::get_use(&conn, use_id)
+            .expect("read use")
+            .expect("use present");
+        assert_eq!(stored.loot_qty, 0);
+        insert_chat_loot(&conn, "2026-04-15 12:00:00", "Iron Ore", 2);
+        assert_eq!(
+            agg.attribute_and_tag_chat_gain(
+                &conn,
+                "Zenith",
+                "Dreva",
+                Some("IronOre"),
+                2,
+                "2026-04-15 12:00:00",
+                Some("Iron Ore"),
+            ),
+            Ok(Some(use_id))
+        );
+        let stored = persistence::get_use(&conn, use_id)
+            .expect("read use")
+            .expect("use present");
+        assert_eq!(stored.loot_qty, 2);
+    }
+
 }
