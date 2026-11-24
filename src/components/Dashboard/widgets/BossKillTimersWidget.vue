@@ -25,7 +25,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import { useFarmingStore } from "../../../stores/farmingStore";
+import { useFarmingStore, parseKillTsMs } from "../../../stores/farmingStore";
 
 const store = useFarmingStore();
 
@@ -44,19 +44,14 @@ onUnmounted(() => {
 const WIKI_MAX_LOCKOUT_SECS = 24 * 3600;
 
 function cooldownSecs(minGap: number | null): number {
-  if (minGap != null && minGap >= 60) return Math.min(minGap, WIKI_MAX_LOCKOUT_SECS);
+  if (minGap != null && minGap > 0) return Math.min(minGap, WIKI_MAX_LOCKOUT_SECS);
   return WIKI_MAX_LOCKOUT_SECS;
-}
-
-function parseTsMs(ts: string): number {
-  const ms = Date.parse(ts.replace(" ", "T") + "Z");
-  return Number.isFinite(ms) ? ms : NaN;
 }
 
 const timers = computed(() => {
   return store.bossTimers
     .map((t) => {
-      const lastMs = parseTsMs(t.lastKilledAt);
+      const lastMs = parseKillTsMs(t.lastKilledAt);
       const remainMs = Number.isFinite(lastMs)
         ? lastMs + cooldownSecs(t.minGapSecs) * 1000 - now.value
         : 0;

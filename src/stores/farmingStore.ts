@@ -22,8 +22,17 @@ function isBossLike(name: string, healthDamage: number, armorDamage: number): bo
   return false;
 }
 
-function parseTsMs(ts: string): number {
-  const ms = Date.parse(ts.replace(" ", "T") + "Z");
+/** Parse a kill timestamp to epoch ms. Backend stamps are UTC
+ * "%Y-%m-%d %H:%M:%S" (no zone suffix, fixed at the parser), so the
+ * zone-free shape gets a `Z`; an already-zoned ISO string passes through
+ * untouched so a stray zone is never double-suffixed into NaN. */
+export function parseKillTsMs(ts: string): number {
+  const trimmed = ts.trim();
+  if (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(trimmed)) {
+    const ms = Date.parse(trimmed);
+    return Number.isFinite(ms) ? ms : NaN;
+  }
+  const ms = Date.parse(trimmed.replace(" ", "T") + "Z");
   return Number.isFinite(ms) ? ms : NaN;
 }
 
@@ -35,11 +44,13 @@ export const useFarmingStore = defineStore("farming", () => {
     if (!isBossLike(payload.enemy_name, payload.health_damage, payload.armor_damage)) return;
     const name = payload.enemy_name;
     const list = bossKills.value[name] ?? [];
+    // Exact-timestamp repeats are duplicate emits of one kill, not new kills.
+    if (list.includes(payload.timestamp)) return;
     list.push(payload.timestamp);
     // keep sorted ascending by time
     list.sort((a, b) => {
-      const ma = parseTsMs(a);
-      const mb = parseTsMs(b);
+      const ma = parseKillTsMs(a);
+      const mb = parseKillTsMs(b);
       if (!Number.isFinite(ma) || !Number.isFinite(mb)) return a.localeCompare(b);
       return ma - mb;
     });
@@ -50,11 +61,13 @@ export const useFarmingStore = defineStore("farming", () => {
     if (times.length < 2) return null;
     let min: number | null = null;
     for (let i = 1; i < times.length; i++) {
-      const a = parseTsMs(times[i - 1]);
-      const b = parseTsMs(times[i]);
+      const a = parseKillTsMs(times[i - 1]);
+      const b = parseKillTsMs(times[i]);
       if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
       const gap = (b - a) / 1000;
-      if (gap < 60) continue; // skip duplicate emits
+      // Exact repeats are deduped on insert, so any positive gap is two
+      // distinct kills and counts toward the observed lockout.
+      if (gap <= 0) continue;
       if (min === null || gap < min) min = gap;
     }
     return min;
