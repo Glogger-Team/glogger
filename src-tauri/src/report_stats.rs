@@ -165,14 +165,14 @@ pub fn parse_behavior_report(content: &str) -> Vec<ParsedStat> {
     stats
 }
 
-/// Persist parsed stats to the character_report_stats table. Forward-only:
-/// an older capture replayed after a newer import is a no-op, and an
-/// identical re-import writes nothing (no stamp churn, so the caller can stay
-/// silent like every other arm). An equal capture with different content
+/// Persist parsed stats to the character_report_stats table. Forward-only
+/// per key: each row's upsert carries `WHERE updated_at <= excluded`, so an
+/// older capture moves no key backward. An identical re-import (scoped to
+/// the incoming keys) writes nothing — no stamp churn, so the caller can
+/// stay silent like every other arm. An equal capture with different content
 /// still replaces — same retry-eligibility rule as `import_garden_almanac` —
 /// so a retry of the current observation heals a failed import. Stamps are
-/// RFC3339 (the shape the wall-clock caller wrote); text comparison orders
-/// same-shape stamps chronologically.
+/// RFC3339; text comparison orders same-shape stamps chronologically.
 pub fn persist_stats(
     conn: &Connection,
     character: &str,
@@ -183,14 +183,17 @@ pub fn persist_stats(
     if stats.is_empty() {
         return Ok(0);
     }
-    // Both checks below scope to the incoming report's own keys: PlayerAge
+    // Identical-skip scopes to the incoming report's own keys: PlayerAge
     // and HelpScreen share this table (overlapping only on age.created_on),
-    // so other reports' rows must neither break identical-skip nor block
-    // this report's keys through MAX. Shared keys still defend: a newer
-    // stamp on age.created_on from either report blocks an older import
-    // carrying that key.
+    // so other reports' rows must not force a rewrite (and stamp advance).
+    // Recency below is per key, in the upsert's own WHERE clause: a newer
+    // stamp on one key (e.g. age.created_on from the other report) blocks
+    // only that key, while fresh sibling keys still land. There is no
+    // batch-level MAX gate on purpose — it would drop the whole batch for
+    // one stale shared key, silently losing fresh keys with the file
+    // already marked seen (no retry).
     let mut key_filter = String::from(" AND (");
-    for (i, _s) in stats.iter().enumerate() {
+    for i in 0..stats.len() {
         if i > 0 {
             key_filter.push_str(" OR ");
         }
@@ -226,22 +229,6 @@ pub fn persist_stats(
     current_sorted.sort();
     fresh.sort();
     if current_sorted == fresh {
-        return Ok(0);
-    }
-    // Recency: a rescan can redeliver an OLDER book after a newer import.
-    // Captures compare lexicographically (RFC3339 both sides). Equal stays
-    // eligible, so a retry of the current observation still replaces.
-    let stored_newest: Option<String> = conn
-        .query_row(
-            &format!(
-                "SELECT MAX(updated_at) FROM character_report_stats
-                 WHERE character_name = ?1 AND server_name = ?2{key_filter}"
-            ),
-            rusqlite::params_from_iter(key_params.iter()),
-            |r| r.get(0),
-        )
-        .map_err(|e| format!("Query error: {e}"))?;
-    if stored_newest.as_deref().is_some_and(|s| timestamp < s) {
         return Ok(0);
     }
     let mut stmt = conn
@@ -725,10 +712,10 @@ You have used <b>71 days</b> of VIP from a Steam subscription.
     }
 
     #[test]
-    fn persist_stats_shared_key_newer_still_blocks_older() {
-        // Conservative pin: PlayerAge and HelpScreen share age.created_on, so
-        // a newer HelpScreen stamp on that key blocks an older PlayerAge
-        // import. Scoping is per incoming key — shared keys still defend.
+    fn persist_stats_stale_shared_key_blocks_only_that_key() {
+        // Per-key forward-only: PlayerAge and HelpScreen share age.created_on,
+        // so a newer stamp on it blocks only that key — fresh sibling keys in
+        // the same older batch still land (no silent whole-batch drop).
         let conn = setup_stats();
         let n = persist_stats(
             &conn,
@@ -750,19 +737,12 @@ You have used <b>71 days</b> of VIP from a Steam subscription.
             "2026-11-18T12:00:00+00:00",
         )
         .unwrap();
-        assert_eq!(n, 0);
-        // The older import wrote nothing: deaths has no row, created_on kept
-        // the newer stamp.
-        let deaths: Option<String> = conn
-            .query_row(
-                "SELECT stat_value FROM character_report_stats
-                 WHERE character_name = 'T' AND server_name = 'Dreva'
-                   AND category = 'age' AND stat_name = 'deaths'",
-                [],
-                |row| row.get(0),
-            )
-            .ok();
-        assert_eq!(deaths, None);
+        // Stale created_on blocked, fresh deaths landed.
+        assert_eq!(n, 1);
+        assert_eq!(
+            read_stat(&conn),
+            ("800".to_string(), "2026-11-18T12:00:00+00:00".to_string())
+        );
         let created: String = conn
             .query_row(
                 "SELECT updated_at FROM character_report_stats
