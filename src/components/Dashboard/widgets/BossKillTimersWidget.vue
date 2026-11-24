@@ -33,6 +33,10 @@ const now = ref(Date.now());
 let timer: ReturnType<typeof setInterval> | undefined;
 
 onMounted(() => {
+  // Reseed persisted timers on fresh restart: `character-login` only fires
+  // on a live login line, so without this the widget stays empty until the
+  // next switch. Guarded + idempotent (CombatView precedent).
+  void store.loadBossBaseline();
   timer = setInterval(() => {
     now.value = Date.now();
   }, 1000);

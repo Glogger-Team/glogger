@@ -1,6 +1,15 @@
 import { defineStore, acceptHMRUpdate } from "pinia";
 import { ref, computed } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { useSettingsStore } from "./settingsStore";
 import type { EnemyKilledPayload } from "./combatStore";
+
+export interface BossKillRow {
+  enemy_name: string;
+  killed_at: string;
+  health_damage: number;
+  armor_damage: number;
+}
 
 // Boss/named kill loot timers. The log carries no explicit class signal, so a
 // boss/named enemy is inferred from the fields EnemyKilled already carries:
@@ -37,16 +46,14 @@ export function parseKillTsMs(ts: string): number {
 }
 
 export const useFarmingStore = defineStore("farming", () => {
-  // enemy name -> sorted kill timestamps (session only)
+  // enemy name -> sorted kill timestamps (live session plus `enemy_kills`
+  // baseline re-seed via loadBossBaseline after restart/character switch)
   const bossKills = ref<Record<string, string[]>>({});
-
-  function handleEnemyKilled(payload: EnemyKilledPayload) {
-    if (!isBossLike(payload.enemy_name, payload.health_damage, payload.armor_damage)) return;
-    const name = payload.enemy_name;
+  function insertBossKill(name: string, timestamp: string) {
     const list = bossKills.value[name] ?? [];
     // Exact-timestamp repeats are duplicate emits of one kill, not new kills.
-    if (list.includes(payload.timestamp)) return;
-    list.push(payload.timestamp);
+    if (list.includes(timestamp)) return;
+    list.push(timestamp);
     // keep sorted ascending by time
     list.sort((a, b) => {
       const ma = parseKillTsMs(a);
@@ -55,6 +62,11 @@ export const useFarmingStore = defineStore("farming", () => {
       return ma - mb;
     });
     bossKills.value = { ...bossKills.value, [name]: list };
+  }
+
+  function handleEnemyKilled(payload: EnemyKilledPayload) {
+    if (!isBossLike(payload.enemy_name, payload.health_damage, payload.armor_damage)) return;
+    insertBossKill(payload.enemy_name, payload.timestamp);
   }
 
   function minGapSecs(times: string[]): number | null {
@@ -83,8 +95,44 @@ export const useFarmingStore = defineStore("farming", () => {
     })),
   );
 
+  const bossBaselineLoaded = ref(false);
+
+  // Persisted timers: re-seed boss kill timestamps from `enemy_kills` after
+  // restart/character switch. The backend pre-filter is coarse; `isBossLike`
+  // stays the single authority here, and inserts run through the same
+  // dedup+sort path as live kills so a replayed live kill never doubles.
+  async function loadBossBaseline() {
+    if (bossBaselineLoaded.value) return;
+    const settings = useSettingsStore();
+    const characterName = settings.settings.activeCharacterName ?? null;
+    const serverName = settings.settings.activeServerName ?? null;
+    try {
+      const rows = await invoke<BossKillRow[]>("get_boss_kill_times", {
+        characterName,
+        serverName,
+      });
+      // Rapid character switches: resetForCharacter cleared the flag and a
+      // newer load is in flight (or done). Drop stale rows instead of mixing
+      // another character's kills into this view.
+      const current = useSettingsStore();
+      if (
+        current.settings.activeCharacterName !== characterName ||
+        current.settings.activeServerName !== serverName
+      )
+        return;
+      for (const row of rows) {
+        if (!isBossLike(row.enemy_name, row.health_damage, row.armor_damage)) continue;
+        insertBossKill(row.enemy_name, row.killed_at);
+      }
+      bossBaselineLoaded.value = true;
+    } catch (e) {
+      console.error("[farming] Failed to load boss baseline:", e);
+    }
+  }
+
   function reset() {
     bossKills.value = {};
+    bossBaselineLoaded.value = false;
   }
 
   function resetForCharacter() {
@@ -95,6 +143,7 @@ export const useFarmingStore = defineStore("farming", () => {
     bossKills,
     bossTimers,
     handleEnemyKilled,
+    loadBossBaseline,
     reset,
     resetForCharacter,
     isBossLike,

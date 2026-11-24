@@ -206,10 +206,10 @@ use db::inventory_commands::{
     import_inventory_report,
 };
 use db::kill_tracking_commands::{
-    delete_imported_source, export_kill_loot_database, get_corpse_extract_details,
-    get_enemy_harvest_stats, get_enemy_kill_stats, get_item_drop_sources,
-    import_kill_loot_database, list_imported_sources, search_database_enemies,
-    search_database_harvested, search_database_items,
+    delete_imported_source, export_kill_loot_database, get_boss_kill_times,
+    get_corpse_extract_details, get_enemy_harvest_stats, get_enemy_kill_stats,
+    get_item_drop_sources, import_kill_loot_database, list_imported_sources,
+    search_database_enemies, search_database_harvested, search_database_items,
 };
 use db::market_commands::{
     bulk_delete_market_values, bulk_update_market_values, delete_market_value,
@@ -945,6 +945,7 @@ pub fn run() {
             update_farming_session,
             delete_farming_session,
             // Kill tracking / drop-rate database
+            get_boss_kill_times,
             get_enemy_kill_stats,
             get_item_drop_sources,
             search_database_enemies,
