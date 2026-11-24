@@ -79,7 +79,7 @@ Structured events parsed from `[Status]` channel messages. The parser is **state
 
 **Source:** Chat Status channel via `chat_status_parser.rs` — collected, not emitted.
 
-`ReportSaved` chat lines (`Saved report to <path>`) land in `DispatchOutcome.report_saved_paths`. The coordinator's live drain auto-imports them (`import_report_saved`); scan/replay paths skip them by design. No Tauri `"report-saved"` event is emitted (backend-wide grep: zero emitters), so the frontend picks up new reports through the `reportWatchInterval` poll in `characterStore` (`pollForNewReports`), refreshed via `game-state-updated` domains.
+`ReportSaved` chat lines (`Saved report to <path>`) land in `DispatchOutcome.report_saved_paths`. The coordinator's live drain auto-imports them (`import_report_saved`); scan/replay paths skip them by design. No Tauri `"report-saved"` event is emitted (backend-wide grep: zero emitters), so new reports surface through the `reportWatchInterval` poll in `characterStore` (`pollForNewReports`) — which only runs when `autoWatchReports` is enabled and no-ops without an active character. The poll imports via `import_latest_report_for_character` / `import_latest_inventory_for_character` and refreshes store state directly; `game-state-updated` domain notifications are the separate live path (the coordinator's auto-import emits them), not what drives the poll.
 
 ### Stream: `"game-state-updated"`
 
