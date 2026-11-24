@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
-use crate::cdn_commands::GameDataState;
 use crate::chat_parser::{
     is_timestamped_line, parse_chat_line, parse_chat_login_line, ChatMessage,
 };
@@ -145,7 +144,6 @@ fn run_replay<R: Runtime>(
     chat_log_path: PathBuf,
     app: &AppHandle<R>,
     _db: &DbPool,
-    game_data: GameDataState,
 ) -> Result<ReplayResult, String> {
     // --- Phase 1: Pre-scan chat log for timezone offset ---
     app.emit(
@@ -228,7 +226,7 @@ fn run_replay<R: Runtime>(
         }
 
     // --- Phase 4: Process through coordinator pipeline ---
-    let mut game_state = GameStateManager::new(game_data.clone());
+    let mut game_state = GameStateManager::new();
 
     let mut result = ReplayResult {
         chat_messages_processed: 0,
@@ -341,10 +339,9 @@ pub async fn replay_chat_log(
     }
 
     let db = app.state::<DbPool>().inner().clone();
-    let game_data = app.state::<GameDataState>().inner().clone();
 
     // Run on a blocking thread since file I/O is synchronous
-    let result = tokio::task::spawn_blocking(move || run_replay(chat_path, &app, &db, game_data))
+    let result = tokio::task::spawn_blocking(move || run_replay(chat_path, &app, &db))
     .await
     .map_err(|e| format!("Replay task failed: {}", e))??;
 
@@ -641,9 +638,6 @@ mod tests {
         DbPool::from_pools(reads, writes)
     }
 
-    fn empty_game_data() -> GameDataState {
-        Arc::new(tokio::sync::RwLock::new(crate::game_data::GameData::empty()))
-    }
 
     /// Chat.log exercising the preview's login arm: one login line (timezone
     /// + server identity) plus a status line and a plain chat line.
@@ -684,7 +678,6 @@ mod tests {
         );
 
         let db = pool();
-        let game_data = empty_game_data();
         let app = tauri::test::mock_app();
         let logins_seen = Arc::new(AtomicUsize::new(0));
         let servers_seen = Arc::new(AtomicUsize::new(0));
@@ -703,7 +696,7 @@ mod tests {
             }
         });
 
-        let result = run_replay(path, app.handle(), &db, game_data).expect("replay");
+        let result = run_replay(path, app.handle(), &db).expect("replay");
         assert_eq!(result.chat_messages_processed, 2);
         assert_eq!(result.chat_status_events_emitted, 1);
         assert_eq!(
@@ -763,7 +756,6 @@ mod tests {
     fn replay_chat_status_events_are_tagged_so_live_feed_skips() {
         let path = tagged_fixture_log();
         let db = pool();
-        let game_data = empty_game_data();
         let app = tauri::test::mock_app();
 
         let seen: Arc<std::sync::Mutex<Vec<String>>> =
@@ -779,7 +771,7 @@ mod tests {
             }
         });
 
-        let result = run_replay(path, app.handle(), &db, game_data).expect("replay");
+        let result = run_replay(path, app.handle(), &db).expect("replay");
         assert_eq!(result.chat_messages_processed, 3);
         assert_eq!(result.chat_status_events_emitted, 2);
 

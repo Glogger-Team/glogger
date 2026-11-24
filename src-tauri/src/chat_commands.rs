@@ -571,46 +571,6 @@ fn run_scan_dispatch(
                 domains.push(d);
             }
         }
-        // Session-keyed stack correction (see `DispatchOutcome::stack_corrections`
-        // docs): the Player.log drain wrote fallback `stack_size = 1` rows,
-        // and the chat line carries the real quantity. Correct inline per
-        // line, keyed by the line's own session identity — never the
-        // drain-final identity. Idempotent: only `stack_size = 1` rows match.
-        // The correction channel fires for every recorded gain — new or
-        // replayed — so a replay repairs a correction whose writer checkout
-        // failed, without restaging attribution (exactly-once `staged_gains`
-        // stays with the live coordinator).
-        for (item_name, quantity) in std::mem::take(&mut outcome.stack_corrections) {
-            if let Some(id) = identity.as_ref()
-                && quantity > 1 {
-                    // Resolve the internal name like the manager path does:
-                    // inventory rows store the Player.log internal token,
-                    // which often differs from the chat display name
-                    // (e.g. "BottleOfMilk" vs "Bottle of Milk").
-                    let internal_name: Option<String> = game_data
-                        .try_read()
-                        .ok()
-                        .and_then(|gd| {
-                            gd.resolve_item(&item_name)
-                                .and_then(|info| info.internal_name.clone())
-                        });
-                    if let Ok(conn) = db_pool.get_write() {
-                        let changed = crate::game_state::correct_stack_in_table_for(
-                            &conn,
-                            &id.character,
-                            &id.server,
-                            &item_name,
-                            internal_name.as_deref(),
-                            quantity,
-                        );
-                        for d in changed {
-                            if !domains.iter().any(|x| *x == d) {
-                                domains.push(d.to_string());
-                            }
-                        }
-                    }
-                }
-        }
         // Forward the fresh structured events the dispatch kept (same names
         // as the live drain) so a scan refreshes open widgets identically
         // (death/rez feeds, chat-status listeners, watch toasts). Replayed

@@ -150,13 +150,6 @@ pub struct DispatchOutcome {
     /// live coordinator's survey attribution and catch-up staging never
     /// double-count twins or replays.
     pub staged_gains: Vec<(String, u32)>,
-    /// Idempotent stack-correction reports (display name, quantity). Unlike
-    /// `staged_gains`, this fires for every gain whose ledger row exists —
-    /// newly written or already present — so a replay repairs a correction
-    /// whose writer checkout failed, without restaging attribution. The
-    /// correction itself only matches `stack_size = 1` placeholder rows, so
-    /// repeats are no-ops and converge exactly once.
-    pub stack_corrections: Vec<(String, u32)>,
 }
 
 impl DispatchOutcome {
@@ -304,13 +297,11 @@ pub struct ItemLedgerCtx<'a> {
 ///   `SurveySessionAggregator::attribute_chat_gain`. Currently always `None`
 ///   in production: both the live drain and scan paths pass `None` (rows
 ///   stay untagged for `claim_unlinked_chat_loot_near` — see module docs),
-///   (same timestamps the dispatch just wrote). Stack correction and the
-///   player-watcher correlation feed stay caller-side: live/catch-up need
-///   coordinator state the scan path cannot (and must not) touch, so new
-///   gains are reported in [`DispatchOutcome::staged_gains`] (exactly-once
-///   attribution) and every recorded gain — new or replayed — in
-///   [`DispatchOutcome::stack_corrections`] for the caller to apply
-///   session-keyed.
+///   (same timestamps the dispatch just wrote). The player-watcher
+///   correlation feed stays caller-side: live/catch-up need coordinator
+///   state the scan path cannot (and must not) touch, so new gains are
+///   reported in [`DispatchOutcome::staged_gains`] (exactly-once attribution).
+///   Inventory quantities come from snapshot imports, not from chat lines.
 pub fn dispatch_chat_message(
     ctx: DispatchCtx<'_>,
     survey_hook: SurveyHook<'_>,
@@ -557,28 +548,12 @@ fn dispatch_status_event(
                     },
                 ) {
                     out.staged_gains.push((item_name.clone(), *quantity));
-                    if *quantity > 1 {
-                        out.stack_corrections.push((item_name.clone(), *quantity));
-                    }
                     true
                 } else {
-                    // Replay (or twin-second): the ledger row already exists —
-                    // repair the correction without restaging attribution. A
-                    // missing row (retention skip, failed insert write) stages
-                    // nothing: the next rescan retries the insert first.
-                    if *quantity > 1
-                        && ledger_gain_present(
-                            ctx.db,
-                            timestamp,
-                            &id.character,
-                            &id.server,
-                            item_name,
-                            *quantity,
-                            context,
-                        )
-                    {
-                        out.stack_corrections.push((item_name.clone(), *quantity));
-                    }
+                    // Replay (or twin-second): the ledger row already exists,
+                    // so nothing stages. A missing row (retention skip, failed
+                    // insert write) stages nothing either: the next rescan
+                    // retries the insert first.
                     false
                 }
             } else {
@@ -841,59 +816,6 @@ fn insert_item_transaction_guarded(db: &DbPool, item: ItemLedgerCtx<'_>) -> bool
     .is_ok()
 }
 
-/// True when a chat-sourced ledger row for this English gain already exists
-/// (replay or twin-second). Same natural key as the insert guard's replay
-/// check. Fail-closed: a lost writer checkout reads as absent, so the next
-/// rescan retries the insert instead of correcting without provenance.
-#[allow(clippy::too_many_arguments)]
-fn ledger_gain_present(
-    db: &DbPool,
-    timestamp: &str,
-    character: &str,
-    server: &str,
-    item_name: &str,
-    quantity: u32,
-    context: &str,
-) -> bool {
-    let Ok(conn) = db.get_write() else {
-        return false;
-    };
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM item_transactions
-             WHERE timestamp = ?1 AND character_name = ?2 AND server_name = ?3
-               AND item_name = ?4 AND quantity = ?5 AND context = ?6 AND source = 'chat_status')",
-        rusqlite::params![timestamp, character, server, item_name, quantity as i32, context],
-        |r| r.get(0),
-    )
-    .unwrap_or(false)
-}
-
-/// True when a VIP JSON receipt's ledger row already exists for this exact
-/// entity (replay or twin claim landed). Mirrors the receipt guard's
-/// post-claim check. Fail-closed like [`ledger_gain_present`].
-#[allow(clippy::too_many_arguments)]
-fn ledger_receipt_present(
-    db: &DbPool,
-    timestamp: &str,
-    character: &str,
-    server: &str,
-    item_name: &str,
-    quantity: u32,
-    from_entity_id: Option<i64>,
-) -> bool {
-    let Ok(conn) = db.get_write() else {
-        return false;
-    };
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM item_transactions
-             WHERE timestamp = ?1 AND character_name = ?2 AND server_name = ?3
-               AND item_name = ?4 AND quantity = ?5 AND context = 'loot' AND source = 'chat_status'
-               AND (from_entity_id = ?6 OR (?6 IS NULL AND from_entity_id IS NULL)))",
-        rusqlite::params![timestamp, character, server, item_name, quantity as i32, from_entity_id],
-        |r| r.get(0),
-    )
-    .unwrap_or(false)
-}
 
 /// Twin-aware insert for a VIP JSON `AddItem` receipt. The English `[Status]`
 /// twin (same timestamp, item, quantity, `context = 'loot'`,
@@ -1157,26 +1079,9 @@ fn dispatch_json_event(
                     ctx.is_scan,
                 ) {
                     out.staged_gains.push((item_name.clone(), *quantity));
-                    if *quantity > 1 {
-                        out.stack_corrections.push((item_name.clone(), *quantity));
-                    }
-                } else if *quantity > 1
-                    && ledger_receipt_present(
-                        ctx.db,
-                        timestamp,
-                        &id.character,
-                        &id.server,
-                        item_name,
-                        *quantity,
-                        (*from_entity_id).map(|n| n as i64),
-                    )
-                {
-                    // Replay or twin-second: the receipt row exists (exact
-                    // entity, or the twin claim stamped it) — repair the
-                    // correction without restaging attribution. A missing row
-                    // (retention skip, failed receipt write) stages nothing:
-                    // the next rescan retries the receipt first.
-                    out.stack_corrections.push((item_name.clone(), *quantity));
+                    // Replay, twin-second, or missing row: nothing further
+                    // stages. A missing row (retention skip, failed receipt
+                    // write) is retried by the next rescan's receipt insert.
                 }
             }
         }
@@ -2876,11 +2781,9 @@ mod tests {
         let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out2 = dispatch(&pool, &gd, Some(&id()), &english, ts, &mut st);
         assert_eq!(out1.staged_gains.len(), 1);
-        // English-second finds the JSON twin's row and stages nothing on
-        // either channel (qty 1 also short-circuits the correction gate):
+        // English-second finds the JSON twin's row and stages nothing:
         // conditional staging holds in both twin orders.
         assert!(out2.staged_gains.is_empty());
-        assert!(out2.stack_corrections.is_empty());
         let rows = item_rows(&pool);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].2.as_deref(), Some("Olugax The Ever-Pudding"));
@@ -3036,12 +2939,10 @@ mod tests {
     }
 
     #[test]
-    fn failed_stack_correction_replays_to_converge_once() {
-        // Failed-then-replayed correction converges exactly once: the first
-        // dispatch stages the gain (new ledger row); the correction step's
-        // writer checkout fails, so the fix is skipped. The replay finds the
-        // ledger row (no new attribution) but still reports the correction,
-        // and applying it twice lands the real quantity — never doubled.
+    fn replayed_gain_does_not_restage_attribution() {
+        // A replayed English gain must not re-attribute: the ledger row
+        // already exists, so no channel stages. Inventory quantities come
+        // from snapshot imports, not from chat lines.
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
@@ -3049,67 +2950,32 @@ mod tests {
         let mut dmg = Vec::new();
         let ts = "26-04-01 05:30:53";
 
-        // Player.log-era fallback row: quantity unknown, awaiting the chat gain.
-        pool.get_write()
-            .unwrap()
-            .execute(
-                "INSERT INTO game_state_inventory
-                 (character_name, server_name, instance_id, item_name, stack_size, last_confirmed_at, source)
-                 VALUES ('Alice', 'Dreva', 1, 'Mandrake Root', 1, '2026-04-01 05:30:00', 'log')",
-                [],
-            )
-            .unwrap();
-
         let m = status_msg("Mandrake Root x5 added to inventory.", ts);
-        // First dispatch: new ledger row, both channels fire.
+        // First dispatch: new ledger row, gain stages exactly once.
         let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out1 = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         assert_eq!(out1.staged_gains.len(), 1);
-        assert_eq!(out1.stack_corrections.len(), 1);
-        // Simulate the failed correction step: apply nothing (writer lost).
-        // Replay finds the ledger row: attribution stays silent, but the
-        // correction is reported again for repair.
+        // Replay finds the ledger row: attribution stays silent.
         let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out2 = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         assert!(out2.staged_gains.is_empty(), "replay must not re-attribute");
-        assert_eq!(out2.stack_corrections.len(), 1, "replay must still repair");
-        // Apply the correction the way run_scan_dispatch does — once per
-        // replay — then prove a further replay converges without doubling.
-        for (name, qty) in &out2.stack_corrections {
-            let conn = pool.get_write().unwrap();
-            crate::game_state::correct_stack_in_table_for(&conn, "Alice", "Dreva", name, None, *qty);
-        }
+        // A further replay converges without doubling.
         let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out3 = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         assert!(out3.staged_gains.is_empty());
-        for (name, qty) in &out3.stack_corrections {
-            let conn = pool.get_write().unwrap();
-            crate::game_state::correct_stack_in_table_for(&conn, "Alice", "Dreva", name, None, *qty);
-        }
-        let conn = pool.get().unwrap();
-        let stack: i64 = conn
-            .query_row(
-                "SELECT stack_size FROM game_state_inventory
-                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND item_name = 'Mandrake Root'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(stack, 5, "failed-then-replayed correction converges");
-        let ledger: i64 = conn
+        let ledger: i64 = pool
+            .get()
+            .unwrap()
             .query_row("SELECT COUNT(*) FROM item_transactions", [], |r| r.get(0))
             .unwrap();
         assert_eq!(ledger, 1, "exactly one ledger row");
     }
 
     #[test]
-    fn failed_json_receipt_correction_replays_to_converge_once() {
-        // JSON mirror of failed_stack_correction_replays_to_converge_once:
-        // every existing JSON fixture is Stack:1, which short-circuits the
-        // quantity gate — so this is the only test executing the receipt
-        // correction true-path (`quantity > 1` with the ledger row present).
-        // A wrong entity predicate in `ledger_receipt_present` would degrade
-        // via `unwrap_or(false)` to silent skip, the exact class fixed here.
+    fn replayed_json_receipt_does_not_restage_attribution() {
+        // JSON mirror of replayed_gain_does_not_restage_attribution: a
+        // replayed AddItem receipt hits the exact-entity row, so attribution
+        // stays silent and the ledger keeps exactly one row.
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
@@ -3117,53 +2983,20 @@ mod tests {
         let mut dmg = Vec::new();
         let ts = "26-04-01 05:30:53";
 
-        pool.get_write()
-            .unwrap()
-            .execute(
-                "INSERT INTO game_state_inventory
-                 (character_name, server_name, instance_id, item_name, stack_size, last_confirmed_at, source)
-                 VALUES ('Alice', 'Dreva', 1, 'Mandrake Root', 1, '2026-04-01 05:30:00', 'log')",
-                [],
-            )
-            .unwrap();
-
         let body = "{\"Name\": \"Mandrake Root\", \"TypeId\": 1137, \"Stack\": 5, \"Flags\": [], \"FromName\": \"Olugax The Ever-Pudding\", \"FromEntityId\": 257400}";
         let json = json_msg("AddItem", body, ts);
-        // First dispatch: new receipt row, both channels fire.
+        // First dispatch: new receipt row, gain stages exactly once.
         let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out1 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert_eq!(out1.staged_gains.len(), 1);
-        assert_eq!(out1.stack_corrections.len(), 1);
-        // Simulate the failed correction step: apply nothing (writer lost).
-        // Replay hits the exact-entity row: attribution stays silent, but the
-        // correction is reported again for repair.
+        // Replay hits the exact-entity row: attribution stays silent.
         let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out2 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert!(out2.staged_gains.is_empty(), "replay must not re-attribute");
-        assert_eq!(out2.stack_corrections.len(), 1, "replay must still repair");
-        // Apply the correction the way run_scan_dispatch does — once per
-        // replay — then prove a further replay converges without doubling.
-        for (name, qty) in &out2.stack_corrections {
-            let conn = pool.get_write().unwrap();
-            crate::game_state::correct_stack_in_table_for(&conn, "Alice", "Dreva", name, None, *qty);
-        }
+        // A further replay converges without doubling.
         let mut st = state(&mut arena, &mut rez, &mut dmg);
         let out3 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert!(out3.staged_gains.is_empty());
-        for (name, qty) in &out3.stack_corrections {
-            let conn = pool.get_write().unwrap();
-            crate::game_state::correct_stack_in_table_for(&conn, "Alice", "Dreva", name, None, *qty);
-        }
-        let conn = pool.get().unwrap();
-        let stack: i64 = conn
-            .query_row(
-                "SELECT stack_size FROM game_state_inventory
-                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND item_name = 'Mandrake Root'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(stack, 5, "failed-then-replayed receipt converges");
         let rows = item_rows(&pool);
         assert_eq!(rows.len(), 1, "exactly one ledger row");
         assert_eq!(rows[0].1, 5);

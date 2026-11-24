@@ -1,4 +1,3 @@
-use crate::cdn_commands::GameDataState;
 use crate::db::DbPool;
 /// Game State Manager — persists derived game state from chat and report data to SQLite.
 ///
@@ -6,7 +5,6 @@ use crate::db::DbPool;
 /// &DbPool per call, called synchronously from the coordinator's event loop.
 /// Maintains "last known value" tables, not event logs.
 use chrono::{Local, Utc};
-use rusqlite::Connection;
 
 /// Timestamped log line for startup diagnostics.
 macro_rules! startup_log {
@@ -22,17 +20,14 @@ pub struct GameStateManager {
     /// When true, login events clear obsolete log-era inventory rows (snapshot rows survive).
     /// Starts false — set to true after the first poll cycle completes (catch-up is done).
     live_mode: bool,
-    /// Reference to loaded CDN game data for entity resolution
-    game_data: GameDataState,
 }
 
 impl GameStateManager {
-    pub fn new(game_data: GameDataState) -> Self {
+    pub fn new() -> Self {
         Self {
             active_character: None,
             active_server: None,
             live_mode: false,
-            game_data,
         }
     }
 
@@ -140,13 +135,11 @@ impl GameStateManager {
             // we want to accumulate data for all characters, not nuke it on each login.
             if live_mode {
                 // Inventory: only the retired Player.log slice. Report imports
-                // delete-then-reinsert the `source = 'snapshot'` slice on every
-                // import (`seed_game_state_from_snapshot`), and live chat gains
-                // write `source = 'chat_status'` — an unscoped wipe deletes
-                // snapshot rows with no import following. Same scoping as the
-                // adopt path (`apply_catch_up_login` in coordinator.rs): no
-                // production writer creates 'log' rows anymore, so the scoped
-                // delete only removes obsolete log-era leftovers.
+                // delete-then-reinsert the inventory slice on every import,
+                // and no production writer creates inventory rows besides
+                // the snapshot import (chat gains write the item_transactions
+                // ledger, not game_state_inventory) — so the scoped delete
+                // only removes obsolete log-era leftovers. Same scoping as the
                 tx.execute(
                     "DELETE FROM game_state_inventory WHERE character_name = ?1 AND server_name = ?2 AND source = 'log'",
                     rusqlite::params![name, server],
@@ -182,211 +175,6 @@ impl GameStateManager {
         );
     }
 
-    /// Session-keyed stack correction: corrects the named `(character, server)`
-    /// slice instead of the active slice. Catch-up applies staged chat gains
-    /// through this so corrections land on the session that produced the rows,
-    /// not whatever identity is active at drain time. Idempotent — only
-    /// `stack_size = 1` placeholder rows match — so callers report every
-    /// recorded gain (new or replayed) and repeats converge without doubling.
-    pub fn correct_stack_for_session(
-        &self,
-        character: &str,
-        server: &str,
-        display_name: &str,
-        quantity: u32,
-        db: &DbPool,
-    ) -> Vec<&'static str> {
-        if quantity <= 1 {
-            return vec![];
-        }
-
-        let conn = match db.get_write() {
-            Ok(c) => c,
-            // Lost race for the single writer: leave a trace (the dispatch
-            // now restages the correction, so the next replay heals this)
-            // instead of skipping silently.
-            Err(e) => {
-                eprintln!("[game-state] Stack correction skipped ({character}@{server} {display_name} x{quantity}): writer checkout failed: {e}");
-                return vec![];
-            }
-        };
-
-        // Resolve display name to internal name via CDN data
-        let internal_name = self.game_data.try_read().ok().and_then(|gd| {
-            gd.resolve_item(display_name)
-                .and_then(|info| info.internal_name.clone())
-        });
-
-        let mut domains = Vec::new();
-
-        // Try to correct game_state_inventory — match by internal_name or display_name.
-        // NOTE: `base_where` uses ?2/?3 because ?1 is the SET value and ?4 the item name.
-        let inv_corrected = correct_stack_in_table(
-            &conn,
-            &StackCorrection {
-                table: "game_state_inventory",
-                base_where: "character_name = ?2 AND server_name = ?3",
-                character,
-                server,
-                internal_name: internal_name.as_deref(),
-                display_name,
-                quantity,
-            },
-        );
-        if inv_corrected {
-            domains.push("inventory");
-        }
-
-        // Try to correct game_state_storage — same logic, any vault
-        let storage_corrected = correct_stack_in_table(
-            &conn,
-            &StackCorrection {
-                table: "game_state_storage",
-                base_where: "character_name = ?2 AND server_name = ?3",
-                character,
-                server,
-                internal_name: internal_name.as_deref(),
-                display_name,
-                quantity,
-            },
-        );
-        if storage_corrected {
-            domains.push("storage");
-        }
-
-        domains
-    }
-
-}
-/// Scan-callable session-keyed stack correction. Same targeting as
-/// `GameStateManager::correct_stack_for_session` but without the manager:
-/// scan paths (`run_scan_dispatch` in `chat_commands.rs`) have no manager
-/// instance, only the line's own session identity — so the caller resolves
-/// the internal name via its `GameDataState` handle and passes it in.
-/// Matches internal-first with display fallback (same as the manager path);
-/// idempotent — only `stack_size = 1` rows match.
-pub fn correct_stack_in_table_for(
-    conn: &rusqlite::Connection,
-    character: &str,
-    server: &str,
-    display_name: &str,
-    internal_name: Option<&str>,
-    quantity: u32,
-) -> Vec<&'static str> {
-    if quantity <= 1 {
-        return vec![];
-    }
-    let mut domains = Vec::new();
-    if correct_stack_in_table(
-        conn,
-        &StackCorrection {
-            table: "game_state_inventory",
-            base_where: "character_name = ?2 AND server_name = ?3",
-            character,
-            server,
-            internal_name,
-            display_name,
-            quantity,
-        },
-    ) {
-        domains.push("inventory");
-    }
-    if correct_stack_in_table(
-        conn,
-        &StackCorrection {
-            table: "game_state_storage",
-            base_where: "character_name = ?2 AND server_name = ?3",
-            character,
-            server,
-            internal_name,
-            display_name,
-            quantity,
-        },
-    ) {
-        domains.push("storage");
-    }
-    domains
-}
-/// Targeting inputs for one stack-correction UPDATE. Groups the
-/// `correct_stack_in_table` args so the fn stays under the arity lint.
-/// (`vault_key` is gone: every caller passed `None` — no vault filter.)
-#[derive(Clone, Copy)]
-struct StackCorrection<'a> {
-    table: &'a str,
-    base_where: &'a str,
-    character: &'a str,
-    server: &'a str,
-    internal_name: Option<&'a str>,
-    display_name: &'a str,
-    quantity: u32,
-}
-/// Returns true if a row was updated.
-fn correct_stack_in_table(conn: &Connection, target: &StackCorrection<'_>) -> bool {
-    let StackCorrection {
-        table,
-        base_where,
-        character,
-        server,
-        internal_name,
-        display_name,
-        quantity,
-    } = *target;
-    // Build the item name match: prefer internal_name, fall back to display_name
-    let name_to_match = internal_name.unwrap_or(display_name);
-
-    // Find the most recent placeholder row with stack_size=1 for this item
-    // (rowid ordering gives us recency since rows are inserted in order).
-    // Provenance-gated to `source = 'log'`: those rows are Player.log-era
-    // placeholders awaiting their real quantity. Report/snapshot imports
-    // (`source = 'snapshot'`) carry authoritative quantities — without the
-    // gate a chat gain would overwrite a real 1-stack with the gain amount.
-    let query = format!(
-        "UPDATE {table} SET stack_size = ?1
-         WHERE rowid = (
-            SELECT rowid FROM {table}
-             WHERE {base_where} AND item_name = ?4 AND stack_size = 1 AND source = 'log'
-             ORDER BY rowid DESC LIMIT 1
-         )"
-    );
-
-    let updated = conn
-        .execute(
-            &query,
-            rusqlite::params![quantity, character, server, name_to_match],
-        )
-        .unwrap_or(0);
-
-    if updated > 0 {
-        eprintln!(
-            "[game-state] Corrected {table} stack: {display_name} → {quantity} (matched {name_to_match})"
-        );
-        return true;
-    }
-
-    // If internal_name didn't match and we have a display_name to try as fallback
-    if internal_name.is_some() {
-        let updated = conn
-            .execute(
-                &format!(
-                    "UPDATE {table} SET stack_size = ?1
-                     WHERE rowid = (
-                         SELECT rowid FROM {table}
-                         WHERE {base_where} AND item_name = ?4 AND stack_size = 1 AND source = 'log'
-                         ORDER BY rowid DESC LIMIT 1
-                     )"
-                ),
-                rusqlite::params![quantity, character, server, display_name],
-            )
-            .unwrap_or(0);
-        if updated > 0 {
-            eprintln!(
-                "[game-state] Corrected {table} stack: {display_name} → {quantity} (matched by display name)"
-            );
-            return true;
-        }
-    }
-
-    false
 }
 
 #[cfg(test)]
@@ -408,145 +196,17 @@ mod tests {
         std::env::temp_dir().join(format!("{prefix}_{}_{nanos}_{n}.db", std::process::id()))
     }
 
-    /// Pins that a session-scoped stack correction touches only the named
-    /// character/server slice: a correction for OtherAlt leaves TestPlayer's
-    /// log rows (and any report-backed row) untouched.
-
-    #[test]
-    fn session_scoped_stack_correction_keys_by_session() {
-        use std::sync::Arc;
-
-        let db_path = unique_temp_db("glogger_session_stack_correct_test");
-        let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
-
-        let manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
-            crate::game_data::GameData::empty(),
-        )));
-
-        let seed = |character: &str, instance_id: i64, item_name: &str| {
-            pool.get_write()
-                .unwrap()
-                .execute(
-                    "INSERT INTO game_state_inventory
-                     (character_name, server_name, instance_id, item_name, stack_size, last_confirmed_at, source)
-                     VALUES (?1, 'Dreva', ?2, ?3, 1, '2026-10-19 12:00:00', 'log')",
-                    rusqlite::params![character, instance_id, item_name],
-                )
-                .unwrap()
-        };
-        // Internal names, matching the player-log rows the coordinator drains
-        // before the staged chat corrections run.
-        seed("TestPlayer", 1, "Fluorite");
-        seed("OtherAlt", 2, "Fluorite");
-        // A report-backed 1-stack: authoritative quantity, never a
-        // correction target even though it matches the old selector.
-        pool.get_write()
-            .unwrap()
-            .execute(
-                "INSERT INTO game_state_inventory
-                 (character_name, server_name, instance_id, item_name, stack_size, last_confirmed_at, source)
-                 VALUES ('TestPlayer', 'Dreva', 7, 'Fluorite', 1, '2026-10-19 12:00:00', 'snapshot')",
-                [],
-            )
-            .unwrap();
-
-        let stack = |character: &str, source: &str| -> i64 {
-            pool.get()
-                .unwrap()
-                .query_row(
-                    "SELECT stack_size FROM game_state_inventory
-                     WHERE character_name = ?1 AND server_name = 'Dreva'
-                       AND item_name = 'Fluorite' AND source = ?2",
-                    rusqlite::params![character, source],
-                    |row| row.get(0),
-                )
-                .unwrap()
-        };
-
-        // Session-keyed: only OtherAlt's slice is corrected.
-        let domains = manager.correct_stack_for_session("OtherAlt", "Dreva", "Fluorite", 5, &pool);
-        assert!(domains.contains(&"inventory"));
-        assert_eq!(stack("OtherAlt", "log"), 5, "staged session corrected");
-        assert_eq!(stack("TestPlayer", "snapshot"), 1, "report row never a target");
-
-        // Same-character correction: TestPlayer's own log row corrects
-        // 1→5 while its report-backed snapshot row stays 1 (the filter
-        // under test), and OtherAlt's corrected row is untouched.
-        let domains = manager.correct_stack_for_session("TestPlayer", "Dreva", "Fluorite", 5, &pool);
-        assert!(domains.contains(&"inventory"));
-        assert_eq!(stack("TestPlayer", "log"), 5, "target slice corrects");
-        assert_eq!(stack("TestPlayer", "snapshot"), 1, "report row never a target");
-        assert_eq!(stack("OtherAlt", "log"), 5, "other session untouched");
-
-        // Drop the pool first: Windows won't delete a file with an open handle.
-        drop(pool);
-        let _ = std::fs::remove_file(&db_path);
-    }
-
-    /// A replayed correction converges without doubling: the first call fixes
-    /// the placeholder 1→N, and every later call with the same quantity is a
-    /// no-op (no row matched, no domain), so restaged corrections from
-    /// replays never inflate the stack or re-emit.
-    #[test]
-    fn replayed_stack_correction_converges_without_doubling() {
-        use std::sync::Arc;
-
-        let db_path = unique_temp_db("glogger_session_stack_correct_replay_test");
-        let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
-
-        let manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
-            crate::game_data::GameData::empty(),
-        )));
-
-        pool.get_write()
-            .unwrap()
-            .execute(
-                "INSERT INTO game_state_inventory
-                 (character_name, server_name, instance_id, item_name, stack_size, last_confirmed_at, source)
-                 VALUES ('TestPlayer', 'Dreva', 1, 'Fluorite', 1, '2026-10-19 12:00:00', 'log')",
-                [],
-            )
-            .unwrap();
-
-        // First correction (the replayed repair): placeholder 1→5.
-        let domains = manager.correct_stack_for_session("TestPlayer", "Dreva", "Fluorite", 5, &pool);
-        assert!(domains.contains(&"inventory"));
-        // Every later replay with the same quantity matches nothing.
-        for _ in 0..2 {
-            let domains = manager.correct_stack_for_session("TestPlayer", "Dreva", "Fluorite", 5, &pool);
-            assert!(domains.is_empty(), "converged correction stays silent");
-        }
-        let stack: i64 = pool
-            .get()
-            .unwrap()
-            .query_row(
-                "SELECT stack_size FROM game_state_inventory
-                 WHERE character_name = 'TestPlayer' AND server_name = 'Dreva' AND item_name = 'Fluorite'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(stack, 5, "replayed corrections converge exactly once");
-
-        // Drop the pool first: Windows won't delete a file with an open handle.
-        drop(pool);
-        let _ = std::fs::remove_file(&db_path);
-    }
-
     /// The login-event timestamp (not wall-clock now) opens the session: a
     /// favor gain stamped after the login event counts toward the new
     /// session's sums. Regression pin for threading the CharacterLogin
     /// timestamp into `set_active_character`.
     #[test]
     fn set_active_character_login_event_time_includes_later_favor_gain() {
-        use std::sync::Arc;
 
         let db_path = unique_temp_db("glogger_session_login_include_test");
         let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
 
-        let mut manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
-            crate::game_data::GameData::empty(),
-        )));
+        let mut manager = GameStateManager::new();
 
         // Favor gain lands 2s after the login event.
         pool.get_write()
@@ -582,14 +242,11 @@ mod tests {
     /// of the new session's sums once the login boundary is the event time.
     #[test]
     fn set_active_character_login_event_time_excludes_prior_session_favor() {
-        use std::sync::Arc;
 
         let db_path = unique_temp_db("glogger_session_login_exclude_test");
         let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
 
-        let mut manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
-            crate::game_data::GameData::empty(),
-        )));
+        let mut manager = GameStateManager::new();
 
         // One gain from the previous session, one from the new session.
         pool.get_write()
@@ -621,14 +278,11 @@ mod tests {
     /// per-table scoping of the live-login wipe (same as the adopt path).
     #[test]
     fn set_active_character_live_login_preserves_snapshot_inventory() {
-        use std::sync::Arc;
 
         let db_path = unique_temp_db("glogger_session_login_snapshot_test");
         let pool = crate::db::init_pool(db_path.clone(), Some(0)).expect("init pool");
 
-        let mut manager = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
-            crate::game_data::GameData::empty(),
-        )));
+        let mut manager = GameStateManager::new();
         manager.set_live_mode();
 
         // Same slice, two provenances: an obsolete log-era row and a saved

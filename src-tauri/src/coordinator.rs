@@ -44,13 +44,6 @@ pub struct CoordinatorStatus {
     pub current_chat_log: Option<String>,
 }
 
-/// A chat `[Status] ItemGained` gain seen during catch-up, keyed by the
-/// login session that produced the line (`ChatSessionTag`, re-derived
-/// per line — not the drain-final identity), except a mid-session resume
-/// (`None` tag), which falls back to the drain identity. Applied to the player
-/// rows via `GameStateManager::correct_stack_for_session` just before the
-/// live flip, because the snapshot slice already holds the rows (prior
-/// report imports) before the chat drain ran.
 /// Which VIP report a `ReportSaved` chat line points at, by the game's own
 /// filename convention (mirrors `setup_commands.rs` `Character_*.json` and
 /// `*_items_*.json` scans). Matched on the file name only — plus a `Reports/`
@@ -104,12 +97,6 @@ fn report_kind_for_path(path: &str) -> Option<ReportKind> {
     }
 }
 
-struct StagedChatGain {
-    character: String,
-    server: String,
-    item_name: String,
-    quantity: u32,
-}
 
 /// A survey gain whose live attribute+tag unit rolled back mid-batch,
 /// staged for one bounded retry at batch end (TODO 53). The retry re-runs
@@ -208,9 +195,6 @@ pub struct DataIngestCoordinator {
     /// reaching `set_live_mode` would otherwise re-read every `Chat-*.log` on
     /// the 500ms polling thread, holding the coordinator lock each time.
     catch_up_servers_scanned: bool,
-    /// Chat stack gains staged during catch-up (see `StagedChatGain`); applied
-    /// just before the live flip. Cleared once live.
-    staged_chat_gains: Vec<StagedChatGain>,
     /// Skill updates skipped because the skill name did not resolve against
     /// current game data (new game skill or stale CDN). Monotonic within the
     /// process; logged with each skip so a growing total signals staleness.
@@ -252,7 +236,7 @@ impl DataIngestCoordinator {
         // Player.log events during the initial replay have a valid server key.
         let current_settings = settings.get();
         let game_data_clone = game_data.clone();
-        let mut game_state = GameStateManager::new(game_data);
+        let mut game_state = GameStateManager::new();
         if let (Some(char_name), Some(server_name)) = (
             &current_settings.active_character_name,
             &current_settings.active_server_name,
@@ -279,7 +263,6 @@ impl DataIngestCoordinator {
             last_rez_dedup: std::collections::HashMap::new(),
             catch_up_chat_servers: std::collections::HashMap::new(),
             catch_up_servers_scanned: false,
-            staged_chat_gains: Vec::new(),
             skipped_unknown_skills: 0,
             suppressed_unknown_skill_repeats: 0,
             last_unknown_skill: None,
@@ -383,32 +366,6 @@ impl DataIngestCoordinator {
         );
     }
 
-    /// Apply chat stack gains staged during catch-up to their own sessions.
-    /// Runs once, as the last step of the catch-up window (after the chat
-    /// drain, before `set_live_mode`): the snapshot slice already holds the
-    /// rows from prior report imports, and the staged keys name the login
-    /// (mid-session resume gains excepted — see `StagedChatGain`).
-    fn apply_staged_chat_corrections(&mut self) {
-        let staged = std::mem::take(&mut self.staged_chat_gains);
-        if staged.is_empty() {
-            return;
-        }
-        let mut domains: Vec<&str> = Vec::new();
-        for gain in &staged {
-            domains.extend(self.game_state.correct_stack_for_session(
-                &gain.character,
-                &gain.server,
-                &gain.item_name,
-                gain.quantity,
-                &self.db_pool,
-            ));
-        }
-        domains.sort();
-        domains.dedup();
-        if !domains.is_empty() {
-            self.app_handle.emit("game-state-updated", &domains).ok();
-        }
-    }
 
     /// Read access to the DB pool. Feature commands need this to issue
     /// queries without going through the GameStateManager.
@@ -780,7 +737,6 @@ impl DataIngestCoordinator {
         // failed poll simply retries (without re-running the chat-login scan —
         // see `catch_up_servers_scanned`).
         if !self.game_state.is_live() {
-            self.apply_staged_chat_corrections();
             startup_log!("Catch-up complete — switching to live tailing mode");
             self.game_state.set_live_mode();
             self.catch_up_chat_servers.clear();
@@ -1073,20 +1029,14 @@ impl DataIngestCoordinator {
                     let mut msg = msg;
                     msg.timestamp = chat_local_to_utc(msg.timestamp, tz_offset);
 
-                    // Catch-up vs live: the Player.log drain already wrote
-                    // fallback `stack_size = 1` rows, and no future
-                    // `ProcessAddItem` will consult the parser buffer — so
-                    // stage gains session-keyed for
-                    // `apply_staged_chat_corrections` instead of
-                    // feeding/correcting now under a drain-order identity.
-                    // The tag is the login session that produced the line;
-                    // only when the file was resumed mid-session (`None`) do
-                    // we fall back to the drain identity. Live resolves the
-                    // same way: a poll batch can span a login boundary (the
-                    // watcher emits file-ordered), so a pre-login line must
-                    // keep its own tag instead of inheriting the new active
-                    // identity. Tag-less live lines (resume-from-offset
-                    // polls) use the active identity.
+                    // Catch-up vs live identity: the tag is the login session
+                    // that produced the line; only when the file was resumed
+                    // mid-session (`None`) do we fall back to the drain
+                    // identity. Live resolves the same way: a poll batch can
+                    // span a login boundary (the watcher emits file-ordered),
+                    // so a pre-login line must keep its own tag instead of
+                    // inheriting the new active identity. Tag-less live lines
+                    // (resume-from-offset polls) use the active identity.
                     let is_live = self.game_state.is_live();
                     let identity: Option<DispatchIdentity> = {
                         // Leading lines of a boundary-spanning batch carry no
@@ -1113,12 +1063,11 @@ impl DataIngestCoordinator {
                         )
                     };
 
-                    // The shared dispatch owns every idempotent DB arm. Two
-                    // live-only follow-ups stay here because they need
+                    // The shared dispatch owns every idempotent DB arm. The
+                    // live-only follow-up stays here because it needs
                     // `&mut self` borrows the dispatch does not take:
-                    // (1) stack correction inline (live) vs session-keyed
-                    // (catch-up), (2) survey attribution through the live
-                    // aggregator's gating state.
+                    // survey attribution through the live aggregator's
+                    // gating state.
                     let mut outcome = {
                         let mut dstate = DispatchState {
                             arena_tracker: &mut self.arena_tracker,
@@ -1153,7 +1102,10 @@ impl DataIngestCoordinator {
                         )
                     };
 
-                    // (1+3) Correlation feed + survey attribution per gain.
+                    // Correlation feed + survey attribution per gain.
+                    // (Inventory stack correction is gone: snapshot imports
+                    // carry authoritative quantities, so there are no
+                    // Player.log-era placeholders left to patch.)
                     for (item_name, quantity) in std::mem::take(&mut outcome.staged_gains) {
                         let (internal_name, item_type_id): (Option<String>, Option<i64>) =
                             self.game_data
@@ -1166,38 +1118,6 @@ impl DataIngestCoordinator {
                                 })
                                 .unwrap_or((None, None));
                         let ts_utc = msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
-                        if is_live {
-                            // Correct the gain's own session slice: the
-                            // dispatch above wrote under `identity`
-                            // (tag-preferred), so the correction must too —
-                            // a B-login-then-A-gain poll would otherwise fix
-                            // B's placeholder for A's gain. Matches active
-                            // when tag and active agree; `None` corrects
-                            // nothing (active is also `None` then).
-                            let corrected = match identity.as_ref() {
-                                Some(id) => self.game_state.correct_stack_for_session(
-                                    &id.character,
-                                    &id.server,
-                                    &item_name,
-                                    quantity,
-                                    &self.db_pool,
-                                ),
-                                None => vec![],
-                            };
-                            if !corrected.is_empty() {
-                                self.app_handle.emit("game-state-updated", &corrected).ok();
-                            }
-                        } else if let Some(id) = identity.as_ref() {
-                            // Catch-up: the snapshot slice already holds the
-                            // rows from prior report imports — stage
-                            // session-keyed for `apply_staged_chat_corrections`.
-                            self.staged_chat_gains.push(StagedChatGain {
-                                character: id.character.clone(),
-                                server: id.server.clone(),
-                                item_name: item_name.clone(),
-                                quantity,
-                            });
-                        }
                         // (3) Survey, live loot gains only: attribute the
                         // just-written ledger row, then tag it — mirrors the
                         // old inline arm. Summoned gains never attribute.
@@ -2855,11 +2775,7 @@ mod session_identity_tests {
 
     /// Fresh game state seeded like the coordinator's (settings' character+server).
     fn game_state(character: &str, server: &str) -> GameStateManager {
-        use std::sync::Arc;
-
-        let mut gs = GameStateManager::new(Arc::new(tauri::async_runtime::RwLock::new(
-            crate::game_data::GameData::empty(),
-        )));
+        let mut gs = GameStateManager::new();
         gs.set_active_character_name(character);
         gs.set_active_server_name(server);
         gs
