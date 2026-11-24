@@ -36,13 +36,8 @@ count to the game's number.
 
 ## Contract / invariants
 
-- **One reconcile implementation.** `db::game_state_commands::reconcile_gift_count`
-  is shared by the live `PlayerEvent::GiftCountObserved` arm
-  (`game_state.rs`) and the backfill, so the two cannot drift.
-- **One parser.** `player_event_parser::parse_gift_count_line` (free function,
-  no parser state) is called by both the live dispatch and the backfill, and
-  both gate on the same literal
-  `"gifts per calendar week and has received"`.
+- **One reconcile implementation (retired with the Player.log item pipeline).** `db::game_state_commands::reconcile_gift_count`, once shared by the live gift-count arm and this backfill, is gone. Uncapped gifts are now detected from chat favor deltas at write time and capped (Statehelm) counts are manual-only (`add_manual_gift` / `remove_last_gift`); there is no count-reconcile path left to keep in sync.
+- **One parser (retired with the pipeline).** The shared gift-note line parser, called by both the live dispatch and the backfill and gated on the game's `"gifts per calendar week and has received"` note, is gone with both its callers.
 - **Dating rule.** `Player.log` lines carry `[HH:MM:SS]` only, and PG writes
   those in UTC (verified: the bracket time equals the login line's
   `Time UTC=`). So the log date is the file's login-line UTC date, advanced one
@@ -50,11 +45,7 @@ count to the game's number.
   no login line is **skipped** rather than guessed — a wrong date would
   silently pollute the week. The parser is now shared
   (`parsers::parse_player_log_login_line`).
-- **The live ingest path uses the same anchor.** Everything the live path
-  persists is dated by `parsers::LogDateResolver`: an explicit base date (replay
-  / old-log reparse) → the session date from the log's own login line
-  (`PlayerEvent::LogSessionAnchored`, rolled at UTC midnight) → the clock with a
-  one-day rollback when the line's time of day is ahead of it. Before that, the
+- **The live ingest path used the same anchor (retired with the pipeline).** Everything the live path persisted was dated from the log's own login line (`parsers::parse_player_log_login_line`): an explicit base date (replay / old-log reparse) → the session date from the login line's `Time UTC=` → the clock with a one-day rollback when the line's time of day was ahead of it. Before that, the
   live path had no anchor at all and stamped lines with the *ingest* date, so a
   lagging catch-up over UTC midnight wrote timestamps up to ~24 h in the future
   (a 23:31 note logged 2026-10-14 came out as `2026-10-15 23:31:26`, which lands
@@ -64,8 +55,8 @@ count to the game's number.
 - **Week filter.** Notes are kept only when `at >= current_week_start_utc()`
   (both stamps are the same DB format, so the string compare is chronological);
   a stale last-week note must never be reconciled against this week's rows.
-  **Both paths** apply it: the backfill while scanning, and the live
-  `GiftCountObserved` arm before it calls `reconcile_gift_count`. Without the
+  **Both paths** applied it: the backfill while scanning, and the live
+  gift-count arm before it reconciled. Without the
   live guard, a note the game printed last week — replayed by a catch-up that
   spans the weekly reset, or by a manual replay of an old log — was still
   reconciled against this week: measured, it wrote 5 rows into *last* week, or,

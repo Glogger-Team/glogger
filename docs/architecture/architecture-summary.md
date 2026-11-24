@@ -8,7 +8,7 @@ Quick reference for the glogger data architecture (post-refactor).
 
 ## Architecture Stack
 
-```
+```text
 ┌─────────────────────────────────────┐
 │         Vue Frontend (Display)       │
 │  ┌─────────────┐  ┌──────────────┐  │
@@ -71,7 +71,7 @@ Quick reference for the glogger data architecture (post-refactor).
 
 ## Event Flow
 
-```
+```text
 User Action (Frontend)
   │
   ▼
@@ -82,7 +82,6 @@ DataIngestCoordinator.start_chat_log_tailing()
   │
   ├─> Creates ChatLogWatcher
   ├─> Starts watching
-  ├─> Sets OperationType::ChatTailing
   └─> Emits 'coordinator-status' event
         │
         ▼
@@ -97,7 +96,7 @@ DataIngestCoordinator.start_chat_log_tailing()
 
 ## Polling Flow
 
-```
+```text
 App.vue: coordinator.startPolling(1500)
   │
   ▼
@@ -128,20 +127,26 @@ DataIngestCoordinator.poll()
 ## Database Schema (Key Tables)
 
 ### log_file_positions
+
 Unified position tracking for all log types.
+
 ```sql
 file_path (PK) | file_type | last_position | player_name | last_processed
 ```
 
 ### chat_messages
+
 Chat messages with deduplication.
+
 ```sql
 id (PK) | timestamp | channel | sender | message | is_system | log_file
 UNIQUE(timestamp, channel, sender, message)  -- Prevents duplicates
 ```
 
 ### character_snapshots
+
 Character progression from Export Character as JSON (Settings → VIP).
+
 ```sql
 id (PK) | character_name | server_name | snapshot_timestamp | raw_json
 UNIQUE(character_name, server_name, snapshot_timestamp)
@@ -149,7 +154,7 @@ UNIQUE(character_name, server_name, snapshot_timestamp)
 
 ## Startup Sequence
 
-```
+```text
 1. Get app data directory
    └─> tauri::PathResolver::app_data_dir()
 
@@ -178,6 +183,7 @@ UNIQUE(character_name, server_name, snapshot_timestamp)
 ## Command Reference
 
 ### Coordinator Commands
+
 ```typescript
 // Start/stop watchers
 await invoke('start_player_tailing')
@@ -193,6 +199,7 @@ await invoke('poll_watchers')
 ```
 
 ### Chat Query Commands
+
 ```typescript
 // Get messages
 const messages = await invoke('get_chat_messages', {
@@ -259,7 +266,7 @@ interface AppSettings {
 
 ## Directory Structure
 
-```
+```text
 glogger/
 ├── src-tauri/src/
 │   ├── lib.rs                   # Main entry, initialization
@@ -338,6 +345,7 @@ const messages = await invoke('get_chat_messages', {
 ## Migration from Old Architecture
 
 ### Before (Frontend-Driven)
+
 ```typescript
 // Polled Rust every 2 seconds
 setInterval(async () => {
@@ -347,6 +355,7 @@ setInterval(async () => {
 ```
 
 ### After (Rust-Managed)
+
 ```typescript
 // Start once, Rust handles polling
 await coordinator.startChatTailing()
@@ -360,6 +369,7 @@ listen('chat-messages-inserted', (event) => {
 ## Best Practices
 
 ✅ **DO:**
+
 - Use coordinator for lifecycle management
 - Listen to events for state updates
 - Use INSERT OR IGNORE for deduplication
@@ -368,6 +378,7 @@ listen('chat-messages-inserted', (event) => {
 - Batch database operations when possible
 
 ❌ **DON'T:**
+
 - Poll from multiple components independently
 - Assume database operations succeed (use Result)
 - Hold locks across async operations
@@ -401,12 +412,14 @@ npm run tauri:build
 ## Next Steps
 
 See [Data Architecture Reference](data-architecture.md) for:
+
 - Detailed component descriptions
 - Complete event flow diagrams
 - Database schema details
 - Future enhancement plans
 
 See [Working with Data Architecture](../guides/working-with-data-architecture.md) for:
+
 - Step-by-step implementation guides
 - Common patterns
 - Debugging tips

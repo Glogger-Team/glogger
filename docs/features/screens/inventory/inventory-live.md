@@ -7,7 +7,7 @@
 
 ## How It Works
 
-- Subscribes to `PlayerEvent` emissions from the coordinator (ItemAdded, ItemStackChanged, ItemDeleted)
+- Subscribed to the coordinator's player-event stream (item added / stack changed / item deleted); the emitting Player.log pipeline is gone, so this view is frozen history
 - Displays current inventory as a table with slot index, item name (via `ItemInline`), and stack size
 - Summary bar shows total item count and total quantity across all stacks
 - Search filter for finding items by name

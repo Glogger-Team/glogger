@@ -8,7 +8,7 @@ Tracks discovered words of power, the one-use spoken buffs crafted via the Calli
 
 ## Features
 
-- **Auto-capture:** Words are detected from `ProcessBook` events with title "You discovered a word of power!" and persisted to SQLite automatically.
+- **Auto-capture:** Words are detected from `ChatJsonEvent::WordDiscovered` chat-JSON events (title "You discovered a word of power!") and persisted to SQLite automatically.
 - **Auto-removal on use:** Speaking a word in-game logs `[Status] You use the word of power WORD!` to Chat.log. The coordinator deletes every saved copy of that word (spoken words are consumed game-wide, so copies saved by any character are dead) and the widget refreshes. A startup backfill scans chat logs dated after the earliest saved discovery, so words spoken while glogger wasn't running are removed too.
 - **Grouped by power name:** Words are grouped under their power name (e.g., "Unnatural Gravity") with newest groups first.
 - **Age counter:** Each word shows a live-updating age (e.g., "2h 15m ago", "3d 6h ago") with color coding:
@@ -24,12 +24,11 @@ Tracks discovered words of power, the one-use spoken buffs crafted via the Calli
 ## Data Flow
 
 1. Player crafts a word of power in-game
-2. `ProcessBook("You discovered a word of power!", ...)` appears in Player.log
-3. `PlayerEventParser` emits a `BookOpened` event
-4. `DataIngestCoordinator` detects the title match, extracts the word from `<sel>` tags and power name from `<size=125%>` tags
-5. Word is persisted to `words_of_power` table
-6. Coordinator emits `game-state-updated` with domain `"words_of_power"`
-7. Widget reloads from DB
+2. The game's chat JSON carries the discovery as a `ChatJsonEvent::WordDiscovered` event (title "You discovered a word of power!")
+3. `dispatch_json_event` extracts the word from `<sel>` tags and the power name from the `Word of Power: ...</size>` marker
+4. Word is persisted to `words_of_power` table
+5. Coordinator emits `game-state-updated` with domain `"words_of_power"`
+6. Widget reloads from DB
 
 On use:
 
@@ -59,5 +58,5 @@ Table: `words_of_power` (migration v37)
 - `src/components/Dashboard/widgets/WordsOfPowerWidget.vue` — widget component
 - `src-tauri/src/db/words_of_power_commands.rs` — Tauri commands, DB helpers, used-word backfill
 - `src-tauri/src/db/migrations.rs` — migration v37
-- `src-tauri/src/coordinator.rs` — `ingest_word_of_power()` method (discovery), `WordOfPowerUsed` chat-status arm (removal)
+- `src-tauri/src/chat_status_dispatch.rs` — `dispatch_json_event`'s `ChatJsonEvent::WordDiscovered` arm (discovery), `ChatStatusEvent::WordOfPowerUsed` arm (removal)
 - `src-tauri/src/chat_status_parser.rs` — `ChatStatusEvent::WordOfPowerUsed`

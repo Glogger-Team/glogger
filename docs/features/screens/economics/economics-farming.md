@@ -38,9 +38,9 @@ Deleted with the freeze: `FarmingView.vue` (legacy wrapper), `FarmingSessionCard
 The farming calculator used to subscribe to multiple event channels:
 
 ```text
-Player.log → PlayerEventParser → player-events-batch channel ─┐
-                                skill-update channel ─────────┤
-Chat.log  → ChatCombatParser  → enemy-killed channel ─────────┤
+Player.log → item/XP parsers → player event stream ──────────┐
+                              skill channel ─────────────────┤
+Chat.log  → chat combat parser → enemy-killed channel ───────┤
                                                               ▼
                                                     farmingStore (if session active)
                                                               │
@@ -55,7 +55,7 @@ New rows stopped with the 10/21 client (verbose `LocalPlayer:` lines gone). Chat
 
 | Category | Source Event (frozen) | Details |
 |----------|----------------------|---------|
-| Skill XP | `skill-update` | Baseline delta per skill, level-ups detected, XP/hr computed |
+| Skill XP | frozen skill-channel deltas (pre-10/21) | Baseline delta per skill, level-ups detected, XP/hr computed |
 | Items Gained | `ItemStackChanged` (positive delta) | Net quantity per item, items/hr |
 | Items Lost | `ItemStackChanged` (negative delta), `ItemDeleted` (Consumed/Unknown) | Storage transfers and vendor sales excluded |
 | NPC Favor | `FavorChanged` | Accumulated per NPC |
@@ -75,7 +75,7 @@ Historic sessions stay readable under Farming → Session History. Live combat (
 ### Session Lifecycle (no longer runs)
 
 1. User used to click **Start Session** (optionally naming it)
-2. Store intercepted `player-event` and `skill-update` events
+2. Store intercepted player-event and skill-channel events
 3. Live metrics updated as events arrived (XP/hr, items/hr, etc.)
 4. User could **Pause/Resume** — paused time excluded from rate calculations
 5. User could edit session **name** and **notes** inline

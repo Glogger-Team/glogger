@@ -149,7 +149,7 @@ Each widget is documented in its own file under `dashboard/`:
 ### New Widget Ideas
 
 - **Daily Quest Tracker** — track daily quest availability/completion. Needs investigation into log events for daily quest accept/complete, whether CDN data marks quests as daily, and reset schedules. **Effort: Medium | Impact: Medium**
-- **Rez Timer** — detect death events in PlayerEventParser, track cooldown, display countdown. Research needed into death/rez log lines. **Effort: Large | Impact: Medium**
+- **Rez Timer** — detect death events in the Chat.log combat dispatch, track cooldown, display countdown. Research needed into death/rez log lines. **Effort: Large | Impact: Medium**
 - **Long-Cooldown Timers** — Resuscitate, portals, Hoplology, etc. Needs cooldown tracking infrastructure, parser work, and possibly manual duration config. Generalized version of rez timer. **Effort: Large | Impact: Medium-High**
 - **"What Should I Do Next"** — suggestion engine using skill levels, recipe data, crafting history. Start simple (random tips), get smarter over time. **Effort: Large | Impact: Medium**
 
