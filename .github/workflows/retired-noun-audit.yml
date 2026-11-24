@@ -1,0 +1,56 @@
+name: Retired-noun audit
+
+# Weekly, never-blocking run of the doc-orphans whole-tree `--audit` mode
+# (scripts/check-doc-orphans.py): every symbol-shaped reference in every doc
+# checked against all live definitions in src-tauri/src. The worker run that
+# motivated this workflow found 4124 raw findings, mostly Vue/CDN/CSS nouns
+# the .rs live scan cannot see, so this workflow is for triage pairs, not
+# gating: the audit step carries `continue-on-error: true` and the upload
+# runs `if: always()`, so the workflow stays green whatever the audit finds.
+# Consumers: triage pairs reading the uploaded `retired-noun-audit` artifact.
+#
+# No `mise run lint:audit` here: that slice is the fail-closed cargo-audit
+# (RustSec) gate, a different audit. This workflow invokes the doc-orphans
+# script directly (stdlib-only, so runner python3 suffices with no mise
+# install — same precedent as flatpak.yml's version-sync step).
+
+on:
+  schedule:
+    # Weekly, Monday 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: retired-noun-audit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    name: Retired-noun audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run doc-orphans whole-tree audit (never blocking)
+        id: audit
+        # Advisory by design (see header): findings must never fail the run.
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          python3 scripts/check-doc-orphans.py --audit 2>&1 | tee retired-noun-audit.txt
+          exit "${PIPESTATUS[0]}"
+
+      - name: Upload audit findings
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: retired-noun-audit
+          path: retired-noun-audit.txt
