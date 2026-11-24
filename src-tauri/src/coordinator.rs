@@ -111,6 +111,56 @@ struct StagedChatGain {
     quantity: u32,
 }
 
+/// A survey gain whose live attribute+tag unit rolled back mid-batch,
+/// staged for one bounded retry at batch end (TODO 53). The retry re-runs
+/// the whole unit, so the re-bump exactly replaces the rolled-back one and
+/// a later pass never double-counts.
+struct PendingSurveyTag {
+    character: String,
+    server: String,
+    internal_name: Option<String>,
+    item_name: String,
+    quantity: u32,
+    ts_utc: String,
+}
+
+/// Bound on staged survey-tag retries per chat batch: a DB outage must not
+/// grow the batch's memory without limit. Overflow gains stay untagged with
+/// no qty behind them (the unit rolled back): a later use recorded within
+/// the claim window may still reclaim them via retro-claim, otherwise they
+/// stay unattributed — the same missing-gain-only state as before the retry
+/// existed.
+const MAX_SURVEY_TAG_RETRIES: usize = 32;
+
+/// Stage a rolled-back survey gain for the batch-end retry, bounded by
+/// [`MAX_SURVEY_TAG_RETRIES`]. Overflow gains stay untagged with no qty
+/// behind them (the unit rolled back): a later in-window use may still
+/// reclaim them via retro-claim, otherwise they stay unattributed.
+fn stage_survey_tag_retry(
+    staging: &mut Vec<PendingSurveyTag>,
+    character: &str,
+    server: &str,
+    internal_name: Option<&str>,
+    item_name: &str,
+    quantity: u32,
+    ts_utc: &str,
+) {
+    if staging.len() < MAX_SURVEY_TAG_RETRIES {
+        staging.push(PendingSurveyTag {
+            character: character.to_string(),
+            server: server.to_string(),
+            internal_name: internal_name.map(str::to_string),
+            item_name: item_name.to_string(),
+            quantity,
+            ts_utc: ts_utc.to_string(),
+        });
+    } else {
+        eprintln!(
+            "[coordinator] survey retry staging full ({MAX_SURVEY_TAG_RETRIES}); gain left unattributed (an in-window later use may still reclaim it)"
+        );
+    }
+}
+
 /// Central coordinator for all data ingestion
 pub struct DataIngestCoordinator {
     player_watcher: Option<PlayerLogWatcher>,
@@ -1003,6 +1053,12 @@ impl DataIngestCoordinator {
         let mut last_unknown_skill: Option<chat_status_dispatch::UnknownSkillSlot> =
             std::mem::take(&mut self.last_unknown_skill);
         let mut saw_unknown_skill = false;
+        // Survey tag-failure staging (TODO 53): gains whose live
+        // attribute+tag unit rolls back mid-batch wait here for one bounded
+        // retry at batch end (below, after the event loop). Single pass —
+        // a retry that still fails leaves the gain unattributed (an
+        // in-window later use may still reclaim it via retro-claim).
+        let mut survey_tag_retries: Vec<PendingSurveyTag> = Vec::new();
         for event in events {
             match event {
                 LogEvent::ChatMessage(msg, session_tag) => {
@@ -1145,107 +1201,71 @@ impl DataIngestCoordinator {
                         // (3) Survey, live loot gains only: attribute the
                         // just-written ledger row, then tag it — mirrors the
                         // old inline arm. Summoned gains never attribute.
-                        // One write transaction for the qty bump + row tag: if
-                        // the tag fails, the bump rolls back with it, leaving
-                        // the row untagged with no qty behind it (a later
-                        // rescan or retro-claim heals cleanly) instead of a
-                        // bumped qty on an untagged row that a later claim
-                        // would double-count. Same unchecked-transaction shape
-                        // as the dispatch arms: fresh pool checkout, no outer
-                        // transaction open here.
+                        // One atomic attribute+tag unit (see
+                        // `attribute_and_tag_chat_gain`): if the tag fails,
+                        // the bump rolls back with it, leaving the row
+                        // untagged with no qty behind it. A failure no longer
+                        // just drops the gain — the inputs stage for one
+                        // bounded retry at batch end (below), which re-runs
+                        // the whole unit so the re-bump exactly replaces the
+                        // rolled-back one.
                         if is_live {
                             let is_loot = matches!(
                                 crate::chat_status_parser::parse_status_message(&msg),
                                 Some(ChatStatusEvent::ItemGained { .. })
                             ) || msg.json_type.as_deref() == Some("AddItem");
-                            if is_loot
-                                && let (Some(id), Ok(conn)) =
-                                    (identity.as_ref(), self.db_pool.get_write())
-                            {
-                                let tx = match rusqlite::Transaction::new_unchecked(
-                                    &conn,
-                                    rusqlite::TransactionBehavior::Immediate,
-                                ) {
-                                    Ok(tx) => tx,
-                                    Err(e) => {
-                                        eprintln!("[coordinator] survey attr txn begin failed: {e}");
-                                        continue;
-                                    }
-                                };
-                                let use_id = match self.survey_aggregator.attribute_chat_gain(
-                                    &tx,
-                                    &id.character,
-                                    &id.server,
-                                    internal_name.as_deref(),
-                                    quantity,
-                                    &ts_utc,
-                                    Some(item_name.as_str()),
-                                ) {
-                                    Some(use_id) => use_id,
-                                    None => continue,
-                                };
-                                // Merge into source_details (never overwrite):
-                                // JSON receipts carry a `json_twin` provenance
-                                // marker that the twin-claim guard relies on —
-                                // replacing the blob would drop the marker and
-                                // re-open the unsourced-first duplicate hole.
-                                let tag_rows = match tx.execute(
-                                    "UPDATE item_transactions
-                                        SET source_kind = 'survey_chat',
-                                            source_details = json_set(
-                                                COALESCE(source_details, '{}'),
-                                                '$.survey_use_id', ?1)
-                                      WHERE rowid = (
-                                        SELECT rowid FROM item_transactions
-                                         WHERE timestamp = ?2
-                                           AND character_name = ?3
-                                           AND server_name = ?4
-                                           AND source = 'chat_status'
-                                           AND source_kind IS NULL
-                                           -- staged survey gains are loot only
-                                           -- (summoned rows share source='chat_status'
-                                           -- / source_kind NULL); exclude them.
-                                           AND context = 'loot'
-                                           AND item_name = ?5
-                                           AND quantity = ?6
-                                         ORDER BY rowid DESC LIMIT 1
-                                      )",
-                                    rusqlite::params![
-                                        use_id,
-                                        ts_utc,
-                                        id.character,
-                                        id.server,
-                                        item_name,
-                                        quantity as i64,
-                                    ],
-                                ) {
-                                    Ok(n) => n,
-                                    // A failed tag must not abort the whole
-                                    // batch via `?`: roll back this gain and
-                                    // move on so the remaining gains still
-                                    // process (same shape as the zero-match
-                                    // arm below).
+                            // Identity-less gains were already skipped by the
+                            // dispatch above; a pool-checkout failure stages
+                            // too — the retry below checks out fresh.
+                            if is_loot && let Some(id) = identity.as_ref() {
+                                match self.db_pool.get_write() {
+                                    Ok(conn) => match self
+                                        .survey_aggregator
+                                        .attribute_and_tag_chat_gain(
+                                            &conn,
+                                            &id.character,
+                                            &id.server,
+                                            internal_name.as_deref(),
+                                            quantity,
+                                            &ts_utc,
+                                            Some(item_name.as_str()),
+                                        ) {
+                                        Ok(_) => {}
+                                        // A failed unit must not abort the
+                                        // whole batch via `?`: the rollback
+                                        // already undid the bump, so stage
+                                        // the inputs for the batch-end retry
+                                        // and move on so the remaining gains
+                                        // still process.
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[coordinator] survey attr/tag failed ({e}); staged for batch-end retry"
+                                            );
+                                            stage_survey_tag_retry(
+                                                &mut survey_tag_retries,
+                                                &id.character,
+                                                &id.server,
+                                                internal_name.as_deref(),
+                                                &item_name,
+                                                quantity,
+                                                &ts_utc,
+                                            );
+                                        }
+                                    },
                                     Err(e) => {
                                         eprintln!(
-                                            "[coordinator] survey row tag failed: {e}, rolled back"
+                                            "[coordinator] survey attr skipped, pool checkout failed ({e}); staged for batch-end retry"
                                         );
-                                        continue;
+                                        stage_survey_tag_retry(
+                                            &mut survey_tag_retries,
+                                            &id.character,
+                                            &id.server,
+                                            internal_name.as_deref(),
+                                            &item_name,
+                                            quantity,
+                                            &ts_utc,
+                                        );
                                     }
-                                };
-                                // The tag must land on exactly one untagged
-                                // ledger row: zero means the row vanished (or
-                                // never matched) between checkouts — commit
-                                // would bump a use with no provenance, so roll
-                                // back and let a later pass reclaim the gain.
-                                if tag_rows != 1 {
-                                    eprintln!(
-                                        "[coordinator] survey row tag matched {tag_rows} rows, rolled back"
-                                    );
-                                    continue;
-                                }
-                                if tx.commit().is_err() {
-                                    eprintln!("[coordinator] survey attr txn commit failed, rolled back");
-                                    continue;
                                 }
                             }
                         }
@@ -1488,6 +1508,43 @@ impl DataIngestCoordinator {
                     identity_mutated = true;
                 }
                 _ => {}
+            }
+        }
+        // Batch-end retry for survey tags that failed mid-batch (TODO 53):
+        // one more pass over the staged gains through the same atomic unit.
+        // Single pass only — a retry that still fails is logged and the gain
+        // stays unattributed (the rollback leaves no qty behind, so a later
+        // in-window use reclaimed via retro-claim cannot double-count).
+        // Runs before the fallible message-insert tail so a tail failure
+        // cannot strand staged gains that a fresh checkout would have healed.
+        if !survey_tag_retries.is_empty() {
+            match self.db_pool.get_write() {
+                Ok(conn) => {
+                    for pending in std::mem::take(&mut survey_tag_retries) {
+                        if let Err(e) =
+                            self.survey_aggregator.attribute_and_tag_chat_gain(
+                                &conn,
+                                &pending.character,
+                                &pending.server,
+                                pending.internal_name.as_deref(),
+                                pending.quantity,
+                                &pending.ts_utc,
+                                Some(pending.item_name.as_str()),
+                            )
+                        {
+                            eprintln!(
+                                "[coordinator] survey batch-end retry failed for {} x{} ({}): {e}",
+                                pending.item_name, pending.quantity, pending.ts_utc
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[coordinator] survey batch-end retry skipped, pool checkout failed ({} gains left unattributed; an in-window later use may still reclaim them): {e}",
+                        survey_tag_retries.len()
+                    );
+                }
             }
         }
 
