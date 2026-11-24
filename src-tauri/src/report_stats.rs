@@ -165,7 +165,14 @@ pub fn parse_behavior_report(content: &str) -> Vec<ParsedStat> {
     stats
 }
 
-/// Persist parsed stats to the character_report_stats table.
+/// Persist parsed stats to the character_report_stats table. Forward-only:
+/// an older capture replayed after a newer import is a no-op, and an
+/// identical re-import writes nothing (no stamp churn, so the caller can stay
+/// silent like every other arm). An equal capture with different content
+/// still replaces — same retry-eligibility rule as `import_garden_almanac` —
+/// so a retry of the current observation heals a failed import. Stamps are
+/// RFC3339 (the shape the wall-clock caller wrote); text comparison orders
+/// same-shape stamps chronologically.
 pub fn persist_stats(
     conn: &Connection,
     character: &str,
@@ -176,30 +183,70 @@ pub fn persist_stats(
     if stats.is_empty() {
         return Ok(0);
     }
-
+    // Identical re-import (rescan) is a pure no-op: values already match, so
+    // there is nothing to write and the stamp must not advance.
+    let current: Vec<(String, String, String)> = conn
+        .prepare(
+            "SELECT category, stat_name, stat_value FROM character_report_stats
+             WHERE character_name = ?1 AND server_name = ?2",
+        )
+        .map_err(|e| format!("Prepare error: {e}"))?
+        .query_map(rusqlite::params![character, server], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(|e| format!("Query error: {e}"))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("Row error: {e}"))?;
+    let mut fresh: Vec<(String, String, String)> = stats
+        .iter()
+        .map(|s| (s.category.clone(), s.name.clone(), s.value.clone()))
+        .collect();
+    let mut current_sorted = current;
+    current_sorted.sort();
+    fresh.sort();
+    if current_sorted == fresh {
+        return Ok(0);
+    }
+    // Recency: a rescan can redeliver an OLDER book after a newer import.
+    // Captures compare lexicographically (RFC3339 both sides). Equal stays
+    // eligible, so a retry of the current observation still replaces.
+    let stored_newest: Option<String> = conn
+        .query_row(
+            "SELECT MAX(updated_at) FROM character_report_stats
+             WHERE character_name = ?1 AND server_name = ?2",
+            rusqlite::params![character, server],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("Query error: {e}"))?;
+    if stored_newest.as_deref().is_some_and(|s| timestamp < s) {
+        return Ok(0);
+    }
     let mut stmt = conn
         .prepare(
             "INSERT INTO character_report_stats (character_name, server_name, category, stat_name, stat_value, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(character_name, server_name, category, stat_name) DO UPDATE SET
                 stat_value = excluded.stat_value,
-                updated_at = excluded.updated_at",
+                updated_at = excluded.updated_at
+             WHERE updated_at <= excluded.updated_at",
         )
         .map_err(|e| format!("Prepare error: {e}"))?;
 
+    let mut changed = 0;
     for stat in stats {
-        stmt.execute(rusqlite::params![
-            character,
-            server,
-            stat.category,
-            stat.name,
-            stat.value,
-            timestamp,
-        ])
-        .map_err(|e| format!("Insert error: {e}"))?;
+        changed += stmt
+            .execute(rusqlite::params![
+                character,
+                server,
+                stat.category,
+                stat.name,
+                stat.value,
+                timestamp,
+            ])
+            .map_err(|e| format!("Insert error: {e}"))?;
     }
 
-    Ok(stats.len())
+    Ok(changed)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
@@ -443,6 +490,147 @@ You have used <b>71 days</b> of VIP from a Steam subscription.
         assert_eq!(
             extract_italic_stat("Died?  <i>YES (822)</i>").map(|(_, v)| v),
             Some("YES (822)".to_string())
+        );
+    }
+
+    // ── recency (derived-state hardening) ─────────────────────────
+
+    fn stat(category: &str, name: &str, value: &str) -> ParsedStat {
+        ParsedStat {
+            category: category.to_string(),
+            name: name.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    fn setup_stats() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run_migrations(&conn, None).unwrap();
+        conn
+    }
+
+    fn read_stat(conn: &Connection) -> (String, String) {
+        conn.query_row(
+            "SELECT stat_value, updated_at FROM character_report_stats
+             WHERE character_name = 'T' AND server_name = 'Dreva'
+               AND category = 'age' AND stat_name = 'deaths'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn persist_stats_older_capture_after_newer_is_noop() {
+        let conn = setup_stats();
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "900")],
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        // An older book replayed after a newer import must not move the
+        // value backward: no-op, count and stamp kept.
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "800")],
+            "2026-11-18T12:00:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(
+            read_stat(&conn),
+            ("900".to_string(), "2026-11-18T12:10:00+00:00".to_string())
+        );
+    }
+
+    #[test]
+    fn persist_stats_identical_reimport_does_not_advance_stamp() {
+        let conn = setup_stats();
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "900")],
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        // Identical values re-observed later: no write, stamp stays at the
+        // first observation instead of advancing.
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "900")],
+            "2026-11-18T12:20:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(
+            read_stat(&conn),
+            ("900".to_string(), "2026-11-18T12:10:00+00:00".to_string())
+        );
+    }
+
+    #[test]
+    fn persist_stats_equal_capture_retry_stays_eligible() {
+        // Same garden-parity rule: an equal capture with different content
+        // still replaces, so a retry of the current observation heals a
+        // failed import instead of wedging behind its own stamp.
+        let conn = setup_stats();
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "900")],
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "901")],
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(read_stat(&conn).0, "901".to_string());
+    }
+
+    #[test]
+    fn persist_stats_newer_after_older_applies() {
+        // Twin arrival order, forward direction: an older book first, then
+        // the newer book — the newer values must land with the newer stamp.
+        let conn = setup_stats();
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "800")],
+            "2026-11-18T12:00:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "900")],
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(
+            read_stat(&conn),
+            ("900".to_string(), "2026-11-18T12:10:00+00:00".to_string())
         );
     }
 }
