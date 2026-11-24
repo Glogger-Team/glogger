@@ -95,19 +95,25 @@ pub fn increment_consumed_count(conn: &Connection, session_id: i64) -> Result<()
     Ok(())
 }
 
+/// Only fires on open sessions (`ended_at IS NULL`): the close-time
+/// [`recompute_session_bounds_and_end`] owns finalized bounds, and a
+/// delayed gain attributed to a closed session's use must not drift
+/// them. Same precedent as [`tighten_started_at`].
 pub fn update_first_loot_at(conn: &Connection, session_id: i64, ts: &str) -> Result<()> {
     conn.execute(
         "UPDATE survey_sessions SET first_loot_at = ?2
-         WHERE id = ?1 AND first_loot_at IS NULL",
+         WHERE id = ?1 AND ended_at IS NULL AND first_loot_at IS NULL",
         params![session_id, ts],
     )?;
     Ok(())
 }
 
+/// Only fires on open sessions (`ended_at IS NULL`) — see
+/// [`update_first_loot_at`].
 pub fn update_last_loot_at(conn: &Connection, session_id: i64, ts: &str) -> Result<()> {
     conn.execute(
         "UPDATE survey_sessions SET last_loot_at = ?2
-         WHERE id = ?1 AND (last_loot_at IS NULL OR last_loot_at < ?2)",
+         WHERE id = ?1 AND ended_at IS NULL AND (last_loot_at IS NULL OR last_loot_at < ?2)",
         params![session_id, ts],
     )?;
     Ok(())
@@ -339,29 +345,14 @@ pub fn mark_live_chat_gain_as_speed_bonus(
     Ok(updated)
 }
 
-/// Claim untagged chat-status loot rows near a survey use's `used_at` and
-/// link them to the use. Returns the total quantity claimed.
-///
-/// Survey loot lands in the same game tick as the map's consumption (Basic)
-/// or within seconds of it (a Motherlode/Multihit first yield framed just
-/// after the chat line), and the chat rows may already be in
-/// `item_transactions` (untagged) by the time the manual use is recorded.
-/// This retroactively tags those rows as `survey_chat` so the loot summary
-/// counts them, mirroring what the live gate in `attribute_chat_gain` does
-/// when the ordering goes the other way. The caller keeps the window tight
-/// (±5s): a wider window would vacuum unrelated mining/kill loot into
-/// mining uses.
-///
-/// Completion and speed-bonus stamping are the caller's job, not this
-/// function's: Basic uses complete on the claim and chained Basic uses
-/// stamp `$.is_speed_bonus` (via `is_speed_bonus`, resolved with
-/// [`basic_use_is_chained`]) — the same `json('true')` shape the retired
-/// Player.log marker path wrote, so readers (`= 1` checks) treat them
-/// identically. Mining uses stay pending: their loot drips across swings.
-///
-/// Survey maps themselves are excluded by internal-name prefix — crafting a
-/// map emits the same "added to inventory" chat line as loot, and players
-/// commonly craft the next map within seconds of using one.
+/// `cdn_available` mirrors the live gate in
+/// [`crate::survey::aggregator::SurveySessionAggregator::attribute_chat_gain`]:
+/// with CDN data the prefix exclusion above is sufficient (a crafted map
+/// would have resolved to a `GeologySurvey*`/`MiningSurvey*` internal
+/// name); without it, crafted-map rows carry NULL `internal_name` and must
+/// ALSO fail the display name's verified "survey" signal, or a map crafted
+/// within seconds of a use is vacuumed in as loot.
+#[allow(clippy::too_many_arguments)]
 pub fn claim_unlinked_chat_loot_near(
     conn: &Connection,
     survey_use_id: i64,
@@ -370,8 +361,9 @@ pub fn claim_unlinked_chat_loot_near(
     used_at_iso: &str,
     window_secs: u32,
     is_speed_bonus: bool,
+    cdn_available: bool,
 ) -> Result<u32> {
-    const PREDICATE: &str = "character_name = ?2
+    const BASE_PREDICATE: &str = "character_name = ?2
            AND server_name = ?3
            AND source = 'chat_status'
            AND context = 'loot'
@@ -382,9 +374,20 @@ pub fn claim_unlinked_chat_loot_near(
                     AND internal_name NOT LIKE 'MiningSurvey%'))
            AND timestamp BETWEEN datetime(?4, '-' || ?5 || ' seconds')
                              AND datetime(?4, '+' || ?5 || ' seconds')";
+    // CDN-down arm of the live gate: NULL-internal rows whose display
+    // name carries "survey" are crafted maps, not loot.
+    let predicate;
+    let predicate_ref: &str = if cdn_available {
+        BASE_PREDICATE
+    } else {
+        predicate = format!(
+            "{BASE_PREDICATE} AND (item_name IS NULL OR lower(item_name) NOT LIKE '%survey%')"
+        );
+        &predicate
+    };
 
     let total: u32 = conn.query_row(
-        &format!("SELECT COALESCE(SUM(quantity), 0) FROM item_transactions WHERE {PREDICATE}"),
+        &format!("SELECT COALESCE(SUM(quantity), 0) FROM item_transactions WHERE {predicate_ref}"),
         params![survey_use_id, character, server, used_at_iso, window_secs],
         |row| row.get(0),
     )?;
@@ -399,7 +402,7 @@ pub fn claim_unlinked_chat_loot_near(
                         source_details = json_set(COALESCE(source_details, '{{}}'),
                                                   '$.survey_use_id', ?1,
                                                   '$.is_speed_bonus', json('true'))
-                  WHERE {PREDICATE}"
+                  WHERE {predicate_ref}"
             ),
             params![survey_use_id, character, server, used_at_iso, window_secs],
         )?;
@@ -410,7 +413,7 @@ pub fn claim_unlinked_chat_loot_near(
                     SET source_kind = 'survey_chat',
                         source_details = json_set(COALESCE(source_details, '{{}}'),
                                                   '$.survey_use_id', ?1)
-                  WHERE {PREDICATE}"
+                  WHERE {predicate_ref}"
             ),
             params![survey_use_id, character, server, used_at_iso, window_secs],
         )?;
@@ -1028,6 +1031,7 @@ mod tests {
             "2026-04-15 12:00:04",
             5,
             chained,
+            true,
         )
         .unwrap();
         assert_eq!(claimed, 3);
@@ -1081,9 +1085,102 @@ mod tests {
             "2026-04-15 12:00:00",
             5,
             chained,
+            true,
         )
         .unwrap();
         assert_eq!(claimed, 3);
         assert_eq!(speed_bonus_flag(&conn, "Iron Ore"), None);
+    }
+
+    #[test]
+    fn retro_claim_excludes_crafted_map_only_when_cdn_down() {
+        // CDN-down crafted maps carry NULL internal_name (resolution
+        // failed): without the display-name arm they read as loot and a
+        // map crafted within seconds of a use is vacuumed in. CDN-up
+        // keeps admitting NULL-internal rows — with resolution working,
+        // NULL means "unresolvable item", not "map" (mirrors the live
+        // gate in `attribute_chat_gain`).
+        let conn = fresh_db();
+        let session = insert_session(
+            &conn,
+            "Zenith",
+            "Dreva",
+            "2026-04-15 12:00:00",
+            SessionStartTrigger::Manual,
+            None,
+        )
+        .unwrap();
+        let a = insert_basic_use(&conn, session, "Zenith", "Dreva", "2026-04-15 12:00:00");
+        insert_chat_loot(&conn, "2026-04-15 12:00:00", "Iron Ore", 3);
+        insert_chat_loot(
+            &conn,
+            "2026-04-15 12:00:02",
+            "Serbule Blue Mineral Survey",
+            1,
+        );
+
+        let claimed_down = claim_unlinked_chat_loot_near(
+            &conn, a, "Zenith", "Dreva", "2026-04-15 12:00:00", 5, false, false,
+        )
+        .unwrap();
+        assert_eq!(claimed_down, 3, "crafted map excluded when CDN is down");
+        let map_tag: Option<String> = conn
+            .query_row(
+                "SELECT source_kind FROM item_transactions WHERE item_name = 'Serbule Blue Mineral Survey'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(map_tag, None);
+
+        let claimed_up = claim_unlinked_chat_loot_near(
+            &conn, a, "Zenith", "Dreva", "2026-04-15 12:00:00", 5, false, true,
+        )
+        .unwrap();
+        assert_eq!(claimed_up, 1, "NULL-internal row admitted when CDN is up");
+    }
+
+    #[test]
+    fn closed_session_loot_bounds_stay_final() {
+        // Close-time `recompute_session_bounds_and_end` owns finalized
+        // bounds: loot attributed afterwards (delayed gains, heals) must
+        // still bump `loot_qty` on the use but never drift the session
+        // header. Same precedent as `tighten_started_at`.
+        let conn = fresh_db();
+        let session = insert_session(
+            &conn,
+            "Zenith",
+            "Dreva",
+            "2026-04-15 12:00:00",
+            SessionStartTrigger::Manual,
+            None,
+        )
+        .unwrap();
+        end_session(&conn, session, "2026-04-15 12:30:00").unwrap();
+
+        update_first_loot_at(&conn, session, "2026-04-15 12:05:00").unwrap();
+        update_last_loot_at(&conn, session, "2026-04-15 12:05:00").unwrap();
+        let s = get_session(&conn, session).unwrap().unwrap();
+        assert_eq!(s.first_loot_at, None);
+        assert_eq!(s.last_loot_at, None);
+
+        // A session closed WITH bounds keeps them too.
+        let session2 = insert_session(
+            &conn,
+            "Zenith",
+            "Dreva",
+            "2026-04-15 12:00:00",
+            SessionStartTrigger::Manual,
+            None,
+        )
+        .unwrap();
+        update_first_loot_at(&conn, session2, "2026-04-15 12:05:00").unwrap();
+        update_last_loot_at(&conn, session2, "2026-04-15 12:10:00").unwrap();
+        end_session(&conn, session2, "2026-04-15 12:30:00").unwrap();
+        update_first_loot_at(&conn, session2, "2026-04-15 12:01:00").unwrap();
+        update_last_loot_at(&conn, session2, "2026-04-15 12:40:00").unwrap();
+        let s2 = get_session(&conn, session2).unwrap().unwrap();
+        assert_eq!(s2.first_loot_at.as_deref(), Some("2026-04-15 12:05:00"));
+        assert_eq!(s2.last_loot_at.as_deref(), Some("2026-04-15 12:10:00"));
     }
 }
