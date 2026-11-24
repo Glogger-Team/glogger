@@ -14,6 +14,17 @@ invocation difference, same as the markdown job): scope is then exactly the
 worktree changes and no upstream - the local scope would be empty and the
 gate could never fire. An all-zero base (manual dispatch) falls back to
 HEAD~1, same as the markdown script.
+
+`--audit` is the whole-tree counterpart, not part of the per-commit gate:
+every symbol-shaped reference in every doc (all of docs/, any revision
+state) is checked against all live definitions/strings/pairs in
+src-tauri/src. A hit is a stale claim the changed-set gate can never see —
+a symbol deleted before the gate existed, or docs edited without touching
+code (the Player.log item parser outlived its deletion across 13 doc
+files). Exit nonzero on any stale claim. Advisory-only by design: doc
+prose legitimately names frontend-owned (Vue/CDN) nouns the .rs live scan
+cannot see, so a blocking CI invocation would drown in unactionable hits;
+run it on demand and triage the grouped output (see audit_tree).
 """
 # Mirrors scope logic from scripts/lint-markdown-changed.py (no --base,
 # plus the --base CI range). Do not import across scripts; keep the logic
@@ -538,6 +549,137 @@ def extract_identifiers(
     return idents, pairs, literals, def_names
 
 
+_DOC_SPAN_RE = re.compile(r"`([^`]*)`|\"([^\"]*)\"")
+_DOC_KEBAB_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)+")
+_DOC_QUOTED_RE = re.compile(r'"([^"]*)"')
+_DOC_CAMEL_RE = re.compile(r"\b[A-Z][a-z]+[A-Z][A-Za-z0-9]*\b")
+
+
+def _span_token_offsets(s: str) -> list[tuple[str, int]]:
+    """(kebab token, offset in s) for whitespace-separated tokens in s."""
+    out: list[tuple[str, int]] = []
+    for m in re.finditer(r"\S+", s):
+        tok = m.group(0).strip(".,;:()[]'\"")
+        if len(tok) < 4 or tok.lower() in STOPWORDS:
+            continue
+        if _DOC_KEBAB_RE.fullmatch(tok):
+            out.append((tok, m.start()))
+    return out
+
+
+def _doc_candidate_items(text: str) -> list[tuple[str, str, int]]:
+    """(kind, token, char offset) for every symbol-shaped doc reference.
+
+    One pass over the whole text so finding lines derive from source
+    offsets: a code span split across lines still attributes its tokens
+    instead of going silent. Nested double-quoted literals inside a
+    backtick span are extracted alongside standalone kebab tokens, so
+    `emit("stale-channel", payload)` still yields `stale-channel`.
+    """
+    items: list[tuple[str, str, int]] = []
+    for m in _DOC_CAMEL_RE.finditer(text):
+        name = m.group(0)
+        if len(name) >= 4 and name.lower() not in STOPWORDS:
+            items.append(("camel", name, m.start()))
+    for m in PAIR_RE.finditer(text):
+        items.append(("pair", m.group(0), m.start()))
+    for m in _DOC_SPAN_RE.finditer(text):
+        if m.group(1) is not None:
+            content, base = m.group(1), m.start(1)
+        else:
+            content, base = m.group(2), m.start(2)
+        for tok, off in _span_token_offsets(content):
+            items.append(("literal", tok, base + off))
+        for qm in _DOC_QUOTED_RE.finditer(content):
+            for tok, off in _span_token_offsets(qm.group(1)):
+                items.append(("literal", tok, base + qm.start(1) + off))
+    return items
+
+
+def extract_doc_candidates(
+    text: str,
+) -> tuple[set[str], set[str], set[str]]:
+    """Symbol-shaped references in one doc text: (camel, pairs, literals).
+
+    Projection of the offset-carrying `_doc_candidate_items` pass, so both
+    stay in agreement by construction. Same shapes the per-commit gate
+    extracts from removed .rs lines: multi-hump CamelCase anywhere (a
+    single hump like `Active` is prose-indistinguishable and excluded by
+    design), `Enum::Variant` pairs anywhere, and kebab-case literals inside
+    backtick or double-quote spans only (bare hyphenated prose and CSS
+    classes would otherwise flood the report). Single-hump Pascal in spans
+    is likewise prose (`About`, `Ability`) and excluded: a retired
+    single-hump literal is the documented blind spot, still covered when
+    its removal trips the per-commit gate. STOPWORDS apply exactly as in
+    extract_identifiers.
+    """
+    camel: set[str] = set()
+    pairs: set[str] = set()
+    literals: set[str] = set()
+    for kind, tok, _ in _doc_candidate_items(text):
+        if kind == "camel":
+            camel.add(tok)
+        elif kind == "pair":
+            pairs.add(tok)
+        else:
+            literals.add(tok)
+    return camel, pairs, literals
+
+
+def audit_tree(
+    docs_root: Path | None = None,
+    rs_root: Path | None = None,
+) -> list[str]:
+    """Whole-tree audit: every doc candidate with no live counterpart.
+
+    Live sets come from the shared collect_live_symbols scan over rs_root
+    (default src-tauri/src), so the audit and the gate cannot disagree on
+    what counts as live. A doc candidate is stale under the gate's own
+    rule: CamelCase with no live definition (a variant with a live pair
+    counts as live even though live_definitions only collects type names),
+    a pair with no live pair use, a kebab literal with neither a live
+    string nor a live definition. Finding lines derive from the source
+    offsets of the whole-document pass, so a span split across lines
+    attributes its start line instead of going silent; same-line spans
+    report exactly as before. Returns sorted `relpath:line: token`
+    findings (same shape as the gate) for human triage; the caller decides
+    the exit code. Roots are parameters (defaulting to the live tree) so
+    self_test can pin the behavior on fixtures.
+    """
+    docs = ROOT / "docs" if docs_root is None else docs_root
+    src = ROOT / "src-tauri" / "src" if rs_root is None else rs_root
+    defined, live_pairs, live_strings = collect_live_symbols(src.rglob("*.rs"))
+    live_variants = {p.split("::", 1)[1] for p in live_pairs}
+    if not docs.exists():
+        return []
+    findings: list[str] = []
+    for doc in sorted(docs.rglob("*.md")):
+        try:
+            text = doc.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        items = _doc_candidate_items(text)
+        camel = {tok for kind, tok, _ in items if kind == "camel"}
+        pairs = {tok for kind, tok, _ in items if kind == "pair"}
+        literals = {tok for kind, tok, _ in items if kind == "literal"}
+        stale = (
+            (camel - defined - live_variants)
+            | (pairs - live_pairs)
+            | ((literals - live_strings) - defined)
+        )
+        if not stale:
+            continue
+        try:
+            rel = doc.relative_to(ROOT).as_posix()
+        except ValueError:
+            rel = doc.as_posix()
+        for _, tok, off in items:
+            if tok in stale:
+                lineno = text.count("\n", 0, off) + 1
+                findings.append(f"{rel}:{lineno}: {tok}")
+    return sorted(set(findings))
+
+
 def old_content_for(path: str, ref: str) -> str | None:
     try:
         out = subprocess.run(
@@ -582,7 +724,8 @@ def collect_changed_rs(explicit_base: str | None) -> list[str]:
     return out
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """CLI parser, factored so self_test can pin the default mode."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--base",
@@ -590,7 +733,19 @@ def main() -> int:
         help="CI range: identifiers removed between base and HEAD "
         "(PR base sha / push before; all-zero falls back to HEAD~1)",
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--audit",
+        action="store_true",
+        help="Whole-tree audit: every symbol-shaped reference in every doc "
+        "checked against all live definitions (ignores the changed-set "
+        "scope). Exit nonzero on any stale claim. Advisory-only; see "
+        "audit_tree.",
+    )
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
     explicit_base = args.base
     if explicit_base is not None and explicit_base.strip("0") == "":
         print(
@@ -599,6 +754,17 @@ def main() -> int:
         )
         explicit_base = "HEAD~1"
     os.chdir(ROOT)
+    if args.audit:
+        # Whole-tree mode: no changed-set scope, no minus-line extraction.
+        # The per-commit gate below is untouched (default path unchanged).
+        audit_findings = audit_tree()
+        for f in audit_findings:
+            print(f)
+        print(
+            f"audited docs tree; {len(audit_findings)} stale claims",
+            file=sys.stderr,
+        )
+        return 1 if audit_findings else 0
     changed = collect_changed_rs(explicit_base)
     idents: set[str] = set()
     removed_pairs: set[str] = set()
@@ -1139,6 +1305,152 @@ def self_test() -> int:
     check(
         "281-analogue live literal still extracted via threaded kept",
         "game-state-updated" in _live_lits and "game-state-updated" in _live_idents,
+    )
+    # --audit mutant-killing pins (whole-tree mode): a stale doc claim in
+    # every candidate class fires, a fully-live doc passes clean, and the
+    # flag defaults off so the per-commit gate path is unchanged. Pre-fix
+    # these fail at name lookup (no audit_tree/build_parser); post-fix they
+    # run against fixture trees, never the live repo.
+    with tempfile.TemporaryDirectory() as auditor:
+        aud_docs = Path(auditor) / "docs"
+        aud_src = Path(auditor) / "src"
+        aud_docs.mkdir()
+        aud_src.mkdir()
+        (aud_src / "live.rs").write_text("pub fn live_fn() {}\n", encoding="utf-8")
+        (aud_docs / "stale.md").write_text(
+            "# Removal notes\n"
+            "\n"
+            "The `RetiredWidget` handler is gone, along with the\n"
+            "`DeadEnum::Gone` arm. The old `stale-channel` event no\n"
+            "longer fires.\n",
+            encoding="utf-8",
+        )
+        _stale_hits = audit_tree(aud_docs, aud_src)
+        _stale_text = "\n".join(_stale_hits)
+    check(
+        "audit flags stale CamelCase claim",
+        "RetiredWidget" in _stale_text,
+    )
+    check(
+        "audit flags stale pair claim",
+        "DeadEnum::Gone" in _stale_text,
+    )
+    check(
+        "audit flags stale kebab-literal claim",
+        "stale-channel" in _stale_text,
+    )
+    with tempfile.TemporaryDirectory() as keeper:
+        keep_docs = Path(keeper) / "docs"
+        keep_src = Path(keeper) / "src"
+        keep_docs.mkdir()
+        keep_src.mkdir()
+        (keep_src / "live.rs").write_text(
+            "pub struct LiveWidget {}\n"
+            "pub enum LiveEnum {\n"
+            "    Kept,\n"
+            "    Other,\n"
+            "}\n"
+            "pub fn emit_it() {\n"
+            '    emit("live-channel", LiveEnum::Kept);\n'
+            "}\n",
+            encoding="utf-8",
+        )
+        (keep_docs / "live.md").write_text(
+            "# Live notes\n"
+            "\n"
+            "The `LiveWidget` handles the `live-channel` event via\n"
+            "`LiveEnum::Kept`.\n",
+            encoding="utf-8",
+        )
+        _live_hits = audit_tree(keep_docs, keep_src)
+    check("audit passes fully-live doc clean", _live_hits == [])
+    check(
+        "audit flag defaults off (per-commit gate unchanged)",
+        build_parser().parse_args([]).audit is False,
+    )
+    check(
+        "audit flag opts in explicitly",
+        build_parser().parse_args(["--audit"]).audit is True,
+    )
+    # Closer-span pin (B round): the span regex must consume its closing
+    # backtick, otherwise the closer re-opens a spurious span and trailing
+    # bare kebab prose on the same line (`well-known` here) fires as a
+    # false-positive literal. Pre-fix this fixture reports `well-known`.
+    with tempfile.TemporaryDirectory() as closer:
+        close_docs = Path(closer) / "docs"
+        close_src = Path(closer) / "src"
+        close_docs.mkdir()
+        close_src.mkdir()
+        (close_src / "live.rs").write_text(
+            'pub fn emit_it() {\n    emit("live-channel");\n}\n', encoding="utf-8"
+        )
+        (close_docs / "close.md").write_text(
+            "# Closer notes\n\nThe `live-channel` event is well-known prose.\n",
+            encoding="utf-8",
+        )
+        _closer_hits = audit_tree(close_docs, close_src)
+    check("audit closed span ignores trailing bare kebab", _closer_hits == [])
+    # C1: nested quoted literal inside a backtick span still fires.
+    # Pre-fix the span yields only `emit("stale-channel",` (the kebab
+    # check fails on the call wrapper) so the retired event goes silent.
+    with tempfile.TemporaryDirectory() as nested:
+        nest_docs = Path(nested) / "docs"
+        nest_src = Path(nested) / "src"
+        nest_docs.mkdir()
+        nest_src.mkdir()
+        (nest_src / "live.rs").write_text("pub fn live_fn() {}\n", encoding="utf-8")
+        (nest_docs / "nested.md").write_text(
+            '# Nested notes\n\nThe `emit("stale-channel", payload)` call is retired.\n',
+            encoding="utf-8",
+        )
+        _nested_hits = audit_tree(nest_docs, nest_src)
+    check(
+        "C1 nested quoted literal inside backtick span fires",
+        "stale-channel" in "\n".join(_nested_hits),
+    )
+    # C2: a variant with a live pair is live. `KeptWidget` never appears in
+    # live_definitions (type names only), so without the pair-backed
+    # suppression the doc mention of a live `LiveEnum::KeptWidget` fires.
+    # A single-hump `Kept` fixture cannot detect this; the multi-hump
+    # variant can.
+    with tempfile.TemporaryDirectory() as variant:
+        var_docs = Path(variant) / "docs"
+        var_src = Path(variant) / "src"
+        var_docs.mkdir()
+        var_src.mkdir()
+        (var_src / "live.rs").write_text(
+            "pub enum LiveEnum {\n"
+            "    KeptWidget,\n"
+            "    Other,\n"
+            "}\n"
+            "pub fn use_it() {\n"
+            "    let x = LiveEnum::KeptWidget;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (var_docs / "variant.md").write_text(
+            "# Variant notes\n\nThe `LiveEnum::KeptWidget` variant is live.\n",
+            encoding="utf-8",
+        )
+        _variant_hits = audit_tree(var_docs, var_src)
+    check("C2 live pair suppresses its variant", _variant_hits == [])
+    # C3: a span split across lines attributes its start line. Pre-fix the
+    # per-line pass finds no complete span on either line, so the audit
+    # returns silent success on a stale claim.
+    with tempfile.TemporaryDirectory() as split:
+        split_docs = Path(split) / "docs"
+        split_src = Path(split) / "src"
+        split_docs.mkdir()
+        split_src.mkdir()
+        (split_src / "live.rs").write_text("pub fn live_fn() {}\n", encoding="utf-8")
+        (split_docs / "split.md").write_text(
+            "# Split notes\n\nThe `stale-channel event is split\nacross lines` here.\n",
+            encoding="utf-8",
+        )
+        _split_hits = audit_tree(split_docs, split_src)
+    check(
+        "C3 split span attributes its start line",
+        any(f.endswith("split.md:3: stale-channel") for f in _split_hits),
     )
     return 1 if failures else 0
 
