@@ -51,19 +51,101 @@ def fail(msg: str) -> int:
     return 1
 
 
-def _strip_line_comments(text: str) -> str:
-    """Remove `//`/`///` comments so doc examples cannot match code patterns.
+_STR_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+_CHAR_RE = re.compile(
+    r"'(?:[^'\\\n]|\\(?:[nrt\\0'\x22]|x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}))'"
+)
+_RAW_STR_RE = re.compile(r"(?:br|cr|r)(#+)?\"")
 
-    `migrations.rs` documents the chain idiom inside a `///` doc comment
-    (the `if current_version < 2` example); that line must never count as
-    a chained version. No `://` sequence occurs inside a string literal in
-    the scanned file, so a per-line cut at the first `//` is safe here.
+
+def _code_only(
+    line: str, in_block: bool, raw_closer: str | None, keep_strings: bool = False
+) -> tuple[str, bool, str | None]:
+    """Blank comments (threading multi-line state) with string awareness.
+
+    Same shape as check-review-patterns `_code_only` (#293 precedent): `//`
+    starts a comment only outside strings/blocks, `/*` opens only outside
+    strings, quotes inside blocks never open strings. `keep_strings`
+    preserves double-quoted/raw spans but blanks comments (char literals
+    stay blanked so `'"'` cannot forge a quote). An unterminated `"`
+    runs to EOL (backslash-newline continuation) so braces in the tail
+    never skew depth. Lifetimes survive via `_CHAR_RE` (needs closing
+    `'`, handles `\\u{...}`).
     """
-    return "\n".join(line.split("//", 1)[0] for line in text.split("\n"))
+    out: list[str] = []
+    i, n = 0, len(line)
+    while i < n:
+        if raw_closer is not None:
+            end = line.find(raw_closer, i)
+            if end == -1:
+                if keep_strings:
+                    out.append(line[i:])
+                return "".join(out), in_block, raw_closer
+            if keep_strings:
+                out.append(line[i : end + len(raw_closer)])
+            i = end + len(raw_closer)
+            raw_closer = None
+            continue
+        if in_block:
+            end = line.find("*/", i)
+            if end == -1:
+                return "".join(out), True, None
+            i = end + 2
+            in_block = False
+            continue
+        if line.startswith("//", i):
+            break
+        if line.startswith("/*", i):
+            in_block = True
+            i += 2
+            continue
+        m = _STR_RE.match(line, i)
+        if m:
+            if keep_strings:
+                out.append(line[i : m.end()])
+            i = m.end()
+            continue
+        if line[i] == '"':
+            if keep_strings:
+                out.append(line[i:])
+            return "".join(out), in_block, raw_closer
+        m = _RAW_STR_RE.match(line, i)
+        if m and (i == 0 or not (line[i - 1].isalnum() or line[i - 1] == "_")):
+            hashes = m.group(1) or ""
+            raw_closer = '"' + "#" * len(hashes)
+            if keep_strings:
+                out.append(line[i : m.end()])
+            i = m.end()
+            continue
+        m = _CHAR_RE.match(line, i)
+        if m:
+            i = m.end()
+            continue
+        out.append(line[i])
+        i += 1
+    return "".join(out), in_block, raw_closer
+
+
+def _strip_comments(text: str) -> str:
+    """Blank `//` and `/*...*/` comments (string-aware, multi-line threaded).
+
+    Both chain scans run on this, never on raw text: `migrations.rs`
+    documents the chain idiom in a `///` doc comment (`:11-17`), and a
+    `/** ... */` rustdoc block or commented-out migration would otherwise
+    match `FN_RE`/`CHAIN_RE` and phantom-pair (or phantom-split) the
+    chain. `//` inside a string (`"http://x"`) stays intact.
+    """
+    kept: list[str] = []
+    in_block = False
+    raw_closer: str | None = None
+    for line in text.splitlines() or [text]:
+        code, in_block, raw_closer = _code_only(line, in_block, raw_closer, True)
+        kept.append(code)
+    return "\n".join(kept)
 
 
 def check_integrity(text: str) -> int:
-    text = _strip_line_comments(text)
+    text = _strip_comments(text)
     fns = set(FN_RE.findall(text))
     chained = set(CHAIN_RE.findall(text))
     errors = []
@@ -123,8 +205,8 @@ def check_added_since(ref: str | None, limit: int = 1) -> int:
         base_text = git("show", f"{base}:src-tauri/src/db/migrations.rs")
     except (OSError, subprocess.TimeoutExpired, RuntimeError) as e:
         return fail(str(e))
-    base_chained = set(CHAIN_RE.findall(_strip_line_comments(base_text)))
-    worktree_text = _strip_line_comments(MIGRATIONS.read_text(encoding="utf-8"))
+    base_chained = set(CHAIN_RE.findall(_strip_comments(base_text)))
+    worktree_text = _strip_comments(MIGRATIONS.read_text(encoding="utf-8"))
     worktree_chained = set(CHAIN_RE.findall(worktree_text))
     added = worktree_chained - base_chained
     if len(added) > limit:
@@ -176,6 +258,41 @@ def self_test() -> int:
             1,
         ),
         (
+            "block-commented fn does not satisfy a chain block",
+            (
+                "/*\n"
+                "fn migration_v9_old_thing(conn: &Connection) -> Result<()> {\n"
+                "}\n"
+                "*/\n"
+                "    if current_version < 9 {\n"
+                "    }\n"
+            ),
+            1,
+        ),
+        (
+            "block rustdoc guard alone does not chain the fn",
+            (
+                "/**\n"
+                "if current_version < 2 {\n"
+                "*/\n"
+                "fn migration_v2_add_foo(conn: &Connection) -> Result<()> {\n"
+                "}\n"
+            ),
+            1,
+        ),
+        # Preservation lock (passes pre- and post-fix): a trailing `//`
+        # URL comment must not eat the code before it.
+        (
+            "trailing // URL comment keeps the real chain",
+            (
+                "fn migration_v9_keep(conn: &Connection) -> Result<()> {\n"
+                "}\n"
+                "    if current_version < 9 { // see https://example.com/schema\n"
+                "    }\n"
+            ),
+            0,
+        ),
+        (
             "unchained fn still fails",
             ("fn migration_v3_fix_things(conn: &Connection) -> Result<()> {\n}\n"),
             1,
@@ -193,13 +310,19 @@ def self_test() -> int:
             print(f"self-test FAIL: {name}: exited {got}, want {expect}")
             continue
         passed += 1
-    stripped_live = _strip_line_comments(MIGRATIONS.read_text(encoding="utf-8"))
+    stripped_live = _strip_comments(MIGRATIONS.read_text(encoding="utf-8"))
     # Real sites still match after stripping, and the line-13 doc example
     # contributes no phantom version on its own.
     phantom_ok = (
-        CHAIN_RE.findall(_strip_line_comments("/// if current_version < 2 {\n")) == []
+        CHAIN_RE.findall(_strip_comments("/// if current_version < 2 {\n")) == []
         and CHAIN_RE.findall("/// if current_version < 2 {\n") == []
         and FN_RE.findall("/// fn migration_v2_add_foo(conn: &Connection) {\n") == []
+        and CHAIN_RE.findall(_strip_comments("/*\nif current_version < 2 {\n*/\n"))
+        == []
+        and FN_RE.findall(
+            _strip_comments("/*\nfn migration_v2_add_foo(conn: &Connection) {\n*/\n")
+        )
+        == []
         and bool(FN_RE.findall(stripped_live))
         and set(CHAIN_RE.findall(stripped_live)) == set(FN_RE.findall(stripped_live))
     )
