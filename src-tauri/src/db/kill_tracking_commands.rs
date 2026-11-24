@@ -548,6 +548,7 @@ pub fn get_enemy_kill_stats(
 /// than the heuristic, never narrower; the damage arm and `LIKE` patterns
 /// above are the wide side. (`LIKE` is ASCII case-insensitive; exact-short
 /// names like `Boss` with no trailing space fall through to the damage arm.)
+#[derive(Serialize)]
 pub struct BossKillRow {
     pub enemy_name: String,
     pub killed_at: String,
