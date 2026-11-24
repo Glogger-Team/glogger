@@ -543,12 +543,11 @@ pub fn get_enemy_kill_stats(
 }
 /// One boss-candidate kill row for timer persistence. The SQL pre-filter is
 /// intentionally coarse — it mirrors the frontend `isBossLike` heuristic
-/// (`farmingStore.ts`: Boss/Elite/Named prefix or health+armor >= 8000) but
-/// the frontend re-applies the exact heuristic on hydrate and stays the
-/// single authority, so widening here only costs rows, never correctness.
-/// (`LIKE` is ASCII case-insensitive; exact-short names like `Boss` with no
-/// trailing space fall through to the damage arm or the frontend re-gate.)
-#[derive(Serialize)]
+/// (`farmingStore.ts`: Boss/Elite/Named prefix or health+armor >= 8000).
+/// Rows the pre-filter drops never reach the frontend, so keep it wider
+/// than the heuristic, never narrower; the damage arm and `LIKE` patterns
+/// above are the wide side. (`LIKE` is ASCII case-insensitive; exact-short
+/// names like `Boss` with no trailing space fall through to the damage arm.)
 pub struct BossKillRow {
     pub enemy_name: String,
     pub killed_at: String,
