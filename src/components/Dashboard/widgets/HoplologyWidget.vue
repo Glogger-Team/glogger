@@ -90,7 +90,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useSettingsStore } from '../../../stores/settingsStore'
-import { useGameStateStore } from '../../../stores/gameStateStore'
+import { useGameStateStore, isReplayChatStatusEvent } from '../../../stores/gameStateStore'
 import { useGameDataStore } from '../../../stores/gameDataStore'
 import { parseUtc, formatDateShort } from '../../../composables/useTimestamp'
 import ItemInline from '../../Shared/Item/ItemInline.vue'
@@ -276,6 +276,11 @@ onMounted(async () => {
 
   // Also listen for real-time study events from chat
   unlistenStatus = await listen('chat-status-event', (event: any) => {
+    // Replay preview re-emits on the live channel tagged `is_replay` — never
+    // refresh (or restart the cooldown timer) from a replay. The envelope
+    // carries no top-level `kind`, so the check below would fall through
+    // anyway — this makes the skip explicit.
+    if (isReplayChatStatusEvent(event.payload)) return
     if (event.payload?.kind === 'ItemStudied') {
       // Refresh data and reset cooldown timer
       loadData()

@@ -4,7 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useSettingsStore } from "./settingsStore";
 import { useGameDataStore } from "./gameDataStore";
-import { useGameStateStore } from "./gameStateStore";
+import { useGameStateStore, isReplayChatStatusEvent } from "./gameStateStore";
+import type { ChatStatusEvent, ReplayChatStatusEnvelope } from "./gameStateStore";
 import { useCharacterStore } from "./characterStore";
 import { useCoordinatorStore } from "./coordinatorStore";
 import { useMarketStore } from "./marketStore";
@@ -280,7 +281,11 @@ export const useStartupStore = defineStore("startup", () => {
         if (!gameState.startupComplete) return;
         combatStore.handleEnemyKilled(event.payload as never);
       });
-      await listen("chat-status-event", (event) => {
+      await listen<ChatStatusEvent | ReplayChatStatusEnvelope>("chat-status-event", (event) => {
+        // Replay preview re-emits on the live channel tagged `is_replay` — never
+        // accumulate into the live combat session. Unconditional, before the
+        // catch-up guard: replay runs after startup, when startupComplete is true.
+        if (isReplayChatStatusEvent(event.payload)) return;
         if (!gameState.startupComplete) return;
         const payload = event.payload as { kind: string };
         if (

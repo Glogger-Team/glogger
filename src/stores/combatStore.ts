@@ -3,7 +3,20 @@ import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import type { CombatLogEntry } from "../types/combat";
 import { useSettingsStore } from "./settingsStore";
+import type { ReplayChatStatusEnvelope } from "./gameStateStore";
 import type { HistoricalFarmingSession } from "../types/farming";
+
+/** True when the payload is a replay-preview envelope, never live tailing. Mirrors gameStateStore.isReplayChatStatusEvent (duplicated, not imported: this store is imported by gameStateStore, so a runtime import would cycle). */
+function isReplayEnvelope(
+  payload: CombatChatStatusPayload | ReplayChatStatusEnvelope,
+): payload is ReplayChatStatusEnvelope {
+  return (
+    typeof payload === "object" &&
+    payload !== null &&
+    "is_replay" in payload &&
+    payload.is_replay === true
+  );
+}
 
 export interface CombatKillTally {
   count: number;
@@ -99,7 +112,14 @@ export const useCombatStore = defineStore("combat", () => {
     });
   }
 
-  function handleChatStatus(payload: CombatChatStatusPayload) {
+  function handleChatStatus(payload: CombatChatStatusPayload | ReplayChatStatusEnvelope) {
+    // Defense in depth: the startupStore forwarder already drops `is_replay`
+    // envelopes before calling here, but never accumulate replay previews into
+    // the live session even if a future caller forwards one directly. The
+    // envelope carries no top-level `kind`, so the switch below would fall
+    // through anyway — this makes the skip explicit (same shape as
+    // gameStateStore.handleChatStatusEvent).
+    if (isReplayEnvelope(payload)) return;
     switch (payload.kind) {
       case "XpGained": {
         ensureStarted(payload.timestamp);
