@@ -500,6 +500,10 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         migration_v93_chat_null_sender_dedup(conn)?;
         super::record_migration(conn, 93)?;
     }
+    if current_version < 94 {
+        migration_v94_kill_loot_receipt_identity(conn)?;
+        super::record_migration(conn, 94)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1544,6 +1548,84 @@ fn migration_v93_chat_null_sender_dedup(conn: &Connection) -> Result<()> {
          DROP INDEX IF EXISTS idx_chat_messages_unique;
          CREATE UNIQUE INDEX idx_chat_messages_unique
              ON chat_messages(timestamp, COALESCE(channel, ''), COALESCE(sender, ''), message);",
+    )?;
+    Ok(())
+}
+
+/// Migration V94: key `enemy_kill_loot` rows by receipt identity.
+///
+/// Both link paths (`link_kill_loot`, `link_kill_loot_for_kill`) deduped on
+/// `(kill_id, item_name, quantity)`, so two same-item receipts from one kill
+/// collapsed to a single loot row (D5-56). The new `receipt_ts` column makes
+/// the key `(kill_id, item_name, quantity, receipt_ts)` — one row per stored
+/// receipt. The receipt timestamp is the finest identity the ledger retains:
+/// same-second same-item twins already collapse in `item_transactions`
+/// (second-granularity key), so one loot row there stays consistent with the
+/// single stored receipt — an accepted limit, not a second defect.
+///
+/// Backfill assigns each legacy row the earliest matching ledger receipt in
+/// the kill's 30-minute loot window (same match the link paths use); rows
+/// with no matching receipt (pruned ledger, orphaned kill) pin to the kill's
+/// `killed_at` so the new exact-match guard stays idempotent for them too.
+fn migration_v94_kill_loot_receipt_identity(conn: &Connection) -> Result<()> {
+    // Minimal-fixture guard (same as v91-v93): skip when the loot table is absent.
+    let has_loot: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'enemy_kill_loot')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_loot {
+        return Ok(());
+    }
+    conn.execute(
+        "ALTER TABLE enemy_kill_loot ADD COLUMN receipt_ts TEXT",
+        [],
+    )?;
+    let has_ledger: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'item_transactions')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    let has_kills: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'enemy_kills')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if has_ledger && has_kills {
+        conn.execute(
+            "UPDATE enemy_kill_loot SET receipt_ts = (
+               SELECT MIN(it.timestamp)
+                 FROM item_transactions it
+                 JOIN enemy_kills k ON k.id = enemy_kill_loot.kill_id
+                WHERE it.character_name = k.character_name
+                  AND it.server_name = k.server_name
+                  AND it.item_name = enemy_kill_loot.item_name
+                  AND it.quantity = enemy_kill_loot.quantity
+                  AND it.from_entity_id = CAST(k.enemy_entity_id AS INTEGER)
+                  AND it.timestamp >= k.killed_at
+                  AND it.timestamp <= datetime(k.killed_at, '+30 minutes')
+             )
+             WHERE receipt_ts IS NULL",
+            [],
+        )?;
+        conn.execute(
+            "UPDATE enemy_kill_loot SET receipt_ts = (
+               SELECT k.killed_at FROM enemy_kills k WHERE k.id = enemy_kill_loot.kill_id
+             )
+             WHERE receipt_ts IS NULL",
+            [],
+        )?;
+    }
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_kill_loot_receipt
+             ON enemy_kill_loot(kill_id, item_name, quantity, receipt_ts)",
+        [],
     )?;
     Ok(())
 }
@@ -4802,13 +4884,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            93,
+            94,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 93);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 94);
     }
 
     #[test]
@@ -4931,13 +5013,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 93) plus the purge itself on the three aggregate source tables.
+        // 94) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 93, "migration chain head");
+        assert_eq!(head, 94, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -4983,8 +5065,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 93 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup). Repair: a
+        // Chain wiring: full run_migrations head must be 94 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -4992,7 +5074,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 93, "migration chain head");
+        assert_eq!(head, 94, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -5731,6 +5813,67 @@ mod tests {
             )
             .unwrap();
         assert_eq!(dupes, 0, "hardened key must ignore the rescan row");
+    }
+    #[test]
+    fn v94_backfills_loot_receipt_ts_and_pins_orphans() {
+        // Pre-v94 shape: no receipt_ts column on the loot table.
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE enemy_kills (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 enemy_name TEXT NOT NULL,
+                 enemy_entity_id TEXT NOT NULL,
+                 killing_ability TEXT NOT NULL,
+                 killed_at TEXT NOT NULL,
+                 character_name TEXT,
+                 server_name TEXT
+             );
+             CREATE TABLE enemy_kill_loot (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 kill_id INTEGER NOT NULL,
+                 item_name TEXT NOT NULL,
+                 quantity INTEGER NOT NULL DEFAULT 1
+             );
+             CREATE TABLE item_transactions (
+                 timestamp TEXT NOT NULL,
+                 character_name TEXT,
+                 server_name TEXT,
+                 item_name TEXT NOT NULL,
+                 quantity INTEGER NOT NULL,
+                 from_entity_id INTEGER
+             );
+             INSERT INTO enemy_kills (enemy_name, enemy_entity_id, killing_ability, killed_at, character_name, server_name)
+             VALUES ('City Slime', '42', 'Claw', '2026-11-17 12:00:00', 'T', 'Dreva');
+             INSERT INTO enemy_kill_loot (kill_id, item_name, quantity)
+             VALUES (1, 'Salad', 2), (1, 'Bone', 1);
+             -- Two same-item receipts: backfill takes the earliest. The Bone
+             -- row has no receipt (pruned ledger) and pins to the kill time.
+             -- The 11:00 row predates the kill and must not match.
+             INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, quantity, from_entity_id)
+             VALUES ('2026-11-17 12:05:00', 'T', 'Dreva', 'Salad', 2, 42),
+                    ('2026-11-17 12:01:00', 'T', 'Dreva', 'Salad', 2, 42),
+                    ('2026-11-17 11:00:00', 'T', 'Dreva', 'Salad', 2, 42);",
+        )
+        .unwrap();
+        migration_v94_kill_loot_receipt_identity(&c).unwrap();
+        let ts = |item: &str| -> Option<String> {
+            c.query_row(
+                "SELECT receipt_ts FROM enemy_kill_loot WHERE item_name = ?1",
+                [item],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(ts("Salad").as_deref(), Some("2026-11-17 12:01:00"), "earliest in-window receipt wins");
+        assert_eq!(ts("Bone").as_deref(), Some("2026-11-17 12:00:00"), "receipt-less row pins to the kill time");
+        let indexed: bool = c
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_kill_loot_receipt')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(indexed, "receipt-identity index must land");
     }
 }
 
