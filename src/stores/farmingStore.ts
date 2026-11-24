@@ -19,7 +19,6 @@ export interface BossKillEntry {
 function isBossLike(name: string, healthDamage: number, armorDamage: number): boolean {
   const trimmed = name.trim();
   if (/^(Boss|Elite|Named)\b/i.test(trimmed)) return true;
-  if (/^[A-Z][a-z]+$/.test(trimmed)) return true;
   if (healthDamage + armorDamage >= 8000) return true;
   return false;
 }
@@ -76,11 +75,16 @@ export const useFarmingStore = defineStore("farming", () => {
     bossKills.value = {};
   }
 
+  function resetForCharacter() {
+    reset();
+  }
+
   return {
     bossKills,
     bossTimers,
     handleEnemyKilled,
     reset,
+    resetForCharacter,
     isBossLike,
   };
 });
