@@ -4,9 +4,9 @@ name: Retired-noun audit
 # (scripts/check-doc-orphans.py): every symbol-shaped reference in every doc
 # checked against all live definitions in src-tauri/src. The worker run that
 # motivated this workflow found 4124 raw findings, mostly Vue/CDN/CSS nouns
-# the .rs live scan cannot see, so this workflow is for triage pairs, not
 # gating: the audit step carries `continue-on-error: true` and the upload
-# runs `if: always()`, so the workflow stays green whatever the audit finds.
+# step runs `if: always()` plus its own `continue-on-error: true`, so the
+# workflow stays green whatever the audit finds or if artifact upload flakes.
 # Consumers: triage pairs reading the uploaded `retired-noun-audit` artifact.
 #
 # No `mise run lint:audit` here: that slice is the fail-closed cargo-audit
@@ -50,6 +50,8 @@ jobs:
 
       - name: Upload audit findings
         if: always()
+        # Artifact-service flakes must never fail this advisory workflow.
+        continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: retired-noun-audit
