@@ -75,11 +75,11 @@ Structured events parsed from `[Status]` channel messages. The parser is **state
 | `ItemStudied` | `You carefully study the X.` | `item_name` |
 | `ReportSaved` | `Saved report to <path>` | `file_path` |
 
-### Stream: `"report-saved"`
+### Stream: `"report-saved"` (never emitted — do not `listen` for it)
 
-**Source:** Chat Status channel via `chat_status_parser.rs` → coordinator
+**Source:** Chat Status channel via `chat_status_parser.rs` — collected, not emitted.
 
-Emitted when the game writes a character or inventory report to disk (triggered by Export Character as JSON or Export Storage as JSON in Settings → VIP). The coordinator re-emits this as a dedicated `"report-saved"` event (payload: file path string) so the frontend can trigger an immediate report import instead of waiting for the next polling cycle.
+`ReportSaved` chat lines (`Saved report to <path>`) land in `DispatchOutcome.report_saved_paths`. The coordinator's live drain auto-imports them (`import_report_saved`); scan/replay paths skip them by design. No Tauri `"report-saved"` event is emitted (backend-wide grep: zero emitters), so the frontend picks up new reports through the `reportWatchInterval` poll in `characterStore` (`pollForNewReports`), refreshed via `game-state-updated` domains.
 
 ### Stream: `"game-state-updated"`
 
