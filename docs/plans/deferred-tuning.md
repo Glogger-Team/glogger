@@ -10,37 +10,9 @@ Related plan files: none yet — promote an item to its own
 
 ---
 
-## 1. Rez dedup 30-second window — needs real-log calibration
+## 1. Rez dedup 30-second window — RETIRED 2026-11-24 (guard + item removed)
 
-**Where:** `src-tauri/src/coordinator.rs` — `rez_within_dedup_window`
-(`WINDOW = 30s`), guard at the `parse_resuscitate_message` dispatch
-(~L1500), tests in `mod rez_dedup_tests`.
-
-**Why deferred:** The guard suppresses the second phrasing of one rez
-("X resuscitates Y" → "Y comes back to life!") when the pair is ≤30s
-apart either direction (`|cur - prev| <= WINDOW`) — provided the first phrasing's
-timestamp is still the stored anchor in `last_rez_dedup` (`persist_rez_event`,
-`chat_status_dispatch.rs`). The 30s value itself
-is unverified against real game behavior — tuning requires a capture of actual paired lines.
-
-**Concrete open items:**
-
-- [ ] Capture a real session containing at least one rez pair; measure
-      the actual timestamp gap between the two phrasings. If any pair
-      exceeds 30s, widen `WINDOW` (there's no re-rez-cooldown evidence
-      either way yet, so the ceiling is unknown).
-- [x] ~~Backward-ordered pairs fail OPEN~~ — **DONE: window is now bidirectional (`(cur - prev).abs() <= WINDOW` in `rez_within_dedup_window`); backward pairs within the window suppress (out-of-order replay / clock skew), covered by `distinct_events_and_malformed` + `legitimate_re_rez_is_kept` reversed cases. Caveat: a backward pair can still fail open if an intervening successful rez for the same target displaced the stored anchor (per-target overwrite on persist + `retain` prune); dispatch retention lifecycle otherwise unresolved — unit tests cover the window helper only, not map pruning.**
-- [ ] Symptom to watch for: duplicate rez rows / inflated "times rezzed"
-      counts in the death-tracker widget. `character_resuscitations` has
-      no UNIQUE key, so dupes are silent — cosmetic only, no corruption.
-- [ ] Same-minute-bucket behavior intentionally gone: the old
-      `(target, minute)` scheme suppressed pairs up to ~60s apart and
-      straddling minute boundaries were MISSED; the new rolling window
-      fixes straddles but shortens coverage. If capture shows gaps of
-      30–60s, consider a 60s window as the old-equivalent compromise.
-
-**How to verify after changing:** `cargo test --lib rez_dedup_tests`
-(adjust window-boundary assertions if `WINDOW` changes).
+**Why retired:** the pair the window guarded never occurs. Corpus census over the live ChatLogs (712 pet-rez lines; 3,482 comes-back-to-life lines; zero same-target pairs, case-insensitive, any file or gap): pets never emit a comes-back line, player rezzes carry no caster line. The window function, the per-target timestamp map (live coordinator, dispatch, scan, replay-guard harness, tests), and the suppression tests are deleted; rez persistence keeps only the row-key replay guard. If the game ever emits both phrasings for one rez, re-add a window behind a live capture.
 
 ---
 

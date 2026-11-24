@@ -125,7 +125,6 @@ mod tests {
         count_currency: bool,
     ) -> PassTotals {
         let mut arena = ArenaTracker::new();
-        let mut rez: HashMap<String, (String, String)> = HashMap::new();
         let mut dmg: Vec<ChatCombatEvent> = Vec::new();
         let mut totals = PassTotals {
             staged_pushes: 0,
@@ -138,7 +137,6 @@ mod tests {
         for line in lines {
             let mut st = DispatchState {
                 arena_tracker: &mut arena,
-                last_rez_dedup: &mut rez,
                 recent_damage: &mut dmg,
                 current_area: None,
                 count_currency,

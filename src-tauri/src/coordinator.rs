@@ -174,19 +174,6 @@ pub struct DataIngestCoordinator {
     /// Casino arena narration tracker — resolves Kuzavek's `[NPC Chatter]`
     /// intro/result lines into completed matches for the Arena widget.
     arena_tracker: crate::arena_parser::ArenaTracker,
-    /// Rez dedup: last persisted successful rez per target as (timestamp,
-    /// caster). The game emits "X resuscitates Y" (named caster, pet rezzes)
-    /// and "Y comes back to life!" (caster "Unknown", player/group rezzes)
-    /// in different contexts; if both phrasings ever fire for the same rez
-    /// (same target, seconds apart) only the first row is kept — same-phrasing
-    /// repeats always record (a rapid re-rez is a genuine second death).
-    /// Keyed PER TARGET (not a single last-tuple): interleaved rezzes of
-    /// different targets within the window each still dedup (`rez A`,
-    /// `rez B`, `A back`, `B back`). Timestamps are compared with a rolling
-    /// 30-second window (`rez_within_dedup_window`), not minute buckets —
-    /// a pair straddling a minute boundary is still one rez. Pruned to a
-    /// bounded window below so it never grows unbounded.
-    last_rez_dedup: std::collections::HashMap<String, (String, String)>,
     /// `character -> server` scanned from the chat logs at the start of the
     /// catch-up window (`refresh_catch_up_session_servers`); cleared once live.
     catch_up_chat_servers: std::collections::HashMap<String, String>,
@@ -260,7 +247,6 @@ impl DataIngestCoordinator {
             recent_damage: Vec::new(),
             debug_capture: DebugCaptureState::new(),
             arena_tracker: crate::arena_parser::ArenaTracker::new(),
-            last_rez_dedup: std::collections::HashMap::new(),
             catch_up_chat_servers: std::collections::HashMap::new(),
             catch_up_servers_scanned: false,
             skipped_unknown_skills: 0,
@@ -1071,7 +1057,6 @@ impl DataIngestCoordinator {
                     let mut outcome = {
                         let mut dstate = DispatchState {
                             arena_tracker: &mut self.arena_tracker,
-                            last_rez_dedup: &mut self.last_rez_dedup,
                             recent_damage: &mut self.recent_damage,
                             current_area: self.current_area.clone(),
                             // Live drain owns the accumulator: each line is
@@ -2651,73 +2636,6 @@ mod report_kind_tests {
             ),
             Some(ReportKind::Items)
         ));
-    }
-}
-
-
-
-/// True when two rez phrasings fall within the symmetric rez-dedup window
-/// (`"YYYY-MM-DD HH:MM:SS"` UTC strings, zero-padded so lexicographic
-/// order equals chronological order). The game emits both rez phrasings
-/// for one event seconds apart — but never instantly, so the window
-/// covers the pair while staying far below any plausible re-rez cooldown.
-/// Backward pairs within the window also suppress (out-of-order replay /
-/// clock skew); re-rez beyond 30 s either direction persists.
-/// Malformed timestamps never match (fail-open: the event is persisted).
-pub(crate) fn rez_within_dedup_window(earlier: &str, later: &str) -> bool {
-    const WINDOW: chrono::Duration = chrono::Duration::seconds(30);
-    match (
-        chrono::NaiveDateTime::parse_from_str(earlier, "%Y-%m-%d %H:%M:%S"),
-        chrono::NaiveDateTime::parse_from_str(later, "%Y-%m-%d %H:%M:%S"),
-    ) {
-        (Ok(prev), Ok(cur)) => {
-            // Symmetric: either direction within the window is the same pair.
-            (cur - prev).abs() <= WINDOW
-        }
-        _ => false,
-    }
-}
-
-#[cfg(test)]
-mod rez_dedup_tests {
-    use super::rez_within_dedup_window as within;
-
-    #[test]
-    fn paired_phrasing_window() {
-        // Pair from a single rez: seconds apart → suppressed.
-        assert!(within("2026-10-04 12:34:56", "2026-10-04 12:34:59"));
-        // Exactly at the window edge (30s) is still within it.
-        assert!(within("2026-10-04 12:34:56", "2026-10-04 12:35:26"));
-    }
-
-    #[test]
-    fn boundary_straddle_is_one_rez() {
-        // Regression: minute buckets suppressed these; the rolling window
-        // must keep treating a :59→:01 straddle as one rez.
-        assert!(within("2026-10-04 12:34:59", "2026-10-04 12:35:01"));
-        assert!(within("2026-10-04 23:59:59", "2026-10-05 00:00:10"));
-    }
-
-    #[test]
-    fn legitimate_re_rez_is_kept() {
-        // A real second rez of the same target is outside the window,
-        // either direction.
-        assert!(!within("2026-10-04 12:34:56", "2026-10-04 12:35:27"));
-        assert!(!within("2026-10-04 12:34:56", "2026-10-04 12:35:31"));
-        assert!(!within("2026-10-04 12:35:27", "2026-10-04 12:34:56"));
-    }
-
-    #[test]
-    fn distinct_events_and_malformed() {
-        // Different day/hour entirely.
-        assert!(!within("2026-10-04 12:34:56", "2026-10-05 12:34:56"));
-        // Backward timestamps within the window also dedup (out-of-order
-        // replay, clock skew): same pair, reversed order.
-        assert!(within("2026-10-04 12:35:00", "2026-10-04 12:34:59"));
-        // Malformed/short timestamps never match (fail-open).
-        assert!(!within("2026-10-04", "2026-10-04 12:34:56"));
-        assert!(!within("", "2026-10-04 12:34:56"));
-        assert!(!within("garbage", "2026-10-04 12:34:56"));
     }
 }
 
