@@ -203,17 +203,17 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     component: RouletteWidget,
     defaultSize: "medium",
   },
-  {
-    id: "boss-kill-timers",
-    name: "Boss Kill Timers",
-    component: BossKillTimersWidget,
-    defaultSize: "medium",
-  },
   // Arena: Today/Fights/Lifetime tabs — daily tips + today's results, with lifetime standings.
   {
     id: "arena",
     name: "Arena",
     component: ArenaWidget,
+    defaultSize: "medium",
+  },
+  {
+    id: "boss-kill-timers",
+    name: "Boss Kill Timers",
+    component: BossKillTimersWidget,
     defaultSize: "medium",
   },
 ];
