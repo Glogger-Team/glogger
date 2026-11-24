@@ -63,7 +63,7 @@ MOD_TESTS_RE = re.compile(r"^\s*(?:pub\s+)?mod\s+\w*tests?\b")
 
 _CFG_TEST_ATTR_RE = re.compile(r"#\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 _ITEM_START_RE = re.compile(
-    r"\b(?:fn|struct|enum|use|const|static)\s+[A-Za-z_][A-Za-z0-9_]*"
+    r"\b(?:fn|struct|enum|use|const|static|type|trait)\s+[A-Za-z_][A-Za-z0-9_]*"
 )
 
 
@@ -191,9 +191,9 @@ def test_module_lines(text: str) -> set[int]:
             # A non-item line ends the attribute's reach; fall through.
         if _CFG_TEST_ATTR_RE.search(raw) is not None:
             # Bare `#[cfg(test)]` on a `fn`/`struct`/`enum`/`use`/
-            # `const`/`static` (same line or, via pending, the item below):
-            # the item line and its brace-balanced body are test-only, so
-            # both live scans inherit it.
+            # `const`/`static`/`type`/`trait` (same line or, via pending,
+            # the item below): the item line and its brace-balanced body
+            # are test-only, so both live scans inherit it.
             out.add(i)
             if _ITEM_START_RE.search(code) is not None:
                 state = _start_attr_item(code, opens, closes)
@@ -930,6 +930,31 @@ def self_test() -> int:
         "test-only type alias is not live",
         live_definitions("#[cfg(test)]\nmod tests {\n    type TestOnly = u32;\n}\n")
         == set(),
+    )
+    # Bare-attribute `type`/`trait` (pending and same-line): the matcher
+    # must recognize the item line so the skip covers it — otherwise the
+    # new live-definition arms would count a test-only alias as live.
+    bare_type_src = (
+        "#[cfg(test)]\n"
+        "pub type RetiredWidget = u32;\n"
+        "#[cfg(test)] pub trait RetiredTrait {}\n"
+        "pub type LiveAlias2 = u32;\n"
+    )
+    check(
+        "bare-attribute type alias skipped",
+        test_module_lines(bare_type_src) == {1, 2, 3},
+    )
+    check(
+        "bare-attribute type alias not a live definition",
+        "RetiredWidget" not in live_definitions(bare_type_src),
+    )
+    check(
+        "same-line attributed trait skipped",
+        "RetiredTrait" not in live_definitions(bare_type_src),
+    )
+    check(
+        "live type alias beside attributes stays live",
+        "LiveAlias2" in live_definitions(bare_type_src),
     )
     # Stale-pending probe: `#[cfg(test)]` on its own line directly above
     # a `mod` block must not leak past the block — the live item after
