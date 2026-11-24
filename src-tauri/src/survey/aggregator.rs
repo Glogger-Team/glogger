@@ -188,25 +188,13 @@ impl SurveySessionAggregator {
         }: ManualUse<'_>,
     ) -> Result<(i64, Option<i64>), String> {
         // Explicit user action — always create a session when none is active.
-        // A lookup failure propagates (`?`) instead of falling through to
-        // `insert_session`: treating "unknown" as "absent" would fragment
-        // sessions with a second active row on a transient DB/decode error.
-        let session_id = match self.fetch_active_session(conn, character, server)? {
-            Some(id) => Some(id),
-            None => {
-                let id = persistence::insert_session(
-                    conn,
-                    character,
-                    server,
-                    now_iso,
-                    SessionStartTrigger::FirstUse,
-                    None,
-                )
-                .map_err(|e| e.to_string())?;
-                self.cached_active_session = Some((character.to_string(), server.to_string(), Some(id)));
-                Some(id)
-            }
-        };
+        // The creation joins the use-insert transaction below (not a
+        // pre-commit here): a failed insert rolls the session back with it
+        // instead of orphaning a zero-use session row. A lookup failure
+        // propagates (`?`) instead of falling through to `insert_session`:
+        // treating "unknown" as "absent" would fragment sessions with a
+        // second active row on a transient DB/decode error.
+        let session_id = self.fetch_active_session(conn, character, server)?;
 
         // Resolve display name for this map via CDN.
         let display_name = self
@@ -227,10 +215,12 @@ impl SurveySessionAggregator {
             .ok()
             .flatten()
         });
-        // Single write transaction per attempt: a failed count update rolls
-        // back the use row instead of returning success with a stale session
-        // count. No outer transaction is open here (fresh pool checkout in
-        // the command), so new_unchecked is safe.
+        // Single write transaction per attempt: the FirstUse session row
+        // and the use row commit together — a failed use insert rolls the
+        // session back with it instead of orphaning a zero-use session, and
+        // a failed count update rolls back the use instead of returning
+        // success with a stale session count. No outer transaction is open
+        // here (fresh pool checkout in the command), so new_unchecked is safe.
         // Transparent stale-session retry: the cached active-session id can
         // point at a session deleted out from under us (History UI deletes
         // directly on the DB), which trips the survey_uses → survey_sessions
@@ -244,7 +234,19 @@ impl SurveySessionAggregator {
                 rusqlite::TransactionBehavior::Immediate,
             )
             .map_err(|e| e.to_string())?;
-
+            if session_id.is_none() {
+                session_id = Some(
+                    persistence::insert_session(
+                        &tx,
+                        character,
+                        server,
+                        now_iso,
+                        SessionStartTrigger::FirstUse,
+                        None,
+                    )
+                    .map_err(|e| e.to_string())?,
+                );
+            }
             match persistence::insert_use(
                 &tx,
                 session_id,
@@ -263,28 +265,20 @@ impl SurveySessionAggregator {
                     }
                     tx.commit()
                         .map_err(|e| format!("survey use transaction failed: {e}"))?;
+                    // Cache only the committed session: caching a rolled-back
+                    // id would route the next use at a missing row.
+                    self.cached_active_session =
+                        Some((character.to_string(), server.to_string(), session_id));
                     break id;
                 }
                 Err(_e) if session_id.is_some() && !retried => {
                     retried = true;
                     drop(tx);
                     self.cached_active_session = None;
-                    session_id = match self.fetch_active_session(conn, character, server)? {
-                        Some(id) => Some(id),
-                        None => {
-                            let id = persistence::insert_session(
-                                conn,
-                                character,
-                                server,
-                                now_iso,
-                                SessionStartTrigger::FirstUse,
-                                None,
-                            )
-                            .map_err(|e| e.to_string())?;
-                            self.cached_active_session = Some((character.to_string(), server.to_string(), Some(id)));
-                            Some(id)
-                        }
-                    };
+                    // Re-resolve only: the loop head creates the
+                    // replacement session inside the next attempt's
+                    // transaction so it rolls back with a failed retry.
+                    session_id = self.fetch_active_session(conn, character, server)?;
                     continue;
                 }
                 Err(e) => {
@@ -336,6 +330,19 @@ impl SurveySessionAggregator {
         // them — never linked rows with a wrong `loot_qty`. Same
         // unchecked-transaction shape as the use insert above: no outer
         // transaction is open here.
+        // CDN-down crafted maps carry NULL internal_name on their ledger
+        // rows: the retro-claim must apply the display-name arm of the live
+        // gate or it vacuums them in as loot. Same shape as
+        // `attribute_chat_gain`'s data-available check.
+        let cdn_available = match self.game_data.try_read() {
+            Ok(gd) => !gd.items.is_empty(),
+            Err(e) => {
+                eprintln!(
+                    "[survey-aggregator] game-data read failed, treating CDN as unavailable for retro-claim: {e}"
+                );
+                false
+            }
+        };
         let claim_outcome = (|| -> Result<u32, String> {
             let tx = rusqlite::Transaction::new_unchecked(
                 conn,
@@ -366,6 +373,7 @@ impl SurveySessionAggregator {
                 now_iso,
                 CHAT_BASIC_WINDOW_SECS as u32,
                 is_bonus,
+                cdn_available,
             )
             .map_err(|e| format!("claim rows failed: {e}"))?;
             if claimed > 0 {
@@ -1166,6 +1174,7 @@ mod tests {
             "2026-04-15 12:00:00",
             CHAT_BASIC_WINDOW_SECS as u32,
             false,
+            true,
         )
         .expect("retro-claim");
         assert_eq!(claimed, 2);
@@ -1241,6 +1250,7 @@ mod tests {
             "2026-04-15 12:00:00",
             CHAT_BASIC_WINDOW_SECS as u32,
             false,
+            true,
         )
         .expect("retro-claim");
         assert_eq!(claimed, 2);
@@ -1249,6 +1259,44 @@ mod tests {
             .expect("read use")
             .expect("use present");
         assert_eq!(stored.loot_qty, 2);
+    }
+
+    #[test]
+    fn first_use_session_rolls_back_with_failed_use_insert() {
+        // The FirstUse session row commits in the same transaction as the
+        // use: sabotaging the use insert must leave zero sessions, not an
+        // orphaned zero-use row. Pre-fix the session pre-committed outside
+        // the use tx (and the retry created a second one) — this fails
+        // with 2 rows there, passes with 0 here.
+        let conn = fresh_db();
+        conn.execute_batch(
+            "CREATE TRIGGER sabotage_use_inserts BEFORE INSERT ON survey_uses
+             BEGIN SELECT RAISE(ABORT, 'sabotaged use insert'); END;",
+        )
+        .expect("install sabotage trigger");
+        let mut agg = empty_aggregator();
+        let err = agg
+            .record_manual_use(
+                &conn,
+                ManualUse {
+                    character: "Zenith",
+                    server: "Dreva",
+                    area: None,
+                    map_internal_name: "MiningSurveySerbule1",
+                    kind: SurveyUseKind::Basic,
+                    now_iso: "2026-04-15 12:00:00",
+                },
+            )
+            .expect_err("sabotaged use insert must fail");
+        assert!(err.contains("sabotaged"), "unexpected error: {err}");
+        let sessions: i64 = conn
+            .query_row("SELECT COUNT(*) FROM survey_sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(sessions, 0, "failed use left an orphan FirstUse session");
+        let uses: i64 = conn
+            .query_row("SELECT COUNT(*) FROM survey_uses", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(uses, 0);
     }
 
     #[test]

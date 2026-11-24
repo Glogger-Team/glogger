@@ -316,10 +316,10 @@ mod tests {
             );
             CREATE UNIQUE INDEX idx_roulette_dedup
                 ON roulette_results(spun_at, number);
-            -- A real v76 database already has item_transactions (created long
-            -- before v76); the v91 migration adds columns to it, so the
-            -- fixture must carry the table for the full chain to run.
-            CREATE TABLE item_transactions (id INTEGER PRIMARY KEY, character_name TEXT);
+            -- Minimal fixture: only roulette_results exists at v76. The
+            -- later migrations that touch item_transactions (v82 purge,
+            -- v91 VIP logging, v94 receipt backfill) all guard on table
+            -- existence, so the full chain runs without it.
             INSERT INTO roulette_results (spun_at, number)
                 VALUES ('2026-06-25 21:58:40', 37);
             INSERT INTO schema_migrations (version) VALUES (76);",

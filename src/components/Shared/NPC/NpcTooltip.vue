@@ -91,7 +91,7 @@ import { computed } from "vue";
 import type { NpcInfo } from "../../../types/gameData";
 import { useGameStateStore } from "../../../stores/gameStateStore";
 import { useCharacterStore } from "../../../stores/characterStore";
-import { FAVOR_TIERS, favorBadgeClasses, tierDisplayName, pointsToNextTier } from "../../../composables/useFavorTiers";
+import { FAVOR_TIERS, favorBadgeClasses, tierDisplayName, pointsToNextTier, tierIndex } from "../../../composables/useFavorTiers";
 import { hasVendor, hasStorage, goldCapAtTier, getStoreService } from "../../../composables/useNpcServices";
 
 const props = defineProps<{
@@ -134,7 +134,23 @@ const favorProgressPercent = computed(() => {
   if (!needed) return null;
   const delta = gamestateFavor.value?.session_delta ?? 0;
   if (delta <= 0) return 0;
-  return Math.min(100, Math.round((delta / needed) * 100));
+  // A tier-up since the last report means part of session_delta was earned
+  // under the previous tier: subtract that tier's exit cost so the bar
+  // credits only in-tier gains. Single-crossing approximation (a stale
+  // report spanning several tiers still over-credits the remainder), and
+  // only when the session funded a full exit — a smaller delta after a
+  // stale report is left alone rather than floored to zero.
+  let credited = delta;
+  const reportTier = snapshotFavor.value?.favor_level;
+  if (
+    reportTier &&
+    reportTier !== favorTier.value &&
+    tierIndex(favorTier.value) < tierIndex(reportTier)
+  ) {
+    const exitCost = pointsToNextTier(reportTier);
+    if (exitCost != null && delta > exitCost) credited = delta - exitCost;
+  }
+  return Math.min(100, Math.round((credited / needed) * 100));
 });
 
 // ── Vendor ─────────────────────────────────────────────────────────
