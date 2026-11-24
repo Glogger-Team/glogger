@@ -1042,6 +1042,35 @@ fn claim_receipt(
         )
         == ["t"],
     )
+    # Raw-string braces (Sim-C concession on b07bf71e/8bf2a25c: the
+    # `_code_only` port handles `br#` spans but had zero pins in this file
+    # — doc-orphans B1/T1 pin the other lexer. Pre-fix FAIL shown against
+    # the b07bf71e^ per-line shape (no raw opener/closer threading): the
+    # closer-line `}` closed the fn early and the bare-quote tail swallowed
+    # the trailing `{` — old `functions()` truncated at line 4, closer line
+    # read (0, 1), bare-quote line read (0, 0).
+    _ml_raw = [
+        (1, "fn foo() {"),
+        (2, '    let s = br#"{'),
+        (3, "    } { still raw"),
+        (4, '    }"#;'),
+        (5, "}"),
+    ]
+    _ml_raw_fns = functions(_ml_raw)
+    check(
+        "raw-string mutant-killing: multi-line br# braces do not move depth",
+        len(_ml_raw_fns) == 1
+        and _ml_raw_fns[0][1] == "\n".join(line for _, line in _ml_raw),
+    )
+    _rc_blanked, _rc_ib, _rc_rc = _code_only('    }"#;', False, '"#', False)
+    check(
+        "raw-string mutant-killing: closer threading hides leading brace",
+        (_rc_blanked, _rc_ib, _rc_rc) == (";", False, None),
+    )
+    check(
+        "raw-string mutant-killing: single-line br# bare quote keeps trailing brace",
+        code_braces('    let s = br#"a"b"#; {') == (1, 0),
+    )
 
     for literal in [
         '"C:/Users/TestUser/AppData/Reports/x.json"',
