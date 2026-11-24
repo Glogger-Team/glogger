@@ -199,12 +199,30 @@ function servicesUnlockedAt(tier: string): string[] {
 }
 
 /** Estimated progress within current tier based on this session's favor */
+// Mirrors NpcTooltip favorProgressPercent (#329): a tier-up since the last
+// report means part of session_delta was earned under the previous tier, so
+// subtract that tier's exit cost and credit only in-tier gains. Single-crossing
+// approximation (a stale report spanning several tiers still over-credits the
+// remainder), and only when the session funded a full exit — a smaller delta
+// after a stale report is left alone rather than floored to zero.
 const progressPercent = computed(() => {
   if (!props.gamestateFavor?.session_delta) return null
   const needed = pointsToNextTier(effectiveTier.value)
   if (!needed) return null
   const delta = props.gamestateFavor.session_delta
   if (delta <= 0) return 0
-  return Math.min(100, Math.round((delta / needed) * 100))
+  let credited = delta
+  const reportTier = props.snapshotTier
+  const liveTier = props.gamestateFavor.favor_tier
+  if (
+    reportTier &&
+    liveTier &&
+    reportTier !== liveTier &&
+    tierIndex(liveTier) < tierIndex(reportTier)
+  ) {
+    const exitCost = pointsToNextTier(reportTier)
+    if (exitCost != null && delta > exitCost) credited = delta - exitCost
+  }
+  return Math.min(100, Math.round((credited / needed) * 100))
 })
 </script>
