@@ -94,7 +94,7 @@ export interface GameStateFavor {
   session_delta: number
   favor_tier: string | null
   last_confirmed_at: string
-  source: 'log' | 'snapshot' | 'both'
+  source: 'log' | 'snapshot'
 }
 
 export interface GameStateCurrency {
