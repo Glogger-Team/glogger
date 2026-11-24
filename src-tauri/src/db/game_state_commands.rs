@@ -2289,7 +2289,6 @@ mod tests {
             server: "Dreva".to_string(),
         };
         let mut arena = crate::arena_parser::ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg: Vec<crate::chat_combat_parser::ChatCombatEvent> = Vec::new();
         let mut milk = |cow: &str, ts: &str, area: Option<&str>| {
             let line = format!("[Combat] Alice: Collect Milk on {cow}!");
@@ -2297,7 +2296,6 @@ mod tests {
             let msg = crate::chat_parser::parse_chat_line(&line).unwrap();
             let mut st = crate::chat_status_dispatch::DispatchState {
                 arena_tracker: &mut arena,
-                last_rez_dedup: &mut rez,
                 recent_damage: &mut dmg,
                 current_area: area.map(|s| s.to_string()),
                 count_currency: true,

@@ -516,7 +516,6 @@ fn run_scan_dispatch(
     watch_rules: &[crate::settings::WatchRule],
 ) -> Vec<String> {
     let mut arena = crate::arena_parser::ArenaTracker::new();
-    let mut last_rez_dedup = std::collections::HashMap::new();
     let mut recent_damage: Vec<crate::chat_combat_parser::ChatCombatEvent> = Vec::new();
     let mut domains: Vec<String> = Vec::new();
     // Batch-local twin-collapse slot for unresolvable-skill sightings.
@@ -540,7 +539,6 @@ fn run_scan_dispatch(
         let local_ts = local_msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
         let mut dstate = DispatchState {
             arena_tracker: &mut arena,
-            last_rez_dedup: &mut last_rez_dedup,
             recent_damage: &mut recent_damage,
             current_area: None,
             // Scan paths never accrue: the accumulator has no per-line

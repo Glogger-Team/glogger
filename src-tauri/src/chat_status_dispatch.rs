@@ -35,7 +35,8 @@
 /// - Words of Power: `DELETE` of an already-gone word removes 0 rows.
 /// - deaths: deduped against `character_deaths` on
 ///   `(character, server, died_at, killer)` before insert.
-/// - rezzes: rolling 30-second per-target window, same as the live path.
+/// - rezzes: deduped against `character_resuscitations` on the full row key
+///   before insert — the cross-phrasing window is gone (pair never observed).
 /// - hoplology: `insert_hoplology_study_from_chat` only touches the row when
 ///   the study is new or upgrades a report-only row to chat.
 /// - currency: live-only (see arm below) — scans skip it, because a
@@ -89,15 +90,9 @@ pub struct DispatchIdentity {
 }
 
 /// Mutable per-process state the live coordinator owns and the dispatch
-/// needs: the arena narration tracker and the rez-dedup map.
+/// needs: the arena narration tracker.
 pub struct DispatchState<'a> {
     pub arena_tracker: &'a mut ArenaTracker,
-    /// Last persisted successful rez per target: (timestamp, caster name).
-    /// The caster distinguishes the two phrasings — named ("X resuscitates
-    /// Y") vs "Unknown" ("Y comes back to life!") — so only cross-phrasing
-    /// pairs suppress (rolling 30s dedup window, same as the coordinator's
-    /// `last_rez_dedup`).
-    pub last_rez_dedup: &'a mut std::collections::HashMap<String, (String, String)>,
     /// Rolling buffer of recent damage-on-player events (max 10),
     /// snapshotted into the DB when a death persists.
     pub recent_damage: &'a mut Vec<ChatCombatEvent>,
@@ -469,7 +464,7 @@ pub fn dispatch_chat_message(
         }
 
         if let Some(rez_event) = chat_resuscitate_parser::parse_resuscitate_message(ctx.msg)
-            && persist_rez_event(ctx.db, id, &rez_event, state.last_rez_dedup, &state.current_area) {
+            && persist_rez_event(ctx.db, id, &rez_event, &state.current_area) {
                 out.character_resuscitated = Some(rez_event);
             }
     }
@@ -1717,13 +1712,11 @@ fn persist_death_event(
 }
 
 
-/// Persist a resuscitation with the rolling 30-second per-target dedup
-/// window. Returns `true` when a row was written (caller emits the event).
+/// Persist a resuscitation. Returns `true` when a row was written (caller emits the event).
 fn persist_rez_event(
     db: &DbPool,
     id: &DispatchIdentity,
     event: &ChatResuscitateEvent,
-    last_rez_dedup: &mut std::collections::HashMap<String, (String, String)>,
     current_area: &Option<String>,
 ) -> bool {
     let (timestamp, caster_name, target_name, success) = match event {
@@ -1734,24 +1727,6 @@ fn persist_rez_event(
             (timestamp, caster_name, target_name, false)
         }
     };
-    if success {
-        // Cross-phrasing suppression only: the game emits "X resuscitates Y"
-        // (named caster) and "Y comes back to life!" (caster "Unknown") for
-        // one rez in different contexts (pet rez vs player/group rez). When
-        // both phrasings fire for the same target within the window, only the
-        // first row is kept. Same-phrasing repeats always record — an 8s-apart
-        // re-rez is a genuine second death (observed live), and an exact
-        // double-emit shares the identical timestamp, which the replay guard
-        // below already catches. (122-log census 2026-11-09: the two phrasings
-        // never co-occurred — pet targets vs player names — so the window is
-        // uncalibrated but also unexercised.)
-        if let Some((prev_ts, prev_caster)) = last_rez_dedup.get(target_name)
-            && crate::coordinator::rez_within_dedup_window(prev_ts, timestamp)
-            && (*prev_caster == "Unknown") != (*caster_name == "Unknown") {
-                return false;
-            }
-        last_rez_dedup.retain(|_, (prev_ts, _)| crate::coordinator::rez_within_dedup_window(prev_ts, timestamp));
-    }
     let Ok(conn) = db.get_write() else {
         return false;
     };
@@ -1766,30 +1741,18 @@ fn persist_rez_event(
         )
         .unwrap_or(false);
     if exists {
-        // Cross-run duplicate: a previous run persisted this row, but this
-        // run's in-memory dedup map is fresh. Prime it so the paired
-        // phrasing (same target within 30s, different caster/stamp) dedups
-        // against this run's memory instead of inserting a second row.
-        if success {
-            last_rez_dedup.insert(target_name.clone(), (timestamp.clone(), caster_name.clone()));
-        }
         return false;
     }
-    let ok = conn
-        .execute(
-            "INSERT INTO character_resuscitations
-                (character_name, server_name, occurred_at, caster_name, target_name, success, area)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                &id.character, &id.server, timestamp, caster_name, target_name,
-                success, current_area.as_deref(),
-            ],
-        )
-        .is_ok();
-    if ok && success {
-        last_rez_dedup.insert(target_name.clone(), (timestamp.clone(), caster_name.clone()));
-    }
-    ok
+    conn.execute(
+        "INSERT INTO character_resuscitations
+            (character_name, server_name, occurred_at, caster_name, target_name, success, area)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            &id.character, &id.server, timestamp, caster_name, target_name,
+            success, current_area.as_deref(),
+        ],
+    )
+    .is_ok()
 }
 
 #[cfg(test)]
@@ -1837,12 +1800,10 @@ mod tests {
 
     fn state<'a>(
         arena: &'a mut ArenaTracker,
-        rez: &'a mut std::collections::HashMap<String, (String, String)>,
         dmg: &'a mut Vec<ChatCombatEvent>,
     ) -> DispatchState<'a> {
         DispatchState {
             arena_tracker: arena,
-            last_rez_dedup: rez,
             recent_damage: dmg,
             current_area: None,
             // Tests exercise arms directly (live-equivalent coverage).
@@ -1853,12 +1814,10 @@ mod tests {
     /// Scan-equivalent state: currency accrual off, like `run_scan_dispatch`.
     fn state_scan<'a>(
         arena: &'a mut ArenaTracker,
-        rez: &'a mut std::collections::HashMap<String, (String, String)>,
         dmg: &'a mut Vec<ChatCombatEvent>,
     ) -> DispatchState<'a> {
         DispatchState {
             arena_tracker: arena,
-            last_rez_dedup: rez,
             recent_damage: dmg,
             current_area: None,
             count_currency: false,
@@ -1964,7 +1923,6 @@ mod tests {
         let gd = game_data();
         seed_skill(&gd, "Sword", 7);
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         
 
@@ -1978,12 +1936,12 @@ mod tests {
             status_msg("Poop on Somebody!", ts), // not a status line — ignored here
         ];
         for m in &msgs {
-            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            let mut st = state(&mut arena, &mut dmg);
             dispatch(&pool, &gd, Some(&id()), m, ts, &mut st);
         }
         // Cow-curse poop comes over Combat, attributed to the file identity.
         let poop = combat_msg("Alice: Poop on Bob!", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let o = dispatch(&pool, &gd, Some(&id()), &poop, ts, &mut st);
         assert!(o.domains.contains(&"report_stats".to_string()));
 
@@ -2018,7 +1976,7 @@ mod tests {
         .unwrap();
         drop(conn);
         let m = status_msg("You received 10 Councils.", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         let conn = pool.get_write().unwrap();
         let delta: i64 = conn
@@ -2031,7 +1989,7 @@ mod tests {
         assert_eq!(delta, 10);
         // Scan-equivalent dispatch (count_currency: false) must not accrue.
         drop(conn);
-        let mut st = state_scan(&mut arena, &mut rez, &mut dmg);
+        let mut st = state_scan(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         let conn = pool.get_write().unwrap();
         let delta2: i64 = conn
@@ -2044,10 +2002,10 @@ mod tests {
         assert_eq!(delta2, 10);
         // Re-scan inserts nothing new.
         for m in &msgs {
-            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            let mut st = state(&mut arena, &mut dmg);
             dispatch(&pool, &gd, Some(&id()), m, ts, &mut st);
         }
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &poop, ts, &mut st);
         let loot2: i64 = conn
             .query_row(
@@ -2069,7 +2027,6 @@ mod tests {
         let gd = game_data();
         seed_skill(&gd, "Sword", 7);
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         
         let ts = "26-04-01 05:30:53";
@@ -2077,9 +2034,9 @@ mod tests {
         let alice = DispatchIdentity { character: "Alice".to_string(), server: "Dreva".to_string() };
         let bob = DispatchIdentity { character: "Bob".to_string(), server: "Legacy".to_string() };
         let m = status_msg("You earned 62 XP and reached level 5 in Sword!", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&alice), &m, ts, &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&bob), &m, ts, &mut st);
 
         let conn = pool.get_write().unwrap();
@@ -2104,12 +2061,11 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         
         let ts = "26-04-01 05:30:53";
         let m = status_msg("Tiny Brain Bug Meat added to inventory.", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, None, &m, ts, &mut st);
         assert!(out.staged_gains.is_empty());
         let conn = pool.get_write().unwrap();
@@ -2118,11 +2074,10 @@ mod tests {
     }
 
     #[test]
-    fn death_persists_once_and_rez_dedups_pair() {
+    fn death_persists_once() {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         
         let ts = "26-04-01 05:30:53";
@@ -2131,68 +2086,35 @@ mod tests {
             "Demon Scout #7059135: Demon Bolt on Alice! Dmg: 179 health, 178 armor. (FATALITY!)",
             ts,
         );
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &death, ts, &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &death, ts, &mut st);
         let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM character_deaths", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 1);
-
-        // Paired rez phrasings within 30s collapse to one row.
-        let r1 = emote_msg("Goblin resuscitates Alice", "26-04-01 05:31:00");
-        let r2 = emote_msg("Alice comes back to life!", "26-04-01 05:31:10");
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
-        dispatch(&pool, &gd, Some(&id()), &r1, "26-04-01 05:31:00", &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
-        let out = dispatch(&pool, &gd, Some(&id()), &r2, "26-04-01 05:31:10", &mut st);
-        assert!(out.character_resuscitated.is_none());
-        let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM character_resuscitations", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
     }
 
     #[test]
     fn rez_same_phrasing_repeat_records() {
         // Live shape (Chat-26-06-11, Bumblebutt 8s apart): a pet rezzed,
-        // alive mid-fight, dead again. Same-phrasing repeats are genuine
-        // re-rezzes and must both persist — only cross-phrasing pairs dedup.
+        // alive mid-fight, dead again. Repeats are genuine re-rezzes and
+        // must both persist — no cross-phrasing suppression exists any more
+        // (pair never observed live; guard removed 2026-11-24).
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         
 
         let r1 = emote_msg("Zabael resuscitates Bumblebutt", "26-06-11 22:19:33");
         let r2 = emote_msg("Zabael resuscitates Bumblebutt", "26-06-11 22:19:41");
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &r1, "26-06-11 22:19:33", &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &r2, "26-06-11 22:19:41", &mut st);
         assert!(out.character_resuscitated.is_some());
         let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM character_resuscitations", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 2);
-    }
-
-    #[test]
-    fn rez_cross_phrasing_reverse_order_dedups() {
-        // Mirror of death_persists_once_and_rez_dedups_pair: suppression is
-        // symmetric, so Unknown→named collapses too, not just named→Unknown.
-        let (_guard, pool) = test_pool();
-        let gd = game_data();
-        let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
-        let mut dmg = Vec::new();
-        
-
-        let r1 = emote_msg("Alice comes back to life!", "26-04-01 05:31:00");
-        let r2 = emote_msg("Goblin resuscitates Alice", "26-04-01 05:31:10");
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
-        dispatch(&pool, &gd, Some(&id()), &r1, "26-04-01 05:31:00", &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
-        let out = dispatch(&pool, &gd, Some(&id()), &r2, "26-04-01 05:31:10", &mut st);
-        assert!(out.character_resuscitated.is_none());
-        let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM character_resuscitations", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 1);
     }
 
     #[test]
@@ -2202,15 +2124,14 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         
         let ts = "26-04-01 05:30:53";
         let m = status_msg("You earned 64 Combat Wisdom: Killed the Aktaari Queen", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         assert!(out.chat_status_event.is_some());
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         let n: i64 = pool.get().unwrap().query_row("SELECT COUNT(*) FROM combat_wisdom_earns", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
@@ -2224,34 +2145,33 @@ mod tests {
         let gd = game_data();
         seed_skill(&gd, "Sword", 7);
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-04-01 05:30:53";
 
         // Persist-backed arm: fresh live line emits, identical replay is silent.
         let m = status_msg("Tiny Brain Bug Meat added to inventory.", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         assert!(out.chat_status_event.is_some());
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         assert!(out.chat_status_event.is_none());
 
         // Pure-XP arm (no persist key): live emits, scan stays silent.
         let x = status_msg("You earned 25 XP in Sword.", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &x, ts, &mut st);
         assert!(out.chat_status_event.is_some());
-        let mut st = state_scan(&mut arena, &mut rez, &mut dmg);
+        let mut st = state_scan(&mut arena, &mut dmg);
         let out = dispatch_scan(&pool, &gd, Some(&id()), &x, ts, &mut st);
         assert!(out.chat_status_event.is_none());
 
         // Wisdom dedups on the local-ts key: replay of the same line is silent.
         let w = status_msg("You earned 64 Combat Wisdom: Killed the Aktaari Queen", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &w, ts, &mut st);
         assert!(out.chat_status_event.is_some());
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &w, ts, &mut st);
         assert!(out.chat_status_event.is_none());
     }
@@ -2261,12 +2181,11 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         
         let ts = "26-04-01 05:30:53";
         let m = status_msg("Saved report to C:/Games/Reports/Character_Alice.json", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         assert_eq!(out.report_saved_paths.len(), 1);
     }
@@ -2295,7 +2214,6 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-04-01 05:30:53";
         // `Fungiculture` stays unseeded: both sightings land in
@@ -2308,7 +2226,7 @@ mod tests {
         );
         let mut last: Option<String> = None;
         let mut count = 0;
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &english, ts, &mut st);
         assert_eq!(out.unknown_skills.len(), 1);
         for skill in out.unknown_skills {
@@ -2316,7 +2234,7 @@ mod tests {
                 count += 1;
             }
         }
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert_eq!(out.unknown_skills.len(), 1);
         for skill in out.unknown_skills {
@@ -2333,7 +2251,6 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-04-01 05:30:53";
         let english = status_msg("You earned 62 XP and reached level 5 in Fungiculture!", ts);
@@ -2344,7 +2261,7 @@ mod tests {
         );
         let mut last: Option<String> = None;
         let mut count = 0;
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert_eq!(out.unknown_skills.len(), 1);
         for skill in out.unknown_skills {
@@ -2352,7 +2269,7 @@ mod tests {
                 count += 1;
             }
         }
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &english, ts, &mut st);
         assert_eq!(out.unknown_skills.len(), 1);
         for skill in out.unknown_skills {
@@ -2370,7 +2287,6 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-04-01 05:30:53";
         let ts2 = "26-04-01 06:30:53";
@@ -2389,7 +2305,7 @@ mod tests {
         let mut last: Option<String> = None;
         let mut count = 0;
         for (m, t) in [(&english, ts), (&json, ts), (&english2, ts2), (&json2, ts2)] {
-            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            let mut st = state(&mut arena, &mut dmg);
             let out = dispatch(&pool, &gd, Some(&id()), m, t, &mut st);
             assert_eq!(out.unknown_skills.len(), 1);
             for skill in out.unknown_skills {
@@ -2417,7 +2333,6 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-04-01 05:30:53";
         let alice = id();
@@ -2432,7 +2347,7 @@ mod tests {
             let mut skipped = 0;
             let mut suppressed = 0;
             for m in [first, second] {
-                let mut st = state(&mut arena, &mut rez, &mut dmg);
+                let mut st = state(&mut arena, &mut dmg);
                 let out = dispatch(&pool, &gd, Some(&alice), m, ts, &mut st);
                 assert_eq!(out.unknown_skills.len(), 1);
                 for skill in out.unknown_skills {
@@ -2455,7 +2370,6 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-04-01 05:30:53";
         let alice = id();
@@ -2470,7 +2384,7 @@ mod tests {
         let mut skipped = 0;
         let mut suppressed = 0;
         // Alice English arms the slot.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&alice), &english, ts, &mut st);
         assert_eq!(out.unknown_skills.len(), 1);
         for skill in out.unknown_skills {
@@ -2481,7 +2395,7 @@ mod tests {
             }
         }
         // Bob same-skill English is a new skip, not a twin collapse.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&bob), &english, ts, &mut st);
         assert_eq!(out.unknown_skills.len(), 1);
         for skill in out.unknown_skills {
@@ -2492,7 +2406,7 @@ mod tests {
             }
         }
         // Bob's JSON twin collapses into Bob's arming.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&bob), &json, ts, &mut st);
         assert_eq!(out.unknown_skills.len(), 1);
         for skill in out.unknown_skills {
@@ -2535,7 +2449,6 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-04-01 05:30:53";
         let alice = id();
@@ -2544,7 +2457,7 @@ mod tests {
         let mut skipped = 0;
         let mut suppressed = 0;
         for _ in 0..2 {
-            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            let mut st = state(&mut arena, &mut dmg);
             let out = dispatch(&pool, &gd, Some(&alice), &english, ts, &mut st);
             assert_eq!(out.unknown_skills.len(), 1);
             for skill in out.unknown_skills {
@@ -2600,15 +2513,14 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         
         let ts = "26-11-17 08:50:27";
         let english = status_msg("Toxic Sludge added to inventory.", ts);
         let json = json_msg("AddItem", LOOT_BODY, ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out1 = dispatch(&pool, &gd, Some(&id()), &english, ts, &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out2 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         // Exactly one staging across the pair: no double attribution.
         assert_eq!(out1.staged_gains.len(), 1);
@@ -2682,15 +2594,14 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 08:50:27";
         let english = status_msg("Toxic Sludge added to inventory.", ts);
         let entity_only = "{\"Name\": \"Toxic Sludge\", \"TypeId\": 1137, \"Stack\": 1, \"Flags\": [], \"FromEntityId\": 257400}";
         let json = json_msg("AddItem", entity_only, ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &english, ts, &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert!(out.staged_gains.is_empty());
         let rows = item_rows(&pool);
@@ -2706,7 +2617,6 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 08:50:27";
         let sourced = json_msg("AddItem", LOOT_BODY, ts);
@@ -2715,13 +2625,13 @@ mod tests {
             "{\"Name\": \"Toxic Sludge\", \"TypeId\": 1137, \"Stack\": 1, \"Flags\": []}",
             ts,
         );
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &sourced, ts, &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &unsourced, ts, &mut st);
         assert_eq!(item_rows(&pool).len(), 2);
         // Replay the sourced receipt: exact-entity hit, no stamping.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &sourced, ts, &mut st);
         let rows = item_rows(&pool);
         assert_eq!(rows.len(), 2);
@@ -2736,7 +2646,6 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 08:50:27";
         let sourced = json_msg("AddItem", LOOT_BODY, ts);
@@ -2745,18 +2654,18 @@ mod tests {
             "{\"Name\": \"Toxic Sludge\", \"TypeId\": 1137, \"Stack\": 1, \"Flags\": []}",
             ts,
         );
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &unsourced, ts, &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &sourced, ts, &mut st);
         assert_eq!(item_rows(&pool).len(), 2);
         // Replay the unsourced receipt: exact-NULL hit on its own row.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &unsourced, ts, &mut st);
         let rows = item_rows(&pool);
         assert_eq!(rows.len(), 2);
         // Replay the sourced receipt: exact-entity hit, no stamping.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &sourced, ts, &mut st);
         let rows = item_rows(&pool);
         assert_eq!(rows.len(), 2);
@@ -2767,15 +2676,14 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         
         let ts = "26-11-17 08:50:27";
         let english = status_msg("Toxic Sludge added to inventory.", ts);
         let json = json_msg("AddItem", LOOT_BODY, ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out1 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out2 = dispatch(&pool, &gd, Some(&id()), &english, ts, &mut st);
         assert_eq!(out1.staged_gains.len(), 1);
         // English-second finds the JSON twin's row and stages nothing:
@@ -2796,7 +2704,6 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 08:50:27";
         let english = status_msg("Toxic Sludge added to inventory.", ts);
@@ -2804,7 +2711,7 @@ mod tests {
         let json_b = json_msg("AddItem", LOOT_BODY_B, ts);
         let mut staged = 0;
         for m in [&english, &json_a, &english, &json_b] {
-            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            let mut st = state(&mut arena, &mut dmg);
             staged += dispatch(&pool, &gd, Some(&id()), m, ts, &mut st).staged_gains.len();
         }
         assert_eq!(staged, 2, "each entity's gain stages exactly once");
@@ -2823,7 +2730,6 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 08:50:27";
         let english = status_msg("Toxic Sludge added to inventory.", ts);
@@ -2831,7 +2737,7 @@ mod tests {
         let json_b = json_msg("AddItem", LOOT_BODY_B, ts);
         let mut staged = 0;
         for m in [&json_a, &json_b, &english, &english] {
-            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            let mut st = state(&mut arena, &mut dmg);
             staged += dispatch(&pool, &gd, Some(&id()), m, ts, &mut st).staged_gains.len();
         }
         assert_eq!(staged, 2, "each entity's gain stages exactly once");
@@ -2921,14 +2827,13 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         
         let ts = "26-11-17 08:50:27";
         let json = json_msg("AddItem", LOOT_BODY, ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out1 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out2 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert_eq!(out1.staged_gains.len(), 1);
         assert!(out2.staged_gains.is_empty());
@@ -2943,21 +2848,20 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-04-01 05:30:53";
 
         let m = status_msg("Mandrake Root x5 added to inventory.", ts);
         // First dispatch: new ledger row, gain stages exactly once.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out1 = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         assert_eq!(out1.staged_gains.len(), 1);
         // Replay finds the ledger row: attribution stays silent.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out2 = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         assert!(out2.staged_gains.is_empty(), "replay must not re-attribute");
         // A further replay converges without doubling.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out3 = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
         assert!(out3.staged_gains.is_empty());
         let ledger: i64 = pool
@@ -2976,22 +2880,21 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-04-01 05:30:53";
 
         let body = "{\"Name\": \"Mandrake Root\", \"TypeId\": 1137, \"Stack\": 5, \"Flags\": [], \"FromName\": \"Olugax The Ever-Pudding\", \"FromEntityId\": 257400}";
         let json = json_msg("AddItem", body, ts);
         // First dispatch: new receipt row, gain stages exactly once.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out1 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert_eq!(out1.staged_gains.len(), 1);
         // Replay hits the exact-entity row: attribution stays silent.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out2 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert!(out2.staged_gains.is_empty(), "replay must not re-attribute");
         // A further replay converges without doubling.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out3 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert!(out3.staged_gains.is_empty());
         let rows = item_rows(&pool);
@@ -3035,11 +2938,10 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 08:50:27";
         let english = status_msg("Mandrake Root x5 added to inventory.", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch_scan(&pool, &gd, Some(&id()), &english, ts, &mut st);
         assert!(out.staged_gains.is_empty());
         assert_eq!(item_rows(&pool).len(), 0);
@@ -3052,11 +2954,10 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 08:50:27";
         let json = json_msg("AddItem", LOOT_BODY, ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch_scan(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert_eq!(out.staged_gains.len(), 1);
         let rows = item_rows(&pool);
@@ -3070,12 +2971,11 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 08:50:27";
         let bare = "{\"Name\": \"Mandrake Root\", \"TypeId\": 1012, \"Stack\": 5, \"Flags\": []}";
         let json = json_msg("AddItem", bare, ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch_scan(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert!(out.staged_gains.is_empty());
         assert_eq!(item_rows(&pool).len(), 0);
@@ -3088,11 +2988,10 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 08:50:27";
         let english = status_msg("Mandrake Root x5 added to inventory.", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &english, ts, &mut st);
         assert_eq!(out.staged_gains.len(), 1);
         assert_eq!(item_rows(&pool).len(), 1);
@@ -3104,7 +3003,6 @@ mod tests {
         let gd = game_data();
         seed_skill(&gd, "Teleportation", 4242);
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         
         let ts = "26-11-17 08:42:52";
@@ -3113,10 +3011,10 @@ mod tests {
             "{\"Skill\":\"Teleportation\", \"XP\": 53, \"OldLevel\": 46, \"NewLevel\": 46}",
             ts,
         );
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert!(out.domains.iter().any(|d| d == "skills"));
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         let (xp, level, n): (i64, i64, i64) = pool
             .get()
@@ -3143,7 +3041,7 @@ mod tests {
                 &format!("{{\"Skill\":\"Riding\", \"XP\": {amount}, \"OldLevel\": 102, \"NewLevel\": 102}}"),
                 ts,
             );
-            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            let mut st = state(&mut arena, &mut dmg);
             dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         }
         let xp: i64 = pool
@@ -3164,7 +3062,6 @@ mod tests {
         let gd = game_data();
         seed_skill(&gd, "Sword", 4243);
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         
         let ts = "26-11-17 08:42:52";
@@ -3173,7 +3070,7 @@ mod tests {
             "{\"Skill\":\"Sword\", \"XP\": 62, \"OldLevel\": 4, \"NewLevel\": 5}",
             ts,
         );
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert!(out.domains.iter().any(|d| d == "skills"));
         let level: i64 = pool
@@ -3195,13 +3092,12 @@ mod tests {
         let gd = game_data();
         seed_npc(&gd, "NPC_Elune", "Elune", Some("AreaSerbule"), true);
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 08:32:34";
         let json = json_msg("DeltaFavor", "{\"Npc\":\"NPC_Elune\", \"Delta\": 18.06948}", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out1 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out2 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert!(out1.domains.iter().any(|d| d == "favor"));
         assert!(out2.domains.iter().all(|d| d != "favor"));
@@ -3242,11 +3138,10 @@ mod tests {
         let gd = game_data();
         seed_npc(&gd, "NPC_Elune", "Elune", Some("AreaSerbule"), true);
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 08:32:34";
         let json = json_msg("DeltaFavor", "{\"Npc\":\"NPC_Elune\", \"Delta\": -52.65}", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         let conn = pool.get().unwrap();
         // Favor loss is real and kept as an event (session sums go negative).
@@ -3286,11 +3181,10 @@ mod tests {
         .unwrap();
         drop(conn);
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let old_ts = "26-11-17 08:00:00";
         let old = json_msg("DeltaFavor", "{\"Npc\":\"NPC_Elune\", \"Delta\": 5.0}", old_ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &old, old_ts, &mut st);
         let conn = pool.get().unwrap();
         let (tier, confirmed): (Option<String>, String) = conn
@@ -3306,7 +3200,7 @@ mod tests {
         drop(conn);
         let new_ts = "26-11-17 11:00:00";
         let new = json_msg("DeltaFavor", "{\"Npc\":\"NPC_Elune\", \"Delta\": 5.0}", new_ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &new, new_ts, &mut st);
         let conn = pool.get().unwrap();
         let confirmed: String = conn
@@ -3393,7 +3287,6 @@ mod tests {
         seed_npc(&gd, "NPC_Goss", "Goss", Some("AreaStatehelm"), true);
         seed_npc(&gd, "NPC_Card", "Card", Some("AreaSerbule"), false);
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         
         let ts = "26-11-17 08:32:34";
@@ -3403,7 +3296,7 @@ mod tests {
                 &format!("{{\"Npc\":\"{npc}\", \"Delta\": 5.0}}"),
                 ts,
             );
-            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            let mut st = state(&mut arena, &mut dmg);
             dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         }
         let conn = pool.get().unwrap();
@@ -3431,7 +3324,6 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         
         let ts = "26-11-17 08:42:52";
@@ -3440,7 +3332,7 @@ mod tests {
             "{\"RecipeName\":\"Recall Heart's Home\", \"RecipeId\": 9008, \"Completions\": 211}",
             ts,
         );
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert!(out.domains.iter().any(|d| d == "recipes"));
         let n: i64 = pool
@@ -3461,10 +3353,10 @@ mod tests {
             "{\"RecipeName\":\"Recall Heart's Home\", \"RecipeId\": 9008, \"Completions\": 212}",
             ts,
         );
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert!(out.domains.iter().any(|d| d == "recipes"));
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert!(out.domains.iter().all(|d| d != "recipes"));
         let n: i64 = pool
@@ -3484,7 +3376,6 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         
         let ts = "26-11-17 08:31:58";
@@ -3493,7 +3384,7 @@ mod tests {
             "{\"Title\":\"Skill Info\", \"Body\":\"Foods Consumed:\\n\\n  Bacon: 22\"}",
             ts,
         );
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert!(out.domains.iter().any(|d| d == "books"));
         let (book_type, title): (String, String) = pool
@@ -3514,7 +3405,7 @@ mod tests {
         assert!(by.contains("Bacon"));
         // Rescan of the identical book: no write, no domain — but the
         // trigger payload still flows so caller-side imports stay converged.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out2 = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
         assert!(out2.domains.iter().all(|d| d != "books"));
         assert!(out2.json_book.is_some());
@@ -3525,19 +3416,18 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
 
         let body = "{\"Title\":\"Skill Info\", \"Body\":\"Foods Consumed:\\n\\n  Bacon: 22\"}";
         let ts1 = "26-11-17 08:31:58";
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &json_msg("Book", body, ts1), ts1, &mut st);
         assert!(out.domains.iter().any(|d| d == "books"));
 
         // Identical body re-observed later: no domain (rescan silent),
         // but captured_at advances to the newer observation.
         let ts2 = "26-11-17 08:41:58";
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out2 = dispatch(&pool, &gd, Some(&id()), &json_msg("Book", body, ts2), ts2, &mut st);
         assert!(out2.domains.iter().all(|d| d != "books"));
         let captured: String = pool
@@ -3556,7 +3446,7 @@ mod tests {
         // no domain, stored content untouched.
         let ts0 = "26-11-17 08:21:58";
         let stale = "{\"Title\":\"Skill Info\", \"Body\":\"Foods Consumed:\\n\\n  Eggs: 3\"}";
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out3 = dispatch(&pool, &gd, Some(&id()), &json_msg("Book", stale, ts0), ts0, &mut st);
         assert!(out3.domains.iter().all(|d| d != "books"));
         let content: String = pool
@@ -3577,17 +3467,16 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         
         let ts = "26-11-17 08:50:27";
         let unknown = json_msg("Report", "{\"Title\":\"Something\"}", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &unknown, ts, &mut st);
         assert_eq!(out.unknown_json, vec!["Report".to_string()]);
         assert!(out.domains.is_empty());
         let bad = json_msg("AddItem", "not-json", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &bad, ts, &mut st);
         assert_eq!(out.malformed_json, vec!["AddItem".to_string()]);
     }
@@ -3597,12 +3486,11 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 16:55:59";
         let body = "{\"Title\":\"Pigeon From TestFriend\", \"Body\":\"This one has food!\\n\\n<i>You received:\\nMulberry Salad x10</i>\"}";
         let msg = json_msg("Pigeon", body, ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
         assert!(out.domains.iter().any(|d| d == "player_messages"));
         assert!(out.unknown_json.is_empty());
@@ -3630,7 +3518,7 @@ mod tests {
         // first and must not swallow the item-bearing one (body is in the
         // rescan key, not just the sender + second).
         let plain = json_msg("Pigeon", "{\"Title\":\"Pigeon From TestFriend\", \"Body\":\"This is a pigeon\\n\"}", ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &plain, ts, &mut st);
         assert!(out.domains.iter().any(|d| d == "player_messages"));
         let count: i64 = pool
@@ -3642,10 +3530,10 @@ mod tests {
             .unwrap();
         assert_eq!(count, 2);
         // Rescan: both lines replay to the existing rows, domains stay silent.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
         assert!(out.domains.iter().all(|d| d != "player_messages"));
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &plain, ts, &mut st);
         assert!(out.domains.iter().all(|d| d != "player_messages"));
         let count: i64 = pool
@@ -3663,12 +3551,11 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 16:55:59";
         let body = "{\"Title\":\"Pigeon To Somebody\", \"Body\":\"...\"}";
         let msg = json_msg("Pigeon", body, ts);
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
         // No message row, but the line stays visible in malformed counters.
         assert!(out.domains.iter().all(|d| d != "player_messages"));
@@ -3680,13 +3567,12 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 16:55:02";
         let msgs = crate::chat_parser::parse_chat_lines(include_str!("../../test_data/vip_json/chat-entityreport.log"));
         assert_eq!(msgs.len(), 1);
         let msg = msgs.into_iter().next().unwrap();
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
         assert!(out.domains.iter().any(|d| d == "player_messages"));
         let row: (String, String) = pool
@@ -3707,7 +3593,6 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-19 21:48:19";
         let msgs = crate::chat_parser::parse_chat_lines(include_str!("../../test_data/vip_json/chat-tip.log"));
@@ -3715,14 +3600,14 @@ mod tests {
         // First pass: ten discoveries write, the dementia tip does not.
         let mut hit = false;
         for msg in &msgs {
-            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            let mut st = state(&mut arena, &mut dmg);
             let out = dispatch(&pool, &gd, Some(&id()), msg, ts, &mut st);
             hit |= out.domains.iter().any(|d| d == "words_of_power");
         }
         assert!(hit);
         // Second pass (rescan): rediscovery never duplicates.
         for msg in &msgs {
-            let mut st = state(&mut arena, &mut rez, &mut dmg);
+            let mut st = state(&mut arena, &mut dmg);
             let out = dispatch(&pool, &gd, Some(&id()), msg, ts, &mut st);
             assert!(out.domains.iter().all(|d| d != "words_of_power"));
         }
@@ -3741,7 +3626,7 @@ mod tests {
         assert_eq!(breath.2, "chat");
         assert!(breath.3.starts_with("2026-11-19"));
         // The dementia tip stays visible in unknown counters, never written.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &msgs[0], ts, &mut st);
         assert_eq!(out.unknown_json, vec!["Tip".to_string()]);
     }
@@ -3753,7 +3638,6 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 17:04:42";
         let msg = json_msg(
@@ -3761,7 +3645,7 @@ mod tests {
             "{\"Skill\":\"Werewolf\", \"XP\": 279200, \"OldLevel\": 6, \"NewLevel\": 6}",
             ts,
         );
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
         assert!(out.unknown_json.is_empty());
         assert!(out.domains.is_empty());
@@ -3772,14 +3656,13 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 17:04:42";
         let msg = combat_msg(
             "Alice: Bruising Blow 8 on City Slime #488966! Dmg: 2943 health. (FATALITY!)",
             ts,
         );
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
         assert!(out.enemy_killed.is_some());
         let row: (String, String) = pool
@@ -3793,7 +3676,7 @@ mod tests {
             .unwrap();
         assert_eq!(row, ("City Slime".to_string(), "488966".to_string()));
         // Rescan: same FATALITY replays to the existing row.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &msg, ts, &mut st);
         let count: i64 = pool
             .get_write()
@@ -3807,7 +3690,6 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         let ts = "26-11-17 17:04:42";
         // Live kill under a known area stamps the zone.
@@ -3815,7 +3697,7 @@ mod tests {
             "Alice: Bruising Blow 8 on City Slime #488966! Dmg: 2943 health. (FATALITY!)",
             ts,
         );
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         st.current_area = Some("Serbule".to_string());
         let out = dispatch(&pool, &gd, Some(&id()), &live_msg, ts, &mut st);
         assert!(out.enemy_killed.is_some());
@@ -3826,7 +3708,7 @@ mod tests {
             "Alice: Bruising Blow 8 on City Slime #488976! Dmg: 2943 health. (FATALITY!)",
             ts,
         );
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         st.current_area = Some("Ilmari Desert".to_string());
         let out = dispatch_scan(&pool, &gd, Some(&id()), &stale_msg, ts, &mut st);
         assert!(out.enemy_killed.is_some());
@@ -3853,7 +3735,6 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         // Kill first, receipt 5s later (live shape: FATALITY 17:04:42 →
         // receipt 17:04:47).
@@ -3861,14 +3742,14 @@ mod tests {
             "Alice: Bruising Blow 8 on City Slime #488966! Dmg: 2943 health. (FATALITY!)",
             "26-11-17 17:04:42",
         );
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &kill, "26-11-17 17:04:42", &mut st);
         let receipt = json_msg(
             "AddItem",
             "{\"Name\": \"Coin Sack\", \"TypeId\": 1325, \"Stack\": 1, \"Flags\": [], \"FromName\": \"City Slime\", \"FromEntityId\": 488966}",
             "26-11-17 17:04:47",
         );
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &receipt, "26-11-17 17:04:47", &mut st);
         let loot: Vec<(String, i64)> = pool
             .get_write()
@@ -3881,7 +3762,7 @@ mod tests {
             .unwrap();
         assert_eq!(loot, vec![("Coin Sack".to_string(), 1)]);
         // Receipt rescan links nothing new.
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &receipt, "26-11-17 17:04:47", &mut st);
         let count: i64 = pool
             .get_write()
@@ -3896,14 +3777,13 @@ mod tests {
         let (_guard, pool) = test_pool();
         let gd = game_data();
         let mut arena = ArenaTracker::new();
-        let mut rez = std::collections::HashMap::new();
         let mut dmg = Vec::new();
         // FATALITY with no receipt (live #488964): kill recorded, no loot.
         let kill = combat_msg(
             "Alice: Claw 9 on City Slime #488964! Dmg: 1822 health. (FATALITY!)",
             "26-11-17 17:05:16",
         );
-        let mut st = state(&mut arena, &mut rez, &mut dmg);
+        let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &kill, "26-11-17 17:05:16", &mut st);
         let kills: i64 = pool
             .get_write()

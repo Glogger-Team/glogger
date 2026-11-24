@@ -69,6 +69,12 @@ STOPWORDS = {
     # JSON examples (the Rust fields are snake_case) — never code symbols.
     "fromname",
     "fromentityid",
+    # External std types are never retired in-tree symbols: a diff
+    # deleting `HashMap` / `NaiveDateTime` uses must not orphan
+    # pre-existing docs mentions of those types (rez-dedup removal,
+    # 2026-11-24 — the guard fn + per-target maps used both).
+    "hashmap",
+    "naivedatetime",
 }
 MOD_TESTS_RE = re.compile(r"^\s*(?:pub\s+)?mod\s+\w*tests?\b")
 
@@ -931,6 +937,18 @@ def self_test() -> int:
         [(1, "    // FromEntityId retired")], ["    "]
     )
     check("prose comment silent", not idents3)
+    # Rez-dedup removal (2026-11-24): external std types on removed lines
+    # are never retired in-tree symbols — deleting their uses must not
+    # orphan pre-existing docs mentions.
+    std_idents, _, _, _ = extract_identifiers(
+        [
+            (1, "    let mut rez: HashMap<String, (String, String)> = HashMap::new();"),
+            (2, "    chrono::NaiveDateTime::parse_from_str(earlier, FMT),"),
+        ],
+        ["    let mut rez = Map::new();", "    parse(earlier, FMT),"],
+    )
+    check("std HashMap silent", "HashMap" not in std_idents)
+    check("std NaiveDateTime silent", "NaiveDateTime" not in std_idents)
 
     # #212: a removed string literal that still occurs quoted in the new
     # tree is not an orphan (unconditional emit made conditional, same
