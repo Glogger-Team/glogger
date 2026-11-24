@@ -195,10 +195,10 @@ When a feature needs to persist events to the database, add a handler in the coo
 
 ### For LogEvent persistence
 
-`process_player_events` handles only `CharacterLogin`, `ChatLogPath`, and
-`AreaTransition` (coordinator.rs:818-920); there is no generic `PlayerEvent`
-dispatch arm. Player.log is not a persistence surface for new features — add
-chat-status or report-based persistence instead.
+`process_player_events` handles session signals only (`CharacterLogin`,
+`ChatLogPath`, `AreaTransition` in `coordinator.rs`); `LogEvent` carries no
+generic item/XP arm. Player.log is not a persistence surface for new
+features — add chat-status or report-based persistence instead.
 
 ### For ChatStatusEvent persistence
 

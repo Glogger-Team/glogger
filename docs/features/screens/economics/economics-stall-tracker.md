@@ -3,8 +3,9 @@
 ## Overview
 
 Player-stall analytics built from the in-game **PlayerShopLog** book. Every time
-the user opens their shop log in-game, Glogger captures the book content via the
-Player.log `ProcessBook` event, parses each log line into a structured event,
+the user opens their shop log in-game, Glogger captures the book content from
+the game's `Books/PlayerShopLog_*.txt` files via the Books-directory watcher,
+parses each log line into a structured event,
 and persists it to SQLite. The Stall Tracker screen then presents that history
 as sales, revenue, and estimated current inventory.
 
@@ -64,7 +65,7 @@ The Stall Tracker has four visible tabs plus a fifth view behind a modal:
 - `src-tauri/src/stall_aggregations.rs` — pure aggregation logic for Revenue pivot and Inventory tier-stack reconstruction. No DB access.
 - `src-tauri/src/db/stall_tracker_commands.rs` — Tauri commands, filter shape, insert helper, import/export.
 - `src-tauri/src/db/migrations.rs` — `stall_events` table creation.
-- `src-tauri/src/coordinator.rs` — intercepts `PlayerEvent::BookOpened { book_type: "PlayerShopLog", … }` and persists the parsed events.
+- `src-tauri/src/books_watcher.rs` — the Books-directory watcher ingests game-written `PlayerShopLog_*.txt` files into `stall_events` (stateless `INSERT OR IGNORE` sweep); the old Player.log book-event arm is gone.
 
 **Frontend (Vue/TS):**
 
@@ -86,7 +87,7 @@ Item names are rendered via `<ItemInline>` in the item-display surfaces (Sales r
 ```text
 Game writes <game_data>/Books/PlayerShopLog_*.txt per opened shop log
     │
-    ├─► live path (Player.log ProcessBook → coordinator ingest_shop_log)
+    ├─► live path (Player.log book event → coordinator ingest_shop_log)
     │       — dark since the 10/21 client stopped emitting LocalPlayer: lines
     │
     └─► Books watcher (30s scan, mtime-tracked) ──► process_book_file
@@ -108,8 +109,8 @@ Game writes <game_data>/Books/PlayerShopLog_*.txt per opened shop log
                                                    dataVersion++ → tabs re-fetch
 ```
 
-The Books-directory watcher is the live source today; the Player.log
-`ProcessBook` path is wired but dark (no `LocalPlayer:` lines since the
+The Books-directory watcher is the live source today; the Player.log book-event
+path is wired but dark (no `LocalPlayer:` lines since the
 10/21 client update). **Chat.log is not involved** — unlike Surveying,
 stall events never need cross-log correction. A manual Refresh command
 (`rescan_stall_books`) re-runs the same ingest statelessly

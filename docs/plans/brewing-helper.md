@@ -57,6 +57,7 @@ for the raw investigation data that informed this plan.
 ## 1. Goals & non-goals
 
 **Goals:**
+
 - Help players discover and record their personal ingredient→effect mappings
   through a "Brewing Journal" that automatically extracts data from item JSON
   exports.
@@ -70,6 +71,7 @@ for the raw investigation data that informed this plan.
   so the discovery matrix is complete and accurate.
 
 **Non-goals:**
+
 - **No wiki-style "correct answers"** — the whole point is that mappings are
   per-player. We never tell the player what effect a combo "should" give.
 - **No brewing automation** — we track and display, we don't tell the player
@@ -103,9 +105,11 @@ for the raw investigation data that informed this plan.
 ### The BrewItem system
 
 CDN recipes define effects via `ResultEffects`:
-```
+
+```text
 BrewItem(tier, skillReq, slot1+slot2+...=effectPool1+effectPool2+...)
 ```
+
 - **Left of `=`:** keyword slots that determine the effect (e.g.,
   `BrewingMushroomC4+BrewingGarnishC3`)
 - **Right of `=`:** effect category pools — the universe of possible effects
@@ -123,6 +127,7 @@ effects.
 
 Drinks also have **skill requirements to consume** that vary per effect. The
 required skill is NOT always Brewing — it can be:
+
 - **Endurance** (e.g., level 38)
 - **Nature Appreciation** (e.g., level 50)
 - **Gourmand** (e.g., level 50)
@@ -138,6 +143,7 @@ means kegs are how brewers share high-level effects with lower-level players.
 ### Data available per crafted drink (from item JSON)
 
 Each brewed item in the inventory JSON stores:
+
 - `IngredientItemTypeIds` — array of the exact item TypeIDs used
 - `TSysPowers` — the effect granted (`Power` name + `Tier`)
 - `UsesRemaining` — servings left
@@ -161,7 +167,7 @@ This is the primary data source for building the personal discovery journal.
 
 ## 4. Build order
 
-```
+```text
 Phase 1 ── CDN brewing data extraction                              [Rust]
 Phase 2 ── Discovery journal (item JSON import)                     [Rust]
 Phase 3 ── Frontend store & Brewery tab shell                       [Vue]
@@ -202,7 +208,7 @@ model that the frontend can query.
 
 ### Key data structures
 
-```
+```text
 BrewingRecipe {
     recipe_id: u32,
     internal_name: String,
@@ -431,7 +437,7 @@ All of these typically fire at the same timestamp.
 
 ### Tasks
 
-- Add brewing event detection to the PlayerEventParser / coordinator.
+- Add brewing event detection to the coordinator's live Chat.log dispatch (the Player.log item lines this phase assumed went dark with the 10/21 client update — confirm a chat-carried signal first).
   Emit a `BrewCompleted` event containing:
   - `recipe_id`, `xp_gained`, `output_item_name`, `timestamp`
   - Ingredient deltas (from UpdateItemCode stack changes) — best effort,
@@ -556,6 +562,6 @@ These are not in scope for the initial build but are worth considering:
    race-restricted effects whose power names don't contain the race? The CDN
    result item keywords include `AlcoholLevel` but may also contain race info.
 
-
 ## random notes
-- what about a 'make this next' generator? we could do it globally and by specific recipe. finds a combo of ingredients you haven't used, but own. 
+
+- what about a 'make this next' generator? we could do it globally and by specific recipe. finds a combo of ingredients you haven't used, but own.

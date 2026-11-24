@@ -114,7 +114,7 @@ Lightweight struct with `active_character: Option<String>` and `active_server: O
 | coordinator `set_active_character` (live) | game_state_session | UPSERT; clears inventory/equipment/combat/mount | session |
 | report import (`seed_game_state_from_snapshot`) | all game_state_* | bulk seed | all |
 
-The deleted Player.log → `PlayerEventParser` → `PlayerEvent` pipeline no longer writes these tables.
+The deleted Player.log item pipeline no longer writes these tables — Chat.log (`chat_status_dispatch`) and report snapshot imports are the live writers.
 
 ### Timestamp Handling
 
