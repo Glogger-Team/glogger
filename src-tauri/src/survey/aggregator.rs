@@ -575,7 +575,8 @@ impl SurveySessionAggregator {
     /// Attribute a live chat loot gain AND tag its ledger row in one write
     /// transaction: the qty bump plus the `source_details` tag commit
     /// together. If the tag fails, the bump rolls back with it, leaving the
-    /// row untagged with no qty behind it (a later pass heals cleanly) —
+    /// row untagged with no qty behind it (only a later use recorded within
+    /// the claim window may still reclaim it via retro-claim) —
     /// never a bumped qty on an untagged row that a later claim would
     /// double-count. Same unchecked-transaction shape as the dispatch arms
     /// and the retro-claim tail: fresh pool checkout, no outer transaction
@@ -741,8 +742,9 @@ impl SurveySessionAggregator {
         // Fail-dangerous guards: a busy/locked DB error is "unknown", never
         // "not counted". Bumping blind would double-count loot_qty with no
         // error and no log; skipping leaves the row untagged with no qty
-        // behind it (a later rescan or retro-claim heals cleanly) instead
-        // of a bumped qty a later claim would double-count.
+        // behind it (only a later use recorded within the claim window may
+        // still reclaim it via retro-claim) instead of a bumped qty a later
+        // claim would double-count.
         let tagged = match persistence::player_gain_already_counted(
             conn,
             use_id,

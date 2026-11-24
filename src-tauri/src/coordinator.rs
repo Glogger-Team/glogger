@@ -126,14 +126,16 @@ struct PendingSurveyTag {
 
 /// Bound on staged survey-tag retries per chat batch: a DB outage must not
 /// grow the batch's memory without limit. Overflow gains stay untagged with
-/// no qty behind them (the unit rolled back), healable by a later rescan
-/// or retro-claim — the same state as before the retry existed.
+/// no qty behind them (the unit rolled back): a later use recorded within
+/// the claim window may still reclaim them via retro-claim, otherwise they
+/// stay unattributed — the same missing-gain-only state as before the retry
+/// existed.
 const MAX_SURVEY_TAG_RETRIES: usize = 32;
 
 /// Stage a rolled-back survey gain for the batch-end retry, bounded by
 /// [`MAX_SURVEY_TAG_RETRIES`]. Overflow gains stay untagged with no qty
-/// behind them (the unit rolled back), healable by a later rescan or
-/// retro-claim — the same state as before the retry existed.
+/// behind them (the unit rolled back): a later in-window use may still
+/// reclaim them via retro-claim, otherwise they stay unattributed.
 fn stage_survey_tag_retry(
     staging: &mut Vec<PendingSurveyTag>,
     character: &str,
@@ -154,7 +156,7 @@ fn stage_survey_tag_retry(
         });
     } else {
         eprintln!(
-            "[coordinator] survey retry staging full ({MAX_SURVEY_TAG_RETRIES}); gain left for rescan/retro-claim"
+            "[coordinator] survey retry staging full ({MAX_SURVEY_TAG_RETRIES}); gain left unattributed (an in-window later use may still reclaim it)"
         );
     }
 }
@@ -1054,7 +1056,8 @@ impl DataIngestCoordinator {
         // Survey tag-failure staging (TODO 53): gains whose live
         // attribute+tag unit rolls back mid-batch wait here for one bounded
         // retry at batch end (below, after the event loop). Single pass —
-        // a retry that still fails is left for a later rescan/retro-claim.
+        // a retry that still fails leaves the gain unattributed (an
+        // in-window later use may still reclaim it via retro-claim).
         let mut survey_tag_retries: Vec<PendingSurveyTag> = Vec::new();
         for event in events {
             match event {
@@ -1509,11 +1512,11 @@ impl DataIngestCoordinator {
         }
         // Batch-end retry for survey tags that failed mid-batch (TODO 53):
         // one more pass over the staged gains through the same atomic unit.
-        // Single pass only — a retry that still fails is logged and left for
-        // a later rescan or retro-claim (the rollback leaves no qty behind,
-        // so that later pass cannot double-count). Runs before the fallible
-        // message-insert tail so a tail failure cannot strand staged gains
-        // that a fresh checkout would have healed.
+        // Single pass only — a retry that still fails is logged and the gain
+        // stays unattributed (the rollback leaves no qty behind, so a later
+        // in-window use reclaimed via retro-claim cannot double-count).
+        // Runs before the fallible message-insert tail so a tail failure
+        // cannot strand staged gains that a fresh checkout would have healed.
         if !survey_tag_retries.is_empty() {
             match self.db_pool.get_write() {
                 Ok(conn) => {
@@ -1538,7 +1541,7 @@ impl DataIngestCoordinator {
                 }
                 Err(e) => {
                     eprintln!(
-                        "[coordinator] survey batch-end retry skipped, pool checkout failed ({} gains left for rescan/retro-claim): {e}",
+                        "[coordinator] survey batch-end retry skipped, pool checkout failed ({} gains left unattributed; an in-window later use may still reclaim them): {e}",
                         survey_tag_retries.len()
                     );
                 }
