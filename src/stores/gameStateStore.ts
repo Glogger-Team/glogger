@@ -7,6 +7,7 @@ import { useCharacterStore } from './characterStore'
 import { useCombatStore } from './combatStore'
 import { useFarmingStore } from './farmingStore'
 import { useDeathStore } from './deathStore'
+import { useResuscitateStore } from './resuscitateStore'
 import {
   skillTotalLevel,
   type GameStateSkill,
@@ -774,7 +775,11 @@ export const useGameStateStore = defineStore('gameState', () => {
     const serverName = getServerName()
     if (!characterName || !serverName) return
     try {
-      arenaTips.value = await invoke<ArenaTip[]>('get_arena_tips', { characterName, serverName })
+      const tips = await invoke<ArenaTip[]>('get_arena_tips', { characterName, serverName })
+      // Rapid character switch during the await: a newer load owns the
+      // state now — refuse to plant the previous character's tips.
+      if (getCharacterName() !== characterName || getServerName() !== serverName) return
+      arenaTips.value = tips
     } catch (e) {
       console.error('[gameStateStore] Failed to load arena tips:', e)
     }
@@ -787,9 +792,13 @@ export const useGameStateStore = defineStore('gameState', () => {
     const serverName = getServerName()
     if (!characterName || !serverName) return
     try {
-      currencyEstimate.value = await invoke<CurrencyEstimate | null>(
+      const estimate = await invoke<CurrencyEstimate | null>(
         'get_currency_estimate', { characterName, serverName },
       )
+      // Same stale-switch guard as fetchArenaTips: refuse to plant the
+      // previous character's wallet estimate.
+      if (getCharacterName() !== characterName || getServerName() !== serverName) return
+      currencyEstimate.value = estimate
     } catch (e) {
       console.error('[gameStateStore] Failed to load currency estimate:', e)
     }
@@ -869,6 +878,9 @@ export const useGameStateStore = defineStore('gameState', () => {
       const rows = await invoke<{ skill_name: string; sort_order: number }[]>(
         'get_tracked_skills', { characterName, serverName }
       )
+      // Same stale-switch guard as fetchArenaTips: refuse to plant the
+      // previous character's tracked list.
+      if (getCharacterName() !== characterName || getServerName() !== serverName) return
       trackedSkillNames.value = rows.map(r => r.skill_name)
     } catch (e) {
       console.error('[gameStateStore] Failed to load tracked skills:', e)
@@ -1359,10 +1371,12 @@ export const useGameStateStore = defineStore('gameState', () => {
     const combatStore = useCombatStore()
     const deathStore = useDeathStore()
     const farmingStore = useFarmingStore()
+    const rezStore = useResuscitateStore()
     resetSessionSkills()
     clearLiveInventory()
     combatStore.resetForCharacter()
     farmingStore.resetForCharacter()
+    rezStore.resetForCharacter()
     deathStore.deathsGeneration++
     deathStore.deaths = []
     deathStore.loaded = false
@@ -1375,9 +1389,11 @@ export const useGameStateStore = defineStore('gameState', () => {
     const combatStore = useCombatStore()
     const deathStore = useDeathStore()
     const farmingStore = useFarmingStore()
+    const rezStore = useResuscitateStore()
     await deathStore.loadDeaths()
     void combatStore.loadHistoricBaseline()
     void farmingStore.loadBossBaseline()
+    void rezStore.loadResuscitations()
   }
   // ── Event Listeners ───────────────────────────────────────────────────
 

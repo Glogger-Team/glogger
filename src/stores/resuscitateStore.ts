@@ -1,4 +1,4 @@
-import { defineStore } from 'pinia'
+import { defineStore, acceptHMRUpdate } from 'pinia'
 import { ref, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useSettingsStore } from './settingsStore'
@@ -19,20 +19,36 @@ export const useResuscitateStore = defineStore('resuscitations', () => {
   const loaded = ref(false)
 
   async function loadResuscitations() {
+    if (loaded.value) return
     const settings = useSettingsStore()
     const characterName = settings.settings.activeCharacterName
     const serverName = settings.settings.activeServerName
     if (!characterName || !serverName) return
 
     try {
-      resuscitations.value = await invoke('get_character_resuscitations', {
+      const rows = await invoke<CharacterResuscitation[]>('get_character_resuscitations', {
         characterName,
         serverName,
       })
+      // Rapid character switch during the await: a newer load owns the
+      // state now — refuse to plant the previous character's rows.
+      // (Mirrors the combat/farming baseline guards.)
+      const current = useSettingsStore()
+      if (
+        current.settings.activeCharacterName !== characterName ||
+        current.settings.activeServerName !== serverName
+      )
+        return
+      resuscitations.value = rows
       loaded.value = true
     } catch (e) {
       console.error('[resuscitations] Failed to load:', e)
     }
+  }
+
+  function resetForCharacter() {
+    resuscitations.value = []
+    loaded.value = false
   }
 
   function handleResuscitateEvent(payload: {
@@ -118,6 +134,7 @@ export const useResuscitateStore = defineStore('resuscitations', () => {
     resuscitations,
     loaded,
     loadResuscitations,
+    resetForCharacter,
     handleResuscitateEvent,
     successfulRezzes,
     rezzedByOthers,
@@ -127,3 +144,7 @@ export const useResuscitateStore = defineStore('resuscitations', () => {
     lastRezzedBy,
   }
 })
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useResuscitateStore, import.meta.hot))
+}
