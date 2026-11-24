@@ -15,7 +15,7 @@ The codebase is **largely consistent** with the documented time standards. The b
   - `Local::now()` in `stall_year_resolver.rs:84` — used to determine the current calendar year for year-less stall timestamps, not stored as a timestamp.
 - [`parsers::LogDateResolver`](../../src-tauri/src/parsers.rs) owns the Player.log date for both consumers (`GameStateManager`, `SurveySessionAggregator`), and `chat_local_to_utc()` handles Chat.log (local-to-UTC) — both ingestion paths are correct; the resolver's clock fallback also rolls back a day when a line's time of day is still ahead of it (a lagging read over UTC midnight).
 
-> Historical note (frozen 2026-04-23; annotated 2026-11-24): `parsers::LogDateResolver` no longer exists in `src-tauri/src` — it was retired with the Player.log pipeline (replay is now chat-only). The bullet above records the audit-time state, not current code.
+> Historical note (frozen 2026-04-23; annotated 2026-11-24): `parsers::LogDateResolver` no longer exists in `src-tauri/src` — it was retired with the Player.log pipeline (replay is now chat-only), so only the Player.log half of the bullet above is audit-time history. The Chat.log half remains live: `chat_local_to_utc()` (`parsers.rs:95`) still handles local-to-UTC conversion, and the roll-back-a-day behavior now lives in `to_utc_datetime_with_base()` (`parsers.rs:13-26`).
 
 - No issues found.
 
