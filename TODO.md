@@ -22,7 +22,7 @@ Small, user-action-triggered or cosmetic items found by the full-PR adversarial 
 
 Small items the B round verified as currently harmless. Each is an isolated slice when wanted.
 
-- [ ] Session-vs-absolute progress semantics (P3): `before` snapshot (FE `get_snapshot`) vs absolute restore counters are separate loans; the reviewed range leaves them distinct. No merge intended without a new contract row.
+- [ ] Session-vs-absolute progress semantics (P3) — instance #1 of the [reconciliation contract](docs/architecture/reconciliation-contract.md): a session baseline and absolute counters stay distinct until the four contract fields (anchor source, delta source, conflict rule, re-anchor points) are declared as a spec row. The B-round entry names no mechanism and detail is unrecoverable from it — re-derive the mechanism before touching.
 - [ ] Dead `'both'` union member (P3): union-widening contract rows carry a `'both'` member with no writer; remove or wire when the contract needs it.
 - [x] Unknown-skill twin double-count (P3) — FIXED #279 (twin unknown skills deduped across poll batches, single accounting count). Original text: English `LevelUp` + JSON `Xp` arms each push `unknown_skills` for an unresolvable skill → `skipped_unknown_skills` counts 2 and two coordinator lines. Dedupe at accounting or document.
   - **Suspects:** `src-tauri/src/chat_status_dispatch.rs` (English `LevelUp` + JSON `Xp` `None` arms).

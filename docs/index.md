@@ -39,6 +39,7 @@ Core structure, patterns, and standards used across the app.
 - [pipeline-structure.md](architecture/pipeline-structure.md) — Data pipeline architecture: CDN ingestion, player data flow, 4-bucket game state scoping, coordinator design.
 - [capture-analysis-results.md](architecture/capture-analysis-results.md) — Devtools capture analysis: observed log events, parseable data formats, and feature opportunities identified from live gameplay captures.
 - [widget-sizing-audit.md](architecture/widget-sizing-audit.md) — Dashboard widget sizing audit: per-widget height inventory, grid system analysis, inconsistencies, and proposed standards.
+- [reconciliation-contract.md](architecture/reconciliation-contract.md) — Dual-write convention: per-domain anchor/delta/conflict/re-anchor declarations for session-baseline vs absolute-counter tracking, with verification shape and worked example.
 
 ## Features
 
