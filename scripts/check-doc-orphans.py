@@ -549,7 +549,7 @@ def extract_identifiers(
     return idents, pairs, literals, def_names
 
 
-_DOC_SPAN_RE = re.compile(r"`([^`]*)|\"([^\"]*)\"")
+_DOC_SPAN_RE = re.compile(r"`([^`]*)`|\"([^\"]*)\"")
 _DOC_KEBAB_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)+")
 
 
@@ -1326,6 +1326,24 @@ def self_test() -> int:
         "audit flag opts in explicitly",
         build_parser().parse_args(["--audit"]).audit is True,
     )
+    # Closer-span pin (B round): the span regex must consume its closing
+    # backtick, otherwise the closer re-opens a spurious span and trailing
+    # bare kebab prose on the same line (`well-known` here) fires as a
+    # false-positive literal. Pre-fix this fixture reports `well-known`.
+    with tempfile.TemporaryDirectory() as closer:
+        close_docs = Path(closer) / "docs"
+        close_src = Path(closer) / "src"
+        close_docs.mkdir()
+        close_src.mkdir()
+        (close_src / "live.rs").write_text(
+            'pub fn emit_it() {\n    emit("live-channel");\n}\n', encoding="utf-8"
+        )
+        (close_docs / "close.md").write_text(
+            "# Closer notes\n\nThe `live-channel` event is well-known prose.\n",
+            encoding="utf-8",
+        )
+        _closer_hits = audit_tree(close_docs, close_src)
+    check("audit closed span ignores trailing bare kebab", _closer_hits == [])
     return 1 if failures else 0
 
 
