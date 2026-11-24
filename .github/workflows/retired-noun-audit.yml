@@ -1,18 +1,32 @@
 name: Retired-noun audit
 
 # Weekly, never-blocking run of the doc-orphans whole-tree `--audit` mode
-# (scripts/check-doc-orphans.py): every symbol-shaped reference in every doc
-# checked against all live definitions in src-tauri/src. The worker run that
-# motivated this workflow found 4124 raw findings, mostly Vue/CDN/CSS nouns
-# gating: the audit step carries `continue-on-error: true` and the upload
-# step runs `if: always()` plus its own `continue-on-error: true`, so the
-# workflow stays green whatever the audit finds or if artifact upload flakes.
+# (scripts/check-doc-orphans.py, stdlib-only, seconds to run): every
+# symbol-shaped reference in every doc checked against all live definitions
+# in src-tauri/src. The worker run that motivated this workflow found
+# thousands of raw findings, mostly Vue/CDN/CSS nouns the .rs live scan
+# cannot see — dozens of lines per component name, each group a single
+# triage decision, not dozens.
+#
+# Scoping choice (triage-pair first): the audit INPUT is deliberately
+# unscoped — whole-tree is the point, and the #327 triage proved real hits
+# hide among the noise, so any shell-side exclusion would re-implement gate
+# semantics and risk dropping signal. Scoping happens at the triage surface
+# instead: the artifact carries the raw log plus a triage index (per-token
+# and per-file counts, most frequent first) that collapses frontend-owned
+# noise into single accept-or-fix decisions. Pairs work top-down from the
+# index and grep the raw log for locations.
+#
+# Never-blocking shape: both steps carry `continue-on-error: true`, the
+# upload runs `if: always()`, so the workflow stays green whatever the audit
+# finds or if artifact upload flakes.
 # Consumers: triage pairs reading the uploaded `retired-noun-audit` artifact.
 #
 # No `mise run lint:audit` here: that slice is the fail-closed cargo-audit
-# (RustSec) gate, a different audit. This workflow invokes the doc-orphans
-# script directly (stdlib-only, so runner python3 suffices with no mise
-# install — same precedent as flatpak.yml's version-sync step).
+# (RustSec) gate, a different audit, and there is no natural slot for a
+# doc-audit task under that name. This workflow invokes the doc-orphans
+# script directly (runner python3 suffices with no mise install — same
+# precedent as flatpak.yml's version-sync step).
 
 on:
   schedule:
@@ -45,8 +59,29 @@ jobs:
         continue-on-error: true
         run: |
           set -uo pipefail
-          python3 scripts/check-doc-orphans.py --audit 2>&1 | tee retired-noun-audit.txt
-          exit "${PIPESTATUS[0]}"
+          python3 scripts/check-doc-orphans.py --audit > retired-noun-audit.txt 2>&1
+          audit_code=$?
+          # Triage index: collapse the raw `relpath:line: token` lines into
+          # per-token and per-file counts (most frequent first) so triage
+          # pairs get one decision per stale name instead of thousands of raw
+          # lines. Lossless by construction: the grep keeps exactly the
+          # finding-shaped lines; the raw log keeps everything.
+          {
+            echo "## retired-noun audit triage index"
+            echo "## full findings: retired-noun-audit.txt (relpath:line: token)"
+            echo "## pick a token, grep it in the full log for locations;"
+            echo "## one decision per token: accept as frontend-owned or fix the doc."
+            echo ""
+            echo "## by token (count token, most frequent first)"
+            grep -E '^[^:]+:[0-9]+: [^ ]+$' retired-noun-audit.txt \
+              | awk -F': ' '{c[$2]++} END {for (t in c) printf "%d %s\n", c[t], t}' \
+              | sort -rn
+            echo ""
+            echo "## by file (count path, densest first)"
+            grep -E '^[^:]+:[0-9]+: [^ ]+$' retired-noun-audit.txt \
+              | cut -d: -f1 | sort | uniq -c | sort -rn
+          } > retired-noun-triage.txt
+          exit "$audit_code"
 
       - name: Upload audit findings
         if: always()
@@ -55,4 +90,6 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: retired-noun-audit
-          path: retired-noun-audit.txt
+          path: |
+            retired-noun-audit.txt
+            retired-noun-triage.txt
