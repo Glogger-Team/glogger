@@ -176,6 +176,14 @@ WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history.
 
 ---
 
+## Bug backlog (user-reported 2026-11-22)
+
+- [x] Chat tabs don't live-update (System/Party go stale; Search is current) — FIXED #248 (merged): shared `useChatLiveRefresh` composable subscribes all 8 tabs to `chat-messages-inserted`; auto-reset at live head, N-new pill otherwise (+ D-fix: `hasOlderPages` head detection, `showNewest()`, day-list refresh, late-listener release). Triaged 2026-11-22: ingestion was healthy, event died in orphaned badge counter; never-built, not a regression. A+B+sim-C+B-delta+Sim-D CLEAN; bot D 5 threads fixed, re-review rate-limited.
+  - **Effort: Small-Medium | Impact: High (chat tabs are the live surface)**
+  - **Suspects:** `src/components/Chat/SystemView.vue`, `src/components/Chat/PartyView.vue` (+ 6 sibling tab views), `src/stores/coordinatorStore.ts:22,45-47`, `src/stores/chatStore.ts` (orphaned wrapper), `src-tauri/src/coordinator.rs:1454-1458` (producer).
+
+---
+
 ## Analytical features (report/chat-backed)
 
 - [x] Item provenance downstream features — DONE in tree (re-validated 2026-11-24): the dead ledger halves are already gone (`ItemAdded|ItemStackChanged` zero hits in `farmingStore.ts`, now 106 lines) and every survivor shipped — kill-loot-by-mob stands on existing rows outside provenance, ledger craft yield reads `game_state_recipes.completion_count` from the Character export, unknown-source report partially survives via chat-backed `ItemGained` inserts. Nothing remains actionable: mining/survey session yield died with the log. Original text: re-scoped audit — ledger halves are LocalPlayer:-gated, two features survive (kill-loot-by-mob shipped outside provenance; ledger craft yield via report). Full audit in history.
