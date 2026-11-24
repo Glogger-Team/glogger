@@ -68,13 +68,22 @@ export const useCombatStore = defineStore("combat", () => {
     try {
       // Per-character baseline; NULL-legacy rows stay visible to every
       // character via the backend OR-NULL predicate. Null identity = no
-      // filter (current global behavior). resetForCharacter already clears
-      // baselineLoaded on switch, so no second reset path here.
+      // filter (current global behavior).
       const sessions = await invoke<HistoricalFarmingSession[]>("get_farming_sessions", {
         limit: 500,
         characterName,
         serverName,
       });
+      // Rapid character switches: resetForCharacter cleared the flag and a
+      // newer load is in flight (or done). Drop stale rows instead of mixing
+      // another character's lifetime totals into this view. (Clearing the
+      // flag alone cannot stop an already-awaited fetch.)
+      const current = useSettingsStore();
+      if (
+        current.settings.activeCharacterName !== characterName ||
+        current.settings.activeServerName !== serverName
+      )
+        return;
       const killTotals: Record<string, number> = {};
       for (const s of sessions) {
         for (const k of s.kills ?? []) {
