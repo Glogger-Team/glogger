@@ -7,7 +7,6 @@ from pathlib import Path
 
 _STR_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
 _BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/")
-_UNTERM_STR_RE = re.compile(r'"(?:\\.|[^"\\])*\\?$')
 _CHAR_RE = re.compile(
     r"'(?:[^'\\\n]|\\(?:[nrt\\0'\x22]|x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}))'"
 )
@@ -403,8 +402,28 @@ def execute_call_end(text: str, open_idx: int) -> int | None:
     return None
 
 
+def _strip_comments(text: str) -> str:
+    """Blank `//`/`/*...*/` (string-aware, multi-line state threaded).
+
+    Shared by `sql_text_of` (#281) and the update-ok matchers (B review on
+    b07bf71e): matching runs on code + live string contents, never on
+    comment prose — `//` inside a string (`"http://x"`) stays intact.
+    Idempotent (blanked text strips to itself).
+    """
+    kept: list[str] = []
+    in_block = False
+    raw_closer: str | None = None
+    for line in text.splitlines() or [text]:
+        code, in_block, raw_closer = _code_only(line, in_block, raw_closer, True)
+        kept.append(code)
+    return "\n".join(kept)
+
+
 def update_ok_tables(fn_text: str) -> list[str]:
     """Tables of UPDATE statements executed with a discarded `.ok()`."""
+    # Comment prose never matches (B review on b07bf71e): a commented-out
+    # twin or a trailing `// INSERT INTO t` must not implicate live code.
+    fn_text = _strip_comments(fn_text)
     tables: list[str] = []
     for m in re.finditer(r"\.\s*execute\s*\(", fn_text):
         end = execute_call_end(fn_text, m.end() - 1)
@@ -465,16 +484,9 @@ def sql_text_of(stmt: str) -> str:
     with Rust backslash-newline continuations removed per language semantics.
     Keyword/column matching runs on this, never on Rust code — `SET`/`WHERE`
     live at SQL depth 0 here while the literals sat inside `execute(` parens."""
-    # Strip `//`/`/*...*/` first (string-aware, multi-line state threaded)
-    # so commented-out SQL never yields literals — #281. `//` inside a
-    # string (`"http://x"`) stays intact.
-    kept: list[str] = []
-    in_block = False
-    raw_closer: str | None = None
-    for line in stmt.splitlines() or [stmt]:
-        code, in_block, raw_closer = _code_only(line, in_block, raw_closer, True)
-        kept.append(code)
-    cleaned = "\n".join(kept)
+    # Commented-out SQL never yields literals — #281 (shared helper also
+    # used by the update-ok matchers). `//` inside `"http://x"` intact.
+    cleaned = _strip_comments(stmt)
     parts: list[str] = []
     for m in SQL_STR_RE.finditer(cleaned):
         content = m.group(1)
@@ -553,6 +565,11 @@ def update_ok_findings(fn_text: str) -> list[str]:
     """Tables with a discarded UPDATE *and* a same-table INSERT sibling —
     the fall-through-to-duplicate shape (detection alone is not a finding:
     best-effort UPDATE-ok writes with no fallback stay silent)."""
+    # Same comment-blindness as `update_ok_tables` (B review): the sibling
+    # search runs on stripped text so a `// INSERT INTO t` tail cannot
+    # implicate a live UPDATE-ok. (`update_ok_tables` strips again —
+    # idempotent.)
+    fn_text = _strip_comments(fn_text)
     out: list[str] = []
     for table in update_ok_tables(fn_text):
         if re.search(
@@ -992,6 +1009,38 @@ fn claim_receipt(
         has_blob_overwrite(
             'fn foo() {\n tx.execute("UPDATE t SET source_details = ?1 WHERE x=1", []).unwrap();\n}'
         ),
+    )
+    # P2 mutant-killing (B review on b07bf71e: `functions()` preserves raw
+    # bodies incl. `//` tails, but update-ok matching ran on raw text — a
+    # commented-out twin or a trailing `// INSERT INTO t` fired
+    # UPDATE_OK_FALLBACK where pre-patch stayed silent).
+    check(
+        "P2 mutant-killing: commented-out twin silent",
+        update_ok_findings(
+            'fn foo() {\n// conn.execute("UPDATE t SET a = 1 WHERE x=1", []).ok();\n// conn.execute("INSERT INTO t (a) VALUES (1)", []);\n}'
+        )
+        == [],
+    )
+    check(
+        "P2 mutant-killing: trailing comment INSERT does not implicate live UPDATE-ok",
+        update_ok_findings(
+            'fn foo() {\n    conn.execute("UPDATE t SET a = 1 WHERE x=1", []).ok(); // INSERT INTO t\n}'
+        )
+        == [],
+    )
+    check(
+        "P2 mutant-killing: block-commented twin silent",
+        update_ok_findings(
+            'fn foo() {\n/* conn.execute("UPDATE t SET a = 1 WHERE x=1", []).ok();\nconn.execute("INSERT INTO t (a) VALUES (1)", []); */\n}'
+        )
+        == [],
+    )
+    check(
+        "P2 preservation: live twin still fires",
+        update_ok_findings(
+            'fn foo() {\n    conn.execute("UPDATE t SET a = 1 WHERE x=1", []).ok();\n    conn.execute("INSERT INTO t (a) VALUES (1)", []);\n}'
+        )
+        == ["t"],
     )
 
     for literal in [
