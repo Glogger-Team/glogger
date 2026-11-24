@@ -260,10 +260,10 @@ export const useGameStateStore = defineStore('gameState', () => {
   const sessionSkills = ref<Record<string, SkillSessionData>>({})
 
   // ── Session XP-rate tracking (driven by [Status] chat events) ─────────
-  // Separate from sessionSkills (per-skill XP from skill-update events plus
-  // chat level-ups via handleChatLevelUp — tnl-less, levels exact). This
-  // aggregates combat vs prodigy XP for the XP/hr widget, using wall-clock
-  // time so the rate stays live during play.
+  // Separate from sessionSkills (per-skill XP folded from chat level-ups via
+  // handleChatLevelUp — levels exact, tnl from the persisted row, in-level XP
+  // verbatim). This aggregates combat vs prodigy XP for the XP/hr widget,
+  // using wall-clock time so the rate stays live during play.
   const xpRateSession = ref<{
     combatXp: number
     prodigyXp: number
