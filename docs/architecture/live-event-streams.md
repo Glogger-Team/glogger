@@ -39,9 +39,6 @@ DataIngestCoordinator                       DataIngestCoordinator
                                                 +-- evaluate_rules()
                                                 +-- emit "watch-rule-triggered"
                                                 +-- emit "chat-messages-inserted"
-                                                +-- GameStateManager
-                                                |     .correct_stack_for_session()
-                                                |     +-- emit "game-state-updated"
                                                 +-- item_transactions ledger
                                                       (records chat-sourced gains)
 ```
@@ -167,11 +164,7 @@ Some data appears in both streams with different levels of detail. The pattern i
 
 #### Backend cross-stream correlation
 
-The coordinator performs **automatic inventory stack correction** by correlating chat status events with stored rows:
-
-1. Report imports (`Reports/*_items_*.json` via `import_inventory_report`) replace the whole snapshot slice for the character/server (`DELETE` + re-insert with `source = 'snapshot'`); those quantities are authoritative.
-2. Chat.log `[Status] Item x5 added to inventory.` carries the real quantity for a gain: the coordinator calls `GameStateManager::correct_stack_for_session()` with the gain's session identity (tag-preferred, active fallback), which resolves the chat display name to an internal name via CDN data and updates the most recent `stack_size = 1, source = 'log'` placeholder row (Player.log-era leftovers). Snapshot rows are never overwritten by correction.
-3. A `"game-state-updated"` event is emitted so the frontend refreshes.
+Report imports (`Reports/*_items_*.json` via `import_inventory_report`) replace the whole inventory slice for the character/server (`DELETE … WHERE source IN ('snapshot','log')` + re-insert with `source = 'snapshot'`); those quantities are authoritative, and legacy Player.log-era placeholder rows do not survive an import. Chat.log `[Status] Item x5 added to inventory.` gains write to the `item_transactions` ledger only — there is no inventory stack-correction path (the former placeholder-patching was removed with its writer).
 
 Chat gains also write to the `item_transactions` ledger table with `source = 'chat_status'`. When the coordinator attributes a gain to a survey use it stamps `source_kind = 'survey_chat'` plus `survey_use_id` in `source_details` — the `source` stays `'chat_status'`, so a query filtering `source = 'player_log'` misses these rows. The survey tracker does not write its own `source = 'player_log'` rows: the manual path inserts session/use rows and tags `chat_status` rows, so no `player_log`-sourced row producer exists on that path.
 

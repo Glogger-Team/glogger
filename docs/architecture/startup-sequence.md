@@ -203,7 +203,7 @@ After the app is interactive:
 
 - `src-tauri/src/lib.rs` — Rust `run()` function, setup handler, CDN background task
 - `src-tauri/src/coordinator.rs` — DataIngestCoordinator, log watcher management
-- `src-tauri/src/game_state.rs` — GameStateManager, active identity + stack correction
+- `src-tauri/src/game_state.rs` — GameStateManager, active identity + derived-state writes
 
 **Data stores populated during startup:**
 

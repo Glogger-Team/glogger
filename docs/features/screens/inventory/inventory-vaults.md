@@ -106,7 +106,7 @@ Export Storage as JSON → character_snapshot_items (DB)
             DELETE all storage for character → INSERT from Storage report
 ```
 
-Each Character report import replaces the slice; between imports, chat-gain stack correction may adjust quantities on leftover log-era placeholder rows.
+Each Character report import replaces the whole slice (snapshot + log-era rows); inventory quantities come from the snapshot, not from chat lines.
 
 ## Database Schema
 
@@ -132,7 +132,7 @@ CREATE TABLE game_state_storage (
 
 ## Storage Persistence
 
-Unlike inventory (which clears its obsolete log-era rows on login), storage persists across sessions. The `GameStateManager` never clears storage — neither on live login (`set_active_character`) nor on session adopt (`apply_catch_up_login`). The slice changes only when a Character report import fully replaces it (DELETE all + re-INSERT `source = 'snapshot'` rows), plus stack-quantity corrections on leftover log-era rows from chat gains.
+Unlike inventory (which clears its obsolete log-era rows on login and import), storage persists across sessions. The `GameStateManager` never clears storage — neither on live login (`set_active_character`) nor on session adopt (`apply_catch_up_login`). The slice changes only when a Character report import fully replaces it (DELETE all + re-INSERT `source = 'snapshot'` rows).
 
 ## Event Handling
 
@@ -141,7 +141,6 @@ There are no live storage events: `StorageDeposit`, `StorageWithdrawal`, and `Ch
 | Writer | DB Operation | Notes |
 |--------|-------------|-------|
 | Character report import (`seed_game_state_from_snapshot`, `import_inventory_report_internal`) | DELETE all for (character, server) + INSERT per vault item | Full-slice replace; `source = 'snapshot'`, synthetic negative `instance_id`s |
-| Chat-gain stack correction (`correct_stack_in_table`) | UPDATE `stack_size` on matching 1-stacks | Only targets leftover `source = 'log'` rows |
 | Live login / session adopt | *(no-op for storage)* | Storage persists across sessions |
 
 ## Data Sources

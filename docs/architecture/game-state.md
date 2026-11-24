@@ -90,14 +90,9 @@ Added in V15 migration. Records every item gain/loss event from both Player.log 
 - **`context` column:** `'loot'`, `'vendor_sell'`, `'storage_deposit'`, `'storage_withdraw'`, `'consumed'`, `'summoned'`, `'unknown'`
 - **`quantity`:** positive for gains, negative for losses
 
-### Chat-Based Stack Correction
+### Chat-Based Stack Correction (retired)
 
-`GameStateManager::correct_stack_for_session(character, server, ...)` fixes the `stack_size=1` problem in `game_state_inventory` and `game_state_storage`. Player.log `ProcessAddItem` always records `stack_size=1`; the real quantity comes from chat status `"Item x5 added to inventory."`. The correction runs under the gain's session identity (tag-preferred, active fallback), not whatever identity is active at drain time. The correction:
-
-1. Resolves the chat display name to a Player.log internal name via CDN `resolve_item()`
-2. Finds the most recent row with `stack_size=1` matching that item name
-3. Updates the stack size to the chat quantity
-4. Returns which domains were corrected so the coordinator can emit `"game-state-updated"`
+Removed: Player.log `ProcessAddItem` always recorded `stack_size = 1` and chat status carried the real quantity, so the coordinator patched placeholders in place. The Player.log writer is gone and report imports delete-then-reinsert authoritative snapshot quantities, leaving no placeholders to patch — the correction path and its tests were removed.
 
 ## GameStateManager (Rust)
 

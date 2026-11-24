@@ -31,7 +31,7 @@ Three core item events are already emitted:
 ### Chat Cross-Validation (`src-tauri/src/chat_status_parser.rs`)
 
 - **ItemGained** — parsed from `"X added to inventory."` / `"X xN added to inventory."` chat lines.
-- **`correct_stack_for_session()`** — fixes Player.log's stack_size=1 artifact using the authoritative chat quantity, keyed by the gain's session identity.
+- Inventory quantities come from Character report imports (authoritative snapshot slices); there is no chat-driven stack-correction path.
 - Chat-sourced transactions recorded separately with `source='chat_status'`.
 
 ### Frontend (`src/stores/gameStateStore.ts`)
