@@ -1142,9 +1142,10 @@ fn dispatch_json_event(
                 let mut current = false;
                 if let Ok(conn) = ctx.db.get_write() {
                     // Same upsert as `persist_book_content` (no emit here —
-                    // the caller owns emits; the domain carries the refresh).
-                    // Gate on content: identical re-reads skip the write AND
-                    // the domain, so rescans stay silent like every other arm.
+                    // the caller owns emits). No `books` domain: nothing in
+                    // the FE consumes it, so writes stay silent.
+                    // Gate on content: identical re-reads skip the write, so
+                    // rescans stay silent like every other arm.
                     let same: bool = conn
                         .query_row(
                             "SELECT content FROM game_state_books
@@ -1195,7 +1196,6 @@ fn dispatch_json_event(
                             .map(|n| n > 0)
                             .unwrap_or(false)
                     {
-                        out.domain("books");
                         current = true;
                     }
                 }
@@ -3386,7 +3386,7 @@ mod tests {
         );
         let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
-        assert!(out.domains.iter().any(|d| d == "books"));
+        assert!(out.domains.is_empty(), "book upserts stay silent — no FE books consumer");
         let (book_type, title): (String, String) = pool
             .get()
             .unwrap()
@@ -3422,7 +3422,7 @@ mod tests {
         let ts1 = "26-11-17 08:31:58";
         let mut st = state(&mut arena, &mut dmg);
         let out = dispatch(&pool, &gd, Some(&id()), &json_msg("Book", body, ts1), ts1, &mut st);
-        assert!(out.domains.iter().any(|d| d == "books"));
+        assert!(out.domains.is_empty(), "book upserts stay silent — no FE books consumer");
 
         // Identical body re-observed later: no domain (rescan silent),
         // but captured_at advances to the newer observation.

@@ -872,10 +872,11 @@ mod tests {
     #[test]
     fn persist_book_is_idempotent_upsert() {
         let pool = pool();
-        // AppHandle isn't constructible in unit tests; persist_book_content
-        // emits through it. Split: verify the SQL contract by calling the
-        // same statement shape the helper runs. The emit path is exercised
-        // by the live-path regression proof.
+        // AppHandle isn't constructible in unit tests, and
+        // persist_book_content keeps its handle only for signature
+        // compatibility (`_app_handle` — no books domain is reported).
+        // Split: verify the SQL contract by calling the same statement
+        // shape the helper runs.
         let conn = pool.get_write().unwrap();
         for _ in 0..2 {
             let dt = chrono::Utc::now().to_rfc3339();
@@ -905,8 +906,8 @@ mod tests {
     fn persist_book_stale_write_changes_no_rows() {
         // The WHERE captured_at <= excluded.captured_at guard lets the upsert
         // succeed with zero rows changed when an older book arrives over a
-        // newer stored row. persist_book_content gates its books emit on that
-        // row count (mirroring the E::Book dispatch arm's n > 0 domain rule),
+        // newer stored row. Neither persist_book_content nor the E::Book
+        // dispatch arm reports a books domain (no FE consumer exists),
         // so prove the guard outcome here: stale content must not land.
         // (AppHandle isn't constructible in unit tests, so no emit
         // assertion — same split as persist_book_is_idempotent_upsert.)

@@ -560,7 +560,7 @@ fn run_scan_dispatch(
             None,
             &mut dstate,
         );
-        // Structured domains (skills, favor, recipes, kills, books, ...) must
+        // Structured domains (skills, favor, recipes, kills, ...) must
         // refresh the UI after a scan exactly like the live drain: merge the
         // dispatch outcome into the accumulated set (deduped). Without this,
         // backfilled rows stay invisible until an unrelated live line fires.
