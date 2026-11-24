@@ -1,7 +1,6 @@
 import { defineStore, acceptHMRUpdate } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { listen } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import { useSettingsStore } from './settingsStore'
 import { useGameStateStore } from './gameStateStore'
@@ -341,13 +340,6 @@ export const useCharacterStore = defineStore('character', () => {
       reportWatchInterval = null
     }
   }
-
-  // Listen for chat-detected report saves — triggers an immediate import
-  // instead of waiting for the next polling cycle.
-  listen<string>('report-saved', (event) => {
-    console.log('[characterStore] Report saved detected via chat:', event.payload)
-    pollForNewReports()
-  })
 
   // ── Inventory Actions ──────────────────────────────────────────────────────
 
