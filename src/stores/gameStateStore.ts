@@ -610,53 +610,6 @@ export const useGameStateStore = defineStore('gameState', () => {
 
   // ── Session Skill Methods ─────────────────────────────────────────────
 
-  /** Handle a skill-update event from the backend (same payload as old skillStore) */
-  function handleSkillUpdate(payload: {
-    skill_type: string
-    level: number
-    bonus: number
-    xp: number
-    tnl: number
-    timestamp: string
-  }) {
-    // During startup catch-up, skill updates come from historical log replay
-    // and may include data from other characters. Skip session accumulation
-    // until the app is fully started and we're in live tailing mode.
-    if (!startupComplete.value) return
-
-    const key = payload.skill_type
-
-    if (!sessionSkills.value[key]) {
-      sessionSkills.value[key] = {
-        skillType: payload.skill_type,
-        currentLevel: payload.level,
-        tnl: payload.tnl,
-        xpGained: 0,
-        levelsGained: 0,
-        firstTimestamp: payload.timestamp,
-        lastTimestamp: payload.timestamp,
-        firstXp: payload.xp,
-      }
-    } else {
-      const s = sessionSkills.value[key]
-      const prevLevel = s.currentLevel
-
-      s.currentLevel = payload.level
-      s.tnl = payload.tnl
-      s.lastTimestamp = payload.timestamp
-
-      if (payload.level > prevLevel) {
-        // Level-up: add remaining XP in old level + current XP in new level
-        s.xpGained += s.tnl - s.firstXp + payload.xp
-        s.levelsGained += payload.level - prevLevel
-        s.firstXp = payload.xp
-      } else if (payload.xp >= s.firstXp) {
-        s.xpGained += payload.xp - s.firstXp
-        s.firstXp = payload.xp
-      }
-    }
-  }
-
   /**
    * Fold a chat `[Status]` level-up into session tracking. Chat carries level
    * + this-level XP but no tnl/bonus, so: levels gained are exact; XP gained
@@ -1502,7 +1455,6 @@ export const useGameStateStore = defineStore('gameState', () => {
     // Session skill tracking
     sessionSkills,
     sessionSkillList,
-    handleSkillUpdate,
     handleChatLevelUp,
     xpPerHour,
     timeToNextLevel,
