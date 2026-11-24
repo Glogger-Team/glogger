@@ -414,30 +414,53 @@ pub fn link_kill_loot_for_kill(
         .map_err(|e| format!("Failed to query receipts: {e}"))?
         .collect::<Result<_, _>>()
         .map_err(|e| format!("Failed to collect receipts: {e}"))?;
-    let mut linked = 0usize;
-    for (item, qty, receipt_ts) in rows {
-        let latest =
-            latest_eligible_kill_id(conn, character, server, enemy_entity_id, &receipt_ts)?;
-        if latest != Some(kill_id) {
-            continue;
+    // One transaction for the whole heal: a failure between rows must roll
+    // back, not half-persist (the pool is the only lock, so BEGIN IMMEDIATE
+    // is enough — single write connection, no outer transaction open at the
+    // dispatch call sites, which check out the writer per call).
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| format!("Failed to begin kill-loot heal: {e}"))?;
+    let healed = (|| -> Result<usize, String> {
+        let mut linked = 0usize;
+        for (item, qty, receipt_ts) in rows {
+            let latest =
+                latest_eligible_kill_id(conn, character, server, enemy_entity_id, &receipt_ts)?;
+            if latest != Some(kill_id) {
+                continue;
+            }
+            let n = conn
+                .execute(
+                    "INSERT INTO enemy_kill_loot (kill_id, item_name, quantity, receipt_ts)
+                     SELECT ?1, ?2, ?3, ?4
+                     WHERE NOT EXISTS (
+                        SELECT 1 FROM enemy_kill_loot
+                         WHERE kill_id = ?1 AND item_name = ?2 AND quantity = ?3
+                           AND receipt_ts = ?4
+                     )",
+                    rusqlite::params![kill_id, item, qty, receipt_ts],
+                )
+                .map_err(|e| format!("Failed to link kill loot: {e}"))?;
+            if n > 0 {
+                linked += 1;
+            }
         }
-        let n = conn
-            .execute(
-                "INSERT INTO enemy_kill_loot (kill_id, item_name, quantity, receipt_ts)
-                 SELECT ?1, ?2, ?3, ?4
-                 WHERE NOT EXISTS (
-                    SELECT 1 FROM enemy_kill_loot
-                     WHERE kill_id = ?1 AND item_name = ?2 AND quantity = ?3
-                       AND receipt_ts = ?4
-                 )",
-                rusqlite::params![kill_id, item, qty, receipt_ts],
-            )
-            .map_err(|e| format!("Failed to link kill loot: {e}"))?;
-        if n > 0 {
-            linked += 1;
+        Ok(linked)
+    })();
+    match healed {
+        Ok(n) => conn
+            .execute_batch("COMMIT")
+            .map_err(|e| {
+                // A failed COMMIT leaves the transaction active; roll back
+                // deterministically instead of relying on connection teardown.
+                let _ = conn.execute_batch("ROLLBACK");
+                format!("Failed to commit kill-loot heal: {e}")
+            })
+            .map(|_| n),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
         }
     }
-    Ok(linked)
 }
 
 /// Attach a loot receipt to its kill via the looted-from entity id. Finds the
@@ -2252,6 +2275,33 @@ mod tests {
             assert_eq!(record_test_kill(conn, "T", "Dreva", "42", "2026-11-17 12:00:00"), None);
             assert_eq!(linked(conn).len(), 2);
         }
+    }
+
+    /// Heal atomicity: a failure between loot rows rolls back the whole heal,
+    /// not half-persist it. A TEMP trigger aborts the kill's second insert;
+    /// which receipt lands first is irrelevant — exactly one insert succeeds
+    /// before the abort, so a non-transactional loop would leave one row.
+    /// Pre-transaction this pin fails with `count == 1`.
+    #[test]
+    fn kill_heal_rolls_back_when_a_row_fails() {
+        let conn = setup();
+        record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
+        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Apple");
+        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:02:00", "Salad");
+        conn.execute_batch(
+            "CREATE TEMP TRIGGER kill_heal_abort_second
+             BEFORE INSERT ON enemy_kill_loot
+             WHEN (SELECT COUNT(*) FROM enemy_kill_loot) >= 1
+             BEGIN
+                 SELECT RAISE(ABORT, 'injected heal failure');
+             END;",
+        )
+        .unwrap();
+        assert!(link_kill_loot_for_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").is_err());
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM enemy_kill_loot", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "failed heal must roll back, not half-persist");
     }
 
     /// D5-56 preservation lock: same-second same-item twins still collapse to
