@@ -4,8 +4,7 @@ import type { EnemyKilledPayload } from "./combatStore";
 
 // Boss/named kill loot timers. The log carries no explicit class signal, so a
 // boss/named enemy is inferred from the fields EnemyKilled already carries:
-//   - name starts with Boss/Elite/Named, or is a single capitalised proper noun
-//     (generic mobs are usually "Adjective Noun" pairs), or
+//   - name starts with Boss/Elite/Named, or
 //   - the kill's total damage (health + armour) is large (high-HP boss).
 // Reverse tracking (enemy_kills) already exists; this store only owns the
 // session-side per-boss last-kill timestamps and observed reuse gaps.
