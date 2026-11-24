@@ -541,6 +541,64 @@ pub fn get_enemy_kill_stats(
         loot,
     })
 }
+/// One boss-candidate kill row for timer persistence. The SQL pre-filter is
+/// intentionally coarse — it mirrors the frontend `isBossLike` heuristic
+/// (`farmingStore.ts`: Boss/Elite/Named prefix or health+armor >= 8000) but
+/// the frontend re-applies the exact heuristic on hydrate and stays the
+/// single authority, so widening here only costs rows, never correctness.
+/// (`LIKE` is ASCII case-insensitive; exact-short names like `Boss` with no
+/// trailing space fall through to the damage arm or the frontend re-gate.)
+#[derive(Serialize)]
+pub struct BossKillRow {
+    pub enemy_name: String,
+    pub killed_at: String,
+    pub health_damage: i64,
+    pub armor_damage: i64,
+}
+
+/// Boss-candidate kill timestamps for the named character/server, oldest
+/// first. Legacy rows with NULL identity stay visible to every character
+/// via the OR-NULL predicate; null identity means no filter (global view).
+fn boss_kill_times<C: DbRead + ?Sized>(
+    conn: &C,
+    character_name: Option<&str>,
+    server_name: Option<&str>,
+) -> Result<Vec<BossKillRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT enemy_name, killed_at, health_damage, armor_damage FROM enemy_kills
+             WHERE (?1 IS NULL OR character_name IS NULL OR character_name = ?1)
+               AND (?2 IS NULL OR server_name IS NULL OR server_name = ?2)
+               AND (enemy_name LIKE 'Boss %' OR enemy_name LIKE 'Elite %' OR enemy_name LIKE 'Named %'
+                    OR (health_damage + armor_damage) >= 8000)
+             ORDER BY enemy_name, killed_at",
+        )
+        .map_err(|e| format!("Failed to prepare query: {e}"))?;
+    let rows = stmt
+        .query_map(rusqlite::params![character_name, server_name], |row| {
+            Ok(BossKillRow {
+                enemy_name: row.get(0)?,
+                killed_at: row.get(1)?,
+                health_damage: row.get(2)?,
+                armor_damage: row.get(3)?,
+            })
+        })
+        .map_err(|e| format!("Query failed: {e}"))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Query failed: {e}"))
+}
+
+#[tauri::command]
+pub fn get_boss_kill_times(
+    db: State<'_, DbPool>,
+    character_name: Option<String>,
+    server_name: Option<String>,
+) -> Result<Vec<BossKillRow>, String> {
+    let conn = db
+        .get()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    boss_kill_times(&conn, character_name.as_deref(), server_name.as_deref())
+}
 
 #[derive(Serialize)]
 pub struct ItemDropSource {
@@ -2031,6 +2089,48 @@ mod tests {
         assert_eq!(row, ("City Slime".into(), "Claw 9".into(), 1822, 7, Some("Serbule".into()), None));
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM enemy_kills", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn boss_kill_times_scopes_by_identity_and_prefilters_boss_like() {
+        let conn = setup();
+        let kill = |name: &str, character: &str, server: &str, entity: &str, ts: &str, dmg: i64| {
+            record_enemy_kill(&conn, character, server, name, entity, "Claw 9", dmg, 0, None, ts).unwrap()
+        };
+        kill("Boss Vex", "T", "Dreva", "e1", "2026-11-17 12:00:00", 9000);
+        kill("Boss Vex", "T", "Dreva", "e2", "2026-11-17 12:30:00", 9000);
+        // Ordinary mob: high enough to be a real kill, nowhere near boss-like.
+        kill("City Slime", "T", "Dreva", "e3", "2026-11-17 12:31:00", 500);
+        // Prefix arm fires even at low damage.
+        kill("Elite Guard", "T", "Dreva", "e4", "2026-11-17 12:32:00", 100);
+        // Another character's boss must not leak into the scoped view.
+        kill("Boss Vex", "Other", "Dreva", "e5", "2026-11-17 12:33:00", 9000);
+        // Legacy row with NULL identity stays visible to every character.
+        conn.execute(
+            "INSERT INTO enemy_kills (enemy_name, enemy_entity_id, killing_ability, health_damage, armor_damage,
+                 killed_at, character_name, server_name)
+             VALUES ('Named Rat', 'e6', 'Claw 9', 50, 0, '2026-11-17 12:34:00', NULL, NULL)",
+            [],
+        ).unwrap();
+
+        let scoped: Vec<(String, String)> = boss_kill_times(&conn, Some("T"), Some("Dreva"))
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.enemy_name, r.killed_at))
+            .collect();
+        assert_eq!(
+            scoped,
+            vec![
+                ("Boss Vex".into(), "2026-11-17 12:00:00".into()),
+                ("Boss Vex".into(), "2026-11-17 12:30:00".into()),
+                ("Elite Guard".into(), "2026-11-17 12:32:00".into()),
+                ("Named Rat".into(), "2026-11-17 12:34:00".into()),
+            ]
+        );
+
+        let global = boss_kill_times(&conn, None, None).unwrap();
+        assert_eq!(global.len(), 5);
+        assert!(global.iter().any(|r| r.enemy_name == "Boss Vex" && r.killed_at == "2026-11-17 12:33:00"));
     }
 
     #[test]

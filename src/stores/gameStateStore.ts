@@ -1374,8 +1374,10 @@ export const useGameStateStore = defineStore('gameState', () => {
   async function reloadCombatAndDeathsForCharacter() {
     const combatStore = useCombatStore()
     const deathStore = useDeathStore()
+    const farmingStore = useFarmingStore()
     await deathStore.loadDeaths()
     void combatStore.loadHistoricBaseline()
+    void farmingStore.loadBossBaseline()
   }
   // ── Event Listeners ───────────────────────────────────────────────────
 
@@ -1426,7 +1428,7 @@ export const useGameStateStore = defineStore('gameState', () => {
 
     // Same order as the picker switch path: clear session-scoped state
     // synchronously under the new identity, reload, then re-seed deaths +
-    // combat baseline.
+    // combat/farming baselines.
     clearSessionForCharacter()
 
     await loadAll()
