@@ -56,11 +56,15 @@ jobs:
       - name: Run doc-orphans whole-tree audit (never blocking)
         id: audit
         # Advisory by design (see header): findings must never fail the run.
+        # GHA executes run: steps with `bash -e`, so every fallible command
+        # neutralizes errexit explicitly (`|| ...`): without that, a
+        # findings-nonzero audit or an empty grep match aborts the step
+        # before the triage index is written.
         continue-on-error: true
         run: |
           set -uo pipefail
-          python3 scripts/check-doc-orphans.py --audit > retired-noun-audit.txt 2>&1
-          audit_code=$?
+          audit_code=0
+          python3 scripts/check-doc-orphans.py --audit > retired-noun-audit.txt 2>&1 || audit_code=0
           # Triage index: collapse the raw `relpath:line: token` lines into
           # per-token and per-file counts (most frequent first) so triage
           # pairs get one decision per stale name instead of thousands of raw
@@ -75,11 +79,11 @@ jobs:
             echo "## by token (count token, most frequent first)"
             grep -E '^[^:]+:[0-9]+: [^ ]+$' retired-noun-audit.txt \
               | awk -F': ' '{c[$2]++} END {for (t in c) printf "%d %s\n", c[t], t}' \
-              | sort -rn
+              | sort -rn || true
             echo ""
             echo "## by file (count path, densest first)"
             grep -E '^[^:]+:[0-9]+: [^ ]+$' retired-noun-audit.txt \
-              | cut -d: -f1 | sort | uniq -c | sort -rn
+              | cut -d: -f1 | sort | uniq -c | sort -rn || true
           } > retired-noun-triage.txt
           exit "$audit_code"
 
