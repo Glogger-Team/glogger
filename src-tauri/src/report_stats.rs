@@ -165,7 +165,14 @@ pub fn parse_behavior_report(content: &str) -> Vec<ParsedStat> {
     stats
 }
 
-/// Persist parsed stats to the character_report_stats table.
+/// Persist parsed stats to the character_report_stats table. Forward-only
+/// per key: each row's upsert carries `WHERE updated_at <= excluded`, so an
+/// older capture moves no key backward. An identical re-import (scoped to
+/// the incoming keys) writes nothing — no stamp churn, so the caller can
+/// stay silent like every other arm. An equal capture with different content
+/// still replaces — same retry-eligibility rule as `import_garden_almanac` —
+/// so a retry of the current observation heals a failed import. Stamps are
+/// RFC3339; text comparison orders same-shape stamps chronologically.
 pub fn persist_stats(
     conn: &Connection,
     character: &str,
@@ -176,30 +183,80 @@ pub fn persist_stats(
     if stats.is_empty() {
         return Ok(0);
     }
-
+    // Identical-skip scopes to the incoming report's own keys: PlayerAge
+    // and HelpScreen share this table (overlapping only on age.created_on),
+    // so other reports' rows must not force a rewrite (and stamp advance).
+    // Recency below is per key, in the upsert's own WHERE clause: a newer
+    // stamp on one key (e.g. age.created_on from the other report) blocks
+    // only that key, while fresh sibling keys still land. There is no
+    // batch-level MAX gate on purpose — it would drop the whole batch for
+    // one stale shared key, silently losing fresh keys with the file
+    // already marked seen (no retry).
+    let mut key_filter = String::from(" AND (");
+    for i in 0..stats.len() {
+        if i > 0 {
+            key_filter.push_str(" OR ");
+        }
+        key_filter.push_str("(category = ? AND stat_name = ?)");
+    }
+    key_filter.push(')');
+    let mut key_params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    key_params.push(Box::new(character.to_string()));
+    key_params.push(Box::new(server.to_string()));
+    for s in stats {
+        key_params.push(Box::new(s.category.clone()));
+        key_params.push(Box::new(s.name.clone()));
+    }
+    // Identical re-import (rescan) is a pure no-op: values already match, so
+    // there is nothing to write and the stamp must not advance.
+    let current: Vec<(String, String, String)> = conn
+        .prepare(&format!(
+            "SELECT category, stat_name, stat_value FROM character_report_stats
+             WHERE character_name = ?1 AND server_name = ?2{key_filter}"
+        ))
+        .map_err(|e| format!("Prepare error: {e}"))?
+        .query_map(rusqlite::params_from_iter(key_params.iter()), |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .map_err(|e| format!("Query error: {e}"))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("Row error: {e}"))?;
+    let mut fresh: Vec<(String, String, String)> = stats
+        .iter()
+        .map(|s| (s.category.clone(), s.name.clone(), s.value.clone()))
+        .collect();
+    let mut current_sorted = current;
+    current_sorted.sort();
+    fresh.sort();
+    if current_sorted == fresh {
+        return Ok(0);
+    }
     let mut stmt = conn
         .prepare(
             "INSERT INTO character_report_stats (character_name, server_name, category, stat_name, stat_value, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(character_name, server_name, category, stat_name) DO UPDATE SET
                 stat_value = excluded.stat_value,
-                updated_at = excluded.updated_at",
+                updated_at = excluded.updated_at
+             WHERE updated_at <= excluded.updated_at",
         )
         .map_err(|e| format!("Prepare error: {e}"))?;
 
+    let mut changed = 0;
     for stat in stats {
-        stmt.execute(rusqlite::params![
-            character,
-            server,
-            stat.category,
-            stat.name,
-            stat.value,
-            timestamp,
-        ])
-        .map_err(|e| format!("Insert error: {e}"))?;
+        changed += stmt
+            .execute(rusqlite::params![
+                character,
+                server,
+                stat.category,
+                stat.name,
+                stat.value,
+                timestamp,
+            ])
+            .map_err(|e| format!("Insert error: {e}"))?;
     }
 
-    Ok(stats.len())
+    Ok(changed)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────
@@ -444,5 +501,257 @@ You have used <b>71 days</b> of VIP from a Steam subscription.
             extract_italic_stat("Died?  <i>YES (822)</i>").map(|(_, v)| v),
             Some("YES (822)".to_string())
         );
+    }
+
+    // ── recency (derived-state hardening) ─────────────────────────
+
+    fn stat(category: &str, name: &str, value: &str) -> ParsedStat {
+        ParsedStat {
+            category: category.to_string(),
+            name: name.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    fn setup_stats() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::migrations::run_migrations(&conn, None).unwrap();
+        conn
+    }
+
+    fn read_stat(conn: &Connection) -> (String, String) {
+        conn.query_row(
+            "SELECT stat_value, updated_at FROM character_report_stats
+             WHERE character_name = 'T' AND server_name = 'Dreva'
+               AND category = 'age' AND stat_name = 'deaths'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn persist_stats_older_capture_after_newer_is_noop() {
+        let conn = setup_stats();
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "900")],
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        // An older book replayed after a newer import must not move the
+        // value backward: no-op, count and stamp kept.
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "800")],
+            "2026-11-18T12:00:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(
+            read_stat(&conn),
+            ("900".to_string(), "2026-11-18T12:10:00+00:00".to_string())
+        );
+    }
+
+    #[test]
+    fn persist_stats_identical_reimport_does_not_advance_stamp() {
+        let conn = setup_stats();
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "900")],
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        // Identical values re-observed later: no write, stamp stays at the
+        // first observation instead of advancing.
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "900")],
+            "2026-11-18T12:20:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(
+            read_stat(&conn),
+            ("900".to_string(), "2026-11-18T12:10:00+00:00".to_string())
+        );
+    }
+
+    #[test]
+    fn persist_stats_equal_capture_retry_stays_eligible() {
+        // Same garden-parity rule: an equal capture with different content
+        // still replaces, so a retry of the current observation heals a
+        // failed import instead of wedging behind its own stamp.
+        let conn = setup_stats();
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "900")],
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "901")],
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(read_stat(&conn).0, "901".to_string());
+    }
+
+    #[test]
+    fn persist_stats_newer_after_older_applies() {
+        // Twin arrival order, forward direction: an older book first, then
+        // the newer book — the newer values must land with the newer stamp.
+        let conn = setup_stats();
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "800")],
+            "2026-11-18T12:00:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "900")],
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(
+            read_stat(&conn),
+            ("900".to_string(), "2026-11-18T12:10:00+00:00".to_string())
+        );
+    }
+
+    #[test]
+    fn persist_stats_cross_category_newer_does_not_block() {
+        // A newer HelpScreen import must not block an older PlayerAge book's
+        // own keys: recency is per incoming key, not per character.
+        let conn = setup_stats();
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("challenges", "bought_stock_items", "1315")],
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "800")],
+            "2026-11-18T12:00:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(
+            read_stat(&conn),
+            ("800".to_string(), "2026-11-18T12:00:00+00:00".to_string())
+        );
+    }
+
+    #[test]
+    fn persist_stats_scoped_identical_ignores_other_report_rows() {
+        // Identical-skip compares only the incoming report's own keys: other
+        // reports' rows must not force a rewrite (and stamp advance).
+        let conn = setup_stats();
+        persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "900")],
+            "2026-11-18T12:00:00+00:00",
+        )
+        .unwrap();
+        persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("challenges", "bought_stock_items", "1315")],
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap();
+        // Same PlayerAge values re-observed later: no write even though the
+        // table holds newer other-category rows and the capture is newer.
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "deaths", "900")],
+            "2026-11-18T12:20:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(
+            read_stat(&conn),
+            ("900".to_string(), "2026-11-18T12:00:00+00:00".to_string())
+        );
+    }
+
+    #[test]
+    fn persist_stats_stale_shared_key_blocks_only_that_key() {
+        // Per-key forward-only: PlayerAge and HelpScreen share age.created_on,
+        // so a newer stamp on it blocks only that key — fresh sibling keys in
+        // the same older batch still land (no silent whole-batch drop).
+        let conn = setup_stats();
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[stat("age", "created_on", "Sat Jan 31 09:40:49 EST 2026")],
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        let n = persist_stats(
+            &conn,
+            "T",
+            "Dreva",
+            &[
+                stat("age", "created_on", "Sat Jan 31 09:40:49 EST 2026"),
+                stat("age", "deaths", "800"),
+            ],
+            "2026-11-18T12:00:00+00:00",
+        )
+        .unwrap();
+        // Stale created_on blocked, fresh deaths landed.
+        assert_eq!(n, 1);
+        assert_eq!(
+            read_stat(&conn),
+            ("800".to_string(), "2026-11-18T12:00:00+00:00".to_string())
+        );
+        let created: String = conn
+            .query_row(
+                "SELECT updated_at FROM character_report_stats
+                 WHERE character_name = 'T' AND server_name = 'Dreva'
+                   AND category = 'age' AND stat_name = 'created_on'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(created, "2026-11-18T12:10:00+00:00".to_string());
     }
 }

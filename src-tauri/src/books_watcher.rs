@@ -591,9 +591,16 @@ pub(crate) fn process_book_file(
             // SkillReport-derived state.
             let mut notes: Vec<String> = Vec::new();
 
+            // Filename suffix is the authoritative game time (mtime is
+            // unreliable across copy/restore); untimestamped files sort
+            // first and fill only an empty row. Thread it into every
+            // stamping path so a backfilled older book never clobbers
+            // newer live state.
+            let captured_at = skill_report_capture_at(&title);
+
             // Live path persists ALL SkillReports to game_state_books first,
             // then runs content-specific branches. Mirror that.
-            persist_book_content(db, app, character, server, &book_type, &title, &content)?;
+            persist_book_content(db, app, character, server, &book_type, &title, &content, captured_at)?;
             notes.push("book upserted".to_string());
 
             let trimmed = content.trim_start();
@@ -616,10 +623,6 @@ pub(crate) fn process_book_file(
                 }
             }
             if content.contains("Primary Bind Location:") {
-                // Filename suffix is the authoritative game time (mtime is
-                // unreliable across copy/restore); untimestamped files sort
-                // first and fill only an empty table.
-                let captured_at = skill_report_capture_at(&title);
                 ingest_teleport_binds_content(db, app, character, server, &content, captured_at)
                     .map_err(|e| format!("teleportation binds failed: {e}"))?;
                 notes.push("binds updated".to_string());
@@ -641,8 +644,12 @@ pub(crate) fn process_book_file(
             if let Some(note) = stats_attribution_skip(&content, character) {
                 return Ok(note);
             }
-            persist_book_content(db, app, character, server, &book_type, &title, &content)?;
-            let n = ingest_report_stats_content(db, app, character, server, &book_type, &content)
+            // Same `*_YYMMDD_HHMMSS` suffix shape as SkillReport stems: the
+            // book's own observation time, so an older backfilled report
+            // never clobbers newer live stats.
+            let captured_at = skill_report_capture_at(&title);
+            persist_book_content(db, app, character, server, &book_type, &title, &content, captured_at)?;
+            let n = ingest_report_stats_content(db, app, character, server, &book_type, &content, captured_at)
                 .map_err(|e| format!("stats import failed: {e}"))?;
             if n > 0 {
                 Ok(format!("book + stats ingested (+{n})"))
@@ -651,7 +658,10 @@ pub(crate) fn process_book_file(
             }
         }
         BookKind::BookOnly => {
-            persist_book_content(db, app, character, server, &book_type, &title, &content)?;
+            // Timestamped stems (e.g. GuildMotd_260712_173954) carry the
+            // book's observation time; untimestamped ones fill empty only.
+            let captured_at = skill_report_capture_at(&title);
+            persist_book_content(db, app, character, server, &book_type, &title, &content, captured_at)?;
             Ok("book upserted".to_string())
         }
     }
@@ -1292,5 +1302,30 @@ mod tests {
         assert_eq!(skill_report_capture_at("SkillReport"), None);
         assert_eq!(skill_report_capture_at("SkillReport_notes"), None);
         assert_eq!(skill_report_capture_at("SkillReport_26118_12100"), None);
+    }
+
+    #[test]
+    fn stats_and_book_only_stems_share_suffix_shape() {
+        // The Stats/BookOnly branches thread the same filename suffix as
+        // their observation time — PlayerAge/HelpScreen and timestamped
+        // misc-book stems parse, untimestamped ones yield None
+        // (fill-empty-only downstream).
+        let at = |stem: &str| {
+            skill_report_capture_at(stem).map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+        };
+        assert_eq!(
+            at("PlayerAge_261118_121000"),
+            Some("2026-11-18 12:10:00".to_string())
+        );
+        assert_eq!(
+            at("HelpScreen_261118_121000"),
+            Some("2026-11-18 12:10:00".to_string())
+        );
+        assert_eq!(
+            at("GuildMotd_260712_173954"),
+            Some("2026-07-12 17:39:54".to_string())
+        );
+        assert_eq!(at("PlayerAge"), None);
+        assert_eq!(at("WhateverElse"), None);
     }
 }

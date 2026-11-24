@@ -1305,7 +1305,7 @@ impl DataIngestCoordinator {
                             }
                         }
                         if book_type == "PlayerAge" || book_type == "HelpScreen" {
-                            self.ingest_report_stats(&book_type, &body, character, server);
+                            self.ingest_report_stats(&at, &book_type, &body, character, server);
                         }
                     }
                     if !outcome.domains.is_empty() {
@@ -1557,7 +1557,14 @@ impl DataIngestCoordinator {
 
     /// Parse structured stats from PlayerAge or Behavior Report books and
     /// persist them to the `character_stats` table as key-value pairs.
-    fn ingest_report_stats(&self, book_type: &str, content: &str, character: &str, server: &str) {
+    /// `at` is the book's own observation time (same naive shape the
+    /// teleport-bind arm parses); an unparsable stamp degrades to
+    /// fill-empty-only like the bind writer.
+    fn ingest_report_stats(&self, at: &str, book_type: &str, content: &str, character: &str, server: &str) {
+        // The book's own observation time is the freshness signal: a stale
+        // replay must not clobber newer stats (unparsable `at` degrades to
+        // untimestamped, which only fills an empty table).
+        let captured_at = chrono::NaiveDateTime::parse_from_str(at, "%Y-%m-%d %H:%M:%S").ok();
         ingest_report_stats_content(
             &self.db_pool,
             &self.app_handle,
@@ -1565,6 +1572,7 @@ impl DataIngestCoordinator {
             server,
             book_type,
             content,
+            captured_at,
         )
         .map_err(|e| eprintln!("[coordinator] {e}"))
         .ok();
@@ -2042,8 +2050,16 @@ pub(crate) fn normalize_book_content(content: &str) -> String {
 /// (character, server, book_type, title) so re-running a report overwrites.
 /// Shared by the live coordinator and the Books-directory watcher.
 ///
+/// Recency: `captured_at` is the book's own observation time (live book `at`,
+/// or the watcher's `*_YYMMDD_HHMMSS` filename suffix). An older capture
+/// replayed over a newer row is skipped, and an identical re-read writes
+/// nothing (no stamp advance) — forward-only, same rule as the
+/// teleport-bind writer. `None` (untimestamped source) stamps the oldest
+/// representable instant, so it only fills an empty row.
+///
 /// Swallows SQL errors to keep ingest flowing, but returns `Err` on pool
 /// acquisition failure so callers can log it.
+#[allow(clippy::too_many_arguments)] // shared live+watcher shape: identity (4) + book key (2) + body + capture
 pub fn persist_book_content(
     db: &DbPool,
     _app_handle: &AppHandle,
@@ -2052,27 +2068,71 @@ pub fn persist_book_content(
     book_type: &str,
     title: &str,
     content: &str,
+    captured_at: Option<chrono::NaiveDateTime>,
 ) -> Result<(), String> {
-    let dt = chrono::Utc::now().to_rfc3339();
+    // Same oldest-instant rule as the teleport-bind writer: wall-clock
+    // `now()` here would beat every real older book and wedge the row.
+    let dt = captured_at
+        .map(|c| c.and_utc().to_rfc3339())
+        .unwrap_or_else(|| "0001-01-01T00:00:00+00:00".to_string());
     let conn = db
         .get_write()
         .map_err(|e| format!("Database connection error: {e}"))?;
-    conn.execute(
-        "INSERT INTO game_state_books (character_name, server_name, book_type, title, content, captured_at)
+    upsert_book_content(&conn, character, server, book_type, title, content, &dt)
+        .map_err(|e| format!("Failed to persist book: {e}"))?;
+    Ok(())
+}
+
+/// Testable core of [`persist_book_content`] (no pool, no `AppHandle`):
+/// identical content skips the write, and the guarded upsert drops an older
+/// capture over a newer row. Returns `true` when the write landed.
+pub(crate) fn upsert_book_content(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    book_type: &str,
+    title: &str,
+    content: &str,
+    captured_at: &str,
+) -> Result<bool, String> {
+    // Identical re-read (rescan): nothing to write, stamp stays put.
+    let same: bool = conn
+        .query_row(
+            "SELECT content FROM game_state_books
+             WHERE character_name = ?1 AND server_name = ?2
+               AND book_type = ?3 AND title = ?4",
+            rusqlite::params![character, server, book_type, title],
+            |r| r.get::<_, String>(0),
+        )
+        .map(|c| c == content)
+        .unwrap_or(false);
+    if same {
+        return Ok(false);
+    }
+    let n = conn
+        .execute(
+            "INSERT INTO game_state_books (character_name, server_name, book_type, title, content, captured_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(character_name, server_name, book_type, title) DO UPDATE SET
             content = excluded.content,
             captured_at = excluded.captured_at
          WHERE captured_at <= excluded.captured_at",
-        rusqlite::params![character, server, book_type, title, content, dt],
-    )
-    .map_err(|e| format!("Failed to persist book: {e}"))?;
-    Ok(())
+            rusqlite::params![character, server, book_type, title, content, captured_at],
+        )
+        .map_err(|e| format!("Failed to persist book: {e}"))?;
+    Ok(n > 0)
 }
 
 /// Parse structured stats from a PlayerAge or Behavior Report (HelpScreen)
 /// book and persist them to `character_report_stats`. Shared by the live
 /// coordinator and the Books-directory watcher.
+///
+/// Recency: `captured_at` is the book's own observation time (same sources
+/// as [`persist_book_content`]). It threads through as the row stamp so the
+/// forward-only guard in `persist_stats` can tell a stale replay from a
+/// fresh report; `None` degrades to fill-empty-only like the bind writer.
+/// A no-op import (identical or older) stays silent — no `report_stats`
+/// domain, same rescan-silence as the garden importer.
 pub fn ingest_report_stats_content(
     db: &DbPool,
     app_handle: &AppHandle,
@@ -2080,6 +2140,7 @@ pub fn ingest_report_stats_content(
     server: &str,
     book_type: &str,
     content: &str,
+    captured_at: Option<chrono::NaiveDateTime>,
 ) -> Result<usize, String> {
     let stats = match book_type {
         "PlayerAge" => crate::report_stats::parse_player_age(content),
@@ -2089,20 +2150,24 @@ pub fn ingest_report_stats_content(
     if stats.is_empty() {
         return Ok(0);
     }
-    let dt = chrono::Utc::now().to_rfc3339();
+    let dt = captured_at
+        .map(|c| c.and_utc().to_rfc3339())
+        .unwrap_or_else(|| "0001-01-01T00:00:00+00:00".to_string());
     let conn = db
         .get_write()
         .map_err(|e| format!("Failed to persist report stats: {e}"))?;
     let n = crate::report_stats::persist_stats(&conn, character, server, &stats, &dt)
         .map_err(|e| format!("Failed to persist report stats: {e}"))?;
-    startup_log!(
-        "[coordinator] Imported {} stats from {} report",
-        n,
-        book_type,
-    );
-    app_handle
-        .emit("game-state-updated", vec!["report_stats"])
-        .ok();
+    if n > 0 {
+        startup_log!(
+            "[coordinator] Imported {} stats from {} report",
+            n,
+            book_type,
+        );
+        app_handle
+            .emit("game-state-updated", vec!["report_stats"])
+            .ok();
+    }
     Ok(n)
 }
 
@@ -3110,6 +3175,157 @@ mod bind_freshness_tests {
     #[test]
     fn unparseable_stored_stamp_never_blocks() {
         assert!(bind_capture_is_fresh(Some("not-a-timestamp"), dt("2026-11-18 12:00:00")));
+    }
+}
+
+#[cfg(test)]
+mod book_content_recency_tests {
+    use super::upsert_book_content;
+
+    fn setup() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run_migrations(&conn, None).unwrap();
+        conn
+    }
+
+    fn read_book(conn: &rusqlite::Connection) -> (String, String) {
+        conn.query_row(
+            "SELECT content, captured_at FROM game_state_books
+             WHERE character_name = 'T' AND server_name = 'Dreva'
+               AND book_type = 'PlayerAge' AND title = 'PlayerAge_261118_121000'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn older_book_after_newer_is_noop() {
+        let conn = setup();
+        assert!(upsert_book_content(
+            &conn,
+            "T",
+            "Dreva",
+            "PlayerAge",
+            "PlayerAge_261118_121000",
+            "newer body",
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap());
+        // An older capture over a newer row: no write, content and stamp kept.
+        assert!(!upsert_book_content(
+            &conn,
+            "T",
+            "Dreva",
+            "PlayerAge",
+            "PlayerAge_261118_121000",
+            "older body",
+            "2026-11-18T12:00:00+00:00",
+        )
+        .unwrap());
+        assert_eq!(
+            read_book(&conn),
+            (
+                "newer body".to_string(),
+                "2026-11-18T12:10:00+00:00".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn identical_reread_writes_nothing_and_keeps_stamp() {
+        let conn = setup();
+        assert!(upsert_book_content(
+            &conn,
+            "T",
+            "Dreva",
+            "PlayerAge",
+            "PlayerAge_261118_121000",
+            "same body",
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap());
+        // Identical content re-observed later: no write, stamp stays at the
+        // first observation instead of advancing.
+        assert!(!upsert_book_content(
+            &conn,
+            "T",
+            "Dreva",
+            "PlayerAge",
+            "PlayerAge_261118_121000",
+            "same body",
+            "2026-11-18T12:20:00+00:00",
+        )
+        .unwrap());
+        assert_eq!(
+            read_book(&conn),
+            (
+                "same body".to_string(),
+                "2026-11-18T12:10:00+00:00".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn equal_capture_retry_replaces() {
+        // Same retry-eligibility rule as the garden importer: an equal
+        // capture with different content still replaces.
+        let conn = setup();
+        assert!(upsert_book_content(
+            &conn,
+            "T",
+            "Dreva",
+            "PlayerAge",
+            "PlayerAge_261118_121000",
+            "first body",
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap());
+        assert!(upsert_book_content(
+            &conn,
+            "T",
+            "Dreva",
+            "PlayerAge",
+            "PlayerAge_261118_121000",
+            "second body",
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap());
+        assert_eq!(read_book(&conn).0, "second body".to_string());
+    }
+
+    #[test]
+    fn newer_book_after_older_applies() {
+        // Twin arrival order, forward direction: older first, then newer —
+        // the newer body lands with the newer stamp.
+        let conn = setup();
+        assert!(upsert_book_content(
+            &conn,
+            "T",
+            "Dreva",
+            "PlayerAge",
+            "PlayerAge_261118_121000",
+            "older body",
+            "2026-11-18T12:00:00+00:00",
+        )
+        .unwrap());
+        assert!(upsert_book_content(
+            &conn,
+            "T",
+            "Dreva",
+            "PlayerAge",
+            "PlayerAge_261118_121000",
+            "newer body",
+            "2026-11-18T12:10:00+00:00",
+        )
+        .unwrap());
+        assert_eq!(
+            read_book(&conn),
+            (
+                "newer body".to_string(),
+                "2026-11-18T12:10:00+00:00".to_string()
+            )
+        );
     }
 }
 
