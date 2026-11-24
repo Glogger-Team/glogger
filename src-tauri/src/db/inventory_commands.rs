@@ -419,9 +419,13 @@ pub fn import_inventory_report_internal(
                 .map_err(|e| format!("Failed to insert storage item: {e}"))?;
         }
 
-        // 9. Seed game_state_inventory from this snapshot (inventory items only)
+        // 9. Seed game_state_inventory from this snapshot (inventory items only).
+        // Clear snapshot rows plus legacy `source = 'log'` rows: those are
+        // Player.log-era placeholders (no live writer since the log went
+        // dark; login already clears them), and source-unfiltered readers
+        // would otherwise sum a stale log row with its fresh snapshot twin.
         conn.execute(
-            "DELETE FROM game_state_inventory WHERE character_name = ?1 AND server_name = ?2 AND source = 'snapshot'",
+            "DELETE FROM game_state_inventory WHERE character_name = ?1 AND server_name = ?2 AND source IN ('snapshot', 'log')",
             rusqlite::params![report.character, report.server_name],
         ).map_err(|e| format!("Failed to clear inventory: {e}"))?;
 
@@ -852,6 +856,44 @@ mod tests {
             )
             .expect("dye row");
         assert_eq!(dye, Some(1));
+    }
+
+    #[test]
+    fn import_clears_legacy_log_inventory_rows() {
+        // Legacy `source = 'log'` placeholders are Player.log-era rows with
+        // no live writer; a fresh snapshot must not leave them beside their
+        // snapshot twins for source-unfiltered readers to sum twice.
+        let db = pool();
+        db.get_write()
+            .expect("write conn")
+            .execute(
+                "INSERT INTO game_state_inventory
+                 (character_name, server_name, instance_id, item_name, stack_size, last_confirmed_at, source)
+                 VALUES ('TestPlayer', 'Dreva', 1, 'Stale Sword', 1, '2026-01-01 00:00:00', 'log')",
+                [],
+            )
+            .expect("seed stale log row");
+        let result = import_inventory_report_internal(&db, FIXTURE).expect("import fixture");
+        assert!(!result.was_duplicate);
+        let conn = db.get().expect("read conn");
+        let log_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM game_state_inventory
+                 WHERE character_name = 'TestPlayer' AND server_name = 'Dreva' AND source = 'log'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("log row count");
+        assert_eq!(log_rows, 0, "stale log rows cleared by snapshot import");
+        let snap_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM game_state_inventory
+                 WHERE character_name = 'TestPlayer' AND server_name = 'Dreva' AND source = 'snapshot'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("snapshot row count");
+        assert!(snap_rows > 0, "snapshot baseline seeded");
     }
 
     #[test]
