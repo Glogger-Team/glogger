@@ -254,16 +254,18 @@ pub struct DispatchCtx<'a> {
     /// must record NULL instead of the current value.
     pub is_live: bool,
     /// Opaque source-line identity for the ledger replay guards, threaded
-    /// into [`ItemLedgerCtx`] and the JSON receipt guard. `None` (every
-    /// production call site today) keeps legacy match-any collapse: any
-    /// same-key row suppresses the insert. `Some(line)` separates a true
+    /// into [`ItemLedgerCtx`] and the JSON receipt guard. `None` (failed
+    /// raw store) keeps legacy match-any collapse: any same-key row
+    /// suppresses the insert. `Some("file:offset")` separates a true
     /// replay (the matching row carries this line's id) from a genuine
-    /// second receipt (different line id inserts) and from the cross-twin
-    /// (a stamped/JSON-marked row still suppresses). Callers must pass
-    /// STABLE ids — raw `chat_messages` rowids (rescan reuses stored rows
-    /// via `INSERT OR IGNORE`) or `(file, offset)` — never a per-pass
-    /// fresh id, which would duplicate the ledger on every rescan.
-    pub source_line_id: Option<i64>,
+    /// second receipt (different offset inserts) and from the cross-twin
+    /// (a stamped/JSON-marked row still suppresses). Per-OCCURRENCE, not
+    /// per-row: two byte-identical lines share one raw row but carry
+    /// different offsets. Callers must pass STABLE ids — the byte offset
+    /// of the line in its file (`INSERT OR IGNORE` raw storage never
+    /// moves a stored line) — never a per-pass fresh id, which would
+    /// duplicate the ledger on every rescan.
+    pub source_line_id: Option<String>,
 }
 
 /// One ledger row pending the replay guard.
@@ -288,10 +290,11 @@ pub struct ItemLedgerCtx<'a> {
     /// are already past the link-up window instead of writing-then-sweeping.
     pub is_scan: bool,
     /// This line's stable identity (`DispatchCtx::source_line_id`): `None`
-    /// keeps legacy match-any collapse; `Some(line)` collapses only on a
-    /// true replay (a row carrying this line) or a stamped/JSON-marked
-    /// twin row, and inserts a genuine second receipt as its own row.
-    pub source_line_id: Option<i64>,
+    /// keeps legacy match-any collapse; `Some("file:offset")` collapses only
+    /// on a true replay (a row carrying this line's id) or a
+    /// stamped/JSON-marked twin row, and inserts a genuine second receipt
+    /// as its own row.
+    pub source_line_id: Option<&'a str>,
 }
 
 /// Run every idempotent structured arm for one chat message.
@@ -552,7 +555,7 @@ fn dispatch_status_event(
                         // English-only gain still collapses here — inherent:
                         // the line has no entity to key on.
                         from_entity_id: None,
-                        source_line_id: ctx.source_line_id,
+                        source_line_id: ctx.source_line_id.as_deref(),
                         is_scan: ctx.is_scan,
                     },
                 ) {
@@ -860,11 +863,11 @@ fn insert_json_receipt_guarded(
     from_name: Option<&str>,
     from_entity_id: Option<i64>,
     // This receipt's stable line identity (`DispatchCtx::source_line_id`):
-    // `None` (every production caller today) keeps the legacy content-key
-    // collapse. `Some(line)` narrows both existence checks to a same-line
+    // `None` (failed raw store) keeps the legacy content-key collapse.
+    // `Some("file:offset")` narrows both existence checks to a same-line
     // replay or this line's own prior claim, so a genuine second receipt
-    // (different line) inserts instead of collapsing onto the first row.
-    source_line_id: Option<i64>,
+    // (different offset) inserts instead of collapsing onto the first row.
+    source_line_id: Option<&str>,
     // Mirrors `DispatchCtx::is_scan`: scans skip bare provisional receipts
     // already past the link-up window; sourced rows (entity present) always
     // write so the twin claim and kill link converge on rescans.
@@ -1148,7 +1151,7 @@ fn dispatch_json_event(
                     *quantity,
                     from_name.as_deref(),
                     (*from_entity_id).map(|n| n as i64),
-                    ctx.source_line_id,
+                    ctx.source_line_id.as_deref(),
                     ctx.is_scan,
                 ) {
                     out.staged_gains.push((item_name.clone(), *quantity));
@@ -1942,7 +1945,7 @@ mod tests {
         msg: &ChatMessage,
         local_ts: &str,
         st: &mut DispatchState<'_>,
-        source_line_id: Option<i64>,
+        source_line_id: Option<&str>,
     ) -> DispatchOutcome {
         dispatch_chat_message(
             DispatchCtx {
@@ -1952,7 +1955,7 @@ mod tests {
                 msg,
                 local_ts,
                 watch_rules: &[],
-                source_line_id,
+                source_line_id: source_line_id.map(str::to_string),
                 // Live path: old pinned timestamps must still write.
                 is_scan: false,
                 is_live: true,
@@ -2845,7 +2848,7 @@ mod tests {
         assert_eq!(entities, vec![Some(257400), Some(257401)]);
     }
 
-    fn english_ctx(entity: Option<i64>, source_line_id: Option<i64>) -> ItemLedgerCtx<'static> {
+    fn english_ctx(entity: Option<i64>, source_line_id: Option<&'static str>) -> ItemLedgerCtx<'static> {
         ItemLedgerCtx {
             timestamp: "26-11-17 08:50:27",
             character: "Alice",
@@ -2867,9 +2870,9 @@ mod tests {
         // Same line id twice is a true replay: an identical resend
         // collapses, exactly as before the line-identity key.
         let (_guard, pool) = test_pool();
-        assert!(insert_item_transaction_guarded(&pool, english_ctx(None, Some(11))));
+        assert!(insert_item_transaction_guarded(&pool, english_ctx(None, Some("Chat.log:11"))));
         assert!(
-            !insert_item_transaction_guarded(&pool, english_ctx(None, Some(11))),
+            !insert_item_transaction_guarded(&pool, english_ctx(None, Some("Chat.log:11"))),
             "identical English resend collapses"
         );
         assert_eq!(item_rows(&pool).len(), 1);
@@ -2883,13 +2886,13 @@ mod tests {
         // (no entity on the line), so this exercises the key for
         // entity-knowing callers.
         let (_guard, pool) = test_pool();
-        assert!(insert_item_transaction_guarded(&pool, english_ctx(Some(1001), Some(11))));
+        assert!(insert_item_transaction_guarded(&pool, english_ctx(Some(1001), Some("Chat.log:11"))));
         assert!(
-            insert_item_transaction_guarded(&pool, english_ctx(Some(1002), Some(12))),
+            insert_item_transaction_guarded(&pool, english_ctx(Some(1002), Some("Chat.log:12"))),
             "second entity's gain is a distinct gain"
         );
         assert!(
-            !insert_item_transaction_guarded(&pool, english_ctx(Some(1001), Some(11))),
+            !insert_item_transaction_guarded(&pool, english_ctx(Some(1001), Some("Chat.log:11"))),
             "exact-entity resend collapses"
         );
         let rows = item_rows(&pool);
@@ -2906,7 +2909,7 @@ mod tests {
         // line still skips instead of duplicating. A NULL-only key would
         // insert a second row here and break twin convergence.
         let (_guard, pool) = test_pool();
-        assert!(insert_item_transaction_guarded(&pool, english_ctx(None, Some(11))));
+        assert!(insert_item_transaction_guarded(&pool, english_ctx(None, Some("Chat.log:11"))));
         pool.get_write()
             .unwrap()
             .execute(
@@ -2915,7 +2918,7 @@ mod tests {
             )
             .unwrap();
         assert!(
-            !insert_item_transaction_guarded(&pool, english_ctx(None, Some(12))),
+            !insert_item_transaction_guarded(&pool, english_ctx(None, Some("Chat.log:12"))),
             "None matches the stamped twin: skip, no duplicate"
         );
         assert_eq!(item_rows(&pool).len(), 1);
@@ -2932,9 +2935,9 @@ mod tests {
         let ts = "26-11-17 08:50:27";
         let english = status_msg("Toxic Sludge added to inventory.", ts);
         let mut st = state(&mut arena, &mut dmg);
-        let out1 = dispatch_with_line(&pool, &gd, Some(&id()), &english, ts, &mut st, Some(11));
+        let out1 = dispatch_with_line(&pool, &gd, Some(&id()), &english, ts, &mut st, Some("Chat.log:11"));
         let mut st = state(&mut arena, &mut dmg);
-        let out2 = dispatch_with_line(&pool, &gd, Some(&id()), &english, ts, &mut st, Some(12));
+        let out2 = dispatch_with_line(&pool, &gd, Some(&id()), &english, ts, &mut st, Some("Chat.log:12"));
         assert_eq!(out1.staged_gains.len(), 1);
         assert_eq!(out2.staged_gains.len(), 1, "genuine second stack stages its own gain");
         assert_eq!(item_rows(&pool).len(), 2);
@@ -2951,9 +2954,9 @@ mod tests {
         let ts = "26-11-17 08:50:27";
         let json = json_msg("AddItem", LOOT_BODY, ts);
         let mut st = state(&mut arena, &mut dmg);
-        let out1 = dispatch_with_line(&pool, &gd, Some(&id()), &json, ts, &mut st, Some(21));
+        let out1 = dispatch_with_line(&pool, &gd, Some(&id()), &json, ts, &mut st, Some("Chat.log:21"));
         let mut st = state(&mut arena, &mut dmg);
-        let out2 = dispatch_with_line(&pool, &gd, Some(&id()), &json, ts, &mut st, Some(22));
+        let out2 = dispatch_with_line(&pool, &gd, Some(&id()), &json, ts, &mut st, Some("Chat.log:22"));
         assert_eq!(out1.staged_gains.len(), 1);
         assert_eq!(out2.staged_gains.len(), 1, "genuine second receipt stages its own gain");
         let rows = item_rows(&pool);
@@ -2975,10 +2978,10 @@ mod tests {
             let english = status_msg("Toxic Sludge added to inventory.", ts);
             let json = json_msg("AddItem", LOOT_BODY, ts);
             // Line ids stay with their lines across both orders.
-            let seq: [(bool, i64); 4] = if json_first {
-                [(true, 21), (true, 22), (false, 11), (false, 12)]
+            let seq: [(bool, &str); 4] = if json_first {
+                [(true, "Chat.log:21"), (true, "Chat.log:22"), (false, "Chat.log:11"), (false, "Chat.log:12")]
             } else {
-                [(false, 11), (false, 12), (true, 21), (true, 22)]
+                [(false, "Chat.log:11"), (false, "Chat.log:12"), (true, "Chat.log:21"), (true, "Chat.log:22")]
             };
             let mut staged = 0;
             for (is_json, line) in seq {
@@ -3010,8 +3013,12 @@ mod tests {
         let ts = "26-11-17 08:50:27";
         let english = status_msg("Toxic Sludge added to inventory.", ts);
         let json = json_msg("AddItem", LOOT_BODY, ts);
-        let seq: [(&ChatMessage, i64); 4] =
-            [(&english, 11), (&english, 12), (&json, 21), (&json, 22)];
+        let seq: [(&ChatMessage, &str); 4] = [
+            (&english, "Chat.log:11"),
+            (&english, "Chat.log:12"),
+            (&json, "Chat.log:21"),
+            (&json, "Chat.log:22"),
+        ];
         let mut staged_first = 0;
         for (m, line) in seq {
             let mut st = state(&mut arena, &mut dmg);

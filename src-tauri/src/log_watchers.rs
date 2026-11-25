@@ -22,8 +22,12 @@ pub enum LogEvent {
     /// Chat message parsed, tagged with the login session that produced it
     /// (`None` while no login line has been seen yet — mid-session resume
     /// from a stored byte offset: the caller falls back to the drain identity
-    /// instead of dropping the gain).
-    ChatMessage(ChatMessage, Option<crate::chat_parser::ChatSessionTag>),
+    /// instead of dropping the gain), plus the byte offset of the line's
+    /// first byte in its file. Offsets are per-OCCURRENCE: two
+    /// byte-identical lines share one stored raw row but carry different
+    /// offsets, so the ledger guards can separate genuine same-second
+    /// duplicates from replays.
+    ChatMessage(ChatMessage, Option<crate::chat_parser::ChatSessionTag>, u64),
     /// Character logged in
     CharacterLogin {
         character_name: String,
@@ -604,6 +608,25 @@ impl LogFileWatcher for ChatLogWatcher {
         }
 
         let lines: Vec<&str> = content_str.lines().collect();
+        // Byte offset of each line's first byte, file-absolute: the batch
+        // started at `batch_start`, and segments split on `\n` (a trailing
+        // `\r` stays inside its segment, so CRLF and LF both measure
+        // exactly). The batch ends at a `\n`, so segments align 1:1 with
+        // `lines` — per-OCCURRENCE identity even for byte-identical lines.
+        let batch_start = self.current_position - usable_len as u64;
+        let mut line_starts: Vec<u64> = Vec::with_capacity(lines.len());
+        {
+            let mut pos = batch_start;
+            for segment in content[..usable_len].split_inclusive(|&b| b == b'\n') {
+                line_starts.push(pos);
+                pos += segment.len() as u64;
+            }
+        }
+        debug_assert_eq!(
+            line_starts.len(),
+            lines.len(),
+            "byte split and str::lines disagree on line count"
+        );
 
         // Pre-scan: the index of the last login line. Reading from position
         // 0 the file holds every historical login — only the most recent
@@ -642,7 +665,10 @@ impl LogFileWatcher for ChatLogWatcher {
             }
             if line_starts_tagged_message(line)
                 && let Some((msg, session)) = tagged_iter.next() {
-                events.push(LogEvent::ChatMessage(msg, session));
+                // Misalignment degrades to the batch start (shared id =
+                // collapse, the safe direction), never a fresh id.
+                let offset = line_starts.get(idx).copied().unwrap_or(batch_start);
+                events.push(LogEvent::ChatMessage(msg, session, offset));
             }
         }
         debug_assert!(
@@ -931,7 +957,7 @@ mod tests {
         let tags: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
-                LogEvent::ChatMessage(msg, tag) if msg.channel.as_deref() == Some("Status") => {
+                LogEvent::ChatMessage(msg, tag, _) if msg.channel.as_deref() == Some("Status") => {
                     Some(tag.clone())
                 }
                 _ => None,
@@ -1005,7 +1031,7 @@ mod tests {
         let described: Vec<String> = events
             .iter()
             .map(|e| match e {
-                LogEvent::ChatMessage(msg, t) => {
+                LogEvent::ChatMessage(msg, t, _) => {
                     let head: String = msg.message.chars().take(20).collect();
                     format!("msg[{}]:{head}", tag(t))
                 }
@@ -1043,6 +1069,56 @@ mod tests {
             ]
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_poll_offsets_are_per_occurrence_and_byte_exact() {
+        // Two byte-identical loot lines must carry different, exact byte
+        // offsets: per-occurrence identity the ledger guards use to split
+        // genuine same-second duplicates (raw storage dedups the bytes to
+        // one row, so a rowid could not separate them).
+        use std::io::Write;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "glogger_chat_offset_test_{}_{nanos}_{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Chat-26-03-09.log");
+        let login = "26-03-09 05:01:46\t**************************************** Logged In As AltA. Server Dreva. Timezone Offset -07:00:00.";
+        let loot = "26-03-09 05:02:00\t[Status] Fluorite x5 added to inventory.";
+        let mut file = std::fs::File::create(&path).unwrap();
+        write!(file, "{login}\n{loot}\n{loot}\n").unwrap();
+        drop(file);
+
+        let mut watcher = ChatLogWatcher::new(path.clone());
+        watcher.start().unwrap();
+        let events = watcher.poll().unwrap();
+        let offsets: Vec<u64> = events
+            .iter()
+            .filter_map(|e| match e {
+                LogEvent::ChatMessage(msg, _, offset)
+                    if msg.channel.as_deref() == Some("Status") =>
+                {
+                    Some(*offset)
+                }
+                _ => None,
+            })
+            .collect();
+        // Login line is a system message, not Status: only the two loot
+        // lines match, at their exact byte starts.
+        let o1 = login.len() as u64 + 1;
+        assert_eq!(offsets, vec![o1, o1 + loot.len() as u64 + 1]);
+        // Stability: a second poll re-emits nothing — the same lines never
+        // get fresh ids (rescan-safety at the source).
+        assert!(watcher.poll().unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

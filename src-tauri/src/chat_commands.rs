@@ -151,6 +151,15 @@ pub async fn scan_chat_logs(
             .map_err(|e| format!("Failed to update log position: {e}"))?;
             inserted
         };
+        // Per-occurrence line identity from the same byte window the raw
+        // insert above stored (`"file:offset"`): rescans recompute the
+        // same ids, so replays collapse and genuine duplicates insert.
+        let source_line_ids = scan_source_line_ids(
+            &raw_text,
+            start_position,
+            &log_file.file_name,
+            local_messages.len(),
+        );
         // Structured dispatch with per-file identity (same rows the live
         // drain would persist). Replay-safe: re-scan inserts nothing new.
         // Identity comes from the same walk that supplied the tz offset.
@@ -164,6 +173,7 @@ pub async fn scan_chat_logs(
                 &messages,
                 &local_messages,
                 &session_at_line,
+                &source_line_ids,
                 fallback.as_deref(),
                 current_server.as_deref(),
                 &app_settings.watch_rules,
@@ -511,6 +521,7 @@ fn run_scan_dispatch(
     utc_messages: &[chat_parser::ChatMessage],
     local_messages: &[chat_parser::ChatMessage],
     session_at_line: &[Option<DispatchIdentity>],
+    source_line_ids: &[Option<String>],
     fallback_character: Option<&str>,
     current_server: Option<&str>,
     watch_rules: &[crate::settings::WatchRule],
@@ -537,6 +548,13 @@ fn run_scan_dispatch(
             },
         };
         let local_ts = local_msg.timestamp.format("%Y-%m-%d %H:%M:%S").to_string();
+        // Per-occurrence identity built by the caller from the same byte
+        // window (`scan_source_line_ids`): a rescan computes the same id
+        // for the same line, so replays collapse; genuine same-second
+        // duplicates carry different offsets and insert. Missing entries
+        // degrade to `None` (legacy collapse), never a fresh id.
+        let source_line_id: Option<String> =
+            source_line_ids.get(idx).cloned().flatten();
         let mut dstate = DispatchState {
             arena_tracker: &mut arena,
             recent_damage: &mut recent_damage,
@@ -554,9 +572,7 @@ fn run_scan_dispatch(
                 msg: utc_msg,
                 local_ts: &local_ts,
                 watch_rules,
-                // FORCED (out-of-slice): new `DispatchCtx` field. `None`
-                // preserves legacy match-any collapse on rescans.
-                source_line_id: None,
+                source_line_id,
                 is_scan: true,
                 is_live: false,
             },
@@ -638,6 +654,58 @@ fn run_scan_dispatch(
         Err(e) => eprintln!("[run_scan_dispatch] Unlinked-gain sweep failed: {e}"),
     }
     domains
+}
+
+/// Per-occurrence source-line ids (`"file:offset"`) for one scan window, in
+/// parsed-message order: `ids[i]` is the byte offset of the raw line that
+/// started parsed message `i` (`start_position` + window-relative bytes).
+///
+/// Mirrors `parse_chat_lines`' line consumption (skip empties, attempt
+/// timestamped lines, fold continuations into the previous message) so the
+/// ids align with the parsed stream the dispatch consumes. MUST stay in
+/// sync with that loop (same three rules, same order) — the
+/// `scan_offsets_mirror_parse` test pins the agreement. A miscount
+/// degrades by index (`.get(idx)` → `None` = legacy collapse at the call
+/// site), never by misalignment panic.
+fn scan_source_line_ids(
+    raw_text: &str,
+    start_position: u64,
+    file_name: &str,
+    parsed_count: usize,
+) -> Vec<Option<String>> {
+    if raw_text.is_empty() {
+        return vec![None; parsed_count];
+    }
+    let mut ids: Vec<Option<String>> = Vec::new();
+    let mut pos = start_position;
+    // `lines()` and the byte split agree except on empty input (guarded
+    // above): both break only on `\n`, and lossy decoding never adds one.
+    let segments: Vec<&[u8]> = raw_text
+        .as_bytes()
+        .split_inclusive(|&b| b == b'\n')
+        .collect();
+    for (line, seg) in raw_text.lines().zip(segments.iter()) {
+        let start = pos;
+        pos += seg.len() as u64;
+        if line.trim().is_empty() {
+            continue;
+        }
+        if crate::chat_parser::is_timestamped_line(line) {
+            if crate::chat_parser::parse_chat_line(line).is_some() {
+                ids.push(Some(format!("{file_name}:{start}")));
+            }
+        } else if ids.is_empty() {
+            // Orphan continuation: the parser skips it (no message to fold
+            // into) — no id either (`ids` is empty exactly when the parser
+            // has emitted nothing).
+        }
+        // Folded continuations append to the previous message: no new id.
+    }
+    ids.truncate(parsed_count);
+    while ids.len() < parsed_count {
+        ids.push(None);
+    }
+    ids
 }
 
 /// Per-line session identity for one scanned file slice: for each parsed
@@ -797,6 +865,11 @@ pub async fn scan_chat_log_file(
     .map_err(|e| format!("Failed to update log position: {e}"))?;
     }
 
+    // Per-occurrence line identity from the same byte window the raw
+    // insert above stored (`"file:offset"`): rescans recompute the same
+    // ids, so replays collapse and genuine duplicates insert.
+    let source_line_ids =
+        scan_source_line_ids(&raw_text, start_position, &file_name, local_messages.len());
     // Structured dispatch with per-file identity (same rows the live
     // drain would persist). Replay-safe: re-scan inserts nothing new.
     // Identity comes from the same walk that supplied the tz offset.
@@ -809,6 +882,7 @@ pub async fn scan_chat_log_file(
             &messages,
             &local_messages,
             &session_at_line,
+            &source_line_ids,
             fallback.as_deref(),
             app_settings.active_server_name.as_deref(),
             &app_settings.watch_rules,
@@ -1048,6 +1122,11 @@ pub async fn tail_chat_log(
     .map_err(|e| format!("Failed to update log position: {e}"))?;
     }
 
+    // Per-occurrence line identity from the same byte window the raw
+    // insert above stored (`"file:offset"`): re-tails recompute the same
+    // ids, so replays collapse and genuine duplicates insert.
+    let source_line_ids =
+        scan_source_line_ids(&raw_text, start_position, file_name, local_messages.len());
     // Structured dispatch with per-file identity (same rows the live
     // drain would persist). Replay-safe: re-tail inserts nothing new.
     // Identity comes from the same walk that supplied the tz offset.
@@ -1059,6 +1138,7 @@ pub async fn tail_chat_log(
         &messages,
         &local_messages,
         &session_at_line,
+        &source_line_ids,
         fallback.as_deref(),
         app_settings.active_server_name.as_deref(),
         &app_settings.watch_rules,
@@ -1557,5 +1637,117 @@ mod tests {
             instants,
             "self-milk instants must not depend on the settings offset"
         );
+    }
+
+    #[test]
+    fn scan_offsets_mirror_parse() {
+        // Mirror agreement: `scan_source_line_ids` aligns 1:1 with
+        // `parse_chat_lines` — same count, and each id's offset points at
+        // the raw line that started the message. Fixture covers an orphan
+        // continuation, empties, a folded continuation, a timestamped-but-
+        // unparseable line, byte-identical duplicate loot lines, and a
+        // CRLF line.
+        let orphan = "orphan continuation with no message yet";
+        let l0 = "26-03-09 05:01:46\t[Status] Fluorite x5 added to inventory.";
+        let l1 = "";
+        let l2 = "still talking here";
+        let l3 = "26-03-09 05:02:00\t[Status";
+        let l4 = "26-03-09 05:02:01\t[Status] Fluorite x5 added to inventory.";
+        let l5 = "26-03-09 05:02:02\t[Guild] Bob: hi\r";
+        let raw = format!("{orphan}\n{l0}\n{l1}\n{l2}\n{l3}\n{l4}\n{l5}\n");
+        assert!(crate::chat_parser::is_timestamped_line(l3), "l3 must exercise the timestamped branch");
+        let parsed = crate::chat_parser::parse_chat_lines(&raw);
+        // orphan skipped, l0 (+folded l2), l3 skipped, l4, l5.
+        assert_eq!(parsed.len(), 3);
+        assert!(parsed[0].message.contains("still talking here"), "l2 folds into l0");
+        let ids = scan_source_line_ids(&raw, 1000, "Chat-26-03-09.log", parsed.len());
+        let o0 = 1000 + orphan.len() as u64 + 1;
+        let o4 = o0 + l0.len() as u64 + 1 + l1.len() as u64 + 1 + l2.len() as u64 + 1 + l3.len() as u64 + 1;
+        let o5 = o4 + l4.len() as u64 + 1;
+        assert_eq!(
+            ids,
+            vec![
+                Some(format!("Chat-26-03-09.log:{o0}")),
+                Some(format!("Chat-26-03-09.log:{o4}")),
+                Some(format!("Chat-26-03-09.log:{o5}")),
+            ]
+        );
+        // Byte-exact past the CRLF line: the offset lands on the `\r`-free
+        // line start, measured in raw bytes.
+        let raw_bytes = raw.as_bytes();
+        assert_eq!(&raw_bytes[o5 as usize - 1000..o5 as usize - 1000 + 10], b"26-03-09 0");
+    }
+
+    #[test]
+    fn scan_dispatch_splits_genuine_same_second_duplicates() {
+        // Production-shaped scan path: two byte-identical loot lines in one
+        // window, ids built by `scan_source_line_ids` exactly as the scan
+        // commands build them, dispatched through `run_scan_dispatch`.
+        // Genuine duplicates yield two ledger rows; re-running the same
+        // window with the same ids stays stable (rescan-safe).
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "glogger_scan_dup_test_{}_{n}.db",
+            std::process::id()
+        ));
+        let db_pool = crate::db::init_pool(path.clone(), Some(0)).expect("init pool");
+        let settings_dir = std::env::temp_dir().join(format!(
+            "glogger_scan_dup_settings_{}_{n}.db",
+            std::process::id()
+        ));
+        let settings =
+            crate::settings::SettingsManager::new(settings_dir.clone()).expect("settings");
+        let game_data: GameDataState = std::sync::Arc::new(tauri::async_runtime::RwLock::new(
+            crate::game_data::GameData::empty(),
+        ));
+        // Fresh timestamp: scan paths skip provisional rows already past
+        // the link-up window, so a pinned old date would write nothing.
+        let ts = chrono::Utc::now().format("%y-%m-%d %H:%M:%S").to_string();
+        let line = format!("{ts}\t[Status] Toxic Sludge added to inventory.");
+        let raw_text = format!("{line}\n{line}\n");
+        let local_messages = crate::chat_parser::parse_chat_lines(&raw_text);
+        assert_eq!(local_messages.len(), 2, "identical lines parse as two messages");
+        let utc_messages = local_messages.clone();
+        let file_name = "Chat-26-11-17.log";
+        let ids = scan_source_line_ids(&raw_text, 0, file_name, local_messages.len());
+        assert_ne!(ids[0], ids[1], "identical lines carry different offsets");
+        let id = DispatchIdentity { character: "Alice".to_string(), server: "Dreva".to_string() };
+        let session_at_line = vec![Some(id.clone()), Some(id)];
+        let run = || {
+            run_scan_dispatch(
+                &db_pool,
+                &settings,
+                &game_data,
+                None,
+                &utc_messages,
+                &local_messages,
+                &session_at_line,
+                &ids,
+                Some("Alice"),
+                Some("Dreva"),
+                &[],
+            )
+        };
+        run();
+        let count: i64 = db_pool
+            .get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM item_transactions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2, "genuine duplicates keep two ledger rows on the scan path");
+        run();
+        let count: i64 = db_pool
+            .get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM item_transactions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2, "re-scanning the same window stays stable");
+        let _ = std::fs::remove_file(&path);
+        for suffix in ["-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.to_string_lossy()));
+        }
+        let _ = std::fs::remove_dir_all(&settings_dir);
     }
 }

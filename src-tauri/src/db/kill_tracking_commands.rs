@@ -2314,7 +2314,7 @@ mod tests {
     /// both stacks survive).
     #[test]
     fn same_second_twins_keep_two_ledger_rows_and_link_by_qty() {
-        let ledger_row = |conn: &Connection, qty: i64, line: i64| {
+        let ledger_row = |conn: &Connection, qty: i64, line: &str| {
             conn.execute(
                 "INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, quantity, context, source, from_entity_id, source_line_id)
                  VALUES ('2026-11-17 12:01:00', 'T', 'Dreva', 'Salad', ?1, 'inventory', 'chat_status', 42, ?2)",
@@ -2325,8 +2325,8 @@ mod tests {
         // Distinct-qty stacks: two genuine receipts, two loot rows.
         let conn = setup();
         record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
-        ledger_row(&conn, 2, 11);
-        ledger_row(&conn, 3, 12);
+        ledger_row(&conn, 2, "Chat.log:11");
+        ledger_row(&conn, 3, "Chat.log:12");
         assert!(link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 2).unwrap());
         assert!(link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 3).unwrap());
         // Replaying either receipt links nothing new from either side.
@@ -2340,8 +2340,8 @@ mod tests {
         // Identical-qty residual: two ledger rows, one loot row.
         let conn = setup();
         record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
-        ledger_row(&conn, 2, 11);
-        ledger_row(&conn, 2, 12);
+        ledger_row(&conn, 2, "Chat.log:11");
+        ledger_row(&conn, 2, "Chat.log:12");
         assert!(link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 2).unwrap());
         assert!(!link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 2).unwrap());
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM enemy_kill_loot", [], |r| r.get(0)).unwrap();

@@ -1688,13 +1688,18 @@ fn migration_v95_drop_dead_schema(conn: &Connection) -> Result<()> {
 /// (`insert_item_transaction_guarded`, `insert_json_receipt_guarded`):
 /// log timestamps are second-granularity, so two genuine same-second
 /// receipts are byte-identical on every compared column. The guards now
-/// key replays on source-line identity instead of content alone, and this
-/// column carries it (raw `chat_messages` rowid once wired — rescan reuses
-/// stored rows via `INSERT OR IGNORE`, so rowids are stable; `NULL` until
-/// then). Nullable with no backfill: pre-identity rows stay `NULL` and keep
-/// legacy match-any collapse, so the first post-upgrade rescan cannot
-/// duplicate years of history at the cost that legacy genuine duplicates
-/// still collapse (accepted, documented at the guards).
+/// key replays on per-occurrence source-line identity instead of content
+/// alone, and this column carries it (`"file:offset"` — the byte offset
+/// of the line in its chat log file; chat logs are dated per-day files,
+/// so a name scopes its offsets to one generation). TEXT: bare offsets
+/// would collide across rotated files, and a hash would be opaque in the
+/// DB the read-time join queries. Nullable with no backfill: pre-identity
+/// rows stay `NULL` and keep legacy match-any collapse, so the first
+/// post-upgrade rescan cannot duplicate history at the cost that legacy
+/// genuine duplicates still collapse (accepted, documented at the guards).
+/// (Per-occurrence, not per raw row: two byte-identical lines share one
+/// raw `chat_messages` row under INSERT OR IGNORE but carry different
+/// offsets — a rowid could not separate them, verified during review.)
 fn migration_v96_item_ledger_source_line(conn: &Connection) -> Result<()> {
     // Minimal-fixture guard (same as v91-v94): skip when the ledger is absent.
     let has_ledger: bool = conn
@@ -1708,7 +1713,7 @@ fn migration_v96_item_ledger_source_line(conn: &Connection) -> Result<()> {
         return Ok(());
     }
     conn.execute(
-        "ALTER TABLE item_transactions ADD COLUMN source_line_id INTEGER",
+        "ALTER TABLE item_transactions ADD COLUMN source_line_id TEXT",
         [],
     )?;
     Ok(())
@@ -6003,8 +6008,8 @@ mod tests {
     #[test]
     fn v96_adds_nullable_source_line_id_with_legacy_nulls() {
         // Minimal ledger shape: the guard's new column must land nullable
-        // with no backfill, so pre-identity rows stay NULL (legacy
-        // match-any collapse) and fresh writes can carry a line id.
+        // TEXT with no backfill, so pre-identity rows stay NULL (legacy
+        // match-any collapse) and fresh writes can carry a "file:offset" id.
         let c = Connection::open_in_memory().unwrap();
         c.execute_batch(
             "CREATE TABLE item_transactions (
@@ -6018,33 +6023,34 @@ mod tests {
         )
         .unwrap();
         migration_v96_item_ledger_source_line(&c).unwrap();
-        let nullable: bool = c
+        let (coltype, nullable): (String, bool) = c
             .query_row(
-                "SELECT NOT EXISTS(SELECT 1 FROM pragma_table_info('item_transactions')
-                   WHERE name = 'source_line_id' AND \"notnull\" = 1)",
+                "SELECT type, \"notnull\" = 0 FROM pragma_table_info('item_transactions')
+                   WHERE name = 'source_line_id'",
                 [],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?))
             )
             .unwrap();
+        assert_eq!(coltype, "TEXT", "source_line_id must land TEXT (file:offset)");
         assert!(nullable, "source_line_id must land nullable");
-        let legacy: Option<i64> = c
+        let legacy: Option<String> = c
             .query_row("SELECT source_line_id FROM item_transactions", [], |r| r.get(0))
             .unwrap();
         assert_eq!(legacy, None, "pre-identity rows stay NULL (legacy collapse)");
         c.execute(
             "INSERT INTO item_transactions (timestamp, item_name, quantity, source_line_id)
-             VALUES ('2026-11-17 12:01:00', 'Salad', 2, 42)",
+             VALUES ('2026-11-17 12:01:00', 'Salad', 2, 'Chat.log:42')",
             [],
         )
         .unwrap();
-        let carried: i64 = c
+        let carried: String = c
             .query_row(
                 "SELECT source_line_id FROM item_transactions WHERE id = 2",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(carried, 42, "fresh writes carry the line id");
+        assert_eq!(carried, "Chat.log:42", "fresh writes carry the line id");
         // Absent ledger (minimal fixtures) stays a no-op.
         let bare = Connection::open_in_memory().unwrap();
         migration_v96_item_ledger_source_line(&bare).unwrap();
