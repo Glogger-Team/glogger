@@ -549,11 +549,12 @@ fn dispatch_status_event(
                         context,
                         survey_use_id,
                         // English lines carry no looted-from entity: the
-                        // guard treats `None` as "match any row" (replay and
-                        // JSON-first twin-second both skip), so twin
-                        // convergence is unchanged. A second entity's
-                        // English-only gain still collapses here — inherent:
-                        // the line has no entity to key on.
+                        // guard treats `None` as "match any row" on the
+                        // entity arm, while the line arm keys on this line's
+                        // identity. A JSON-first twin-second consumes its
+                        // pending JSON row (no stage — the receipt staged);
+                        // a genuine second line inserts its own row. Legacy
+                        // `None` line ids keep the match-any collapse.
                         from_entity_id: None,
                         source_line_id: ctx.source_line_id.as_deref(),
                         is_scan: ctx.is_scan,
@@ -794,13 +795,15 @@ fn insert_item_transaction_guarded(db: &DbPool, item: ItemLedgerCtx<'_>) -> bool
     // Replay guard: the natural key of a chat ledger row plus the looted-from
     // entity when the caller knows it, plus this line's stable identity.
     // `None` entity (every English line — the line carries no entity) matches
-    // any row's entity, and a `None` line id (every production caller today)
-    // matches any row's identity: legacy match-any collapse, preserving
-    // replay collapse and JSON-first twin-second skip exactly as before.
-    // `Some` line id collapses only across representations, never within:
-    // a true replay (a row carrying this line's id) or a stamped/JSON-marked
-    // twin row still skips, but a genuine second receipt — same key, an
-    // unstamped English row from a different line — inserts its own row.
+    // any row's entity, and a `None` line id (legacy callers) matches any
+    // row's identity: legacy match-any collapse, preserving replay collapse.
+    // `Some` line id collapses only across representations or onto this
+    // line's own trace: a true replay (a row carrying this line's id) or a
+    // row this line already consumed (`english_claimed_by`, set below) still
+    // skips. The two line-blind disjuncts (`from_entity_id IS NOT NULL`,
+    // `json_twin IS NOT NULL`) are gone: a stamped/JSON row from another
+    // line no longer collapses a genuine second receipt — that receipt falls
+    // through to the consume step and inserts its own row.
     // Pre-identity (`NULL`) rows keep match-any collapse so the first
     // post-upgrade rescan cannot duplicate history. No UNIQUE index exists
     // (adding one would reindex every install), so the check is an explicit
@@ -812,14 +815,58 @@ fn insert_item_transaction_guarded(db: &DbPool, item: ItemLedgerCtx<'_>) -> bool
                AND item_name = ?4 AND quantity = ?5 AND context = ?6 AND source = 'chat_status'
                AND (?7 IS NULL OR from_entity_id IS ?7)
                AND (?8 IS NULL OR source_line_id IS NULL OR source_line_id IS ?8
-                    OR from_entity_id IS NOT NULL
-                    OR json_extract(source_details, '$.json_twin') IS NOT NULL))",
+                    OR json_extract(source_details, '$.english_claimed_by') IS ?8))",
             rusqlite::params![item.timestamp, item.character, item.server, item.item_name, item.quantity as i32, item.context, item.from_entity_id, item.source_line_id],
             |r| r.get(0),
         )
         .unwrap_or(false);
     if exists {
         return false;
+    }
+    // Consume marker (twin-second): on a replay-check miss, claim one
+    // pending JSON-twin row for this line instead of inserting a twin —
+    // twin-second stages nothing because the JSON receipt already staged the
+    // gain. Pending = carries the `json_twin` marker and is not already
+    // consumed by another line (`english_claimed_by` NULL-or-self).
+    // Completed pairs are never consumable: a JSON-first completed row
+    // carries an `english_claimed_by` trace, and an English-first completed
+    // row carries the JSON claim (`claimed_by`) with no `json_twin` marker,
+    // so neither is a consume candidate. Sourced JSON rows (entity at birth)
+    // stay consumable — the entity is origin, not a stamp, and excluding it
+    // would break JSON-first twin convergence. A genuine second receipt
+    // finds no pending twin and falls through to the INSERT below. Legacy
+    // `None` line ids skip the marker (match-any already hit above). A
+    // failed UPDATE reports and stops: falling through to the INSERT on a
+    // broken connection would duplicate the gain (same fail-closed shape as
+    // the JSON twin claim).
+    if let Some(line_id) = item.source_line_id {
+        let claimed = conn.execute(
+            "UPDATE item_transactions
+                SET source_details = json_set(COALESCE(source_details, '{}'), '$.english_claimed_by', ?7)
+             WHERE rowid = (SELECT MIN(rowid) FROM item_transactions
+                 WHERE timestamp = ?1 AND character_name = ?2 AND server_name = ?3
+                   AND item_name = ?4 AND quantity = ?5 AND context = ?6 AND source = 'chat_status'
+                   AND json_extract(source_details, '$.json_twin') IS NOT NULL
+                   AND (json_extract(source_details, '$.english_claimed_by') IS NULL
+                        OR json_extract(source_details, '$.english_claimed_by') IS ?7))",
+            rusqlite::params![
+                item.timestamp,
+                item.character,
+                item.server,
+                item.item_name,
+                item.quantity as i32,
+                item.context,
+                line_id,
+            ],
+        );
+        match claimed {
+            Ok(n) if n > 0 => return false,
+            Ok(_) => {}
+            Err(e) => {
+                eprintln!("[dispatch] english twin-consume update failed, receipt left for retry: {e}");
+                return false;
+            }
+        }
     }
     conn.execute(
         "INSERT INTO item_transactions
@@ -2903,25 +2950,164 @@ mod tests {
     }
 
     #[test]
-    fn english_guard_null_skips_stamped_twin() {
-        // JSON-first fence at guard level: once the twin claim stamps the
-        // row's entity, a `None`-entity English insert from the twin's own
-        // line still skips instead of duplicating. A NULL-only key would
-        // insert a second row here and break twin convergence.
+    fn english_twin_pairs_converge_interleaved_both_orders() {
+        // Interleaved twin pairs (E1,J1,E2,J2 and J1,E1,J2,E2), one line id
+        // per line: exactly 2 rows, both stamped with the entity, exactly 2
+        // staged gains. Preservation lock: the consume marker must keep the
+        // twin-second convergence the line-blind guard provided when every
+        // twin arrives — passes pre- and post-fix.
+        for json_first in [false, true] {
+            let (_guard, pool) = test_pool();
+            let gd = game_data();
+            let mut arena = ArenaTracker::new();
+            let mut dmg = Vec::new();
+            let ts = "26-11-17 08:50:27";
+            let english = status_msg("Toxic Sludge added to inventory.", ts);
+            let json = json_msg("AddItem", LOOT_BODY, ts);
+            let seq: [(bool, &str); 4] = if json_first {
+                [
+                    (true, "Chat.log:21"),
+                    (false, "Chat.log:11"),
+                    (true, "Chat.log:22"),
+                    (false, "Chat.log:12"),
+                ]
+            } else {
+                [
+                    (false, "Chat.log:11"),
+                    (true, "Chat.log:21"),
+                    (false, "Chat.log:12"),
+                    (true, "Chat.log:22"),
+                ]
+            };
+            let mut staged = 0;
+            for (is_json, line) in seq {
+                let m = if is_json { &json } else { &english };
+                let mut st = state(&mut arena, &mut dmg);
+                staged += dispatch_with_line(&pool, &gd, Some(&id()), m, ts, &mut st, Some(line))
+                    .staged_gains
+                    .len();
+            }
+            assert_eq!(staged, 2, "each event stages exactly once (json_first={json_first})");
+            let rows = item_rows(&pool);
+            assert_eq!(rows.len(), 2, "two events keep two rows (json_first={json_first})");
+            assert!(
+                rows.iter().all(|r| r.3 == Some(257400)),
+                "both rows stamped (json_first={json_first})"
+            );
+        }
+    }
+
+    #[test]
+    fn english_genuine_second_survives_malformed_twin() {
+        // Mutant-killing (fails pre-fix): E1 + J1 complete the first pair;
+        // E2's twin arrives malformed (`skipped_json_malformed`: counted, no
+        // ledger row). E2 must still insert and stage its own gain — the
+        // line-blind guard collapsed it onto the stamped row and the gain
+        // was silently lost.
         let (_guard, pool) = test_pool();
-        assert!(insert_item_transaction_guarded(&pool, english_ctx(None, Some("Chat.log:11"))));
-        pool.get_write()
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:50:27";
+        let english = status_msg("Toxic Sludge added to inventory.", ts);
+        let json = json_msg("AddItem", LOOT_BODY, ts);
+        let mut st = state(&mut arena, &mut dmg);
+        let out1 = dispatch_with_line(&pool, &gd, Some(&id()), &english, ts, &mut st, Some("Chat.log:11"));
+        assert_eq!(out1.staged_gains.len(), 1);
+        let mut st = state(&mut arena, &mut dmg);
+        let out2 = dispatch_with_line(&pool, &gd, Some(&id()), &json, ts, &mut st, Some("Chat.log:21"));
+        assert!(out2.staged_gains.is_empty());
+        assert_eq!(item_rows(&pool).len(), 1);
+        // E2's twin never lands: malformed JSON is counted, never stored.
+        let bad = json_msg("AddItem", "not-json", ts);
+        let mut st = state(&mut arena, &mut dmg);
+        let bad_out = dispatch_with_line(&pool, &gd, Some(&id()), &bad, ts, &mut st, Some("Chat.log:22"));
+        assert_eq!(bad_out.malformed_json, vec!["AddItem".to_string()]);
+        assert_eq!(item_rows(&pool).len(), 1);
+        // The genuine second receipt inserts and stages despite the stamp.
+        let mut st = state(&mut arena, &mut dmg);
+        let out3 = dispatch_with_line(&pool, &gd, Some(&id()), &english, ts, &mut st, Some("Chat.log:12"));
+        assert_eq!(out3.staged_gains.len(), 1, "malformed-twin second gain must survive");
+        assert_eq!(item_rows(&pool).len(), 2);
+    }
+
+    #[test]
+    fn english_inserts_after_completed_pair_json_first() {
+        // Mutant-killing (fails pre-fix): JSON-first completed pair (J1
+        // inserts the `json_twin` row, E1 consumes it via
+        // `english_claimed_by`) then a genuine second English gain — E2 must
+        // insert its own row, never consume E1's completed row. Replaces
+        // `english_guard_null_skips_stamped_twin`, whose traceless raw-UPDATE
+        // stamp no real writer produces post-#352 (stamps always carry
+        // `claimed_by` + line identity).
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:50:27";
+        let english = status_msg("Toxic Sludge added to inventory.", ts);
+        let json = json_msg("AddItem", LOOT_BODY, ts);
+        let mut st = state(&mut arena, &mut dmg);
+        let out1 = dispatch_with_line(&pool, &gd, Some(&id()), &json, ts, &mut st, Some("Chat.log:21"));
+        assert_eq!(out1.staged_gains.len(), 1);
+        let mut st = state(&mut arena, &mut dmg);
+        let out2 = dispatch_with_line(&pool, &gd, Some(&id()), &english, ts, &mut st, Some("Chat.log:11"));
+        assert!(out2.staged_gains.is_empty(), "twin-second consumes, stages nothing");
+        assert_eq!(item_rows(&pool).len(), 1);
+        let claimed: i64 = pool
+            .get()
             .unwrap()
-            .execute(
-                "UPDATE item_transactions SET from_name = 'Olugax', from_entity_id = 257400",
+            .query_row(
+                "SELECT COUNT(*) FROM item_transactions
+                 WHERE json_extract(source_details, '$.english_claimed_by') = 'Chat.log:11'",
                 [],
+                |r| r.get(0),
             )
             .unwrap();
-        assert!(
-            !insert_item_transaction_guarded(&pool, english_ctx(None, Some("Chat.log:12"))),
-            "None matches the stamped twin: skip, no duplicate"
-        );
-        assert_eq!(item_rows(&pool).len(), 1);
+        assert_eq!(claimed, 1, "consume leaves a per-line trace");
+        let mut st = state(&mut arena, &mut dmg);
+        let out3 = dispatch_with_line(&pool, &gd, Some(&id()), &english, ts, &mut st, Some("Chat.log:12"));
+        assert_eq!(out3.staged_gains.len(), 1, "post-completed-pair English inserts");
+        assert_eq!(item_rows(&pool).len(), 2);
+    }
+
+    #[test]
+    fn english_consume_replay_is_stable() {
+        // Preservation lock (stable pre- and post-fix): replay the full
+        // consume interleave with original line ids — nothing restages,
+        // nothing duplicates. Each replay hits its own trace (insert line,
+        // JSON `claimed_by`, or English `english_claimed_by`).
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:50:27";
+        let english = status_msg("Toxic Sludge added to inventory.", ts);
+        let json = json_msg("AddItem", LOOT_BODY, ts);
+        let seq: [(&ChatMessage, &str); 4] = [
+            (&json, "Chat.log:21"),
+            (&english, "Chat.log:11"),
+            (&json, "Chat.log:22"),
+            (&english, "Chat.log:12"),
+        ];
+        let mut staged_first = 0;
+        for (m, line) in seq {
+            let mut st = state(&mut arena, &mut dmg);
+            staged_first += dispatch_with_line(&pool, &gd, Some(&id()), m, ts, &mut st, Some(line))
+                .staged_gains
+                .len();
+        }
+        assert_eq!(staged_first, 2);
+        assert_eq!(item_rows(&pool).len(), 2);
+        let mut staged_second = 0;
+        for (m, line) in seq {
+            let mut st = state(&mut arena, &mut dmg);
+            staged_second += dispatch_with_line(&pool, &gd, Some(&id()), m, ts, &mut st, Some(line))
+                .staged_gains
+                .len();
+        }
+        assert_eq!(staged_second, 0, "replays must not restage");
+        assert_eq!(item_rows(&pool).len(), 2, "replays must not duplicate");
     }
 
     #[test]
