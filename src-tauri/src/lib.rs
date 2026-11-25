@@ -218,7 +218,6 @@ use db::market_commands::{
 };
 use db::player_commands::{
     add_market_price, add_sale, get_market_prices_for_item, get_recent_events, get_recent_sales,
-    log_event,
 };
 use db::survey_commands::get_all_survey_types;
 use db::resuscitate_commands::get_character_resuscitations;
@@ -833,7 +832,6 @@ pub fn run() {
             add_sale,
             get_recent_sales,
             // Player data - Event log
-            log_event,
             get_recent_events,
             // Database admin
             get_database_stats,

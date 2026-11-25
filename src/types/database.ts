@@ -83,10 +83,6 @@ export interface SaleRecord {
 }
 
 // Event log types
-export interface LogEventInput {
-  event_type: string;
-  event_data: any;
-}
 
 export interface EventLogRecord {
   id: number;

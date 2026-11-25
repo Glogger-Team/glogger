@@ -504,6 +504,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         migration_v94_kill_loot_receipt_identity(conn)?;
         super::record_migration(conn, 94)?;
     }
+
+    if current_version < 95 {
+        migration_v95_drop_dead_schema(conn)?;
+        super::record_migration(conn, 95)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1638,6 +1643,36 @@ fn migration_v94_kill_loot_receipt_identity(conn: &Connection) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_kill_loot_receipt
              ON enemy_kill_loot(kill_id, item_name, quantity, receipt_ts)",
         [],
+    )?;
+    Ok(())
+}
+
+/// Migration V95: drop dead schema from replaced or never-built features
+/// (decision 2026-11-25, writer/reader grep + live-DB census all zero rows).
+///
+/// - `chat_log_files` (+ `idx_chat_log_files_date`): legacy file tracking,
+///   replaced by `log_file_positions` (v1). Sole live writer was the
+///   `delete_all_chat_messages` wipe path; `get_chat_log_files` (chat_parser)
+///   is filesystem discovery, unrelated, and stays.
+/// - `survey_data_imports`: v16 data-sharing import tracking, never built —
+///   no writers or readers outside the v16 migration itself. (v27 dropped
+///   the sibling `survey_imports` table, not this one.)
+/// - `survey_session_stats.import_id` (+ index): needs no statement — the
+///   column died with its table in v27 on every DB that ran the chain
+///   (linear versions: v95 entry implies v27 ran), and the index went with
+///   it. A bare `DROP INDEX IF EXISTS` is kept so a re-appearing name can
+///   never linger. (SQLite also refuses `DROP COLUMN` on a
+///   REFERENCES-clause column, so a guarded ALTER would error rather
+///   than clean — the v27 table drop is the cleanup.)
+/// - `log_event` Tauri command surface is removed in the same change; the
+///   `event_log` table stays (`get_recent_events` still reads it).
+///   Re-introduction needs the feature rebuilt, not these rows.
+fn migration_v95_drop_dead_schema(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP INDEX IF EXISTS idx_survey_session_stats_import;
+         DROP TABLE IF EXISTS survey_data_imports;
+         DROP INDEX IF EXISTS idx_chat_log_files_date;
+         DROP TABLE IF EXISTS chat_log_files;",
     )?;
     Ok(())
 }
@@ -4896,13 +4931,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            94,
+            95,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 94);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 95);
     }
 
     #[test]
@@ -5025,13 +5060,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 94) plus the purge itself on the three aggregate source tables.
+        // 95) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 94, "migration chain head");
+        assert_eq!(head, 95, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -5077,8 +5112,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 94 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity). Repair: a
+        // Chain wiring: full run_migrations head must be 95 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -5086,7 +5121,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 94, "migration chain head");
+        assert_eq!(head, 95, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -5887,5 +5922,46 @@ mod tests {
             .unwrap();
         assert!(indexed, "receipt-identity index must land");
     }
+
+    #[test]
+    fn v95_drops_dead_schema_and_keeps_live_neighbors() {
+        // Realistic v94 shape: v27 already dropped `survey_session_stats`
+        // (with it `import_id` + its index); the dead tables linger.
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE chat_log_files (id INTEGER PRIMARY KEY, file_date TEXT);
+             CREATE INDEX idx_chat_log_files_date ON chat_log_files(file_date DESC);
+             CREATE TABLE survey_data_imports (id INTEGER PRIMARY KEY AUTOINCREMENT, label TEXT NOT NULL);
+             CREATE TABLE log_file_positions (file_path TEXT, file_type TEXT);
+             CREATE TABLE event_log (id INTEGER PRIMARY KEY, event_type TEXT);",
+        )
+        .unwrap();
+        migration_v95_drop_dead_schema(&c).unwrap();
+        let gone = |kind: &str, name: &str| -> bool {
+            c.query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type = ?1 AND name = ?2)",
+                [kind, name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(gone("table", "chat_log_files"), "legacy chat file tracking must go");
+        assert!(gone("index", "idx_chat_log_files_date"), "orphan chat index must go");
+        assert!(gone("table", "survey_data_imports"), "never-built import tracking must go");
+        assert!(!gone("table", "log_file_positions"), "replacement file tracking must stay");
+        assert!(!gone("table", "event_log"), "event_log (get_recent_events reads it) must stay");
+        // Idempotent: second run is a no-op.
+        migration_v95_drop_dead_schema(&c).unwrap();
+        // Pre-v27 shape (session table with import_id still present) must
+        // not error: v27 owns that table's lifecycle, so v95 leaves it.
+        c.execute_batch(
+            "CREATE TABLE survey_session_stats (id INTEGER PRIMARY KEY, import_id INTEGER REFERENCES survey_data_imports(id) ON DELETE CASCADE);
+             CREATE INDEX idx_survey_session_stats_import ON survey_session_stats(import_id);",
+        )
+        .unwrap();
+        migration_v95_drop_dead_schema(&c).unwrap();
+        assert!(!gone("table", "survey_session_stats"), "v27-owned table must be left alone");
+    }
+
 }
 

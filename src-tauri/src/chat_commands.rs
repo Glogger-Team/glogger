@@ -1162,7 +1162,7 @@ pub async fn delete_all_chat_messages(db_pool: State<'_, DbPool>) -> Result<usiz
     Ok(deleted)
 }
 
-/// Four DELETEs in one transaction. Split out from the command so the
+/// Three DELETEs in one transaction. Split out from the command so the
 /// all-or-nothing behaviour is unit-testable. `conn` is `&mut` because
 /// `transaction_with_behavior` needs it.
 fn delete_all_chat_messages_impl(conn: &mut rusqlite::Connection) -> Result<usize, String> {
@@ -1177,10 +1177,6 @@ fn delete_all_chat_messages_impl(conn: &mut rusqlite::Connection) -> Result<usiz
     let deleted = tx
         .execute("DELETE FROM chat_messages", [])
         .map_err(|e| format!("Failed to delete all messages: {e}"))?;
-
-    // Clear legacy chat log file tracking
-    tx.execute("DELETE FROM chat_log_files", [])
-        .map_err(|e| format!("Failed to delete chat log files: {e}"))?;
 
     // Reset file positions for chat logs so they can be re-imported
     tx.execute(
@@ -1232,7 +1228,6 @@ mod tests {
         conn.execute_batch(
             "CREATE TABLE chat_messages (id INTEGER PRIMARY KEY);
              CREATE TABLE chat_item_links (id INTEGER PRIMARY KEY, message_id INTEGER);
-             CREATE TABLE chat_log_files (id INTEGER PRIMARY KEY);
              CREATE TABLE log_file_positions (file_path TEXT, file_type TEXT);",
         )
         .unwrap();

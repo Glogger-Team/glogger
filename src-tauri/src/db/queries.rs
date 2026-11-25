@@ -40,18 +40,6 @@ pub mod player_data {
             |row| row.get(0),
         )
     }
-    /// Log a generic event
-    pub fn log_event(
-        conn: &WriteConn,
-        event_type: &str,
-        event_data: &str, // JSON string
-    ) -> Result<i64> {
-        conn.query_row(
-            "INSERT INTO event_log (event_type, event_data) VALUES (?1, ?2) RETURNING id",
-            params![event_type, event_data],
-            |row| row.get(0),
-        )
-    }
 }
 
 /// Survey-related queries
