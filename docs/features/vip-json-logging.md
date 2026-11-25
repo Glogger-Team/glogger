@@ -25,7 +25,7 @@ Line shape: `YY-MM-DD HH:MM:SS\t[JSON:Type] {single-line JSON}` — no sender pr
 
 ## Twin rule (idempotency across the pair)
 
-English-twin identity key stays `(timestamp, character, server, item, qty, context, source='chat_status')`
+English-twin identity key stays `(timestamp, character, server, item, qty, context, source='chat_status')` narrowed by per-occurrence `file:offset` (`source_line_id`) line identity plus stamped-entity/`json_twin`/`claimed_by` traces
 — the English guard never sees entities. The JSON guard is entity-aware: exact-entity `EXISTS` first,
 then a single-row unstamped-ENGLISH-twin claim (`from_name`/`from_entity_id` enrichment, `MIN(rowid)`).
 JSON-originated rows carry `{"json_twin":true}` in `source_details` and are never claimed — an unsourced
