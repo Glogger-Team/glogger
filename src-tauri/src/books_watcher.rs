@@ -517,15 +517,20 @@ pub(crate) enum BookKind {
     /// the content promotion in `classify_book_file` routes harvest bodies
     /// here for book upsert + harvest snapshot import.
     HarvestAlmanac,
+    /// Gardening Almanac backfill: shares the `GardeningAlmanac_*` stem with
+    /// the harvest almanac (indistinguishable by name) — the content
+    /// promotion in `classify_book_file` routes garden bodies here for book
+    /// upsert + garden snapshot import.
+    GardenAlmanac,
     /// Book upsert only (GuildMotd, MessageOfDay, NewQuest, unknown,
-    /// ServerStatus, GardeningAlmanac — the watcher captures content but does
-    /// not duplicate the live garden extraction).
+    /// ServerStatus — the watcher captures content but has no structured
+    /// import for these).
     BookOnly,
 }
 
-/// Classify a Books-dir file by stem, with a content override for the
-/// Emotion-Harvesting Almanac. Returns the `book_type` used for the
-/// `game_state_books` upsert plus the ingest kind.
+/// Classify a Books-dir file by stem, with content overrides for the two
+/// almanacs sharing the `GardeningAlmanac_*` stem. Returns the `book_type`
+/// used for the `game_state_books` upsert plus the ingest kind.
 ///
 /// Filename shapes seen on disk: `SkillReport_261001_212859`,
 /// `PlayerShopLog_260826_194723`, `NewQuestquest_45455_Name_260623_174509`
@@ -533,12 +538,14 @@ pub(crate) enum BookKind {
 /// `NewQuestBook` — a file-local book_type; these streams don't appear in any
 /// live `matches!` list).
 ///
-/// Content override: the game saves the Emotion-Harvesting Almanac under
-/// the `GardeningAlmanac_*` file stem, indistinguishable by name from the
-/// gardening almanac, so a `BookOnly` stem carrying a harvest body
-/// (`Harvesting Focuses:`) promotes to `HarvestAlmanac`. The live JSON path
-/// keys on title instead (`Emotion-Harvesting Almanac` — coordinator arms,
-/// untouched here).
+/// Content overrides: the game saves both the Emotion-Harvesting Almanac and
+/// the Gardening Almanac under the `GardeningAlmanac_*` file stem,
+/// indistinguishable by name, so a `BookOnly` stem carrying a harvest body
+/// (`Harvesting Focuses:`) promotes to `HarvestAlmanac` and a `BookOnly`
+/// stem carrying a garden body (`Gardening Events:`) promotes to
+/// `GardenAlmanac` (harvest check first). The live JSON path keys on title
+/// instead (`Emotion-Harvesting Almanac`, `Gardening Almanac` — coordinator
+/// arms, untouched here).
 pub(crate) fn classify_book_file(stem: &str, content: &str) -> (String, BookKind) {
     let prefix = stem.split('_').next().unwrap_or_default();
     let (book_type, stem_kind) = match prefix {
@@ -551,6 +558,9 @@ pub(crate) fn classify_book_file(stem: &str, content: &str) -> (String, BookKind
     };
     if stem_kind == BookKind::BookOnly && content.contains("Harvesting Focuses:") {
         return (book_type, BookKind::HarvestAlmanac);
+    }
+    if stem_kind == BookKind::BookOnly && content.contains("Gardening Events:") {
+        return (book_type, BookKind::GardenAlmanac);
     }
     (book_type, stem_kind)
 }
@@ -698,6 +708,33 @@ pub(crate) fn process_book_file(
             if n > 0 {
                 app.emit("game-state-updated", vec!["harvest_almanac"]).ok();
                 Ok(format!("book upserted, harvest almanac +{n}"))
+            } else {
+                Ok("book upserted".to_string())
+            }
+        }
+        BookKind::GardenAlmanac => {
+            // Same book row the stem alone would have upserted (book_type
+            // stays stem-derived, so no duplicate rows), plus the garden
+            // snapshot import the live title arm runs.
+            let captured_at = book_stem_capture_at(&title);
+            persist_book_content(db, app, character, server, &book_type, &title, &content, captured_at)?;
+            // Space-format stamp for the parser's relative-time math;
+            // untimestamped stems degrade to the oldest instant so a real
+            // capture always supersedes them (same None-oldest rule as the
+            // bind writer).
+            let captured_str = captured_at
+                .map(|c| c.format("%Y-%m-%d %H:%M:%S").to_string())
+                .unwrap_or_else(|| "0001-01-01 00:00:00".to_string());
+            let conn = db
+                .get_write()
+                .map_err(|e| format!("Database connection error: {e}"))?;
+            let n = crate::db::game_state_commands::import_garden_almanac(
+                &conn, character, server, &content, &captured_str,
+            )
+            .map_err(|e| format!("garden almanac import failed: {e}"))?;
+            if n > 0 {
+                app.emit("game-state-updated", vec!["garden_almanac"]).ok();
+                Ok(format!("book upserted, garden almanac +{n}"))
             } else {
                 Ok("book upserted".to_string())
             }
@@ -943,13 +980,49 @@ mod tests {
         let (bt, kind) = classify_book_file("SkillReport_261001_212859", harvest);
         assert_eq!(bt, "SkillReport");
         assert_eq!(kind, BookKind::SkillReport);
-        // ... and a GardeningAlmanac file without a harvest body stays
-        // BookOnly (garden backfill is out of scope).
+        // ... and a GardeningAlmanac file carrying neither almanac body
+        // stays BookOnly.
         let binds = "Teleportation Status:\n\nPrimary Bind Location: Serbule\n";
         let (bt, kind) = classify_book_file("GardeningAlmanac_261124_211737", binds);
         assert_eq!(bt, "GardeningAlmanac");
         assert_eq!(kind, BookKind::BookOnly);
         let (_, kind) = classify_book_file("GardeningAlmanac_261124_211737", "");
+        assert_eq!(kind, BookKind::BookOnly);
+    }
+
+    #[test]
+    fn classify_promotes_garden_body_to_garden_almanac() {
+        // The Gardening Almanac shares the `GardeningAlmanac_*` stem with
+        // the Emotion-Harvesting Almanac: the stem alone says BookOnly, the
+        // garden body promotes it. Shape mirrors the live JSON body
+        // (test_data/vip_json/chat-book.log Gardening Almanac line).
+        let garden = "<h1>Current Gardening Events:</h1>\n<indent=20><h2>Barley Season in Gazluk</h2></indent>\n<indent=20>Barley grown in the Gazluk area will yield an extra barley at harvest.</indent>\n<indent=20><i>Ends in 6 hours 12 minutes</i></indent>";
+        let (bt, kind) = classify_book_file("GardeningAlmanac_261124_211737", garden);
+        assert_eq!(bt, "GardeningAlmanac");
+        assert_eq!(kind, BookKind::GardenAlmanac);
+        // Promotion is content-driven, not stem-driven: any BookOnly stem
+        // carrying a garden body routes to the garden arm ...
+        let (bt, kind) = classify_book_file("WhateverElse_261001_101010", garden);
+        assert_eq!(bt, "WhateverElse");
+        assert_eq!(kind, BookKind::GardenAlmanac);
+        // ... but never across arms: a SkillReport-shaped file keeps its
+        // ingest even with a garden marker in the body ...
+        let (bt, kind) = classify_book_file("SkillReport_261001_212859", garden);
+        assert_eq!(bt, "SkillReport");
+        assert_eq!(kind, BookKind::SkillReport);
+        // ... harvest bodies still route harvest ...
+        let harvest = "<h1>Current Harvesting Focuses:</h1>\n<indent=20><h2>Ghouls</h2></indent>";
+        let (_, kind) = classify_book_file("GardeningAlmanac_261124_211737", harvest);
+        assert_eq!(kind, BookKind::HarvestAlmanac);
+        // ... a body carrying both markers keeps the harvest arm (harvest
+        // check runs first, preserving #351 behavior) ...
+        let both = format!("{garden}\n{harvest}");
+        let (_, kind) = classify_book_file("GardeningAlmanac_261124_211737", &both);
+        assert_eq!(kind, BookKind::HarvestAlmanac);
+        // ... while a plain body stays BookOnly.
+        let binds = "Teleportation Status:\n\nPrimary Bind Location: Serbule\n";
+        let (bt, kind) = classify_book_file("GardeningAlmanac_261124_211737", binds);
+        assert_eq!(bt, "GardeningAlmanac");
         assert_eq!(kind, BookKind::BookOnly);
     }
 
