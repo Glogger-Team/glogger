@@ -622,6 +622,12 @@ impl LogFileWatcher for ChatLogWatcher {
                 pos += segment.len() as u64;
             }
         }
+        if line_starts.len() != lines.len() {
+            eprintln!(
+                "[chat-poll] line offset mirror drift in {:?} @{}: {} byte segments vs {} str lines; offsets fall back to batch start",
+                self.file_path, batch_start, line_starts.len(), lines.len()
+            );
+        }
         debug_assert_eq!(
             line_starts.len(),
             lines.len(),
@@ -645,6 +651,9 @@ impl LogFileWatcher for ChatLogWatcher {
         let mut tagged_iter = tagged.into_iter();
 
         let mut events = Vec::new();
+        // Predicate hits with a dry stream: today's mirrors agree, so this
+        // stays zero — counted only to make a future desync release-visible.
+        let mut tagged_dropped = 0usize;
 
         // One ordered pass: markers at their file position (watcher session
         // state mutates in file order too), each followed by that line's own
@@ -663,16 +672,32 @@ impl LogFileWatcher for ChatLogWatcher {
             if !collapsed {
                 events.extend(marker_events);
             }
-            if line_starts_tagged_message(line)
-                && let Some((msg, session)) = tagged_iter.next() {
-                // Misalignment degrades to the batch start (shared id =
-                // collapse, the safe direction), never a fresh id.
-                let offset = line_starts.get(idx).copied().unwrap_or(batch_start);
-                events.push(LogEvent::ChatMessage(msg, session, offset));
+            if line_starts_tagged_message(line) {
+                if let Some((msg, session)) = tagged_iter.next() {
+                    // Misalignment degrades to the batch start (shared id =
+                    // collapse, the safe direction), never a fresh id.
+                    let offset = line_starts.get(idx).copied().unwrap_or(batch_start);
+                    events.push(LogEvent::ChatMessage(msg, session, offset));
+                } else {
+                    // Same outcome as before (message dropped), now counted
+                    // for the release-visible drift log below.
+                    tagged_dropped += 1;
+                }
             }
         }
-        debug_assert!(
-            tagged_iter.next().is_none(),
+        let tagged_surplus = tagged_iter.count();
+        if tagged_dropped > 0 || tagged_surplus > 0 {
+            eprintln!(
+                "[chat-poll] tagged mirror drift in {:?} @{}: {} predicate hits dropped, {} surplus stream items over {} lines",
+                self.file_path, batch_start, tagged_dropped, tagged_surplus, lines.len()
+            );
+        }
+        debug_assert_eq!(
+            tagged_dropped, 0,
+            "predicate fired with no tagged message left"
+        );
+        debug_assert_eq!(
+            tagged_surplus, 0,
             "tagged message stream outlived its lines"
         );
 
