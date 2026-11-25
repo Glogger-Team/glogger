@@ -53,9 +53,14 @@
         </span>
       </template>
       <template #cell-bonus_items_total="{ row }">
-        <span class="text-text-secondary">{{ (row.bonus_items_total as number).toLocaleString() }}</span>
+        <span class="text-text-secondary">{{ bonusItems(row as unknown as ZoneSummary) }}</span>
       </template>
     </DataTable>
+
+    <!-- survey-bonus-dark: unstamped aggregates read zero; show unavailable, never a measured zero. -->
+    <p v-if="!hasBonus" class="text-text-dim text-xs italic px-1">
+      Speed bonus applies to back-to-back Basic uses only.
+    </p>
   </div>
 </template>
 
@@ -130,14 +135,23 @@ function selectZoneRow(payload: { row: Record<string, unknown>; index: number })
   emit('select-zone', (payload.row as unknown as ZoneSummary).area)
 }
 
+// survey-bonus-dark: mirrors the session-detail unavailable pattern —
+// aggregates without bonus stamps show unavailable, never a measured zero.
+const hasBonus = computed(() => props.zones.some(z => z.basic_uses_with_bonus > 0))
+
 function bonusRate(z: ZoneSummary): string {
-  if (z.basic_uses === 0) return '—'
+  if (z.basic_uses === 0 || z.basic_uses_with_bonus === 0) return '—'
   const pct = (z.basic_uses_with_bonus / z.basic_uses) * 100
   return `${pct.toFixed(1)}%`
 }
 
 function bonusRateClass(z: ZoneSummary): string {
-  if (z.basic_uses === 0) return 'text-text-dim'
+  if (z.basic_uses === 0 || z.basic_uses_with_bonus === 0) return 'text-text-dim'
   return 'text-accent-gold'
+}
+
+function bonusItems(z: ZoneSummary): string {
+  if (z.basic_uses_with_bonus === 0) return '—'
+  return z.bonus_items_total.toLocaleString()
 }
 </script>

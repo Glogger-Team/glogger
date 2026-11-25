@@ -14,8 +14,8 @@
       />
       <StatCard
         label="Bonus Items"
-        :value="analytics.bonus_items_total.toLocaleString()"
-        sub="total bonus drops"
+        :value="hasBonus ? analytics.bonus_items_total.toLocaleString() : '—'"
+        :sub="hasBonus ? 'total bonus drops' : 'bonus data unavailable'"
       />
       <StatCard
         label="Zones"
@@ -23,6 +23,11 @@
         :sub="`${analytics.survey_types.length} survey types`"
       />
     </div>
+
+    <!-- survey-bonus-dark: unstamped aggregates read zero; show unavailable, never a measured zero. -->
+    <p v-if="!hasBonus" class="text-text-dim text-xs italic px-1">
+      Speed bonus applies to back-to-back Basic uses only.
+    </p>
 
     <!-- Cross-zone comparison -->
     <section
@@ -131,23 +136,28 @@ const multihitCount = computed(() =>
   props.analytics.zones.reduce((sum, z) => sum + z.multihit_uses, 0).toLocaleString(),
 )
 
+// survey-bonus-dark: mirrors the session-detail unavailable pattern —
+// aggregates without bonus stamps show unavailable, never a measured zero.
+const hasBonus = computed(() => props.analytics.basic_uses_with_bonus > 0)
+
 const bonusRateDisplay = computed(() => {
   const a = props.analytics
-  if (a.total_basic_uses === 0) return '—'
+  if (a.total_basic_uses === 0 || a.basic_uses_with_bonus === 0) return '—'
   return `${((a.basic_uses_with_bonus / a.total_basic_uses) * 100).toFixed(1)}%`
 })
 const bonusRateSub = computed(() => {
   const a = props.analytics
   if (a.total_basic_uses === 0) return 'no basic surveys yet'
+  if (a.basic_uses_with_bonus === 0) return 'bonus data unavailable'
   return `${a.basic_uses_with_bonus} of ${a.total_basic_uses} basic`
 })
 
 function typeBonusRate(t: SurveyTypeSummary): string {
-  if (t.kind !== 'basic' || t.total_uses === 0) return '—'
+  if (t.kind !== 'basic' || t.total_uses === 0 || t.uses_with_bonus === 0) return '—'
   return `${((t.uses_with_bonus / t.total_uses) * 100).toFixed(1)}%`
 }
 function typeBonusRateClass(t: SurveyTypeSummary): string {
-  if (t.kind !== 'basic' || t.total_uses === 0) return 'text-text-dim'
+  if (t.kind !== 'basic' || t.total_uses === 0 || t.uses_with_bonus === 0) return 'text-text-dim'
   return 'text-accent-gold'
 }
 </script>

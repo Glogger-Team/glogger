@@ -20,6 +20,11 @@
       />
     </div>
 
+    <!-- survey-bonus-dark: unstamped aggregates read zero; show unavailable, never a measured zero. -->
+    <p v-if="type.kind === 'basic' && !hasBonus" class="text-text-dim text-xs italic px-1">
+      Speed bonus applies to back-to-back Basic uses only.
+    </p>
+
     <!-- Items table -->
     <ZoneRewardsCard
       :map-display-name="type.map_display_name"
@@ -63,12 +68,17 @@ const category = computed(() =>
   props.type.map_internal_name.startsWith('MiningSurvey') ? 'mining' : 'mineral',
 )
 
+// survey-bonus-dark: mirrors the session-detail unavailable pattern —
+// aggregates without bonus stamps show unavailable, never a measured zero.
+const hasBonus = computed(() => props.type.uses_with_bonus > 0)
+
 const bonusRate = computed(() => {
-  if (props.type.kind !== 'basic' || props.type.total_uses === 0) return '—'
+  if (props.type.kind !== 'basic' || props.type.total_uses === 0 || props.type.uses_with_bonus === 0) return '—'
   return `${((props.type.uses_with_bonus / props.type.total_uses) * 100).toFixed(1)}%`
 })
 const bonusRateSub = computed(() => {
   if (props.type.kind !== 'basic' || props.type.total_uses === 0) return 'basic-only stat'
+  if (props.type.uses_with_bonus === 0) return 'bonus data unavailable'
   return `${props.type.uses_with_bonus} of ${props.type.total_uses} basic`
 })
 
