@@ -145,26 +145,25 @@ same line id twice; a new test passes two line ids and expects two rows.
 
 ### JSON guard (new predicate + reorder)
 
-1. `exact_exists` narrows to same-line replay OR twin-claimed row:
-   content key + entity match + (`source_line_id` = this line's **or** row
-   already stamped with this entity by the twin claim). A genuine second
-   JSON receipt (different line, same entity) must **not** hit here.
-2. Twin claim runs **before** the exact check when unstamped English rows
-   exist: claim `MIN(rowid)` among unstamped English rows *excluding this
-   line's own prior claim*, stamp entity. This lets J2 (genuine, same
-   entity) claim the second English twin row E2 instead of collapsing onto
-   J1's stamped row — the current order (exact-check-first) is what strands
-   E2 unclaimed.
-3. `exists_after` unchanged in shape: hit (claimed or replayed) → return
-   `false` (AlreadyPresent, still `link_kill_loot`, still no staging —
-   E2/J2's event staged exactly once at its English insert); miss →
-   INSERT with `json_twin` provenance as today.
+1. `exact_exists` narrows to same-line replay OR own prior twin-claim: content key + entity match + (`source_line_id` = this line's id `M` **or** the row's recorded claimant is `M`). A genuine second JSON receipt (different line, same entity) must **not** hit here.
+2. Twin claim runs **before** the exact check when unstamped English rows exist: claim `MIN(rowid)` among unstamped English rows *excluding rows already claimed by another line*, stamp entity **and record `M` as the claimant** (e.g. `json_set(source_details, '$.claimed_by', M)` alongside the `json_twin` provenance — never overwriting `source_line_id`, which stays the English line's so its own rescan still same-line hits). This lets J2 (genuine, same entity) claim the second English twin row E2 instead of collapsing onto J1's stamped row — the current order (exact-check-first) is what strands E2 unclaimed.
+3. `exists_after` uses the **same narrowed predicate as step 1** (this is the correction: it is NOT the old content-key+entity shape from `:902-911`, which would re-collapse J2 onto J1's row). `?7` is this receipt's line id `M`:
 
-Genuine JSON-only duplicates (no English lines at all): different line ids
-→ each INSERTs its own row. Replays (same line id) → collapse. T44/T43
-invariants hold: sourced replay still never stamps an unsourced row
-(step-1 same-line check precedes any claim; unsourced JSON rows keep the
-`json_twin` marker and stay unclaimable).
+```sql
+SELECT EXISTS(SELECT 1 FROM item_transactions
+ WHERE timestamp=?1 AND character_name=?2 AND server_name=?3
+   AND item_name=?4 AND quantity=?5 AND context='loot' AND source='chat_status'
+   AND (from_entity_id=?6 OR (?6 IS NULL AND from_entity_id IS NULL))
+   AND (source_line_id=?7
+        OR json_extract(source_details,'$.claimed_by')=?7
+        OR source_line_id IS NULL))
+```
+
+The `source_line_id IS NULL` arm is the legacy back-compat: pre-identity rows keep match-any collapse so old replays stay safe, at the accepted cost that genuine duplicates among legacy rows still collapse. New rows always carry non-NULL ids. Hit (own insert replayed, or own claim replayed) → return `false` (AlreadyPresent, still `link_kill_loot`, still no staging — E2/J2's event staged exactly once at its English insert); miss → INSERT with `json_twin` provenance as today.
+
+Re-trace of test 2 (`json_genuine_duplicate_same_entity_keeps_two_rows`: J1 line M1, J2 line M2, same entity/item/qty/second, no English rows): J1 step 1 misses (empty) → step 2 finds no unstamped English row → `exists_after` misses (no row carries M1) → INSERTs row1 (`source_line_id`=M1, entity set). J2 (M2): step 1 misses — row1 matches key+entity but `source_line_id`=M1 ≠ M2 and claimant is NULL, and the legacy arm does not fire (row1's id is non-NULL) → step 2 finds no unstamped English row → `exists_after` misses for the same reason → **INSERTs row2**. Two rows, staged twice. J1/J2 replays: step 1 hits via `source_line_id` equality → collapse. Green on paper.
+
+Genuine JSON-only duplicates (no English lines at all): different line ids → each INSERTs its own row. Replays (same line id) → collapse. T44/T43 invariants hold: sourced replay still never stamps an unsourced row (step-1 same-line/own-claim check precedes any claim, and the claim still requires entity `Some` plus the `json_twin`-marker exclusion, so unsourced JSON rows stay unclaimable and their own replays hit only via `source_line_id` equality).
 
 ### Link layer — deliberately unchanged
 
