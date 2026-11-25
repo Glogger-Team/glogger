@@ -253,6 +253,17 @@ pub struct DispatchCtx<'a> {
     /// which drain older lines under a newer area — arms that stamp location
     /// must record NULL instead of the current value.
     pub is_live: bool,
+    /// Opaque source-line identity for the ledger replay guards, threaded
+    /// into [`ItemLedgerCtx`] and the JSON receipt guard. `None` (every
+    /// production call site today) keeps legacy match-any collapse: any
+    /// same-key row suppresses the insert. `Some(line)` separates a true
+    /// replay (the matching row carries this line's id) from a genuine
+    /// second receipt (different line id inserts) and from the cross-twin
+    /// (a stamped/JSON-marked row still suppresses). Callers must pass
+    /// STABLE ids — raw `chat_messages` rowids (rescan reuses stored rows
+    /// via `INSERT OR IGNORE`) or `(file, offset)` — never a per-pass
+    /// fresh id, which would duplicate the ledger on every rescan.
+    pub source_line_id: Option<i64>,
 }
 
 /// One ledger row pending the replay guard.
@@ -276,6 +287,11 @@ pub struct ItemLedgerCtx<'a> {
     /// Mirrors `DispatchCtx::is_scan`: scans skip provisional rows that
     /// are already past the link-up window instead of writing-then-sweeping.
     pub is_scan: bool,
+    /// This line's stable identity (`DispatchCtx::source_line_id`): `None`
+    /// keeps legacy match-any collapse; `Some(line)` collapses only on a
+    /// true replay (a row carrying this line) or a stamped/JSON-marked
+    /// twin row, and inserts a genuine second receipt as its own row.
+    pub source_line_id: Option<i64>,
 }
 
 /// Run every idempotent structured arm for one chat message.
@@ -536,6 +552,7 @@ fn dispatch_status_event(
                         // English-only gain still collapses here — inherent:
                         // the line has no entity to key on.
                         from_entity_id: None,
+                        source_line_id: ctx.source_line_id,
                         is_scan: ctx.is_scan,
                     },
                 ) {
@@ -772,21 +789,29 @@ fn insert_item_transaction_guarded(db: &DbPool, item: ItemLedgerCtx<'_>) -> bool
         None => (None, None),
     };
     // Replay guard: the natural key of a chat ledger row plus the looted-from
-    // entity when the caller knows it. `None` (every English line — the line
-    // carries no entity) matches any row, preserving replay collapse and
-    // JSON-first twin-second skip exactly as before: the twin tests prove a
-    // NULL-only key would duplicate there. `Some` matches only the
-    // exact-entity row, so a second entity's gain records instead of
-    // collapsing while its own resend still collapses. No UNIQUE index
-    // exists (adding one would reindex every install), so the check is an
-    // explicit SELECT — same-connection, no race on the single writer.
+    // entity when the caller knows it, plus this line's stable identity.
+    // `None` entity (every English line — the line carries no entity) matches
+    // any row's entity, and a `None` line id (every production caller today)
+    // matches any row's identity: legacy match-any collapse, preserving
+    // replay collapse and JSON-first twin-second skip exactly as before.
+    // `Some` line id collapses only across representations, never within:
+    // a true replay (a row carrying this line's id) or a stamped/JSON-marked
+    // twin row still skips, but a genuine second receipt — same key, an
+    // unstamped English row from a different line — inserts its own row.
+    // Pre-identity (`NULL`) rows keep match-any collapse so the first
+    // post-upgrade rescan cannot duplicate history. No UNIQUE index exists
+    // (adding one would reindex every install), so the check is an explicit
+    // SELECT — same-connection, no race on the single writer.
     let exists: bool = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM item_transactions
              WHERE timestamp = ?1 AND character_name = ?2 AND server_name = ?3
                AND item_name = ?4 AND quantity = ?5 AND context = ?6 AND source = 'chat_status'
-               AND (?7 IS NULL OR from_entity_id IS ?7))",
-            rusqlite::params![item.timestamp, item.character, item.server, item.item_name, item.quantity as i32, item.context, item.from_entity_id],
+               AND (?7 IS NULL OR from_entity_id IS ?7)
+               AND (?8 IS NULL OR source_line_id IS NULL OR source_line_id IS ?8
+                    OR from_entity_id IS NOT NULL
+                    OR json_extract(source_details, '$.json_twin') IS NOT NULL))",
+            rusqlite::params![item.timestamp, item.character, item.server, item.item_name, item.quantity as i32, item.context, item.from_entity_id, item.source_line_id],
             |r| r.get(0),
         )
         .unwrap_or(false);
@@ -797,12 +822,12 @@ fn insert_item_transaction_guarded(db: &DbPool, item: ItemLedgerCtx<'_>) -> bool
         "INSERT INTO item_transactions
             (timestamp, character_name, server_name, item_name,
              internal_name, item_type_id, quantity, context,
-             source, source_kind, source_details, from_entity_id)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'chat_status', ?9, ?10, ?11)",
+             source, source_kind, source_details, from_entity_id, source_line_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'chat_status', ?9, ?10, ?11, ?12)",
         rusqlite::params![
             item.timestamp, item.character, item.server, item.item_name, item.internal_name,
             item.item_type_id, item.quantity as i32, item.context, source_kind, source_details,
-            item.from_entity_id,
+            item.from_entity_id, item.source_line_id,
         ],
     )
     .is_ok()
@@ -834,6 +859,12 @@ fn insert_json_receipt_guarded(
     quantity: u32,
     from_name: Option<&str>,
     from_entity_id: Option<i64>,
+    // This receipt's stable line identity (`DispatchCtx::source_line_id`):
+    // `None` (every production caller today) keeps the legacy content-key
+    // collapse. `Some(line)` narrows both existence checks to a same-line
+    // replay or this line's own prior claim, so a genuine second receipt
+    // (different line) inserts instead of collapsing onto the first row.
+    source_line_id: Option<i64>,
     // Mirrors `DispatchCtx::is_scan`: scans skip bare provisional receipts
     // already past the link-up window; sourced rows (entity present) always
     // write so the twin claim and kill link converge on rescans.
@@ -847,21 +878,28 @@ fn insert_json_receipt_guarded(
     let Ok(conn) = db.get_write() else {
         return false;
     };
-    // 1. Check for an existing receipt matching the EXACT entity first. A
-    // sourced replay must not stamp an unsourced twin before this check
-    // (otherwise a sourced + unsourced pair at the same timestamp collapses
-    // into a third row on replay).
+    // 1. Narrowed replay check: the content key + exact entity, and this
+    // line's own trace — a row carrying this line's id (same-line replay)
+    // or a row this line already claimed — or a pre-identity (`NULL`) row,
+    // which keeps match-any collapse so the first post-upgrade rescan
+    // cannot duplicate history. A `None` line id (every production caller
+    // today) matches any row: the legacy exact shape, unchanged. A sourced
+    // replay hits its own row here and never stamps an unsourced twin
+    // (T44); a genuine second receipt (different line, same entity) misses
+    // and falls through to the claim instead of collapsing.
     let exact_exists: bool = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM item_transactions
              WHERE timestamp = ?1 AND character_name = ?2 AND server_name = ?3
                AND item_name = ?4 AND quantity = ?5 AND context = 'loot' AND source = 'chat_status'
-               AND (from_entity_id = ?6 OR (?6 IS NULL AND from_entity_id IS NULL)))",
-            rusqlite::params![timestamp, character, server, item_name, quantity as i32, from_entity_id],
+               AND (from_entity_id = ?6 OR (?6 IS NULL AND from_entity_id IS NULL))
+               AND (?7 IS NULL OR source_line_id IS ?7
+                    OR json_extract(source_details, '$.claimed_by') IS ?7
+                    OR source_line_id IS NULL))",
+            rusqlite::params![timestamp, character, server, item_name, quantity as i32, from_entity_id, source_line_id],
             |r| r.get(0),
         )
         .unwrap_or(false);
-
     // 2. Only when that misses, claim at most one genuinely unstamped
     // ENGLISH twin. Presence of FromEntityId locates the twin; the display
     // name stays optional. Single-row scoping via MIN(rowid). Provenance:
@@ -871,41 +909,82 @@ fn insert_json_receipt_guarded(
     // marker its own replay needs for the exact hit (unsourced-first order
     // would then insert a duplicate row on rescan). Pre-marker rows have
     // NULL details and stay claimable (they predate JSON ingestion).
+    // Rows already claimed by another line are excluded, so a genuine
+    // second receipt claims the second English twin row instead of
+    // collapsing onto the first receipt's stamped row. The claim records
+    // this line as the claimant (`claimed_by`, alongside the entity stamp
+    // — never overwriting `source_line_id`, which stays the English line's
+    // so its own rescan still same-line hits). A `None` line id keeps the
+    // legacy UPDATE verbatim (no details touch): byte-identical legacy path.
     // A failed UPDATE reports and stops: falling through to the insert on a
     // broken connection would record a duplicate of the English gain.
-    if !exact_exists && from_entity_id.is_some()
-        && let Err(e) = conn.execute(
-            "UPDATE item_transactions SET from_name = ?1, from_entity_id = ?2
-             WHERE rowid = (SELECT MIN(rowid) FROM item_transactions
-                 WHERE timestamp = ?3 AND character_name = ?4 AND server_name = ?5
-                   AND item_name = ?6 AND quantity = ?7 AND context = 'loot'
-                   AND source = 'chat_status'
-                   AND from_name IS NULL AND from_entity_id IS NULL
-                   AND (source_details IS NULL
-                        OR json_extract(source_details, '$.json_twin') IS NULL))",
-            rusqlite::params![
-                from_name,
-                from_entity_id,
-                timestamp,
-                character,
-                server,
-                item_name,
-                quantity as i32
-            ],
-        )
-    {
-        eprintln!("[dispatch] twin-claim update failed, receipt left for retry: {e}");
-        return false;
+    if !exact_exists && from_entity_id.is_some() {
+        let claimed = if let Some(line_id) = source_line_id {
+            conn.execute(
+                "UPDATE item_transactions SET from_name = ?1, from_entity_id = ?2,
+                    source_details = json_set(COALESCE(source_details, '{}'), '$.claimed_by', ?8)
+                 WHERE rowid = (SELECT MIN(rowid) FROM item_transactions
+                     WHERE timestamp = ?3 AND character_name = ?4 AND server_name = ?5
+                       AND item_name = ?6 AND quantity = ?7 AND context = 'loot'
+                       AND source = 'chat_status'
+                       AND from_name IS NULL AND from_entity_id IS NULL
+                       AND (source_details IS NULL
+                            OR json_extract(source_details, '$.json_twin') IS NULL)
+                       AND (json_extract(source_details, '$.claimed_by') IS NULL
+                            OR json_extract(source_details, '$.claimed_by') = ?8))",
+                rusqlite::params![
+                    from_name,
+                    from_entity_id,
+                    timestamp,
+                    character,
+                    server,
+                    item_name,
+                    quantity as i32,
+                    line_id
+                ],
+            )
+        } else {
+            conn.execute(
+                "UPDATE item_transactions SET from_name = ?1, from_entity_id = ?2
+                 WHERE rowid = (SELECT MIN(rowid) FROM item_transactions
+                     WHERE timestamp = ?3 AND character_name = ?4 AND server_name = ?5
+                       AND item_name = ?6 AND quantity = ?7 AND context = 'loot'
+                       AND source = 'chat_status'
+                       AND from_name IS NULL AND from_entity_id IS NULL
+                       AND (source_details IS NULL
+                            OR json_extract(source_details, '$.json_twin') IS NULL))",
+                rusqlite::params![
+                    from_name,
+                    from_entity_id,
+                    timestamp,
+                    character,
+                    server,
+                    item_name,
+                    quantity as i32
+                ],
+            )
+        };
+        if let Err(e) = claimed {
+            eprintln!("[dispatch] twin-claim update failed, receipt left for retry: {e}");
+            return false;
+        }
     }
 
-    // Re-check after a possible twin claim.
+    // Re-check after a possible twin claim, with the same narrowed shape
+    // as step 1 (this is the correction: the old content-key-only shape
+    // re-collapsed a genuine second receipt onto the first receipt's row).
+    // Hit (own insert replayed, or own claim replayed) → no insert; the
+    // caller stages nothing because the English twin already staged the gain.
     let exists_after: bool = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM item_transactions
              WHERE timestamp = ?1 AND character_name = ?2 AND server_name = ?3
                AND item_name = ?4 AND quantity = ?5 AND context = 'loot' AND source = 'chat_status'
-               AND (from_entity_id = ?6 OR (?6 IS NULL AND from_entity_id IS NULL)))",
-            rusqlite::params![timestamp, character, server, item_name, quantity as i32, from_entity_id],
+               AND (from_entity_id = ?6 OR (?6 IS NULL AND from_entity_id IS NULL))
+               AND (?7 IS NULL OR source_line_id IS ?7
+                    OR json_extract(source_details, '$.claimed_by') IS ?7
+                    OR source_line_id IS NULL))",
+            rusqlite::params![timestamp, character, server, item_name, quantity as i32, from_entity_id, source_line_id],
             |r| r.get(0),
         )
         .unwrap_or(false);
@@ -917,8 +996,8 @@ fn insert_json_receipt_guarded(
             "INSERT INTO item_transactions
                 (timestamp, character_name, server_name, item_name,
                  internal_name, item_type_id, quantity, context,
-                 source, from_name, from_entity_id, source_details)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'loot', 'chat_status', ?8, ?9, ?10)",
+                 source, from_name, from_entity_id, source_details, source_line_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'loot', 'chat_status', ?8, ?9, ?10, ?11)",
             rusqlite::params![
                 timestamp,
                 character,
@@ -935,6 +1014,7 @@ fn insert_json_receipt_guarded(
                 // ignore unknown keys; the survey tagger merges via json_set
                 // (coordinator live-attribution block), preserving the marker.
                 "{\"json_twin\":true}",
+                source_line_id,
             ],
         )
         .is_ok()
@@ -1068,6 +1148,7 @@ fn dispatch_json_event(
                     *quantity,
                     from_name.as_deref(),
                     (*from_entity_id).map(|n| n as i64),
+                    ctx.source_line_id,
                     ctx.is_scan,
                 ) {
                     out.staged_gains.push((item_name.clone(), *quantity));
@@ -1850,6 +1931,19 @@ mod tests {
         local_ts: &str,
         st: &mut DispatchState<'_>,
     ) -> DispatchOutcome {
+        dispatch_with_line(pool, gd, identity, msg, local_ts, st, None)
+    }
+    /// Dispatch with an explicit source-line id: `None` exercises the legacy
+    /// match-any path (all pre-existing tests), `Some` the line-keyed guards.
+    fn dispatch_with_line(
+        pool: &DbPool,
+        gd: &GameDataState,
+        identity: Option<&DispatchIdentity>,
+        msg: &ChatMessage,
+        local_ts: &str,
+        st: &mut DispatchState<'_>,
+        source_line_id: Option<i64>,
+    ) -> DispatchOutcome {
         dispatch_chat_message(
             DispatchCtx {
                 db: pool,
@@ -1858,6 +1952,7 @@ mod tests {
                 msg,
                 local_ts,
                 watch_rules: &[],
+                source_line_id,
                 // Live path: old pinned timestamps must still write.
                 is_scan: false,
                 is_live: true,
@@ -1882,6 +1977,7 @@ mod tests {
                 msg,
                 local_ts,
                 watch_rules: &[],
+                source_line_id: None,
                 is_scan: true,
                 is_live: false,
             },
@@ -2568,6 +2664,7 @@ mod tests {
             1,
             Some("Olugax The Ever-Pudding"),
             Some(257400),
+            None,
             false,
         );
         let conn = pool.get().unwrap();
@@ -2748,7 +2845,7 @@ mod tests {
         assert_eq!(entities, vec![Some(257400), Some(257401)]);
     }
 
-    fn english_ctx(entity: Option<i64>) -> ItemLedgerCtx<'static> {
+    fn english_ctx(entity: Option<i64>, source_line_id: Option<i64>) -> ItemLedgerCtx<'static> {
         ItemLedgerCtx {
             timestamp: "26-11-17 08:50:27",
             character: "Alice",
@@ -2760,18 +2857,19 @@ mod tests {
             context: "loot",
             survey_use_id: None,
             from_entity_id: entity,
+            source_line_id,
             is_scan: false,
         }
     }
 
     #[test]
     fn english_guard_collapses_identical_second_gain() {
-        // `None` (every production English line) matches any row: an
-        // identical resend collapses, exactly as before the entity key.
+        // Same line id twice is a true replay: an identical resend
+        // collapses, exactly as before the line-identity key.
         let (_guard, pool) = test_pool();
-        assert!(insert_item_transaction_guarded(&pool, english_ctx(None)));
+        assert!(insert_item_transaction_guarded(&pool, english_ctx(None, Some(11))));
         assert!(
-            !insert_item_transaction_guarded(&pool, english_ctx(None)),
+            !insert_item_transaction_guarded(&pool, english_ctx(None, Some(11))),
             "identical English resend collapses"
         );
         assert_eq!(item_rows(&pool).len(), 1);
@@ -2780,17 +2878,18 @@ mod tests {
     #[test]
     fn english_guard_records_second_entity_when_known() {
         // Entity-aware key: two same-second same-item+qty gains from
-        // different entities both record; a byte-identical resend of one
-        // still collapses. Production English passes `None` (no entity on
-        // the line), so this exercises the key for entity-knowing callers.
+        // different entities (different lines) both record; a same-line
+        // resend of one still collapses. Production English passes `None`
+        // (no entity on the line), so this exercises the key for
+        // entity-knowing callers.
         let (_guard, pool) = test_pool();
-        assert!(insert_item_transaction_guarded(&pool, english_ctx(Some(1001))));
+        assert!(insert_item_transaction_guarded(&pool, english_ctx(Some(1001), Some(11))));
         assert!(
-            insert_item_transaction_guarded(&pool, english_ctx(Some(1002))),
+            insert_item_transaction_guarded(&pool, english_ctx(Some(1002), Some(12))),
             "second entity's gain is a distinct gain"
         );
         assert!(
-            !insert_item_transaction_guarded(&pool, english_ctx(Some(1001))),
+            !insert_item_transaction_guarded(&pool, english_ctx(Some(1001), Some(11))),
             "exact-entity resend collapses"
         );
         let rows = item_rows(&pool);
@@ -2803,11 +2902,11 @@ mod tests {
     #[test]
     fn english_guard_null_skips_stamped_twin() {
         // JSON-first fence at guard level: once the twin claim stamps the
-        // row's entity, a `None`-entity English insert (the English twin, or
-        // a resend) still skips instead of duplicating. A NULL-only key
-        // would insert a second row here and break twin convergence.
+        // row's entity, a `None`-entity English insert from the twin's own
+        // line still skips instead of duplicating. A NULL-only key would
+        // insert a second row here and break twin convergence.
         let (_guard, pool) = test_pool();
-        assert!(insert_item_transaction_guarded(&pool, english_ctx(None)));
+        assert!(insert_item_transaction_guarded(&pool, english_ctx(None, Some(11))));
         pool.get_write()
             .unwrap()
             .execute(
@@ -2816,10 +2915,121 @@ mod tests {
             )
             .unwrap();
         assert!(
-            !insert_item_transaction_guarded(&pool, english_ctx(None)),
+            !insert_item_transaction_guarded(&pool, english_ctx(None, Some(12))),
             "None matches the stamped twin: skip, no duplicate"
         );
         assert_eq!(item_rows(&pool).len(), 1);
+    }
+
+    #[test]
+    fn english_genuine_duplicate_keeps_two_rows() {
+        // Same key, two English lines, different line ids: the genuine
+        // second stack inserts its own row instead of collapsing.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:50:27";
+        let english = status_msg("Toxic Sludge added to inventory.", ts);
+        let mut st = state(&mut arena, &mut dmg);
+        let out1 = dispatch_with_line(&pool, &gd, Some(&id()), &english, ts, &mut st, Some(11));
+        let mut st = state(&mut arena, &mut dmg);
+        let out2 = dispatch_with_line(&pool, &gd, Some(&id()), &english, ts, &mut st, Some(12));
+        assert_eq!(out1.staged_gains.len(), 1);
+        assert_eq!(out2.staged_gains.len(), 1, "genuine second stack stages its own gain");
+        assert_eq!(item_rows(&pool).len(), 2);
+    }
+
+    #[test]
+    fn json_genuine_duplicate_same_entity_keeps_two_rows() {
+        // Same key+entity, two JSON receipts, different line ids, no
+        // English rows: each inserts its own row instead of collapsing.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:50:27";
+        let json = json_msg("AddItem", LOOT_BODY, ts);
+        let mut st = state(&mut arena, &mut dmg);
+        let out1 = dispatch_with_line(&pool, &gd, Some(&id()), &json, ts, &mut st, Some(21));
+        let mut st = state(&mut arena, &mut dmg);
+        let out2 = dispatch_with_line(&pool, &gd, Some(&id()), &json, ts, &mut st, Some(22));
+        assert_eq!(out1.staged_gains.len(), 1);
+        assert_eq!(out2.staged_gains.len(), 1, "genuine second receipt stages its own gain");
+        let rows = item_rows(&pool);
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.3 == Some(257400)));
+    }
+
+    #[test]
+    fn twin_pair_times_two_events_both_orders() {
+        // Two genuine twin pairs (English + JSON each), same key+entity,
+        // four line ids: exactly 2 rows, both stamped with the entity, and
+        // exactly 2 staged gains — in both arrival orders.
+        for json_first in [false, true] {
+            let (_guard, pool) = test_pool();
+            let gd = game_data();
+            let mut arena = ArenaTracker::new();
+            let mut dmg = Vec::new();
+            let ts = "26-11-17 08:50:27";
+            let english = status_msg("Toxic Sludge added to inventory.", ts);
+            let json = json_msg("AddItem", LOOT_BODY, ts);
+            // Line ids stay with their lines across both orders.
+            let seq: [(bool, i64); 4] = if json_first {
+                [(true, 21), (true, 22), (false, 11), (false, 12)]
+            } else {
+                [(false, 11), (false, 12), (true, 21), (true, 22)]
+            };
+            let mut staged = 0;
+            for (is_json, line) in seq {
+                let m = if is_json { &json } else { &english };
+                let mut st = state(&mut arena, &mut dmg);
+                staged += dispatch_with_line(&pool, &gd, Some(&id()), m, ts, &mut st, Some(line))
+                    .staged_gains
+                    .len();
+            }
+            assert_eq!(staged, 2, "each event stages exactly once (json_first={json_first})");
+            let rows = item_rows(&pool);
+            assert_eq!(rows.len(), 2, "two events keep two rows (json_first={json_first})");
+            assert!(
+                rows.iter().all(|r| r.3 == Some(257400)),
+                "both rows stamped (json_first={json_first})"
+            );
+        }
+    }
+
+    #[test]
+    fn full_redispatch_is_stable() {
+        // Re-dispatch all four lines with their original ids: still 2 rows,
+        // 0 newly staged. Guards the INSERT-happy rules against rescan
+        // duplication — every replay must hit its own trace.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:50:27";
+        let english = status_msg("Toxic Sludge added to inventory.", ts);
+        let json = json_msg("AddItem", LOOT_BODY, ts);
+        let seq: [(&ChatMessage, i64); 4] =
+            [(&english, 11), (&english, 12), (&json, 21), (&json, 22)];
+        let mut staged_first = 0;
+        for (m, line) in seq {
+            let mut st = state(&mut arena, &mut dmg);
+            staged_first += dispatch_with_line(&pool, &gd, Some(&id()), m, ts, &mut st, Some(line))
+                .staged_gains
+                .len();
+        }
+        assert_eq!(staged_first, 2);
+        assert_eq!(item_rows(&pool).len(), 2);
+        let mut staged_second = 0;
+        for (m, line) in seq {
+            let mut st = state(&mut arena, &mut dmg);
+            staged_second += dispatch_with_line(&pool, &gd, Some(&id()), m, ts, &mut st, Some(line))
+                .staged_gains
+                .len();
+        }
+        assert_eq!(staged_second, 0, "replays must not restage");
+        assert_eq!(item_rows(&pool).len(), 2, "replays must not duplicate");
     }
 
     #[test]
@@ -2912,18 +3122,21 @@ mod tests {
         let first = insert_json_receipt_guarded(
             &pool, ts, "Alice", "Dreva", "Coin Sack", None, None, 1,
             Some("Slime A"), Some(1001),
+            None,
             false,
         );
         assert!(first);
         let second = insert_json_receipt_guarded(
             &pool, ts, "Alice", "Dreva", "Coin Sack", None, None, 1,
             Some("Slime B"), Some(1002),
+            None,
             false,
         );
         assert!(second, "second entity's receipt is a distinct gain");
         let resend = insert_json_receipt_guarded(
             &pool, ts, "Alice", "Dreva", "Coin Sack", None, None, 1,
             Some("Slime A"), Some(1001),
+            None,
             false,
         );
         assert!(!resend, "byte-identical resend collapses");

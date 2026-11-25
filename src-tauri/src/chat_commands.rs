@@ -554,6 +554,9 @@ fn run_scan_dispatch(
                 msg: utc_msg,
                 local_ts: &local_ts,
                 watch_rules,
+                // FORCED (out-of-slice): new `DispatchCtx` field. `None`
+                // preserves legacy match-any collapse on rescans.
+                source_line_id: None,
                 is_scan: true,
                 is_live: false,
             },

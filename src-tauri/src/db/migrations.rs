@@ -509,6 +509,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         migration_v95_drop_dead_schema(conn)?;
         super::record_migration(conn, 95)?;
     }
+
+    if current_version < 96 {
+        migration_v96_item_ledger_source_line(conn)?;
+        super::record_migration(conn, 96)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1673,6 +1678,38 @@ fn migration_v95_drop_dead_schema(conn: &Connection) -> Result<()> {
          DROP TABLE IF EXISTS survey_data_imports;
          DROP INDEX IF EXISTS idx_chat_log_files_date;
          DROP TABLE IF EXISTS chat_log_files;",
+    )?;
+    Ok(())
+}
+
+/// Migration V96: nullable `source_line_id` on the chat-loot ledger.
+///
+/// Same-second same-corpse receipts collapse at the ledger guards
+/// (`insert_item_transaction_guarded`, `insert_json_receipt_guarded`):
+/// log timestamps are second-granularity, so two genuine same-second
+/// receipts are byte-identical on every compared column. The guards now
+/// key replays on source-line identity instead of content alone, and this
+/// column carries it (raw `chat_messages` rowid once wired — rescan reuses
+/// stored rows via `INSERT OR IGNORE`, so rowids are stable; `NULL` until
+/// then). Nullable with no backfill: pre-identity rows stay `NULL` and keep
+/// legacy match-any collapse, so the first post-upgrade rescan cannot
+/// duplicate years of history at the cost that legacy genuine duplicates
+/// still collapse (accepted, documented at the guards).
+fn migration_v96_item_ledger_source_line(conn: &Connection) -> Result<()> {
+    // Minimal-fixture guard (same as v91-v94): skip when the ledger is absent.
+    let has_ledger: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'item_transactions')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_ledger {
+        return Ok(());
+    }
+    conn.execute(
+        "ALTER TABLE item_transactions ADD COLUMN source_line_id INTEGER",
+        [],
     )?;
     Ok(())
 }
@@ -4931,13 +4968,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            95,
+            96,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 95);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 96);
     }
 
     #[test]
@@ -5060,13 +5097,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 95) plus the purge itself on the three aggregate source tables.
+        // 96) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 95, "migration chain head");
+        assert_eq!(head, 96, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -5112,8 +5149,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 95 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop). Repair: a
+        // Chain wiring: full run_migrations head must be 96 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -5121,7 +5158,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 95, "migration chain head");
+        assert_eq!(head, 96, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -5961,6 +5998,56 @@ mod tests {
         .unwrap();
         migration_v95_drop_dead_schema(&c).unwrap();
         assert!(!gone("table", "survey_session_stats"), "v27-owned table must be left alone");
+    }
+
+    #[test]
+    fn v96_adds_nullable_source_line_id_with_legacy_nulls() {
+        // Minimal ledger shape: the guard's new column must land nullable
+        // with no backfill, so pre-identity rows stay NULL (legacy
+        // match-any collapse) and fresh writes can carry a line id.
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE item_transactions (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 timestamp TEXT NOT NULL,
+                 item_name TEXT NOT NULL,
+                 quantity INTEGER NOT NULL
+             );
+             INSERT INTO item_transactions (timestamp, item_name, quantity)
+             VALUES ('2026-11-17 12:01:00', 'Salad', 2);",
+        )
+        .unwrap();
+        migration_v96_item_ledger_source_line(&c).unwrap();
+        let nullable: bool = c
+            .query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM pragma_table_info('item_transactions')
+                   WHERE name = 'source_line_id' AND \"notnull\" = 1)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(nullable, "source_line_id must land nullable");
+        let legacy: Option<i64> = c
+            .query_row("SELECT source_line_id FROM item_transactions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(legacy, None, "pre-identity rows stay NULL (legacy collapse)");
+        c.execute(
+            "INSERT INTO item_transactions (timestamp, item_name, quantity, source_line_id)
+             VALUES ('2026-11-17 12:01:00', 'Salad', 2, 42)",
+            [],
+        )
+        .unwrap();
+        let carried: i64 = c
+            .query_row(
+                "SELECT source_line_id FROM item_transactions WHERE id = 2",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(carried, 42, "fresh writes carry the line id");
+        // Absent ledger (minimal fixtures) stays a no-op.
+        let bare = Connection::open_in_memory().unwrap();
+        migration_v96_item_ledger_source_line(&bare).unwrap();
     }
 
 }

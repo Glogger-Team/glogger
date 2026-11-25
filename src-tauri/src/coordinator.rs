@@ -1079,6 +1079,14 @@ impl DataIngestCoordinator {
                                 msg: &msg,
                                 local_ts: &local_ts,
                                 watch_rules: &self.settings.get().watch_rules,
+                                // No stable line identity yet: the watcher
+                                // does not carry (file, offset), and the raw
+                                // row is stored after the dispatch. `None`
+                                // keeps legacy match-any collapse — never a
+                                // fresh id (which would duplicate the ledger
+                                // on every rescan). Wiring the watcher
+                                // offset is a follow-up.
+                                source_line_id: None,
                                 is_scan: false,
                                 is_live,
                             },

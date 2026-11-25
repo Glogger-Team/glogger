@@ -2304,25 +2304,48 @@ mod tests {
         assert_eq!(count, 0, "failed heal must roll back, not half-persist");
     }
 
-    /// D5-56 preservation lock: same-second same-item twins still collapse to
-    /// one loot row. The ledger keys receipts at second granularity, so two
-    /// same-second receipts from one corpse store a single
-    /// `item_transactions` row — one stored receipt, one loot row. This pins
-    /// the accepted limit, not the defect: distinct-timestamp receipts must
-    /// still link one row each (see above).
+    /// New contract (replaces `same_second_twins_stay_collapsed`, retired —
+    /// its pin now lives in git history): the ledger holds one row per
+    /// genuine same-second receipt (distinct `source_line_id`s), and the
+    /// link layer emits one loot row per (item, qty, receipt_ts) key.
+    /// Distinct-qty stacks off one corpse link separately; identical
+    /// same-second same-qty stacks still share one loot row (accepted
+    /// residual — the read-time join counts ledger rows directly, where
+    /// both stacks survive).
     #[test]
-    fn same_second_twins_stay_collapsed() {
+    fn same_second_twins_keep_two_ledger_rows_and_link_by_qty() {
+        let ledger_row = |conn: &Connection, qty: i64, line: i64| {
+            conn.execute(
+                "INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, quantity, context, source, from_entity_id, source_line_id)
+                 VALUES ('2026-11-17 12:01:00', 'T', 'Dreva', 'Salad', ?1, 'inventory', 'chat_status', 42, ?2)",
+                rusqlite::params![qty, line],
+            )
+            .unwrap();
+        };
+        // Distinct-qty stacks: two genuine receipts, two loot rows.
         let conn = setup();
         record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
-        // The ledger holds one row for the twin pair (second-granularity key).
-        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad");
+        ledger_row(&conn, 2, 11);
+        ledger_row(&conn, 3, 12);
         assert!(link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 2).unwrap());
-        // Replaying the same receipt (rescan, or the twin's second line)
-        // links nothing new from either side.
+        assert!(link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 3).unwrap());
+        // Replaying either receipt links nothing new from either side.
         assert!(!link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 2).unwrap());
+        assert!(!link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 3).unwrap());
         assert_eq!(link_kill_loot_for_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap(), 0);
         let count: i64 = conn.query_row("SELECT COUNT(*) FROM enemy_kill_loot", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(count, 2, "distinct-qty stacks link separately");
+        let ledger: i64 = conn.query_row("SELECT COUNT(*) FROM item_transactions", [], |r| r.get(0)).unwrap();
+        assert_eq!(ledger, 2, "two genuine receipts keep two ledger rows");
+        // Identical-qty residual: two ledger rows, one loot row.
+        let conn = setup();
+        record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
+        ledger_row(&conn, 2, 11);
+        ledger_row(&conn, 2, 12);
+        assert!(link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 2).unwrap());
+        assert!(!link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 2).unwrap());
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM enemy_kill_loot", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1, "identical same-qty stacks share one loot row (residual)");
     }
 
     fn insert_test_receipt(conn: &Connection, character: &str, server: &str, entity: &str, ts: &str, item: &str) {
