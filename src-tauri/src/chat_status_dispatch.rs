@@ -1368,14 +1368,14 @@ fn dispatch_json_event(
                     // missed real gift is worse than a spurious gift row.
                     .unwrap_or_else(|| (npc.clone(), true));
                 if let Ok(conn) = ctx.db.get_write() {
-                    // Event log: one row per observed line. `INSERT OR IGNORE`
-                    // makes rescans and scan replays no-ops; session sums and
-                    // gift detection derive from this table by query, so there
-                    // is no running total to keep consistent.
-                    // Known limit: the key is (npc, second, delta), so two
-                    // genuinely distinct same-second same-delta gifts collapse
-                    // into one — accepted (second-granularity logs give no
-                    // finer key; rapid same-item gifting is rare).
+                    // Event log: one row per observed line. Rescans and scan
+                    // replays collapse onto the row carrying their own line
+                    // id; session sums and gift detection derive from this
+                    // table by query, so there is no running total to keep
+                    // consistent. Two genuinely distinct same-second
+                    // same-delta gifts carry different `file:offset` ids and
+                    // insert as separate rows (post-#352 line identity); the
+                    // old (npc, second, delta) key could not separate them.
                     // Single write transaction for event + touch-up + gift:
                     // a gift-log failure rolls back the event, so a later
                     // replay retries the whole unit instead of leaving a
@@ -1393,12 +1393,36 @@ fn dispatch_json_event(
                             return;
                         }
                     };
+                    // Upgrade-boundary replay guard (ledger-guard shape): a
+                    // stamped line matching a pre-identity (`NULL`) row is a
+                    // rescan replay, not a genuine second gift — the COALESCE
+                    // index would see key+id vs key+'' as distinct and
+                    // duplicate it. `None` (failed raw store) keeps legacy
+                    // match-any collapse; `Some` collapses only onto its own
+                    // line's row or a pre-identity row, never onto another
+                    // line's stamped row. Same-transaction SELECT on the
+                    // pool's exclusive write checkout: no race, and the
+                    // event + touch-up + gift unit stays atomic.
+                    let source_line_id = ctx.source_line_id.as_deref();
+                    let seen: bool = tx
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM favor_events
+                             WHERE character_name = ?1 AND server_name = ?2 AND npc_key = ?3
+                               AND timestamp = ?4 AND delta = ?5
+                               AND (?6 IS NULL OR source_line_id IS NULL OR source_line_id IS ?6))",
+                            rusqlite::params![id.character, id.server, npc, timestamp, *delta, source_line_id],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or(false);
+                    if seen {
+                        return;
+                    }
                     let fresh = tx
                         .execute(
                             "INSERT OR IGNORE INTO favor_events
-                                (character_name, server_name, npc_key, timestamp, delta)
-                             VALUES (?1, ?2, ?3, ?4, ?5)",
-                            rusqlite::params![id.character, id.server, npc, timestamp, *delta],
+                                (character_name, server_name, npc_key, timestamp, delta, source_line_id)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                            rusqlite::params![id.character, id.server, npc, timestamp, *delta, source_line_id],
                         )
                         .map(|n| n > 0)
                         .unwrap_or(false);
@@ -3566,6 +3590,113 @@ mod tests {
             )
             .unwrap();
         assert!((delta - 18.06948).abs() < 1e-9);
+        let gifts: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM game_state_gift_log
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(gifts, 1);
+    }
+
+    #[test]
+    fn favor_same_second_same_delta_distinct_lines_insert_two_rows() {
+        // Post-#352 line identity: two genuinely distinct same-second
+        // same-delta gifts (different file offsets) are two rows, not one.
+        // The old (npc, second, delta) key collapsed them; the line id
+        // separates per-occurrence twins.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        seed_npc(&gd, "NPC_Elune", "Elune", Some("AreaSerbule"), true);
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:32:34";
+        let json = json_msg("DeltaFavor", "{\"Npc\":\"NPC_Elune\", \"Delta\": 18.06948}", ts);
+        let mut st = state(&mut arena, &mut dmg);
+        let out1 = dispatch_with_line(&pool, &gd, Some(&id()), &json, ts, &mut st, Some("Chat.log:100"));
+        let mut st = state(&mut arena, &mut dmg);
+        let out2 = dispatch_with_line(&pool, &gd, Some(&id()), &json, ts, &mut st, Some("Chat.log:200"));
+        assert!(out1.domains.iter().any(|d| d == "favor"));
+        assert!(out2.domains.iter().any(|d| d == "favor"));
+        let conn = pool.get().unwrap();
+        let events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM favor_events
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(events, 2);
+        let gifts: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM game_state_gift_log
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(gifts, 2);
+    }
+
+    #[test]
+    fn favor_same_line_replay_collapses_to_one_row() {
+        // Same line id twice (rescan replay) stays one row: the second
+        // application is a no-op, exactly like the legacy content key.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        seed_npc(&gd, "NPC_Elune", "Elune", Some("AreaSerbule"), true);
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:32:34";
+        let json = json_msg("DeltaFavor", "{\"Npc\":\"NPC_Elune\", \"Delta\": 18.06948}", ts);
+        let mut st = state(&mut arena, &mut dmg);
+        let out1 = dispatch_with_line(&pool, &gd, Some(&id()), &json, ts, &mut st, Some("Chat.log:100"));
+        let mut st = state(&mut arena, &mut dmg);
+        let out2 = dispatch_with_line(&pool, &gd, Some(&id()), &json, ts, &mut st, Some("Chat.log:100"));
+        assert!(out1.domains.iter().any(|d| d == "favor"));
+        assert!(out2.domains.iter().all(|d| d != "favor"));
+        let conn = pool.get().unwrap();
+        let events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM favor_events
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(events, 1);
+    }
+
+    #[test]
+    fn favor_stamped_line_matching_legacy_null_row_collapses() {
+        // Upgrade boundary: a pre-identity (`NULL`) row keeps match-any
+        // collapse, so the first post-upgrade rescan (which stamps every
+        // line) cannot duplicate history. Mirrors the ledger guards.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        seed_npc(&gd, "NPC_Elune", "Elune", Some("AreaSerbule"), true);
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:32:34";
+        let json = json_msg("DeltaFavor", "{\"Npc\":\"NPC_Elune\", \"Delta\": 18.06948}", ts);
+        let mut st = state(&mut arena, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        let mut st = state(&mut arena, &mut dmg);
+        let out = dispatch_with_line(&pool, &gd, Some(&id()), &json, ts, &mut st, Some("Chat.log:100"));
+        assert!(out.domains.iter().all(|d| d != "favor"));
+        let conn = pool.get().unwrap();
+        let events: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM favor_events
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND npc_key = 'NPC_Elune'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(events, 1);
         let gifts: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM game_state_gift_log

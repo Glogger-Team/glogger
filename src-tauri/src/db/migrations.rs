@@ -514,6 +514,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         migration_v96_item_ledger_source_line(conn)?;
         super::record_migration(conn, 96)?;
     }
+
+    if current_version < 97 {
+        migration_v97_favor_source_line(conn)?;
+        super::record_migration(conn, 97)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1715,6 +1720,65 @@ fn migration_v96_item_ledger_source_line(conn: &Connection) -> Result<()> {
     conn.execute(
         "ALTER TABLE item_transactions ADD COLUMN source_line_id TEXT",
         [],
+    )?;
+    Ok(())
+}
+
+/// Migration V97: nullable `source_line_id` on the favor event log.
+///
+/// Same collapse class as V96: log timestamps are second-granularity, so two
+/// genuinely distinct same-second same-delta gifts are byte-identical on the
+/// old `(character, server, npc, timestamp, delta)` key and the second
+/// collapsed. The favor arm now keys replays on per-occurrence source-line
+/// identity (`"file:offset"`, same stable id the ledger guards use), and this
+/// column carries it. TEXT for the same reason as V96: bare offsets would
+/// collide across rotated files, and a hash would be opaque in the DB.
+/// Nullable with no backfill: pre-identity rows stay `NULL` and keep
+/// match-any collapse (the writer guard skips a stamped line onto a `NULL`
+/// row), so the first post-upgrade rescan cannot duplicate history — at the
+/// accepted cost that a legacy genuine duplicate still collapses, documented
+/// at the favor arm. No backfill is possible either way: the line identity
+/// of already-stored rows is unrecoverable.
+///
+/// The old key is a PRIMARY KEY, which SQLite cannot drop by ALTER, and a
+/// plain UNIQUE index would treat `NULL`s as distinct (V93 lesson: rescans
+/// would re-insert legacy rows forever). So the table is rebuilt without a
+/// PK and the key becomes a `COALESCE(source_line_id, '')` expression index:
+/// legacy `NULL` rows collapse among themselves exactly like the old PK,
+/// while stamped lines go per-occurrence. Copy is exact: the old PK implies
+/// the new key, so every legacy row survives the rebuild. Fresh databases
+/// need no separate CREATE edit — they run the whole chain, V91 creating the
+/// table and this migration rebuilding it, same as V96's ALTER-over-V15.
+fn migration_v97_favor_source_line(conn: &Connection) -> Result<()> {
+    // Minimal-fixture guard (same as v91-v96): skip when favor_events absent.
+    let has_favor: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'favor_events')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_favor {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE favor_events_new (
+            character_name TEXT NOT NULL,
+            server_name TEXT NOT NULL,
+            npc_key TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            delta REAL NOT NULL,
+            source_line_id TEXT
+        );
+        INSERT INTO favor_events_new
+            (character_name, server_name, npc_key, timestamp, delta, source_line_id)
+            SELECT character_name, server_name, npc_key, timestamp, delta, NULL
+              FROM favor_events;
+        DROP TABLE favor_events;
+        ALTER TABLE favor_events_new RENAME TO favor_events;
+        CREATE UNIQUE INDEX idx_favor_events_line
+            ON favor_events(character_name, server_name, npc_key, timestamp, delta,
+                            COALESCE(source_line_id, ''));",
     )?;
     Ok(())
 }
@@ -4973,13 +5037,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            96,
+            97,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 96);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 97);
     }
 
     #[test]
@@ -5102,13 +5166,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 96) plus the purge itself on the three aggregate source tables.
+        // 97) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 96, "migration chain head");
+        assert_eq!(head, 97, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -5154,8 +5218,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 96 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id). Repair: a
+        // Chain wiring: full run_migrations head must be 97 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id + v97 favor source-line id). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -5163,7 +5227,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 96, "migration chain head");
+        assert_eq!(head, 97, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -6054,6 +6118,73 @@ mod tests {
         // Absent ledger (minimal fixtures) stays a no-op.
         let bare = Connection::open_in_memory().unwrap();
         migration_v96_item_ledger_source_line(&bare).unwrap();
+    }
+
+    #[test]
+    fn v97_favor_events_gains_source_line_id_with_coalesce_key() {
+        // Old-shape table (v91 CREATE): the rebuild must carry every row,
+        // land a nullable TEXT column, keep legacy NULLs, and enforce the
+        // per-occurrence key — a stamped twin inserts (proving the old PK
+        // is gone) while NULL replays and same-id replays still collapse.
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE favor_events (
+                 character_name TEXT NOT NULL,
+                 server_name TEXT NOT NULL,
+                 npc_key TEXT NOT NULL,
+                 timestamp TEXT NOT NULL,
+                 delta REAL NOT NULL,
+                 PRIMARY KEY (character_name, server_name, npc_key, timestamp, delta)
+             );
+             INSERT INTO favor_events (character_name, server_name, npc_key, timestamp, delta)
+             VALUES ('Alice', 'Dreva', 'NPC_Elune', '2026-11-17 08:32:34', 18.06948);",
+        )
+        .unwrap();
+        migration_v97_favor_source_line(&c).unwrap();
+        let (coltype, nullable): (String, bool) = c
+            .query_row(
+                "SELECT type, \"notnull\" = 0 FROM pragma_table_info('favor_events')
+                   WHERE name = 'source_line_id'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?))
+            )
+            .unwrap();
+        assert_eq!(coltype, "TEXT", "source_line_id must land TEXT (file:offset)");
+        assert!(nullable, "source_line_id must land nullable");
+        let legacy: Option<String> = c
+            .query_row("SELECT source_line_id FROM favor_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(legacy, None, "pre-identity rows stay NULL (legacy collapse)");
+        // Legacy NULL replay collapses under the COALESCE key ...
+        c.execute(
+            "INSERT OR IGNORE INTO favor_events
+                (character_name, server_name, npc_key, timestamp, delta, source_line_id)
+             VALUES ('Alice', 'Dreva', 'NPC_Elune', '2026-11-17 08:32:34', 18.06948, NULL)",
+            [],
+        )
+        .unwrap();
+        // ... a stamped twin inserts, and its own replay collapses.
+        c.execute(
+            "INSERT OR IGNORE INTO favor_events
+                (character_name, server_name, npc_key, timestamp, delta, source_line_id)
+             VALUES ('Alice', 'Dreva', 'NPC_Elune', '2026-11-17 08:32:34', 18.06948, 'Chat.log:200')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT OR IGNORE INTO favor_events
+                (character_name, server_name, npc_key, timestamp, delta, source_line_id)
+             VALUES ('Alice', 'Dreva', 'NPC_Elune', '2026-11-17 08:32:34', 18.06948, 'Chat.log:200')",
+            [],
+        )
+        .unwrap();
+        let count: i64 = c
+            .query_row("SELECT COUNT(*) FROM favor_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2, "NULL legacy + one stamped twin; replays collapse");
+        // Absent table (minimal fixtures) stays a no-op.
+        let bare = Connection::open_in_memory().unwrap();
+        migration_v97_favor_source_line(&bare).unwrap();
     }
 
 }
