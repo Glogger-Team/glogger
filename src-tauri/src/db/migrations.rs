@@ -1598,6 +1598,16 @@ fn migration_v94_kill_loot_receipt_identity(conn: &Connection) -> Result<()> {
         )
         .unwrap_or(false);
     if has_ledger && has_kills {
+        // Covering index for the receipt backfill below: without it the
+        // correlated subquery falls back to idx_item_tx_char (character +
+        // server only), re-scanning every row of the character's ledger per
+        // loot row (observed: full-core spin, no WAL progress). Dropped after
+        // the backfill: no permanent schema footprint.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS tmp_tx_receipt_lookup
+                 ON item_transactions(character_name, server_name, item_name, quantity, from_entity_id, timestamp)",
+            [],
+        )?;
         conn.execute(
             "UPDATE enemy_kill_loot SET receipt_ts = (
                SELECT MIN(it.timestamp)
@@ -1622,6 +1632,8 @@ fn migration_v94_kill_loot_receipt_identity(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    // Backfill done: drop the scaffolding index.
+    conn.execute("DROP INDEX IF EXISTS tmp_tx_receipt_lookup", [])?;
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_kill_loot_receipt
              ON enemy_kill_loot(kill_id, item_name, quantity, receipt_ts)",
