@@ -1304,6 +1304,25 @@ impl DataIngestCoordinator {
                                 }
                             }
                         }
+                        if title == "Emotion-Harvesting Almanac" {
+                            // Title-only is the whole gate: `json_book` is
+                            // only populated by the Book arm, and the title
+                            // classifier leaves this title in the "JSON"
+                            // bucket (never "SkillReport").
+                            if let Ok(conn) = self.db_pool.get_write() {
+                                match crate::db::game_state_commands::import_harvest_almanac(
+                                    &conn, character, server, &body, &at,
+                                ) {
+                                    Ok(n) if n > 0 => outcome.domains.push("harvest_almanac".into()),
+                                    Ok(_) => {}
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[coordinator] Failed to import harvesting focuses from JSON book: {e}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
                         if book_type == "PlayerAge" || book_type == "HelpScreen" {
                             self.ingest_report_stats(&at, &book_type, &body, character, server);
                         }

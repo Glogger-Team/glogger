@@ -1324,6 +1324,214 @@ pub fn get_harvest_almanac(
         .map_err(|e| format!("Row error: {e}"))
 }
 
+/// One harvesting focus parsed from an Emotion-Harvesting Almanac body.
+pub struct HarvestFocus {
+    pub monster: String,
+    pub description: Option<String>,
+    pub is_current: bool,
+    pub event_start: Option<String>,
+    pub event_end: Option<String>,
+}
+
+/// Snapshot-comparison key for one harvest focus row.
+type HarvestFocusKey = (String, Option<String>, i64, Option<String>, Option<String>);
+
+/// Strip `<...>` markup from an almanac block, leaving the prose.
+fn strip_almanac_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Parse an Emotion-Harvesting Almanac `JSON:Book` body (observed 2026-11-24)
+/// into per-monster focuses. Current/upcoming split comes from the section
+/// headers; `event_start`/`event_end` are absolute (`%Y-%m-%d %H:%M:%S`)
+/// computed from `captured_at` plus the relative text (NULL when unparseable).
+pub fn parse_harvest_almanac_body(body: &str, captured_at: &str) -> Vec<HarvestFocus> {
+    let upcoming_at = body.find("Upcoming Harvesting Focuses:").unwrap_or(usize::MAX);
+    let base = chrono::NaiveDateTime::parse_from_str(captured_at, "%Y-%m-%d %H:%M:%S");
+    let mut out = Vec::new();
+    let mut search_from = 0usize;
+    while let Some(rel) = body[search_from..].find("<h2>") {
+        let h2 = search_from + rel;
+        let title_start = h2 + "<h2>".len();
+        let Some(end_rel) = body[title_start..].find("</h2>") else {
+            break;
+        };
+        let title = &body[title_start..title_start + end_rel];
+        let rest_start = title_start + end_rel + "</h2>".len();
+        // Next <h2> (or end of body) bounds this focus's block.
+        let block_end = body[rest_start..]
+            .find("<h2>")
+            .map(|r| rest_start + r)
+            .unwrap_or(body.len());
+        let block = &body[rest_start..block_end];
+        search_from = block_end;
+        let monster = title.trim();
+        if monster.is_empty() {
+            continue;
+        }
+        let timing = block
+            .find("<i>")
+            .and_then(|s| {
+                block[s + "<i>".len()..]
+                    .find("</i>")
+                    .map(|e| block[s + "<i>".len()..s + "<i>".len() + e].trim().to_string())
+            })
+            .filter(|s| !s.is_empty());
+        // Description is the prose before the timing note, tags stripped.
+        let prose_end = block.find("<i>").unwrap_or(block.len());
+        let prose = strip_almanac_tags(&block[..prose_end]);
+        let description = if prose.is_empty() { None } else { Some(prose) };
+        let is_current = h2 < upcoming_at;
+        let (event_start, event_end) = match timing.as_deref() {
+            Some(t) if t.starts_with("Starts in ") => (
+                relative_to(&base, t.trim_start_matches("Starts in ")),
+                None,
+            ),
+            Some(t) if t.starts_with("Ends in ") => (
+                None,
+                relative_to(&base, t.trim_start_matches("Ends in ")),
+            ),
+            _ => (None, None),
+        };
+        out.push(HarvestFocus {
+            monster: monster.to_string(),
+            description,
+            is_current,
+            event_start,
+            event_end,
+        });
+    }
+    out
+}
+
+/// Replace a character's harvest snapshot from an almanac body. Returns the
+/// number of rows written: identical re-imports (rescans) and unparseable
+/// bodies are pure no-ops returning 0. There is no harvest history table
+/// (unlike the garden path), so only the snapshot is replaced.
+pub fn import_harvest_almanac(
+    conn: &rusqlite::Connection,
+    character: &str,
+    server: &str,
+    body: &str,
+    captured_at: &str,
+) -> Result<usize, String> {
+    // A truncated (unclosed) <h2> means a partial parse — refuse to replace
+    // the existing snapshot (no-op, Ok(0)) rather than deleting omitted focuses.
+    if body.rfind("<h2>").map(|h| !body[h..].contains("</h2>")).unwrap_or(false) {
+        return Ok(0);
+    }
+    let focuses = parse_harvest_almanac_body(body, captured_at);
+    if focuses.is_empty() {
+        // Never wipe a good snapshot on an unparseable body. Tradeoff: a
+        // genuinely empty almanac (never observed) would also no-op instead
+        // of clearing — clearing needs a distinct parsed-empty signal.
+        return Ok(0);
+    }
+    // Identical re-import (rescan) is a pure no-op: no snapshot churn.
+    let current: Vec<HarvestFocusKey> = conn
+        .prepare(
+            "SELECT monster_name, description, is_current, event_start, event_end
+             FROM harvest_almanac WHERE character_name = ?1 AND server_name = ?2 ORDER BY monster_name",
+        )
+        .map_err(|e| format!("Failed to read harvest snapshot: {e}"))?
+        .query_map(rusqlite::params![character, server], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?))
+        })
+        .map_err(|e| format!("Failed to read harvest snapshot: {e}"))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("Failed to read harvest snapshot: {e}"))?;
+    let mut fresh: Vec<HarvestFocusKey> = focuses
+        .iter()
+        .map(|f| {
+            (
+                f.monster.clone(),
+                f.description.clone(),
+                f.is_current as i64,
+                f.event_start.clone(),
+                f.event_end.clone(),
+            )
+        })
+        .collect();
+    fresh.sort();
+    if current == fresh {
+        return Ok(0);
+    }
+    // Recency: a rescan can redeliver an OLDER identical Book after a newer
+    // import (newest-first scans). Its content differs (older focuses), so
+    // the check above passes — but replacing the snapshot would move the
+    // harvest clock backward. Captures sort lexicographically (naive-UTC
+    // stamps on both sides), so compare as text. Equal captures stay
+    // eligible (a failed import of the current observation can still be
+    // retried).
+    let stored_newest: Option<String> = conn
+        .query_row(
+            "SELECT MAX(captured_at) FROM harvest_almanac
+             WHERE character_name = ?1 AND server_name = ?2",
+            rusqlite::params![character, server],
+            |r| r.get(0),
+        )
+        .map_err(|e| format!("Failed to read harvest capture time: {e}"))?;
+    if stored_newest.as_deref().is_some_and(|s| captured_at < s) {
+        return Ok(0);
+    }
+    // One transaction: a crash or error mid-replace must not leave a partial
+    // snapshot (the pool is the only lock, so BEGIN IMMEDIATE is enough).
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| format!("Failed to begin harvest import: {e}"))?;
+    let replaced = (|| -> Result<usize, String> {
+        conn.execute(
+            "DELETE FROM harvest_almanac WHERE character_name = ?1 AND server_name = ?2",
+            rusqlite::params![character, server],
+        )
+        .map_err(|e| format!("Failed to clear harvest snapshot: {e}"))?;
+        let mut n = 0;
+        for f in &focuses {
+            conn.execute(
+                "INSERT INTO harvest_almanac
+                    (character_name, server_name, monster_name, description, event_start, event_end, is_current, captured_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                rusqlite::params![
+                    character,
+                    server,
+                    f.monster,
+                    f.description,
+                    f.event_start,
+                    f.event_end,
+                    f.is_current as i64,
+                    captured_at
+                ],
+            )
+            .map_err(|e| format!("Failed to insert harvest focus: {e}"))?;
+            n += 1;
+        }
+        Ok(n)
+    })();
+    match replaced {
+        Ok(n) => conn
+            .execute_batch("COMMIT")
+            .map_err(|e| {
+                // A failed COMMIT leaves the transaction active; roll back
+                // deterministically instead of relying on connection teardown.
+                let _ = conn.execute_batch("ROLLBACK");
+                format!("Failed to commit harvest import: {e}")
+            })
+            .map(|_| n),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
 
 /// One gardening season parsed from a Gardening Almanac body.
 pub struct GardenSeason {
@@ -2808,6 +3016,76 @@ mod tests {
         // with different content still replaces (rescan heals failed imports).
         let n = import_garden_almanac(&conn, "T", "Dreva", body, "2026-11-17 16:47:31").unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn harvest_almanac_body_parses_focuses() {
+        let body = "<h1>Current Harvesting Focuses:</h1>\n<indent=20><h2>Ghouls</h2></indent><indent=20>Seek out ghouls. Knock them senseless and steal their fear and greed!</indent>\n<indent=20><i>Ends in 1 hour 42 minutes</i></indent>\n\n\n<h1>Upcoming Harvesting Focuses:</h1>\n<indent=20><h2>Corporeal Non-Skeleton Undead</h2></indent><indent=20>Today you should hunt non-skeleton, non-ghost undead. Their vile emotions can be repurposed!</indent>\n<indent=20><i>Starts in 1 hour 42 minutes</i></indent>";
+        let focuses = parse_harvest_almanac_body(body, "2026-11-24 21:17:37");
+        assert_eq!(focuses.len(), 2);
+        let current: Vec<_> = focuses.iter().filter(|f| f.is_current).collect();
+        let upcoming: Vec<_> = focuses.iter().filter(|f| !f.is_current).collect();
+        assert_eq!(current.len(), 1);
+        assert_eq!(upcoming.len(), 1);
+        let ghouls = &current[0];
+        assert_eq!(ghouls.monster, "Ghouls");
+        assert!(ghouls.description.as_deref().unwrap().contains("steal their fear and greed"));
+        // 21:17:37 + 1h42m.
+        assert_eq!(ghouls.event_end.as_deref(), Some("2026-11-24 22:59:37"));
+        assert_eq!(ghouls.event_start, None);
+        let undead = &upcoming[0];
+        assert_eq!(undead.monster, "Corporeal Non-Skeleton Undead");
+        assert!(undead.description.as_deref().unwrap().contains("non-skeleton, non-ghost undead"));
+        assert_eq!(undead.event_start.as_deref(), Some("2026-11-24 22:59:37"));
+        assert_eq!(undead.event_end, None);
+    }
+
+    #[test]
+    fn harvest_almanac_import_replaces_snapshot_and_round_trips() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::migrations::run_migrations(&conn, None).unwrap();
+        let body = "<h1>Current Harvesting Focuses:</h1>\n<indent=20><h2>Ghouls</h2></indent><indent=20>Seek out ghouls. Knock them senseless and steal their fear and greed!</indent>\n<indent=20><i>Ends in 1 hour 42 minutes</i></indent>\n\n\n<h1>Upcoming Harvesting Focuses:</h1>\n<indent=20><h2>Corporeal Non-Skeleton Undead</h2></indent><indent=20>Today you should hunt non-skeleton, non-ghost undead. Their vile emotions can be repurposed!</indent>\n<indent=20><i>Starts in 1 hour 42 minutes</i></indent>";
+        let n = import_harvest_almanac(&conn, "T", "Dreva", body, "2026-11-24 21:17:37").unwrap();
+        assert_eq!(n, 2);
+        let snap: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM harvest_almanac WHERE character_name = 'T'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(snap, 2);
+        // Re-import (rescan): pure no-op — returns 0, snapshot still 2.
+        // Returning 0 (not the parsed count) is what keeps the coordinator
+        // from re-emitting the `harvest_almanac` domain.
+        let n = import_harvest_almanac(&conn, "T", "Dreva", body, "2026-11-24 21:17:37").unwrap();
+        assert_eq!(n, 0);
+        let snap: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM harvest_almanac WHERE character_name = 'T'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(snap, 2);
+        // Garbage body never wipes a good snapshot.
+        let n =
+            import_harvest_almanac(&conn, "T", "Dreva", "not an almanac", "2026-11-24 21:17:37")
+                .unwrap();
+        assert_eq!(n, 0);
+        let snap: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM harvest_almanac WHERE character_name = 'T'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(snap, 2);
+        // Truncated body preserves the snapshot.
+        let truncated = "<h2>Ghouls</h2><i>Ends in 1 hour</i><h2>Undead";
+        let n = import_harvest_almanac(&conn, "T", "Dreva", truncated, "2026-11-24 21:17:37")
+            .unwrap();
+        assert_eq!(n, 0);
     }
 
     #[test]
