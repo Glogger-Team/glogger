@@ -351,13 +351,16 @@ pub fn record_enemy_kill(
 /// directions so each receipt resolves to exactly one kill.
 ///
 /// Family-aware: Player.log-era kills carry time-only `killed_at` (no date),
-/// for which the lexicographic window below is vacuous on the upper bound
-/// and year-2000 on the lower (`datetime('19:29:10','-30 minutes')` is
-/// `2000-01-01 …`) — a silent no-match against full-date receipts. Those rows
-/// take the `time()` arm instead: same entity, time-of-day within the window.
-/// Midnight wraparound (kill 23:55, receipt 00:05) misses there too — an
-/// accepted limit on ancient rows, documented, not a silent regression: the
-/// full-format path is byte-identical to before.
+/// for which the lexicographic arm below is vacuous or year-2000 on one bound
+/// or the other (`datetime('19:29:10','-30 minutes')` is `2000-01-01 …`, and a
+/// `2x:xx:xx` stamp sorts *after* any same-day full stamp at byte 1) — a
+/// silent no-match against full-date receipts. Those rows take the `time()`
+/// arm instead: same entity, time-of-day within the window. The arms are
+/// independent disjuncts (not a shared outer bound) so neither family's
+/// shape leaks into the other's comparison. Midnight wraparound (kill 23:55,
+/// receipt 00:05) misses there too — an accepted limit on ancient rows,
+/// documented, not a silent regression: the full-format path is
+/// byte-identical to before.
 fn latest_eligible_kill_id(
     conn: &rusqlite::Connection,
     character: &str,
@@ -371,8 +374,7 @@ fn latest_eligible_kill_id(
         "SELECT id FROM enemy_kills
           WHERE character_name = ?1 AND server_name = ?2
             AND enemy_entity_id = ?3
-            AND killed_at <= ?4
-            AND (killed_at >= datetime(?4, '-30 minutes')
+            AND ((killed_at <= ?4 AND killed_at >= datetime(?4, '-30 minutes'))
                  OR (length(killed_at) = 8
                      AND time(killed_at) <= time(?4)
                      AND time(killed_at) >= time(?4, '-30 minutes')))
@@ -3002,5 +3004,21 @@ mod tests {
         assert!(!link_kill_loot(&conn, "T", "Dreva", "42", "2026-04-13 19:29:35", "Bone", 1).unwrap());
         // A same-entity receipt outside the time-of-day window stays unlinked.
         assert!(!link_kill_loot(&conn, "T", "Dreva", "42", "2026-04-13 20:29:35", "Bone", 1).unwrap());
+        // Evening hour: a `2x:xx:xx` time-only kill sorts *after* any same-day
+        // full stamp at byte 1, so a shared outer `killed_at <= ?4` bound can
+        // never match it — the arms must stay independent disjuncts. Same
+        // entity, full-date receipt 16 min later: heals and links.
+        record_test_kill(&conn, "T", "Dreva", "43", "21:45:00")
+            .expect("evening legacy kill lands");
+        conn.execute(
+            "INSERT INTO item_transactions
+                (timestamp, character_name, server_name, item_name, quantity, context, source, from_entity_id)
+             VALUES ('2026-04-13 22:01:00', 'T', 'Dreva', 'Bone', 1, 'loot', 'chat_status', 43)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(link_kill_loot_for_kill(&conn, "T", "Dreva", "43", "21:45:00").unwrap(), 1);
+        // Just past the window stays unlinked (no over-match from the rework).
+        assert!(!link_kill_loot(&conn, "T", "Dreva", "43", "2026-04-13 22:16:00", "Bone", 1).unwrap());
     }
 }
