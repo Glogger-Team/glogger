@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, TryLockError};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Runtime, Wry};
 
 /// Timestamped log line for startup diagnostics.
 macro_rules! startup_log {
@@ -119,6 +119,15 @@ struct PendingSurveyTag {
 /// existed.
 const MAX_SURVEY_TAG_RETRIES: usize = 32;
 
+/// Bound on consecutive retries of the SAME chat tail batch (D5-47): each
+/// raw-batch insert failure rewinds the watcher so the next poll replays
+/// the unconsumed tail, but a permanently failing batch (poison rows)
+/// would otherwise livelock the poll loop. After this many failures the
+/// cursor is left advanced (skip-ahead): the poison batch is dropped and
+/// polling continues. A different batch (file or start offset) resets
+/// the count.
+const CHAT_BATCH_RETRY_CAP: u32 = 3;
+
 /// Stage a rolled-back survey gain for the batch-end retry, bounded by
 /// [`MAX_SURVEY_TAG_RETRIES`]. Overflow gains stay untagged with no qty
 /// behind them (the unit rolled back): a later in-window use may still
@@ -149,12 +158,12 @@ fn stage_survey_tag_retry(
 }
 
 /// Central coordinator for all data ingestion
-pub struct DataIngestCoordinator {
+pub struct DataIngestCoordinator<R: Runtime = Wry> {
     player_watcher: Option<PlayerLogWatcher>,
     chat_watcher: Option<ChatLogWatcher>,
     db_pool: DbPool,
     settings: Arc<SettingsManager>,
-    app_handle: AppHandle,
+    app_handle: AppHandle<R>,
     /// Phase 5 survey tracker. Owned by the coordinator so its state survives
     /// screen navigation per the backend-owned-state rule. Fed by chat-gain
     /// attribution on the live event loop, persists per-use rows to
@@ -209,14 +218,33 @@ pub struct DataIngestCoordinator {
     /// process; the raw chat row is still stored, so this only signals format
     /// drift in the game's JSON output.
     skipped_json_malformed: u64,
+    /// Chat-log switch target stashed when the old watcher's final flush
+    /// failed (D5-47). `start_chat_log_tailing` polls the old watcher
+    /// (consuming its bytes) and drains the flush through
+    /// `process_chat_events` BEFORE the new watcher starts; a raw-batch
+    /// insert failure there used to return `?` with the bytes consumed,
+    /// the new watcher never started, and the `ChatLogPath` trigger
+    /// already consumed from the player cursor — the tail was never
+    /// replayed. The next poll retries the stashed switch instead of
+    /// advancing past it. Cleared when a switch completes.
+    pending_chat_switch: Option<PathBuf>,
+    /// Consecutive raw-batch failures for the current chat tail batch
+    /// (D5-47). Each failure rewinds the watcher so the next poll
+    /// replays the tail; after [`CHAT_BATCH_RETRY_CAP`] failures of the
+    /// SAME batch the cursor is left advanced (skip-ahead) so a poison
+    /// batch can't livelock the poll loop. Reset on any success.
+    chat_batch_retries: u32,
+    /// Batch the retry count belongs to: chat file + byte offset the
+    /// failed batch started at. A different batch resets the count.
+    chat_retry_batch_start: Option<(String, u64)>,
 }
 
-impl DataIngestCoordinator {
+impl<R: Runtime> DataIngestCoordinator<R> {
     /// Create a new coordinator
     pub fn new(
         db_pool: DbPool,
         settings: Arc<SettingsManager>,
-        app_handle: AppHandle,
+        app_handle: AppHandle<R>,
         game_data: GameDataState,
     ) -> Result<Self, String> {
         // Seed game state manager with persisted character+server so that
@@ -253,6 +281,9 @@ impl DataIngestCoordinator {
             suppressed_unknown_skill_repeats: 0,
             last_unknown_skill: None,
             skipped_json_malformed: 0,
+            pending_chat_switch: None,
+            chat_batch_retries: 0,
+            chat_retry_batch_start: None,
         })
     }
 
@@ -527,11 +558,15 @@ impl DataIngestCoordinator {
     /// Start chat log tailing
     pub fn start_chat_log_tailing(&mut self, chat_log_path: PathBuf) -> Result<(), String> {
 
-        // Already tailing the same file? No-op.
+        // Already tailing the same file? No-op. A pending switch to this
+        // same file is satisfied by the no-op — clear it.
         let should_switch = match &self.chat_watcher {
             Some(existing)
                 if existing.is_active() && existing.get_file_path() == &chat_log_path =>
             {
+                if self.pending_chat_switch.as_ref() == Some(&chat_log_path) {
+                    self.pending_chat_switch = None;
+                }
                 return Ok(());
             }
             Some(_) => true,
@@ -547,19 +582,33 @@ impl DataIngestCoordinator {
             // `player_messages` rows for structured lines in the tail.
             // End the watcher borrow before dispatching — the drain needs
             // `&mut self` for its trackers and follow-ups.
-            let flushed: Vec<LogEvent> = if let Some(watcher) = &mut self.chat_watcher {
-                startup_log!(
-                    "Chat log switching from {:?} → {:?}, flushing old watcher",
-                    watcher.get_file_path(),
-                    chat_log_path
-                );
-                watcher.poll().unwrap_or_default()
-            } else {
-                Vec::new()
-            };
+            let (pre_flush_pos, flushed): (u64, Vec<LogEvent>) =
+                if let Some(watcher) = &mut self.chat_watcher {
+                    startup_log!(
+                        "Chat log switching from {:?} → {:?}, flushing old watcher",
+                        watcher.get_file_path(),
+                        chat_log_path
+                    );
+                    let pre_flush_pos = watcher.get_position();
+                    (pre_flush_pos, watcher.poll().unwrap_or_default())
+                } else {
+                    (0, Vec::new())
+                };
             if !flushed.is_empty() {
                 startup_log!("Final flush: {} events from old chat log", flushed.len());
-                self.process_chat_events(flushed)?;
+                // D5-47: the flush consumed the old watcher's bytes before
+                // the drain ran. If the drain's raw-batch insert fails, the
+                // old code returned `?` here — new watcher never started,
+                // trigger line already consumed — and the tail was never
+                // replayed. Rewind the old watcher, stash the target for
+                // the next poll's retry, and surface the error.
+                if let Err(e) = self.process_chat_events(flushed) {
+                    self.note_chat_batch_failure(pre_flush_pos);
+                    self.pending_chat_switch = Some(chat_log_path);
+                    return Err(e);
+                }
+                self.chat_batch_retries = 0;
+                self.chat_retry_batch_start = None;
             }
             self.stop_chat_log_tailing()?;
         }
@@ -593,6 +642,10 @@ impl DataIngestCoordinator {
 
         // Store watcher
         self.chat_watcher = Some(watcher);
+
+        // Switch completed (fresh or retried) — the old tail was flushed
+        // and the trigger that requested this file is satisfied.
+        self.pending_chat_switch = None;
 
         // Emit status change event
         self.emit_status_change()?;
@@ -646,6 +699,43 @@ impl DataIngestCoordinator {
         self.emit_status_change()?;
 
         Ok(())
+    }
+
+    /// Account for a failed chat batch that started at `batch_start`
+    /// (D5-47). Rewinds the chat watcher so the next poll replays the
+    /// unconsumed tail — unless this is the [`CHAT_BATCH_RETRY_CAP`]+1-th
+    /// consecutive failure of the same batch, in which case the cursor is
+    /// left advanced (skip-ahead) so a poison batch can't livelock the
+    /// poll loop. The caller still surfaces the original error either
+    /// way; a skip is loud on stderr. A different batch (file or start
+    /// offset) resets the count.
+    fn note_chat_batch_failure(&mut self, batch_start: u64) {
+        let key: Option<(String, u64)> = self.chat_watcher.as_ref().map(|w| {
+            (
+                w.get_file_path().to_string_lossy().to_string(),
+                batch_start,
+            )
+        });
+        let key = match key {
+            Some(key) => key,
+            None => return,
+        };
+        if self.chat_retry_batch_start.as_ref() == Some(&key) {
+            self.chat_batch_retries += 1;
+        } else {
+            self.chat_retry_batch_start = Some(key.clone());
+            self.chat_batch_retries = 1;
+        }
+        if self.chat_batch_retries > CHAT_BATCH_RETRY_CAP {
+            eprintln!(
+                "[coordinator] chat batch @{} in {} failed {} times; skipping ahead (poison batch dropped) to keep polling",
+                key.1, key.0, self.chat_batch_retries
+            );
+            self.chat_batch_retries = 0;
+            self.chat_retry_batch_start = None;
+        } else if let Some(watcher) = self.chat_watcher.as_mut() {
+            watcher.rewind_to(batch_start);
+        }
     }
 
     /// Poll all active watchers and process events
@@ -710,10 +800,31 @@ impl DataIngestCoordinator {
             }
         }
 
+        // D5-47: retry a chat-log switch whose final flush failed. The
+        // `ChatLogPath` trigger is already consumed from the player
+        // cursor, so without this the stashed target would never run and
+        // the next poll would advance past the rewound tail. Runs before
+        // the chat poll so the retry's own flush drains first; a fresh
+        // failure re-stashes inside `start_chat_log_tailing`.
+        if let Some(target) = self.pending_chat_switch.clone() {
+            self.start_chat_log_tailing(target)?;
+        }
+
         // Poll chat log watcher
         if let Some(watcher) = &mut self.chat_watcher {
+            let batch_start = watcher.get_position();
             let events = watcher.poll()?;
-            self.process_chat_events(events)?;
+            // D5-47: the poll above consumed the tail's bytes before the
+            // drain ran. On a raw-batch insert failure, rewind (or
+            // skip-ahead past a poison batch) instead of advancing past
+            // the unprocessed tail — then surface the error so the poll
+            // cycle visibly fails and retries.
+            if let Err(e) = self.process_chat_events(events) {
+                self.note_chat_batch_failure(batch_start);
+                return Err(e);
+            }
+            self.chat_batch_retries = 0;
+            self.chat_retry_batch_start = None;
         }
 
         // Live mode turns on only after the whole catch-up — the Player.log drain
@@ -944,8 +1055,6 @@ impl DataIngestCoordinator {
     /// The per-event emits here (chat-status-event, server-detected, etc.) are
     /// low-volume and don't need the same batching treatment as player events.
     fn process_chat_events(&mut self, events: Vec<LogEvent>) -> Result<(), String> {
-        let mut messages = Vec::new();
-
         // Pre-batch identity for leading untagged lines: the watcher emits
         // file-ordered, so a line ahead of the first marker resolves against
         // the session in force when the batch arrived — not the one the
@@ -1010,6 +1119,33 @@ impl DataIngestCoordinator {
             .as_ref()
             .map(|w| w.get_file_name().to_string())
             .unwrap_or_else(|| "unknown".to_string());
+
+        // D5-47 raw-first: convert and insert the raw rows BEFORE any
+        // structured dispatch write, so a raw-batch failure returns with
+        // zero dispatch side effects and the rewound tail replays cleanly.
+        // Conversion is pure (same function + same pre-batch `tz_offset`
+        // the drain below uses), and `INSERT OR IGNORE` makes a replayed
+        // batch collapse row-for-row.
+        let mut staged: Vec<crate::chat_parser::ChatMessage> = Vec::new();
+        for event in &events {
+            if let LogEvent::ChatMessage(msg, ..) = event {
+                let mut msg = msg.clone();
+                msg.timestamp = chat_local_to_utc(msg.timestamp, tz_offset);
+                staged.push(msg);
+            }
+        }
+        let staged_inserted: usize = if staged.is_empty() {
+            0
+        } else {
+            let conn = self
+                .db_pool
+                .get_write()
+                .map_err(|e| format!("Database error: {}", e))?;
+            let excluded_channels = &self.settings.get().excluded_chat_channels;
+            insert_chat_messages(&conn, &staged, &log_file, excluded_channels)
+                .map_err(|e| format!("Failed to insert messages: {}", e))?
+        };
+
         for event in events {
             match event {
                 LogEvent::ChatMessage(msg, session_tag, offset) => {
@@ -1351,8 +1487,9 @@ impl DataIngestCoordinator {
                     if !outcome.domains.is_empty() {
                         self.app_handle.emit("game-state-updated", &outcome.domains).ok();
                     }
-
-                    messages.push(msg);
+                    // No `messages.push` here: the raw rows were inserted
+                    // before the drain ran (D5-47 raw-first); the converted
+                    // `msg` above is dispatch-local only now.
                 }
                 LogEvent::ServerDetected {
                     server_name,
@@ -1493,36 +1630,27 @@ impl DataIngestCoordinator {
             }
         }
 
-        // Store the twin slot back before any fallible tail: the skips above
-        // already counted, so a later insert failure must not replay them.
-        // Expire a stale arming: a poll that drained chat lines but produced
-        // no unknown-skill sighting means no twin is pending across the
+        // Store the twin slot back: the skips above already counted, and the
+        // raw batch was inserted before the drain ran (D5-47 raw-first), so
+        // no fallible tail remains below that could replay them. Expire a
+        // stale arming: a poll that drained chat lines but produced no
+        // unknown-skill sighting means no twin is pending across the
         // boundary (an unpaired half from an earlier poll is dead). Empty
         // polls preserve the slot — a twin split across idle polls is still
         // consecutive in log order.
-        self.last_unknown_skill = if !messages.is_empty() && !saw_unknown_skill {
+        self.last_unknown_skill = if !staged.is_empty() && !saw_unknown_skill {
             None
         } else {
             last_unknown_skill
         };
 
-        // Batch insert messages (watch rules already evaluated per message
-        // through the shared dispatch, which forwards what fired).
-        if !messages.is_empty() {
-            let conn = self
-                .db_pool
-                .get_write()
-                .map_err(|e| format!("Database error: {}", e))?;
-
-            let excluded_channels = &self.settings.get().excluded_chat_channels;
-            let inserted = insert_chat_messages(&conn, &messages, &log_file, excluded_channels)
-                .map_err(|e| format!("Failed to insert messages: {}", e))?;
-
-            if inserted > 0 {
-                self.app_handle
-                    .emit("chat-messages-inserted", inserted)
-                    .ok();
-            }
+        // Raw rows were inserted before the drain ran (D5-47 raw-first);
+        // the emit stays here so notification order on the happy path is
+        // unchanged (after every per-message emit above).
+        if staged_inserted > 0 {
+            self.app_handle
+                .emit("chat-messages-inserted", staged_inserted)
+                .ok();
         }
 
         Ok(())
@@ -2093,9 +2221,9 @@ pub(crate) fn normalize_book_content(content: &str) -> String {
 /// Swallows SQL errors to keep ingest flowing, but returns `Err` on pool
 /// acquisition failure so callers can log it.
 #[allow(clippy::too_many_arguments)] // shared live+watcher shape: identity (4) + book key (2) + body + capture
-pub fn persist_book_content(
+pub fn persist_book_content<R: Runtime>(
     db: &DbPool,
-    _app_handle: &AppHandle,
+    _app_handle: &AppHandle<R>,
     character: &str,
     server: &str,
     book_type: &str,
@@ -2166,9 +2294,9 @@ pub(crate) fn upsert_book_content(
 /// fresh report; `None` degrades to fill-empty-only like the bind writer.
 /// A no-op import (identical or older) stays silent — no `report_stats`
 /// domain, same rescan-silence as the garden importer.
-pub fn ingest_report_stats_content(
+pub fn ingest_report_stats_content<R: Runtime>(
     db: &DbPool,
-    app_handle: &AppHandle,
+    app_handle: &AppHandle<R>,
     character: &str,
     server: &str,
     book_type: &str,
@@ -2250,9 +2378,9 @@ fn bind_capture_is_fresh(
         Err(_) => true,
     }
 }
-pub fn ingest_teleport_binds_content(
+pub fn ingest_teleport_binds_content<R: Runtime>(
     db: &DbPool,
-    app_handle: &AppHandle,
+    app_handle: &AppHandle<R>,
     character: &str,
     server: &str,
     content: &str,
@@ -2311,10 +2439,10 @@ pub fn ingest_teleport_binds_content(
 /// Parse a hoplology "Equipment Studied:" skill report and backfill studied
 /// items. Returns the number of newly inserted studies. Shared by the live
 /// coordinator and the Books-directory watcher.
-pub fn ingest_hoplology_content(
+pub fn ingest_hoplology_content<R: Runtime>(
     db: &DbPool,
     game_data: &GameDataState,
-    app_handle: &AppHandle,
+    app_handle: &AppHandle<R>,
     character: &str,
     server: &str,
     content: &str,
@@ -3371,5 +3499,292 @@ mod logout_identity_tests {
         assert!(logout_clears_identity(Some("Zenith"), "Zenith"));
         assert!(!logout_clears_identity(Some("Zenith"), "AltB"));
         assert!(!logout_clears_identity(None, "Zenith"));
+    }
+}
+
+#[cfg(test)]
+mod retryable_switch_tests {
+    use super::*;
+    use crate::db::migrations::run_migrations;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+
+    /// Migrated pool pair over a unique shared-cache memory DB (mirrors the
+    /// `books_watcher` helper), except the single write connection fails
+    /// FAST when checked out: holding it is the deterministic fault
+    /// injector for raw-batch failures (no schema sabotage, no production
+    /// test seam). Each failed checkout costs one 200 ms timeout.
+    fn pool() -> DbPool {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let mk = |query_only: bool| {
+            r2d2_sqlite::SqliteConnectionManager::file(format!(
+                "file:retryable_switch_test_{n}?mode=memory&cache=shared"
+            ))
+            .with_init(move |conn| {
+                if query_only {
+                    conn.execute_batch(
+                        "PRAGMA journal_mode=WAL;
+                         PRAGMA busy_timeout=5000;
+                         PRAGMA synchronous=NORMAL;
+                         PRAGMA foreign_keys=ON;
+                         PRAGMA query_only=ON;",
+                    )
+                } else {
+                    conn.execute_batch(
+                        "PRAGMA journal_mode=WAL;
+                         PRAGMA busy_timeout=5000;
+                         PRAGMA synchronous=NORMAL;
+                         PRAGMA foreign_keys=ON;",
+                    )
+                }
+            })
+        };
+        let writes = r2d2::Pool::builder()
+            .max_size(1)
+            .connection_timeout(Duration::from_millis(200))
+            .build(mk(false))
+            .expect("writes pool");
+        let reads = r2d2::Pool::builder()
+            .max_size(2)
+            .build(mk(true))
+            .expect("reads pool");
+        let conn = writes.get().expect("write conn");
+        run_migrations(&conn, None).expect("migrations");
+        drop(conn);
+        DbPool::from_pools(reads, writes)
+    }
+
+    fn game_data() -> GameDataState {
+        std::sync::Arc::new(tauri::async_runtime::RwLock::new(
+            crate::game_data::GameData::empty(),
+        ))
+    }
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "retryable_switch_{}_{}_{n}",
+            tag,
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        dir
+    }
+
+    /// Login marker plus caller-supplied plain chat lines. Plain lines
+    /// only: no status arms fire, so the drain's only DB writes are the
+    /// login marker's `servers` / `user_characters` rows plus the raw
+    /// rows — the exact surface the raw-first pin asserts on.
+    const LOGIN_LINE: &str = "**************************************** Logged In As Switcher. Server Dreva. Timezone Offset -05:00:00.";
+
+    fn write_log(dir: &std::path::Path, name: &str, lines: &[&str]) -> PathBuf {
+        let path = dir.join(name);
+        let mut body = String::from(LOGIN_LINE);
+        body.push('\n');
+        for line in lines {
+            body.push_str(line);
+            body.push('\n');
+        }
+        std::fs::write(&path, body).expect("fixture");
+        path
+    }
+
+    fn row_count(pool: &DbPool, table: &str) -> i64 {
+        let sql = format!("SELECT COUNT(*) FROM {table}");
+        let conn = pool.get().expect("read conn");
+        conn.query_row(&sql, [], |row| row.get(0))
+            .expect("count")
+    }
+
+    /// Coordinator under the mock runtime: `tauri::test::mock_app` is
+    /// headless-safe (repo precedent in `replay.rs`) and the struct's
+    /// `R: Runtime = Wry` default keeps production construction unchanged.
+    type TestCoordinator = DataIngestCoordinator<tauri::test::MockRuntime>;
+
+    fn coordinator(
+        pool: DbPool,
+        dir: &std::path::Path,
+        app: &tauri::App<tauri::test::MockRuntime>,
+    ) -> TestCoordinator {
+        let settings = Arc::new(SettingsManager::new(dir.join("settings-dir")).expect("settings"));
+        DataIngestCoordinator::new(pool, settings, app.handle().clone(), game_data())
+            .expect("coordinator")
+    }
+
+    fn attach_chat(coord: &mut TestCoordinator, path: PathBuf) {
+        let mut watcher = ChatLogWatcher::new(path);
+        watcher.start().expect("watcher start");
+        coord.chat_watcher = Some(watcher);
+    }
+
+    fn chat_position(coord: &TestCoordinator) -> u64 {
+        coord
+            .chat_watcher
+            .as_ref()
+            .expect("chat watcher")
+            .get_position()
+    }
+
+    /// A raw-batch insert failure replays the unconsumed tail on the next
+    /// poll instead of advancing past it — and, raw-first, leaves zero
+    /// dispatch side effects behind (the login marker's `servers` /
+    /// `user_characters` rows would already exist under dispatch-first).
+    #[test]
+    fn raw_failure_replays_tail_on_next_poll() {
+        let dir = tmpdir("replay");
+        let log = write_log(
+            &dir,
+            "Chat.log",
+            &[
+                "26-03-26 15:12:48\t[Guild] Mate: hello",
+                "26-03-26 15:13:02\t[Guild] Other: world",
+            ],
+        );
+        let end = std::fs::metadata(&log).expect("meta").len();
+        let pool = pool();
+        let app = tauri::test::mock_app();
+        let mut coord = coordinator(pool.clone(), &dir, &app);
+        attach_chat(&mut coord, log);
+
+        // Fault on: hold the single write connection so the raw insert's
+        // checkout times out fast.
+        let held = pool.get_write().expect("hold writes");
+        assert!(coord.poll().is_err(), "poll must surface the raw failure");
+        assert_eq!(coord.chat_batch_retries, 1);
+        assert_eq!(
+            chat_position(&coord),
+            0,
+            "failed batch rewinds to batch start"
+        );
+        assert_eq!(row_count(&pool, "chat_messages"), 0);
+        assert_eq!(
+            row_count(&pool, "user_characters"),
+            0,
+            "raw-first: no login side effects on raw failure"
+        );
+        assert_eq!(
+            row_count(&pool, "servers"),
+            0,
+            "raw-first: no server side effects on raw failure"
+        );
+        drop(held);
+
+        // Fault off: the next poll replays the rewound tail.
+        assert!(coord.poll().is_ok());
+        assert_eq!(coord.chat_batch_retries, 0);
+        assert_eq!(
+            row_count(&pool, "chat_messages"),
+            2,
+            "replayed tail is stored, not skipped"
+        );
+        assert_eq!(row_count(&pool, "user_characters"), 1);
+        assert_eq!(chat_position(&coord), end);
+
+        // A third poll is empty and stores nothing twice.
+        assert!(coord.poll().is_ok());
+        assert_eq!(row_count(&pool, "chat_messages"), 2);
+    }
+
+    /// A switch-flush raw failure stashes the target and completes on the
+    /// next poll: bytes replay from the rewound old watcher, then the new
+    /// watcher starts. (Failure order 2 of 2: flush-time vs poll-time.)
+    #[test]
+    fn switch_flush_failure_retried_by_next_poll() {
+        let dir = tmpdir("switch");
+        let old = write_log(
+            &dir,
+            "Chat-old.log",
+            &[
+                "26-03-26 15:12:48\t[Guild] Mate: hello",
+                "26-03-26 15:13:02\t[Guild] Other: world",
+            ],
+        );
+        let new = dir.join("Chat-new.log");
+        std::fs::write(&new, "").expect("empty new log");
+        let pool = pool();
+        let app = tauri::test::mock_app();
+        let mut coord = coordinator(pool.clone(), &dir, &app);
+        attach_chat(&mut coord, old.clone());
+
+        let held = pool.get_write().expect("hold writes");
+        assert!(coord.start_chat_log_tailing(new.clone()).is_err());
+        assert_eq!(
+            coord.pending_chat_switch,
+            Some(new.clone()),
+            "failed switch is stashed"
+        );
+        {
+            let w = coord.chat_watcher.as_ref().expect("old watcher kept");
+            assert_eq!(w.get_file_path(), &old);
+            assert!(w.is_active());
+            assert_eq!(w.get_position(), 0, "old watcher rewound to flush start");
+        }
+        assert_eq!(row_count(&pool, "chat_messages"), 0);
+        drop(held);
+
+        // The next poll retries the stashed switch and completes it.
+        assert!(coord.poll().is_ok());
+        {
+            let w = coord.chat_watcher.as_ref().expect("new watcher");
+            assert_eq!(w.get_file_path(), &new, "switch completed");
+        }
+        assert!(coord.pending_chat_switch.is_none());
+        assert_eq!(
+            row_count(&pool, "chat_messages"),
+            2,
+            "old tail flushed through the retry"
+        );
+    }
+
+    /// A permanently failing batch does not livelock the poll loop: after
+    /// CHAT_BATCH_RETRY_CAP rewinds the cursor is left advanced
+    /// (skip-ahead) and polling continues past the poison.
+    #[test]
+    fn retry_cap_skips_poison_batch() {
+        let dir = tmpdir("cap");
+        let log = write_log(
+            &dir,
+            "Chat.log",
+            &["26-03-26 15:12:48\t[Guild] Mate: hello"],
+        );
+        let end = std::fs::metadata(&log).expect("meta").len();
+        let pool = pool();
+        let app = tauri::test::mock_app();
+        let mut coord = coordinator(pool.clone(), &dir, &app);
+        attach_chat(&mut coord, log.clone());
+
+        let held = pool.get_write().expect("hold writes");
+        for i in 1..=CHAT_BATCH_RETRY_CAP + 1 {
+            assert!(coord.poll().is_err(), "poll {i} still fails");
+            if i <= CHAT_BATCH_RETRY_CAP {
+                assert_eq!(chat_position(&coord), 0, "attempt {i} rewinds");
+            }
+        }
+        assert_eq!(chat_position(&coord), end, "cap overflow skips ahead");
+        assert_eq!(coord.chat_batch_retries, 0, "skip resets the count");
+        assert_eq!(
+            row_count(&pool, "chat_messages"),
+            0,
+            "poison batch dropped, nothing stored"
+        );
+
+        // An empty follow-up poll succeeds even with the outage still on —
+        // the loop is not wedged.
+        assert!(coord.poll().is_ok());
+        drop(held);
+
+        // New bytes after the skip still process (identity-less live line:
+        // dispatch drops it, the raw row is kept).
+        use std::io::Write as _;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&log)
+            .expect("open log")
+            .write_all(b"26-03-26 15:14:00\t[Guild] Late: arrival\n")
+            .expect("append");
+        assert!(coord.poll().is_ok());
+        assert_eq!(row_count(&pool, "chat_messages"), 1);
     }
 }
