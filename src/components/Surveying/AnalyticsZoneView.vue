@@ -20,10 +20,15 @@
       />
       <StatCard
         label="Bonus Items"
-        :value="zone.bonus_items_total.toLocaleString()"
-        sub="total bonus drops"
+        :value="hasBonus ? zone.bonus_items_total.toLocaleString() : '—'"
+        :sub="hasBonus ? 'total bonus drops' : 'bonus data unavailable'"
       />
     </div>
+
+    <!-- survey-bonus-dark: unstamped aggregates read zero; show unavailable, never a measured zero. -->
+    <p v-if="!hasBonus" class="text-text-dim text-xs italic px-1">
+      Speed bonus applies to back-to-back Basic uses only.
+    </p>
 
     <!-- Survey types in this zone — one card each -->
     <div v-if="typesInZone.length > 0" class="grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-3">
@@ -74,12 +79,17 @@ const typesInZone = computed(() =>
   props.analytics.survey_types.filter(t => (t.area ?? '(unknown)') === props.zone.area),
 )
 
+// survey-bonus-dark: mirrors the session-detail unavailable pattern —
+// aggregates without bonus stamps show unavailable, never a measured zero.
+const hasBonus = computed(() => props.zone.basic_uses_with_bonus > 0)
+
 const bonusRate = computed(() => {
-  if (props.zone.basic_uses === 0) return '—'
+  if (props.zone.basic_uses === 0 || props.zone.basic_uses_with_bonus === 0) return '—'
   return `${((props.zone.basic_uses_with_bonus / props.zone.basic_uses) * 100).toFixed(1)}%`
 })
 const bonusRateSub = computed(() => {
   if (props.zone.basic_uses === 0) return 'no basic surveys'
+  if (props.zone.basic_uses_with_bonus === 0) return 'bonus data unavailable'
   return `${props.zone.basic_uses_with_bonus} of ${props.zone.basic_uses} basic`
 })
 
