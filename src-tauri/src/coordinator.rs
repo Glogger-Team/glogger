@@ -1137,13 +1137,25 @@ impl<R: Runtime> DataIngestCoordinator<R> {
         let staged_inserted: usize = if staged.is_empty() {
             0
         } else {
-            let conn = self
-                .db_pool
-                .get_write()
-                .map_err(|e| format!("Database error: {}", e))?;
+            // A raw-batch failure returns before the drain ran: hand the
+            // taken twin slot back so the rewound replay starts from the
+            // same arming the first attempt saw (dropping it here would
+            // count a skip the replay would have collapsed).
+            let conn = match self.db_pool.get_write() {
+                Ok(conn) => conn,
+                Err(e) => {
+                    self.last_unknown_skill = last_unknown_skill;
+                    return Err(format!("Database error: {}", e));
+                }
+            };
             let excluded_channels = &self.settings.get().excluded_chat_channels;
-            insert_chat_messages(&conn, &staged, &log_file, excluded_channels)
-                .map_err(|e| format!("Failed to insert messages: {}", e))?
+            match insert_chat_messages(&conn, &staged, &log_file, excluded_channels) {
+                Ok(inserted) => inserted,
+                Err(e) => {
+                    self.last_unknown_skill = last_unknown_skill;
+                    return Err(format!("Failed to insert messages: {}", e));
+                }
+            }
         };
 
         for event in events {
@@ -3648,11 +3660,24 @@ mod retryable_switch_tests {
         let mut coord = coordinator(pool.clone(), &dir, &app);
         attach_chat(&mut coord, log);
 
+        // Arm the twin-collapse slot: the failing poll must hand it back
+        // so the replay starts from the same arming (a dropped slot
+        // would count a skip the replay would have collapsed).
+        coord.last_unknown_skill = Some(chat_status_dispatch::UnknownSkillSlot {
+            character: "Switcher".to_string(),
+            server: "Dreva".to_string(),
+            skill: "BogusSkill".to_string(),
+        });
+
         // Fault on: hold the single write connection so the raw insert's
         // checkout times out fast.
         let held = pool.get_write().expect("hold writes");
         assert!(coord.poll().is_err(), "poll must surface the raw failure");
         assert_eq!(coord.chat_batch_retries, 1);
+        assert!(
+            coord.last_unknown_skill.is_some(),
+            "twin slot restored for the replay"
+        );
         assert_eq!(
             chat_position(&coord),
             0,
