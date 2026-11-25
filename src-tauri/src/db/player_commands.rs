@@ -181,25 +181,6 @@ pub fn get_recent_sales(
 
 // ── Event Log Commands ────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
-pub struct LogEventInput {
-    pub event_type: String,
-    pub event_data: serde_json::Value,
-}
-
-#[tauri::command]
-pub fn log_event(db: State<'_, DbPool>, input: LogEventInput) -> Result<i64, String> {
-    let conn = db
-        .get_write()
-        .map_err(|e| format!("Database connection error: {e}"))?;
-
-    let event_data_json = serde_json::to_string(&input.event_data)
-        .map_err(|e| format!("Failed to serialize event data: {e}"))?;
-
-    queries::player_data::log_event(&conn, &input.event_type, &event_data_json)
-        .map_err(|e| format!("Failed to log event: {e}"))
-}
-
 #[derive(Serialize)]
 pub struct EventLogRecord {
     pub id: i64,
