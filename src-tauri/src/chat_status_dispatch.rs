@@ -1622,7 +1622,12 @@ fn accrue_currency_delta(db: &DbPool, character: &str, server: &str, amount: i64
 
 /// Naive UTC (`%Y-%m-%d %H:%M:%S`) → RFC3339 for `*_at` columns shared with
 /// wall-clock writers. Falls back to now() on unparseable input so a bad
-/// stamp never blocks the write.
+/// stamp never blocks the write. Unreachable by construction today: every
+/// caller passes `NaiveDateTime::format` output in this same shape (probe
+/// 2026-11-25 — books `observed`, both milking arms), so the fallback is
+/// belt-and-suspenders, not a live path. Do not "fix" the fallback without
+/// a malformed-stamp sighting; the phantom-row class it would feed (books
+/// anchor, milking key) has no observed trigger.
 fn utc_naive_to_rfc3339(event_ts: &str) -> String {
     match chrono::NaiveDateTime::parse_from_str(event_ts.trim(), "%Y-%m-%d %H:%M:%S") {
         Ok(dt) => chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc).to_rfc3339(),
