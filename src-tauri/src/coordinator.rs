@@ -1001,9 +1001,18 @@ impl DataIngestCoordinator {
         // a retry that still fails leaves the gain unattributed (an
         // in-window later use may still reclaim it via retro-claim).
         let mut survey_tag_retries: Vec<PendingSurveyTag> = Vec::new();
+
+        // The watcher's file name scopes per-line byte offsets to one log
+        // generation (chat logs are dated per-day files): the ledger guards'
+        // `file:offset` identity below. Reused by the tail batch insert.
+        let log_file = self
+            .chat_watcher
+            .as_ref()
+            .map(|w| w.get_file_name().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
         for event in events {
             match event {
-                LogEvent::ChatMessage(msg, session_tag) => {
+                LogEvent::ChatMessage(msg, session_tag, offset) => {
                     // Capture the local wall-clock timestamp BEFORE the UTC
                     // conversion below — Combat Wisdom / arena / poop dedup
                     // keys use local time to stay consistent with the chat-log
@@ -1014,6 +1023,14 @@ impl DataIngestCoordinator {
                     // Convert chat timestamp from local time to UTC
                     let mut msg = msg;
                     msg.timestamp = chat_local_to_utc(msg.timestamp, tz_offset);
+
+                    // Per-occurrence line identity for the ledger guards:
+                    // `file:offset` is stable across rescans (byte offsets
+                    // never move) and distinct per line even when two lines
+                    // are byte-identical (they share one raw row under
+                    // INSERT OR IGNORE, so a rowid could not separate them).
+                    let source_line_id: Option<String> =
+                        Some(format!("{log_file}:{offset}"));
 
                     // Catch-up vs live identity: the tag is the login session
                     // that produced the line; only when the file was resumed
@@ -1079,6 +1096,10 @@ impl DataIngestCoordinator {
                                 msg: &msg,
                                 local_ts: &local_ts,
                                 watch_rules: &self.settings.get().watch_rules,
+                                // Per-occurrence `file:offset` identity from
+                                // above: genuine same-second duplicates
+                                // insert, replays collapse.
+                                source_line_id,
                                 is_scan: false,
                                 is_live,
                             },
@@ -1492,13 +1513,6 @@ impl DataIngestCoordinator {
                 .db_pool
                 .get_write()
                 .map_err(|e| format!("Database error: {}", e))?;
-
-            // Use the actual file name from the watcher, not the position
-            let log_file = self
-                .chat_watcher
-                .as_ref()
-                .map(|w| w.get_file_name().to_string())
-                .unwrap_or_else(|| "unknown".to_string());
 
             let excluded_channels = &self.settings.get().excluded_chat_channels;
             let inserted = insert_chat_messages(&conn, &messages, &log_file, excluded_channels)

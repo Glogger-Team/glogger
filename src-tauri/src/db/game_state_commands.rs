@@ -2516,6 +2516,8 @@ mod tests {
                     msg: &msg,
                     local_ts: "2026-04-01 05:30:53",
                     watch_rules: &[],
+                    // FORCED (out-of-slice): new `DispatchCtx` field.
+                    source_line_id: None,
                     is_scan: false,
                     is_live: true,
                 },
