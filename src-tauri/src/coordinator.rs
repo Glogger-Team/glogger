@@ -3712,6 +3712,75 @@ mod retryable_switch_tests {
         assert_eq!(row_count(&pool, "chat_messages"), 2);
     }
 
+    /// Same pin as above but faulting the INSERT itself (not the pool
+    /// checkout): a BEFORE INSERT trigger aborts `insert_chat_messages`
+    /// while `get_write` succeeds, so the insert-arm restore — not just
+    /// the checkout-arm restore — is what the slot assertion exercises.
+    #[test]
+    fn raw_insert_failure_restores_slot_and_replays() {
+        let dir = tmpdir("insertfault");
+        let log = write_log(
+            &dir,
+            "Chat.log",
+            &[
+                "26-03-26 15:12:48\t[Guild] Mate: hello",
+                "26-03-26 15:13:02\t[Guild] Other: world",
+            ],
+        );
+        let end = std::fs::metadata(&log).expect("meta").len();
+        let pool = pool();
+        let app = tauri::test::mock_app();
+        let mut coord = coordinator(pool.clone(), &dir, &app);
+        attach_chat(&mut coord, log);
+
+        coord.last_unknown_skill = Some(chat_status_dispatch::UnknownSkillSlot {
+            character: "Switcher".to_string(),
+            server: "Dreva".to_string(),
+            skill: "BogusSkill".to_string(),
+        });
+
+        // Fault on: abort every raw row insert (checkout still succeeds).
+        // Guard dropped before polling so only the insert fails.
+        {
+            let conn = pool.get_write().expect("write conn");
+            conn.execute_batch(
+                "CREATE TRIGGER d5_47_inject_insert_failure BEFORE INSERT ON chat_messages
+                 BEGIN SELECT RAISE(ABORT, 'D5-47 injected insert failure'); END;",
+            )
+            .expect("inject trigger");
+        }
+        assert!(coord.poll().is_err(), "poll must surface the insert failure");
+        assert_eq!(coord.chat_batch_retries, 1);
+        assert!(
+            coord.last_unknown_skill.is_some(),
+            "twin slot restored by the insert-arm path"
+        );
+        assert_eq!(
+            chat_position(&coord),
+            0,
+            "failed batch rewinds to batch start"
+        );
+        assert_eq!(row_count(&pool, "chat_messages"), 0);
+        assert_eq!(row_count(&pool, "user_characters"), 0);
+        assert_eq!(row_count(&pool, "servers"), 0);
+
+        // Fault off: drop the trigger and the next poll replays the tail.
+        {
+            let conn = pool.get_write().expect("write conn");
+            conn.execute_batch("DROP TRIGGER d5_47_inject_insert_failure;")
+                .expect("remove trigger");
+        }
+        assert!(coord.poll().is_ok());
+        assert_eq!(coord.chat_batch_retries, 0);
+        assert_eq!(
+            row_count(&pool, "chat_messages"),
+            2,
+            "replayed tail is stored, not skipped"
+        );
+        assert_eq!(row_count(&pool, "user_characters"), 1);
+        assert_eq!(chat_position(&coord), end);
+    }
+
     /// A switch-flush raw failure stashes the target and completes on the
     /// next poll: bytes replay from the rewound old watcher, then the new
     /// watcher starts. (Failure order 2 of 2: flush-time vs poll-time.)
