@@ -485,6 +485,20 @@ impl ChatLogWatcher {
         std::mem::take(&mut self.raw_lines_buffer)
     }
 
+    /// Rewind the in-memory cursor so the next `poll` replays bytes it
+    /// already consumed (D5-47: the raw-batch insert failed after `poll`
+    /// advanced past the tail). Backward-only — a target at or past the
+    /// cursor is ignored, so a stale batch start can never skip live
+    /// bytes. Never touches the persisted cursor (the caller persists on
+    /// success) or the rotation flag. Watcher session state
+    /// (`player_name`) re-derives from the replayed markers, so no
+    /// snapshot is needed.
+    pub fn rewind_to(&mut self, position: u64) {
+        if position < self.current_position {
+            self.current_position = position;
+        }
+    }
+
     /// Check a line for session markers (login/logout).
     /// Returns a vec of LogEvents if the line is a session marker.
     fn check_session_marker(&mut self, line: &str) -> Vec<LogEvent> {
