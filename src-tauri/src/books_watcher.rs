@@ -512,36 +512,54 @@ pub(crate) enum BookKind {
     SkillReport,
     /// PlayerAge / HelpScreen: book upsert + structured stats ingest.
     Stats,
-    /// Book upsert only (GuildMotd, MessageOfTheDay, NewQuest, unknown,
+    /// Emotion-Harvesting Almanac backfill: the game saves it under the
+    /// `GardeningAlmanac_*` stem, so the stem alone lands it in `BookOnly` —
+    /// the content promotion in `classify_book_file` routes harvest bodies
+    /// here for book upsert + harvest snapshot import.
+    HarvestAlmanac,
+    /// Book upsert only (GuildMotd, MessageOfDay, NewQuest, unknown,
     /// ServerStatus, GardeningAlmanac — the watcher captures content but does
-    /// not duplicate the live almanac extraction).
+    /// not duplicate the live garden extraction).
     BookOnly,
 }
 
-/// Classify a Books-dir file by its stem. Returns the `book_type` used for
-/// the `game_state_books` upsert plus the ingest kind.
+/// Classify a Books-dir file by stem, with a content override for the
+/// Emotion-Harvesting Almanac. Returns the `book_type` used for the
+/// `game_state_books` upsert plus the ingest kind.
 ///
 /// Filename shapes seen on disk: `SkillReport_261001_212859`,
 /// `PlayerShopLog_260826_194723`, `NewQuestquest_45455_Name_260623_174509`
 /// (the quest book's stem prefix is `NewQuestquest`, normalized to
 /// `NewQuestBook` — a file-local book_type; these streams don't appear in any
 /// live `matches!` list).
-pub(crate) fn classify_book_file(stem: &str) -> (String, BookKind) {
+///
+/// Content override: the game saves the Emotion-Harvesting Almanac under
+/// the `GardeningAlmanac_*` file stem, indistinguishable by name from the
+/// gardening almanac, so a `BookOnly` stem carrying a harvest body
+/// (`Harvesting Focuses:`) promotes to `HarvestAlmanac`. The live JSON path
+/// keys on title instead (`Emotion-Harvesting Almanac` — coordinator arms,
+/// untouched here).
+pub(crate) fn classify_book_file(stem: &str, content: &str) -> (String, BookKind) {
     let prefix = stem.split('_').next().unwrap_or_default();
-    match prefix {
+    let (book_type, stem_kind) = match prefix {
         "PlayerShopLog" => ("PlayerShopLog".to_string(), BookKind::ShopLog),
         "SkillReport" => ("SkillReport".to_string(), BookKind::SkillReport),
         "PlayerAge" => ("PlayerAge".to_string(), BookKind::Stats),
         "HelpScreen" => ("HelpScreen".to_string(), BookKind::Stats),
         "NewQuestquest" => ("NewQuestBook".to_string(), BookKind::BookOnly),
         other => (other.to_string(), BookKind::BookOnly),
+    };
+    if stem_kind == BookKind::BookOnly && content.contains("Harvesting Focuses:") {
+        return (book_type, BookKind::HarvestAlmanac);
     }
+    (book_type, stem_kind)
 }
-/// Game timestamp from a `SkillReport_YYMMDD_HHMMSS` filename stem.
+/// Game timestamp from a `*_YYMMDD_HHMMSS` filename stem (SkillReport,
+/// PlayerAge/HelpScreen, timestamped misc books — same suffix shape).
 /// `None` for untimestamped files — those sort first (= oldest), and the
 /// bind writer treats `None` as oldest too, so an untimestamped backfill
 /// fills an empty table but never overwrites a timestamped bind.
-fn skill_report_capture_at(stem: &str) -> Option<NaiveDateTime> {
+fn book_stem_capture_at(stem: &str) -> Option<NaiveDateTime> {
     let groups: Vec<&str> = stem.split('_').collect();
     if groups.len() < 2 {
         return None;
@@ -573,12 +591,12 @@ pub(crate) fn process_book_file(
         .and_then(|s| s.to_str())
         .ok_or_else(|| "filename has no stem".to_string())?
         .to_string();
-    let (book_type, kind) = classify_book_file(&stem);
     let title = stem;
 
     // Normalize escaped-newline content (live-path shape) into real newlines.
     // File content already has real newlines; this is a no-op there.
     let content = crate::coordinator::normalize_book_content(content);
+    let (book_type, kind) = classify_book_file(&title, &content);
 
     match kind {
         BookKind::ShopLog => ingest_shop_log_file(&title, &content, character, db, app),
@@ -596,7 +614,7 @@ pub(crate) fn process_book_file(
             // first and fill only an empty row. Thread it into every
             // stamping path so a backfilled older book never clobbers
             // newer live state.
-            let captured_at = skill_report_capture_at(&title);
+            let captured_at = book_stem_capture_at(&title);
 
             // Live path persists ALL SkillReports to game_state_books first,
             // then runs content-specific branches. Mirror that.
@@ -647,7 +665,7 @@ pub(crate) fn process_book_file(
             // Same `*_YYMMDD_HHMMSS` suffix shape as SkillReport stems: the
             // book's own observation time, so an older backfilled report
             // never clobbers newer live stats.
-            let captured_at = skill_report_capture_at(&title);
+            let captured_at = book_stem_capture_at(&title);
             persist_book_content(db, app, character, server, &book_type, &title, &content, captured_at)?;
             let n = ingest_report_stats_content(db, app, character, server, &book_type, &content, captured_at)
                 .map_err(|e| format!("stats import failed: {e}"))?;
@@ -657,10 +675,37 @@ pub(crate) fn process_book_file(
                 Ok("book + stats ingested".to_string())
             }
         }
+        BookKind::HarvestAlmanac => {
+            // Same book row the stem alone would have upserted (book_type
+            // stays stem-derived, so no duplicate rows), plus the harvest
+            // snapshot import the live title arm runs.
+            let captured_at = book_stem_capture_at(&title);
+            persist_book_content(db, app, character, server, &book_type, &title, &content, captured_at)?;
+            // Space-format stamp for the parser's relative-time math;
+            // untimestamped stems degrade to the oldest instant so a real
+            // capture always supersedes them (same None-oldest rule as the
+            // bind writer).
+            let captured_str = captured_at
+                .map(|c| c.format("%Y-%m-%d %H:%M:%S").to_string())
+                .unwrap_or_else(|| "0001-01-01 00:00:00".to_string());
+            let conn = db
+                .get_write()
+                .map_err(|e| format!("Database connection error: {e}"))?;
+            let n = crate::db::game_state_commands::import_harvest_almanac(
+                &conn, character, server, &content, &captured_str,
+            )
+            .map_err(|e| format!("harvest almanac import failed: {e}"))?;
+            if n > 0 {
+                app.emit("game-state-updated", vec!["harvest_almanac"]).ok();
+                Ok(format!("book upserted, harvest almanac +{n}"))
+            } else {
+                Ok("book upserted".to_string())
+            }
+        }
         BookKind::BookOnly => {
             // Timestamped stems (e.g. GuildMotd_260712_173954) carry the
             // book's observation time; untimestamped ones fill empty only.
-            let captured_at = skill_report_capture_at(&title);
+            let captured_at = book_stem_capture_at(&title);
             persist_book_content(db, app, character, server, &book_type, &title, &content, captured_at)?;
             Ok("book upserted".to_string())
         }
@@ -857,7 +902,8 @@ mod tests {
             ),
         ];
         for (stem, (book_type, kind)) in cases {
-            let (bt, k) = classify_book_file(stem);
+            // No harvest body: stem alone decides, as before.
+            let (bt, k) = classify_book_file(stem, "");
             assert_eq!(bt, book_type, "book_type for {stem}");
             assert_eq!(k, kind, "kind for {stem}");
         }
@@ -865,15 +911,45 @@ mod tests {
 
     #[test]
     fn classify_unknown_prefix_is_book_only() {
-        let (bt, kind) = classify_book_file("WhateverElse_261001_101010");
+        let (bt, kind) = classify_book_file("WhateverElse_261001_101010", "");
         assert_eq!(bt, "WhateverElse");
         assert_eq!(kind, BookKind::BookOnly);
     }
 
     #[test]
     fn classify_defensive_prefixes() {
-        let (bt, kind) = classify_book_file("ServerStatus_261001_101010");
+        let (bt, kind) = classify_book_file("ServerStatus_261001_101010", "");
         assert_eq!(bt, "ServerStatus");
+        assert_eq!(kind, BookKind::BookOnly);
+    }
+
+    #[test]
+    fn classify_promotes_harvest_body_to_harvest_almanac() {
+        // The game saves the Emotion-Harvesting Almanac under the
+        // `GardeningAlmanac_*` stem: the stem alone says BookOnly, the
+        // harvest body promotes it. Shape mirrors the live JSON body
+        // (game_state_commands harvest fixture).
+        let harvest = "<h1>Current Harvesting Focuses:</h1>\n<indent=20><h2>Ghouls</h2></indent>\n<indent=20>Seek out ghouls.</indent>\n<indent=20><i>Ends in 1 hour 42 minutes</i></indent>";
+        let (bt, kind) = classify_book_file("GardeningAlmanac_261124_211737", harvest);
+        assert_eq!(bt, "GardeningAlmanac");
+        assert_eq!(kind, BookKind::HarvestAlmanac);
+        // Promotion is content-driven, not stem-driven: any BookOnly stem
+        // carrying a harvest body routes to the harvest arm ...
+        let (bt, kind) = classify_book_file("WhateverElse_261001_101010", harvest);
+        assert_eq!(bt, "WhateverElse");
+        assert_eq!(kind, BookKind::HarvestAlmanac);
+        // ... but never across arms: a SkillReport-shaped file keeps its
+        // ingest even with a harvest marker in the body ...
+        let (bt, kind) = classify_book_file("SkillReport_261001_212859", harvest);
+        assert_eq!(bt, "SkillReport");
+        assert_eq!(kind, BookKind::SkillReport);
+        // ... and a GardeningAlmanac file without a harvest body stays
+        // BookOnly (garden backfill is out of scope).
+        let binds = "Teleportation Status:\n\nPrimary Bind Location: Serbule\n";
+        let (bt, kind) = classify_book_file("GardeningAlmanac_261124_211737", binds);
+        assert_eq!(bt, "GardeningAlmanac");
+        assert_eq!(kind, BookKind::BookOnly);
+        let (_, kind) = classify_book_file("GardeningAlmanac_261124_211737", "");
         assert_eq!(kind, BookKind::BookOnly);
     }
 
@@ -1290,7 +1366,7 @@ mod tests {
 
     #[test]
     fn skill_report_suffix_parses_game_time() {
-        let at = skill_report_capture_at("SkillReport_261118_121000");
+        let at = book_stem_capture_at("SkillReport_261118_121000");
         assert_eq!(
             at.map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string()),
             Some("2026-11-18 12:10:00".to_string())
@@ -1299,9 +1375,9 @@ mod tests {
 
     #[test]
     fn skill_report_suffix_rejects_untimestamped() {
-        assert_eq!(skill_report_capture_at("SkillReport"), None);
-        assert_eq!(skill_report_capture_at("SkillReport_notes"), None);
-        assert_eq!(skill_report_capture_at("SkillReport_26118_12100"), None);
+        assert_eq!(book_stem_capture_at("SkillReport"), None);
+        assert_eq!(book_stem_capture_at("SkillReport_notes"), None);
+        assert_eq!(book_stem_capture_at("SkillReport_26118_12100"), None);
     }
 
     #[test]
@@ -1311,7 +1387,7 @@ mod tests {
         // misc-book stems parse, untimestamped ones yield None
         // (fill-empty-only downstream).
         let at = |stem: &str| {
-            skill_report_capture_at(stem).map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
+            book_stem_capture_at(stem).map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())
         };
         assert_eq!(
             at("PlayerAge_261118_121000"),
