@@ -1277,6 +1277,41 @@ pub fn get_pooping_stats_for<C: crate::db::DbRead + ?Sized>(
     })
 }
 
+// ── Timestamp contract: space-format naive UTC ─────────────────────────────
+///
+/// Every timestamp this module writes or compares is `"YYYY-MM-DD HH:MM:SS"`
+/// naive UTC (the chat pipeline's shape — what all SQL predicates assume).
+/// Two legacy families reach these writers: RFC3339 (`2026-05-02T03:59:25.322`
+/// `+00:00`, chrono convenience in later modules) and time-only (`19:29:10`,
+/// Player.log era). `normalize_contract_ts` maps the T-family onto the
+/// contract (fraction + offset truncated — the contract is
+/// second-granularity and every RFC3339 writer is chrono-`Utc`, so the
+/// offset is always `+00:00`/`Z`); anything else passes through
+/// byte-identical rather than being dropped or invented — a time-only stamp
+/// has no recoverable date, and inventing one would silently corrupt
+/// ordering. Migration v98 backfills the stored T-family rows; time-only
+/// rows stay until a date source exists, and the window predicates that
+/// must match them are family-aware (`kill_tracking_commands.rs`).
+///
+/// `parse_contract_ts` is the read side: fixed-format Rust parses must
+/// accept both live families explicitly — never silently drop the other one.
+pub(crate) fn parse_contract_ts(s: &str) -> Option<chrono::NaiveDateTime> {
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Some(dt);
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt.naive_utc());
+    }
+    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").ok()
+}
+
+pub(crate) fn normalize_contract_ts(s: &str) -> String {
+    match parse_contract_ts(s) {
+        Some(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+        None => s.to_string(),
+    }
+}
+
 // ── Harvest Almanac ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -1355,9 +1390,11 @@ fn strip_almanac_tags(s: &str) -> String {
 /// into per-monster focuses. Current/upcoming split comes from the section
 /// headers; `event_start`/`event_end` are absolute (`%Y-%m-%d %H:%M:%S`)
 /// computed from `captured_at` plus the relative text (NULL when unparseable).
+/// `captured_at` accepts both contract families (space-format and RFC3339) —
+/// a T-family capture must still yield event math, never silent NULLs.
 pub fn parse_harvest_almanac_body(body: &str, captured_at: &str) -> Vec<HarvestFocus> {
     let upcoming_at = body.find("Upcoming Harvesting Focuses:").unwrap_or(usize::MAX);
-    let base = chrono::NaiveDateTime::parse_from_str(captured_at, "%Y-%m-%d %H:%M:%S");
+    let base = parse_contract_ts(captured_at);
     let mut out = Vec::new();
     let mut search_from = 0usize;
     while let Some(rel) = body[search_from..].find("<h2>") {
@@ -1394,12 +1431,12 @@ pub fn parse_harvest_almanac_body(body: &str, captured_at: &str) -> Vec<HarvestF
         let is_current = h2 < upcoming_at;
         let (event_start, event_end) = match timing.as_deref() {
             Some(t) if t.starts_with("Starts in ") => (
-                relative_to(&base, t.trim_start_matches("Starts in ")),
+                relative_to(base, t.trim_start_matches("Starts in ")),
                 None,
             ),
             Some(t) if t.starts_with("Ends in ") => (
                 None,
-                relative_to(&base, t.trim_start_matches("Ends in ")),
+                relative_to(base, t.trim_start_matches("Ends in ")),
             ),
             _ => (None, None),
         };
@@ -1425,6 +1462,11 @@ pub fn import_harvest_almanac(
     body: &str,
     captured_at: &str,
 ) -> Result<usize, String> {
+    // Contract: persist space-format naive UTC. A T-family capture normalizes
+    // here so the snapshot, the recency guard below, and the event math all
+    // share one shape (migration v98 backfills the stored rows).
+    let normalized = normalize_contract_ts(captured_at);
+    let captured_at: &str = &normalized;
     // A truncated (unclosed) <h2> means a partial parse — refuse to replace
     // the existing snapshot (no-op, Ok(0)) rather than deleting omitted focuses.
     if body.rfind("<h2>").map(|h| !body[h..].contains("</h2>")).unwrap_or(false) {
@@ -1549,9 +1591,11 @@ type GardenSeasonKey = (String, String, i64, Option<String>, Option<String>);
 /// per-crop seasons. Current/upcoming split comes from the section headers;
 /// `event_start`/`event_end` are absolute (`%Y-%m-%d %H:%M:%S`) computed from
 /// `captured_at` plus the relative text (NULL when unparseable).
+/// `captured_at` accepts both contract families (space-format and RFC3339) —
+/// a T-family capture must still yield event math, never silent NULLs.
 pub fn parse_garden_almanac_body(body: &str, captured_at: &str) -> Vec<GardenSeason> {
     let upcoming_at = body.find("Upcoming Gardening Events:").unwrap_or(usize::MAX);
-    let base = chrono::NaiveDateTime::parse_from_str(captured_at, "%Y-%m-%d %H:%M:%S");
+    let base = parse_contract_ts(captured_at);
     let mut out = Vec::new();
     let mut search_from = 0usize;
     while let Some(rel) = body[search_from..].find("<h2>") {
@@ -1583,12 +1627,12 @@ pub fn parse_garden_almanac_body(body: &str, captured_at: &str) -> Vec<GardenSea
         let is_current = h2 < upcoming_at;
         let (event_start, event_end) = match timing.as_deref() {
             Some(t) if t.starts_with("Starts in ") => (
-                relative_to(&base, t.trim_start_matches("Starts in ")),
+                relative_to(base, t.trim_start_matches("Starts in ")),
                 None,
             ),
             Some(t) if t.starts_with("Ends in ") => (
                 None,
-                relative_to(&base, t.trim_start_matches("Ends in ")),
+                relative_to(base, t.trim_start_matches("Ends in ")),
             ),
             _ => (None, None),
         };
@@ -1605,11 +1649,11 @@ pub fn parse_garden_almanac_body(body: &str, captured_at: &str) -> Vec<GardenSea
 
 /// Add a parsed relative duration ("6 hours 12 minutes", "1 day 6 hours")
 /// to a base timestamp. Returns `None` when either side is unparseable.
-fn relative_to(
-    base: &Result<chrono::NaiveDateTime, chrono::ParseError>,
-    rel: &str,
-) -> Option<String> {
-    let base = base.as_ref().ok()?;
+/// `base` is the contract-family parse of the capture stamp (`None` when the
+/// capture itself is unparseable — the callers then yield NULL event bounds,
+/// never a silently wrong absolute time).
+fn relative_to(base: Option<chrono::NaiveDateTime>, rel: &str) -> Option<String> {
+    let base = base?;
     let mut secs: i64 = 0;
     let mut num: Option<i64> = None;
     for tok in rel.split_whitespace() {
@@ -1649,6 +1693,13 @@ pub fn import_garden_almanac(
     body: &str,
     captured_at: &str,
 ) -> Result<usize, String> {
+    // Contract: persist space-format naive UTC. A T-family capture normalizes
+    // here so the snapshot, the history rows, and the recency guard below all
+    // share one shape (migration v98 backfills the stored rows). Without this
+    // a T-family capture sorts *after* same-day space rows at position 10
+    // (`T` > ` `) and the recency guard below misfires.
+    let normalized = normalize_contract_ts(captured_at);
+    let captured_at: &str = &normalized;
     // A truncated (unclosed) <h2> means a partial parse — refuse to replace
     // the existing snapshot (no-op, Ok(0)) rather than deleting omitted seasons.
     if body.rfind("<h2>").map(|h| !body[h..].contains("</h2>")).unwrap_or(false) {
@@ -3092,18 +3143,18 @@ mod tests {
 
     #[test]
     fn relative_to_rejects_absurd_durations_without_panic() {
-        let base = chrono::NaiveDateTime::parse_from_str("2026-11-17 16:47:31", "%Y-%m-%d %H:%M:%S");
+        let base = parse_contract_ts("2026-11-17 16:47:31");
         // Valid duration still resolves.
         assert_eq!(
-            relative_to(&base, "1 day 6 hours").as_deref(),
+            relative_to(base, "1 day 6 hours").as_deref(),
             Some("2026-11-18 22:47:31")
         );
         // Absurd inputs return None instead of panicking on overflow.
-        assert_eq!(relative_to(&base, "1000000000 days"), None);
-        assert_eq!(relative_to(&base, "999999999999 hours"), None);
+        assert_eq!(relative_to(base, "1000000000 days"), None);
+        assert_eq!(relative_to(base, "999999999999 hours"), None);
         // chrono stores millis: 7.8e17 s passes i64 seconds math but exceeds
         // i64::MAX/1000, so Duration::seconds would panic — try_seconds wins.
-        assert_eq!(relative_to(&base, "9000000000000 days"), None);
+        assert_eq!(relative_to(base, "9000000000000 days"), None);
     }
 
     #[test]
@@ -3132,5 +3183,90 @@ mod tests {
         assert!((sums["NPC_Goss"] - 5.0).abs() < 1e-9);
         // A session row for another character is no session at all.
         assert!(session_favor_sums(&conn, "Bob", "Dreva").unwrap().is_empty());
+    }
+    #[test]
+    fn contract_ts_normalizes_t_family_and_passes_the_rest_through() {
+        // Space-format is already the contract: byte-identical.
+        assert_eq!(
+            normalize_contract_ts("2026-04-13 22:01:42"),
+            "2026-04-13 22:01:42"
+        );
+        // RFC3339 with fraction + offset collapses to contract seconds.
+        assert_eq!(
+            normalize_contract_ts("2026-05-02T03:59:25.322+00:00"),
+            "2026-05-02 03:59:25"
+        );
+        assert_eq!(
+            normalize_contract_ts("2026-05-02T03:59:25Z"),
+            "2026-05-02 03:59:25"
+        );
+        // Bare-T (no offset) still parses — the separator is the signal.
+        assert_eq!(
+            normalize_contract_ts("2026-05-02T03:59:25"),
+            "2026-05-02 03:59:25"
+        );
+        // Time-only has no recoverable date: pass through, never invent one.
+        assert_eq!(normalize_contract_ts("19:29:10"), "19:29:10");
+        // Unparseable input passes through rather than becoming NULL/empty —
+        // writers must never silently destroy a stamp they don't understand.
+        assert_eq!(normalize_contract_ts("Fri Apr 24 04:46"), "Fri Apr 24 04:46");
+        assert_eq!(normalize_contract_ts(""), "");
+    }
+
+    #[test]
+    fn garden_almanac_rfc3339_capture_yields_same_event_math() {
+        // The census mixed family: a T-family capture must produce the same
+        // absolute event bounds as its space twin — the old fixed-format
+        // parse dropped the T-family to NULL event bounds (silent no-math).
+        let body = "Upcoming Gardening Events:\
+            <h2>Barley Season in Gazluk</h2><i>Ends in 6 hours 12 minutes</i>";
+        let space = parse_garden_almanac_body(body, "2026-11-17 16:47:31");
+        let rfc = parse_garden_almanac_body(body, "2026-11-17T16:47:31.000+00:00");
+        assert_eq!(space.len(), 1);
+        assert_eq!(space[0].event_end.as_deref(), Some("2026-11-17 22:59:31"));
+        assert_eq!(rfc.len(), space.len());
+        assert_eq!(rfc[0].event_end, space[0].event_end);
+        assert_eq!(rfc[0].event_start, space[0].event_start);
+    }
+
+    #[test]
+    fn garden_import_normalizes_capture_and_rescans_converge_across_families() {
+        let conn = setup();
+        let body = "Upcoming Gardening Events:\
+            <h2>Barley Season in Gazluk</h2><i>Ends in 6 hours 12 minutes</i>";
+        // T-family capture persists as space-format contract time.
+        let n = import_garden_almanac(&conn, "T", "Dreva", body, "2026-11-17T16:47:31+00:00")
+            .unwrap();
+        assert_eq!(n, 1);
+        let stored: String = conn
+            .query_row(
+                "SELECT captured_at FROM garden_almanac WHERE character_name = 'T'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "2026-11-17 16:47:31");
+        let hist_stored: String = conn
+            .query_row(
+                "SELECT captured_at FROM garden_almanac_history WHERE character_name = 'T'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hist_stored, "2026-11-17 16:47:31");
+        // The space-format twin of the same observation is an identical
+        // re-import (rescan): no-op, no duplicate history — the families
+        // converge on one stored shape instead of churning the snapshot.
+        let n = import_garden_almanac(&conn, "T", "Dreva", body, "2026-11-17 16:47:31")
+            .unwrap();
+        assert_eq!(n, 0);
+        let hist: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM garden_almanac_history WHERE character_name = 'T'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hist, 1);
     }
 }

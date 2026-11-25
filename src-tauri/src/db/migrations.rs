@@ -519,6 +519,10 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         migration_v97_favor_source_line(conn)?;
         super::record_migration(conn, 97)?;
     }
+    if current_version < 98 {
+        migration_v98_timestamp_space_contract(conn)?;
+        super::record_migration(conn, 98)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1780,6 +1784,80 @@ fn migration_v97_favor_source_line(conn: &Connection) -> Result<()> {
             ON favor_events(character_name, server_name, npc_key, timestamp, delta,
                             COALESCE(source_line_id, ''));",
     )?;
+    Ok(())
+}
+
+/// Migration V98: normalize stored timestamps to the space-format naive-UTC contract.
+///
+/// Census 2026-11-24: three families coexist — space-format naive UTC
+/// (`2026-04-13 22:01:42`, the chat pipeline, what every SQL predicate
+/// assumes), RFC3339 (`2026-05-02T03:59:25.322+00:00`, chrono convenience in
+/// later modules), and time-only legacy (`19:29:10`, Player.log era). Two
+/// columns mix the first two (`garden_almanac_history.*` 30/15/45 T vs 6/2/8
+/// space, `words_of_power.discovered_at` 419 T vs 10 space): at string
+/// position 10 a space (0x20) sorts before `T` (0x54), so same-day T-rows
+/// misorder against space rows (history `ORDER BY captured_at DESC`, WoP
+/// `ORDER BY discovered_at DESC`) and fixed-format Rust parses dropped the
+/// other family.
+///
+/// This migration rewrites the T-family in place —
+/// `substr(replace(col, 'T', ' '), 1, 19)` — across every census column that
+/// carries event time. The rewrite is lossless for everything the writers
+/// produce: the contract is second-granularity and every RFC3339 writer is
+/// chrono-`Utc`, so the offset is always `+00:00`/`Z` and the fraction is
+/// sub-second noise below key granularity. Time-only rows are intentionally
+/// untouched: their date is unrecoverable, and inventing one would silently
+/// corrupt ordering — the window predicates that must match them are
+/// family-aware instead (`latest_eligible_kill_id`,
+/// `link_kill_loot_for_kill`). Writers normalize at the edge going forward
+/// (`normalize_contract_ts` in `game_state_commands.rs`).
+fn migration_v98_timestamp_space_contract(conn: &Connection) -> Result<()> {
+    // (table, column) pairs carrying event time, per the census. Space and
+    // time-only rows contain no 'T' and never match the filter; NULLs never
+    // match LIKE.
+    const COLUMNS: &[(&str, &str)] = &[
+        ("enemy_kills", "killed_at"),
+        ("enemy_kill_loot", "receipt_ts"),
+        ("item_transactions", "timestamp"),
+        ("garden_almanac", "captured_at"),
+        ("garden_almanac", "event_start"),
+        ("garden_almanac", "event_end"),
+        ("garden_almanac_history", "captured_at"),
+        ("garden_almanac_history", "event_start"),
+        ("garden_almanac_history", "event_end"),
+        ("harvest_almanac", "captured_at"),
+        ("harvest_almanac", "event_start"),
+        ("harvest_almanac", "event_end"),
+        ("words_of_power", "discovered_at"),
+        ("corpse_extracts", "extracted_at"),
+        ("farming_sessions", "start_time"),
+        ("farming_sessions", "end_time"),
+        ("stall_events", "event_timestamp"),
+        ("stall_events", "event_at"),
+        ("stall_events", "log_timestamp"),
+    ];
+    for (table, column) in COLUMNS {
+        // Minimal-fixture guard (same as v80/v96/v97): skip absent tables,
+        // and absent columns on partial-shape fixtures.
+        let has_column: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2)",
+                [table, column],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        if !has_column {
+            continue;
+        }
+        // Table/column names come from the fixed const list above (never user
+        // input), so `format!` here carries no injection shape; the SQL-prepare
+        // gate skips dynamic table names by design.
+        let sql = format!(
+            "UPDATE {table} SET {column} = substr(replace({column}, 'T', ' '), 1, 19) \
+             WHERE {column} LIKE '%T%'"
+        );
+        conn.execute(&sql, [])?;
+    }
     Ok(())
 }
 
@@ -5037,13 +5115,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            97,
+            98,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 97);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 98);
     }
 
     #[test]
@@ -5166,13 +5244,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 97) plus the purge itself on the three aggregate source tables.
+        // 98) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 97, "migration chain head");
+        assert_eq!(head, 98, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -5218,8 +5296,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 97 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id + v97 favor source-line id). Repair: a
+        // Chain wiring: full run_migrations head must be 98 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id + v97 favor source-line id + v98 timestamp space contract). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -5227,7 +5305,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 97, "migration chain head");
+        assert_eq!(head, 98, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -6187,5 +6265,97 @@ mod tests {
         migration_v97_favor_source_line(&bare).unwrap();
     }
 
+    #[test]
+    fn v98_normalizes_t_family_leaves_space_and_time_only_and_repairs_order() {
+        // Census shapes: T-family with fraction+offset, plain space, bare-T,
+        // Zulu, time-only legacy, and NULL event bounds.
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE words_of_power (id INTEGER PRIMARY KEY, discovered_at TEXT NOT NULL);
+             CREATE TABLE garden_almanac_history (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 crop_name TEXT NOT NULL,
+                 captured_at TEXT NOT NULL,
+                 event_start TEXT
+             );
+             CREATE TABLE enemy_kills (id INTEGER PRIMARY KEY AUTOINCREMENT, killed_at TEXT NOT NULL);
+             CREATE TABLE item_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL);
+             INSERT INTO words_of_power (discovered_at) VALUES
+                 ('2026-05-02T03:59:25.322+00:00'),
+                 ('2026-04-13 22:01:42');
+             INSERT INTO garden_almanac_history (crop_name, captured_at, event_start) VALUES
+                 ('Barley', '2026-11-17T12:00:00+00:00', '2026-11-17T22:59:31Z'),
+                 ('Carrot', '2026-11-17 16:47:31', NULL);
+             INSERT INTO enemy_kills (killed_at) VALUES ('19:29:10'), ('2026-04-13T19:29:10');",
+        )
+        .unwrap();
+        // Pre-migration the earlier T-row misorders: 'T' (0x54) sorts after
+        // ' ' (0x20) at position 10, so the noon T-capture reads NEWER than
+        // the 16:47 space capture taken almost five hours later.
+        let first_before: String = c
+            .query_row(
+                "SELECT crop_name FROM garden_almanac_history ORDER BY captured_at DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(first_before, "Barley", "T-row floats above the later space row");
+        migration_v98_timestamp_space_contract(&c).unwrap();
+        let wop: String = c
+            .query_row(
+                "SELECT GROUP_CONCAT(discovered_at, '|') FROM (SELECT discovered_at FROM words_of_power ORDER BY id)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            wop,
+            "2026-05-02 03:59:25|2026-04-13 22:01:42",
+            "T-family collapses to contract seconds, space rows byte-identical"
+        );
+        let garden: Vec<(String, String, Option<String>)> = c
+            .prepare(
+                "SELECT crop_name, captured_at, event_start FROM garden_almanac_history ORDER BY captured_at DESC",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            garden,
+            vec![
+                ("Carrot".to_string(), "2026-11-17 16:47:31".to_string(), None),
+                ("Barley".to_string(), "2026-11-17 12:00:00".to_string(), Some("2026-11-17 22:59:31".to_string())),
+            ],
+            "post-migration history orders chronologically; NULL bounds survive"
+        );
+        // Time-only legacy keeps its bytes (no date to recover); the bare-T
+        // kill normalizes.
+        let kills: Vec<String> = c
+            .prepare("SELECT killed_at FROM enemy_kills ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(kills, vec!["19:29:10", "2026-04-13 19:29:10"]);
+        // Absent tables (minimal fixtures) and partial shapes stay no-ops.
+        let bare = Connection::open_in_memory().unwrap();
+        migration_v98_timestamp_space_contract(&bare).unwrap();
+        bare.execute_batch("CREATE TABLE enemy_kills (id INTEGER PRIMARY KEY);")
+            .unwrap();
+        migration_v98_timestamp_space_contract(&bare).unwrap();
+        // Idempotent: a second run rewrites nothing.
+        migration_v98_timestamp_space_contract(&c).unwrap();
+        let wop_again: String = c
+            .query_row(
+                "SELECT GROUP_CONCAT(discovered_at, '|') FROM (SELECT discovered_at FROM words_of_power ORDER BY id)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(wop_again, "2026-05-02 03:59:25|2026-04-13 22:01:42");
+    }
 }
 
