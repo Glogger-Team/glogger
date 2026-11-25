@@ -7,6 +7,7 @@
 ///   `source_label` so a re-import of the same file replaces rather than
 ///   double-counts
 /// - "combined": mine + imported, summed
+use super::game_state_commands::normalize_contract_ts;
 use super::{DbPool, DbRead};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -289,6 +290,13 @@ pub fn record_enemy_kill(
     zone: Option<&str>,
     killed_at: &str,
 ) -> Result<Option<i64>, String> {
+    // Contract: persist space-format naive UTC. The live chat pipeline already
+    // stamps it, but chrono-RFC3339 callers normalize here so the stored row
+    // and the NOT-EXISTS dedup key share one shape (migration v98 backfills
+    // the stored T-family rows; time-only passes through — see the window
+    // predicates below).
+    let killed_at_norm = normalize_contract_ts(killed_at);
+    let killed_at: &str = &killed_at_norm;
     let inserted = conn
         .execute(
             "INSERT INTO enemy_kills
@@ -341,6 +349,18 @@ pub fn record_enemy_kill(
 /// dedup UNIQUE index makes `killed_at` decisive for API-reachable rows; the
 /// `id` half keeps the query total regardless). Shared by both link
 /// directions so each receipt resolves to exactly one kill.
+///
+/// Family-aware: Player.log-era kills carry time-only `killed_at` (no date),
+/// for which the lexicographic arm below is vacuous or year-2000 on one bound
+/// or the other (`datetime('19:29:10','-30 minutes')` is `2000-01-01 …`, and a
+/// `2x:xx:xx` stamp sorts *after* any same-day full stamp at byte 1) — a
+/// silent no-match against full-date receipts. Those rows take the `time()`
+/// arm instead: same entity, time-of-day within the window. The arms are
+/// independent disjuncts (not a shared outer bound) so neither family's
+/// shape leaks into the other's comparison. Midnight wraparound (kill 23:55,
+/// receipt 00:05) misses there too — an accepted limit on ancient rows,
+/// documented, not a silent regression: the full-format path is
+/// byte-identical to before.
 fn latest_eligible_kill_id(
     conn: &rusqlite::Connection,
     character: &str,
@@ -348,12 +368,16 @@ fn latest_eligible_kill_id(
     enemy_entity_id: &str,
     receipt_ts: &str,
 ) -> Result<Option<i64>, String> {
+    let receipt_norm = normalize_contract_ts(receipt_ts);
+    let receipt_ts: &str = &receipt_norm;
     conn.query_row(
         "SELECT id FROM enemy_kills
           WHERE character_name = ?1 AND server_name = ?2
             AND enemy_entity_id = ?3
-            AND killed_at <= ?4
-            AND killed_at >= datetime(?4, '-30 minutes')
+            AND ((killed_at <= ?4 AND killed_at >= datetime(?4, '-30 minutes'))
+                 OR (length(killed_at) = 8
+                     AND time(killed_at) <= time(?4)
+                     AND time(killed_at) >= time(?4, '-30 minutes')))
           ORDER BY killed_at DESC, id DESC LIMIT 1",
         rusqlite::params![character, server, enemy_entity_id, receipt_ts],
         |row| row.get(0),
@@ -377,6 +401,11 @@ pub fn link_kill_loot_for_kill(
     enemy_entity_id: &str,
     killed_at: &str,
 ) -> Result<usize, String> {
+    // Contract: normalize the incoming stamp so the kill lookup below and the
+    // receipt scan share one shape with the stored rows (migration v98
+    // backfills the T-family; time-only passes through to the `time()` scan).
+    let killed_at_norm = normalize_contract_ts(killed_at);
+    let killed_at: &str = &killed_at_norm;
     // Same-identity rows are unique via the `record_enemy_kill` dedupe; the
     // `id` tie-break keeps the lookup total (newest wins) if duplicates ever
     // land directly, matching the receipt-side resolution below.
@@ -397,15 +426,31 @@ pub fn link_kill_loot_for_kill(
     // Per-receipt timestamps: DISTINCT (item, qty) alone cannot resolve which
     // kill a receipt belongs to when two kills share the window, so resolve
     // each receipt row and keep only the ones this kill wins.
-    let mut stmt = conn
-        .prepare(
+    // Time-only legacy kills carry no date: the lexicographic window below
+    // can never match them (`datetime('19:29:10','+30 minutes')` is year-2000,
+    // so the scan was a silent no-op on exactly those kills). Those rows scan
+    // by time-of-day instead — still scoped by character/server/entity, so the
+    // per-receipt `latest_eligible_kill_id` resolution below stays precise.
+    // Two static statements (not one `format!` predicate) so the SQL-prepare
+    // gate still resolves every DML statically.
+    let mut stmt = if killed_at.len() == 8 {
+        conn.prepare(
+            "SELECT DISTINCT item_name, quantity, timestamp FROM item_transactions
+              WHERE character_name = ?1 AND server_name = ?2
+                AND from_entity_id = ?3
+                AND time(timestamp) >= time(?4)
+                AND time(timestamp) <= time(?4, '+30 minutes')",
+        )
+    } else {
+        conn.prepare(
             "SELECT DISTINCT item_name, quantity, timestamp FROM item_transactions
               WHERE character_name = ?1 AND server_name = ?2
                 AND from_entity_id = ?3
                 AND timestamp >= ?4
                 AND timestamp <= datetime(?4, '+30 minutes')",
         )
-        .map_err(|e| format!("Failed to prepare receipt lookup: {e}"))?;
+    }
+    .map_err(|e| format!("Failed to prepare receipt lookup: {e}"))?;
     let rows: Vec<(String, i64, String)> = stmt
         .query_map(
             rusqlite::params![character, server, enemy_entity_id, killed_at],
@@ -480,6 +525,11 @@ pub fn link_kill_loot(
     item_name: &str,
     quantity: i64,
 ) -> Result<bool, String> {
+    // Contract: the stored `receipt_ts` is space-format naive UTC — normalize
+    // the incoming receipt first so the link key and the `latest_eligible`
+    // resolution below share one shape (migration v98 backfills the rest).
+    let receipt_norm = normalize_contract_ts(receipt_ts);
+    let receipt_ts: &str = &receipt_norm;
     // Distinguishable failure: a missing row is `Ok(false)` (unlooted kill
     // or a kill line that never arrived); a DB error propagates instead of
     // masquerading as "no match". Resolution matches the kill side
@@ -2902,5 +2952,73 @@ mod tests {
             .expect("unknown-zone entry");
         assert_eq!(unknown.total_kills, 4);
         assert_eq!(unknown.loot[0].item_name, "Rusty Sword");
+    }
+    #[test]
+    fn rfc3339_kill_stored_as_space_contract_and_rescans_dedup() {
+        let conn = setup();
+        // A chrono-RFC3339 stamp normalizes on write: stored space-format.
+        let id = record_test_kill(&conn, "T", "Dreva", "42", "2026-05-02T03:59:25.322+00:00")
+            .expect("first insert lands");
+        let stored: String = conn
+            .query_row("SELECT killed_at FROM enemy_kills WHERE id = ?1", [id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, "2026-05-02 03:59:25");
+        // Rescans dedup no matter which family they arrive in — the key is
+        // normalized before the NOT-EXISTS check, so both twins collapse.
+        assert_eq!(
+            record_test_kill(&conn, "T", "Dreva", "42", "2026-05-02T03:59:25.322+00:00"),
+            None
+        );
+        assert_eq!(
+            record_test_kill(&conn, "T", "Dreva", "42", "2026-05-02 03:59:25"),
+            None
+        );
+    }
+
+    #[test]
+    fn time_only_kill_heals_against_full_date_ledger() {
+        let conn = setup();
+        // Census shape: Player.log-era time-only kill, full-date Chat.log
+        // ledger receipt for the same entity 25s later. The old lexicographic
+        // scan was a silent no-op here (`datetime('19:29:10','+30 minutes')`
+        // is year-2000, so the receipt fell outside the window).
+        record_test_kill(&conn, "T", "Dreva", "42", "19:29:10")
+            .expect("legacy kill lands");
+        conn.execute(
+            "INSERT INTO item_transactions
+                (timestamp, character_name, server_name, item_name, quantity, context, source, from_entity_id)
+             VALUES ('2026-04-13 19:29:35', 'T', 'Dreva', 'Bone', 1, 'loot', 'chat_status', 42)",
+            [],
+        )
+        .unwrap();
+        let healed = link_kill_loot_for_kill(&conn, "T", "Dreva", "42", "19:29:10").unwrap();
+        assert_eq!(healed, 1, "rescan heal must match the previously time-only kill");
+        let receipt: Option<String> = conn
+            .query_row("SELECT receipt_ts FROM enemy_kill_loot", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(receipt.as_deref(), Some("2026-04-13 19:29:35"));
+        // Rescan heal finds its own key present: idempotent.
+        assert_eq!(link_kill_loot_for_kill(&conn, "T", "Dreva", "42", "19:29:10").unwrap(), 0);
+        // Receipt-side direction agrees: the full-date receipt resolves to
+        // the time-only kill (already linked above, so it reports present).
+        assert!(!link_kill_loot(&conn, "T", "Dreva", "42", "2026-04-13 19:29:35", "Bone", 1).unwrap());
+        // A same-entity receipt outside the time-of-day window stays unlinked.
+        assert!(!link_kill_loot(&conn, "T", "Dreva", "42", "2026-04-13 20:29:35", "Bone", 1).unwrap());
+        // Evening hour: a `2x:xx:xx` time-only kill sorts *after* any same-day
+        // full stamp at byte 1, so a shared outer `killed_at <= ?4` bound can
+        // never match it — the arms must stay independent disjuncts. Same
+        // entity, full-date receipt 16 min later: heals and links.
+        record_test_kill(&conn, "T", "Dreva", "43", "21:45:00")
+            .expect("evening legacy kill lands");
+        conn.execute(
+            "INSERT INTO item_transactions
+                (timestamp, character_name, server_name, item_name, quantity, context, source, from_entity_id)
+             VALUES ('2026-04-13 22:01:00', 'T', 'Dreva', 'Bone', 1, 'loot', 'chat_status', 43)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(link_kill_loot_for_kill(&conn, "T", "Dreva", "43", "21:45:00").unwrap(), 1);
+        // Just past the window stays unlinked (no over-match from the rework).
+        assert!(!link_kill_loot(&conn, "T", "Dreva", "43", "2026-04-13 22:16:00", "Bone", 1).unwrap());
     }
 }
