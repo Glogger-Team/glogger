@@ -831,10 +831,12 @@ fn insert_item_transaction_guarded(db: &DbPool, item: ItemLedgerCtx<'_>) -> bool
     // Completed pairs are never consumable: a JSON-first completed row
     // carries an `english_claimed_by` trace, and an English-first completed
     // row carries the JSON claim (`claimed_by`) with no `json_twin` marker,
-    // so neither is a consume candidate. Sourced JSON rows (entity at birth)
-    // stay consumable — the entity is origin, not a stamp, and excluding it
-    // would break JSON-first twin convergence. A genuine second receipt
-    // finds no pending twin and falls through to the INSERT below. Legacy
+    // so neither is a consume candidate. The claim is entity-scoped exactly
+    // like the replay check (`None` matches any row), so an
+    // entity-knowing caller only consumes its own entity's row — sourced-JSON
+    // twin-second convergence is unchanged (`None` match-any). A genuine
+    // second receipt finds no pending twin and falls through to the INSERT
+    // below. Legacy
     // `None` line ids skip the marker (match-any already hit above). A
     // failed UPDATE reports and stops: falling through to the INSERT on a
     // broken connection would duplicate the gain (same fail-closed shape as
@@ -842,13 +844,14 @@ fn insert_item_transaction_guarded(db: &DbPool, item: ItemLedgerCtx<'_>) -> bool
     if let Some(line_id) = item.source_line_id {
         let claimed = conn.execute(
             "UPDATE item_transactions
-                SET source_details = json_set(COALESCE(source_details, '{}'), '$.english_claimed_by', ?7)
+                SET source_details = json_set(COALESCE(source_details, '{}'), '$.english_claimed_by', ?8)
              WHERE rowid = (SELECT MIN(rowid) FROM item_transactions
                  WHERE timestamp = ?1 AND character_name = ?2 AND server_name = ?3
                    AND item_name = ?4 AND quantity = ?5 AND context = ?6 AND source = 'chat_status'
+                   AND (?7 IS NULL OR from_entity_id IS ?7)
                    AND json_extract(source_details, '$.json_twin') IS NOT NULL
                    AND (json_extract(source_details, '$.english_claimed_by') IS NULL
-                        OR json_extract(source_details, '$.english_claimed_by') IS ?7))",
+                        OR json_extract(source_details, '$.english_claimed_by') IS ?8))",
             rusqlite::params![
                 item.timestamp,
                 item.character,
@@ -856,6 +859,7 @@ fn insert_item_transaction_guarded(db: &DbPool, item: ItemLedgerCtx<'_>) -> bool
                 item.item_name,
                 item.quantity as i32,
                 item.context,
+                item.from_entity_id,
                 line_id,
             ],
         );
@@ -3069,6 +3073,41 @@ mod tests {
         let out3 = dispatch_with_line(&pool, &gd, Some(&id()), &english, ts, &mut st, Some("Chat.log:12"));
         assert_eq!(out3.staged_gains.len(), 1, "post-completed-pair English inserts");
         assert_eq!(item_rows(&pool).len(), 2);
+    }
+    #[test]
+    fn english_consume_respects_entity_when_known() {
+        // Mutant-killing for the entity predicate: an entity-aware English
+        // line must not consume another entity's pending `json_twin` row —
+        // that would complete the wrong pair and leave its own twin pending.
+        // Production English always passes `None` (match-any, unchanged).
+        let (_guard, pool) = test_pool();
+        pool.get_write()
+            .unwrap()
+            .execute(
+                "INSERT INTO item_transactions
+                    (timestamp, character_name, server_name, item_name, quantity,
+                     context, source, from_name, from_entity_id, source_details, source_line_id)
+                 VALUES ('26-11-17 08:50:27', 'Alice', 'Dreva', 'Toxic Sludge', 1,
+                     'loot', 'chat_status', 'Olugax', 1002, '{\"json_twin\":true}', 'Chat.log:29')",
+                [],
+            )
+            .unwrap();
+        assert!(
+            insert_item_transaction_guarded(&pool, english_ctx(Some(1001), Some("Chat.log:31"))),
+            "different-entity English inserts instead of consuming"
+        );
+        assert_eq!(item_rows(&pool).len(), 2);
+        let marked: i64 = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM item_transactions
+                 WHERE json_extract(source_details, '$.english_claimed_by') IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(marked, 0, "no row consumed by the wrong-entity line");
     }
 
     #[test]
