@@ -5,7 +5,7 @@
     <div class="h-full overflow-y-auto p-3 flex flex-col gap-3">
       <!-- Header -->
       <div class="flex items-center justify-between">
-        <h2 class="text-lg font-semibold text-text-primary">Statehelm Reputation</h2>
+        <h2 class="screen-title">Statehelm Reputation</h2>
       </div>
 
       <!-- Filters -->

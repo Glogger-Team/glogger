@@ -1,7 +1,7 @@
 <template>
   <div class="flex flex-col gap-4 h-full min-h-0 overflow-y-auto">
     <div class="flex items-center justify-between">
-      <h2 class="text-lg font-semibold text-text-primary">Deaths</h2>
+      <h2 class="screen-title">Deaths</h2>
       <span class="text-sm text-text-muted">{{ store.totalDeaths }} total</span>
     </div>
 

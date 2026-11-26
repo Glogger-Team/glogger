@@ -1,6 +1,6 @@
 <template>
   <div class="card p-6">
-    <h2 class="text-lg text-text-primary mb-2">Startup Behavior</h2>
+    <h2 class="screen-title mb-2">Startup Behavior</h2>
     <p class="text-text-muted text-sm mb-6">
       Choose what glogger should do automatically when it starts.
       You can change these later in Settings.

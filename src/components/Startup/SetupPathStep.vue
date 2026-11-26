@@ -1,6 +1,6 @@
 <template>
   <div class="card p-6">
-    <h2 class="text-lg text-text-primary mb-2">Locate Project Gorgon</h2>
+    <h2 class="screen-title mb-2">Locate Project Gorgon</h2>
     <p class="text-text-muted text-sm mb-6">
       Select the folder where Project Gorgon stores its data (ChatLogs, Reports, Books).
       On Windows: <code>AppData\LocalLow\Elder Game\Project Gorgon</code><br />
