@@ -7,7 +7,7 @@ use tauri::State;
 
 // ── Input types ─────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct CreateProjectInput {
     pub name: String,
     pub notes: Option<String>,
@@ -15,8 +15,9 @@ pub struct CreateProjectInput {
     pub fee_config: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct UpdateProjectInput {
+    #[specta(type = u32)]
     pub id: i64,
     pub name: String,
     pub notes: String,
@@ -25,9 +26,11 @@ pub struct UpdateProjectInput {
     pub customer_provides: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct AddProjectEntryInput {
+    #[specta(type = u32)]
     pub project_id: i64,
+    #[specta(type = u32)]
     pub recipe_id: i64,
     pub recipe_name: String,
     pub quantity: i32,
@@ -35,33 +38,41 @@ pub struct AddProjectEntryInput {
     /// Concrete item IDs pinned to the recipe's variable (keyword) slots, in slot
     /// order. `None`/empty resolves slots generically. Used by the Brewery tab to
     /// turn a specific discovery combo into a project entry with exact materials.
+    #[specta(type = Option<Vec<u32>>)]
     pub slot_item_ids: Option<Vec<i64>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct UpdateProjectEntryInput {
+    #[specta(type = u32)]
     pub id: i64,
     pub quantity: i32,
+    #[specta(type = Vec<u32>)]
     pub expanded_ingredient_ids: Vec<i64>,
     pub target_stock: Option<i32>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct BatchUpdateExpansionsEntry {
+    #[specta(type = u32)]
     pub id: i64,
+    #[specta(type = Vec<u32>)]
     pub expanded_ingredient_ids: Vec<i64>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct ReorderEntriesInput {
+    #[specta(type = u32)]
     pub project_id: i64,
+    #[specta(type = Vec<u32>)]
     pub entry_ids: Vec<i64>,
 }
 
 // ── Output types ────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct CraftingProject {
+    #[specta(type = u32)]
     pub id: i64,
     pub name: String,
     pub notes: String,
@@ -73,29 +84,36 @@ pub struct CraftingProject {
     pub entries: Vec<CraftingProjectEntry>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct CraftingProjectEntry {
+    #[specta(type = u32)]
     pub id: i64,
+    #[specta(type = u32)]
     pub project_id: i64,
+    #[specta(type = u32)]
     pub recipe_id: i64,
     pub recipe_name: String,
     pub quantity: i32,
     pub sort_order: i32,
+    #[specta(type = Vec<u32>)]
     pub expanded_ingredient_ids: Vec<i64>,
     pub target_stock: Option<i32>,
     /// Item IDs pinned to the recipe's variable slots, in slot order (see
     /// `AddProjectEntryInput::slot_item_ids`). Empty when slots resolve generically.
+    #[specta(type = Vec<u32>)]
     pub slot_item_ids: Vec<i64>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct CraftingProjectSummary {
+    #[specta(type = u32)]
     pub id: i64,
     pub name: String,
     pub notes: String,
     pub group_name: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[specta(type = u32)]
     pub entry_count: i64,
 }
 
@@ -630,19 +648,24 @@ fn import_crafting_project_impl(conn: &rusqlite::Connection, encoded: &str) -> R
 
 // ── Material availability ───────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct VaultStock {
     pub vault_name: String,
+    #[specta(type = u32)]
     pub quantity: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct MaterialAvailability {
+    #[specta(type = u32)]
     pub item_type_id: i64,
     pub item_name: String,
+    #[specta(type = u32)]
     pub inventory_quantity: i64,
+    #[specta(type = u32)]
     pub storage_quantity: i64,
     pub vault_breakdown: Vec<VaultStock>,
+    #[specta(type = u32)]
     pub total_available: i64,
 }
 
@@ -805,7 +828,7 @@ pub fn check_material_availability(
 
 // ── Work order data from snapshot ────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct WorkOrderData {
     pub active: Vec<String>,
     pub completed: Vec<String>,
@@ -816,7 +839,7 @@ pub struct WorkOrderData {
 /// One character's work-order presence for a single quest key, read from that
 /// character's latest snapshot. `category` is `work_order` or
 /// `completed_work_order` (mirrors `character_active_quests.category`).
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct WorkOrderPresence {
     pub character_name: String,
     pub server_name: String,
@@ -1207,5 +1230,61 @@ mod import_export_tests {
         // Server scoping: unknown server yields nothing.
         let empty = query_all_character_work_orders(&conn, Some("Other")).unwrap();
         assert!(empty.is_empty());
+    }
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `crafting` IPC payload shapes derive `specta::Type` so
+// `src/types/crafting.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test crafting_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<CreateProjectInput>()
+        .register::<UpdateProjectInput>()
+        .register::<AddProjectEntryInput>()
+        .register::<UpdateProjectEntryInput>()
+        .register::<BatchUpdateExpansionsEntry>()
+        .register::<ReorderEntriesInput>()
+        .register::<CraftingProject>()
+        .register::<CraftingProjectEntry>()
+        .register::<CraftingProjectSummary>()
+        .register::<VaultStock>()
+        .register::<MaterialAvailability>()
+        .register::<WorkOrderData>()
+        .register::<WorkOrderPresence>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/crafting.specta.ts` must equal
+    /// what `export_bindings` derives from the `crafting` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test crafting_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_crafting_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/crafting.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
     }
 }

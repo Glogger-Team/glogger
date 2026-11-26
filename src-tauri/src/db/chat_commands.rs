@@ -119,8 +119,9 @@ impl Default for ChatMessageFilter {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
 pub struct ChatMessageRow {
+    #[specta(type = u32)]
     pub id: i64,
     pub timestamp: String,
     pub channel: Option<String>,
@@ -132,10 +133,11 @@ pub struct ChatMessageRow {
     pub item_links: Vec<ChatItemLinkRow>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
 pub struct ChatItemLinkRow {
     pub raw_text: String,
     pub item_name: String,
+    #[specta(type = Option<u32>)]
     pub item_id: Option<i64>,
 }
 
@@ -535,10 +537,11 @@ pub fn get_chat_days<C: DbRead + ?Sized>(
     Ok(days)
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
 pub struct ChatDayRow {
     /// Day (`YYYY-MM-DD`) in the viewer's display timezone
     pub day: String,
+    #[specta(type = u32)]
     pub count: i64,
 }
 
@@ -591,14 +594,19 @@ pub fn get_channel_stats<C: DbRead + ?Sized>(conn: &C) -> Result<Vec<(String, i6
 }
 
 /// Get overall chat statistics
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
 pub struct ChatStats {
+    #[specta(type = u32)]
     pub total_messages: i64,
+    #[specta(type = u32)]
     pub channel_count: i64,
     pub oldest_message: String,
     pub newest_message: String,
+    #[specta(type = u32)]
     pub database_size_bytes: i64,
+    #[specta(type = u32)]
     pub messages_size_bytes: i64,
+    #[specta(type = u32)]
     pub item_links_count: i64,
 }
 
@@ -1530,5 +1538,52 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM chat_messages", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 4);
+    }
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `chat_db` IPC payload shapes derive `specta::Type` so
+// `src/types/chatDb.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test chat_db_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<ChatMessageRow>()
+        .register::<ChatItemLinkRow>()
+        .register::<ChatDayRow>()
+        .register::<ChatStats>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/chatDb.specta.ts` must equal
+    /// what `export_bindings` derives from the `chat_db` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test chat_db_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_chat_db_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/chatDb.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
     }
 }

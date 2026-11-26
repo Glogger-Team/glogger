@@ -74,99 +74,116 @@ pub struct NpcFavorData {
 
 // ── Command Response Types ───────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct ImportResult {
     pub character_name: String,
     pub server_name: String,
     pub snapshot_timestamp: String,
+    #[specta(type = u32)]
     pub skills_imported: usize,
+    #[specta(type = u32)]
     pub npcs_imported: usize,
+    #[specta(type = u32)]
     pub recipes_imported: usize,
+    #[specta(type = u32)]
     pub stats_imported: usize,
+    #[specta(type = u32)]
     pub currencies_imported: usize,
+    #[specta(type = u32)]
     pub quests_imported: usize,
     pub was_duplicate: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct CharacterSnapshotSummary {
+    #[specta(type = u32)]
     pub id: i64,
     pub character_name: String,
     pub server_name: String,
     pub snapshot_timestamp: String,
     pub race: String,
     pub import_date: String,
+    #[specta(type = u32)]
     pub skill_count: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct SnapshotSkillLevel {
     pub skill_name: String,
     pub level: i32,
     pub bonus_levels: i32,
+    #[specta(type = u32)]
     pub xp_toward_next: i64,
+    #[specta(type = u32)]
     pub xp_needed_for_next: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct SnapshotSkillAbility {
     pub skill_name: String,
     pub ability_key: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct SnapshotNpcFavor {
     pub npc_key: String,
     pub favor_level: String,
     pub favor: Option<f64>,
+    #[specta(type = Option<u32>)]
     pub councils_spent_at_vendor: Option<i64>,
     pub vendor_reset_time: Option<String>,
     pub player_notes: Option<String>,
+    #[specta(type = Option<u32>)]
     pub gifts_this_week: Option<i64>,
     /// Owning snapshot's game timestamp — lets consumers compare snapshot
     /// freshness against live `last_confirmed_at`.
     pub snapshot_timestamp: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct SnapshotRecipeCompletion {
     pub recipe_key: String,
+    #[specta(type = u32)]
     pub completions: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct SnapshotStat {
     pub stat_key: String,
     pub value: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct SnapshotCurrency {
     pub currency_key: String,
+    #[specta(type = u32)]
     pub amount: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct SnapshotActiveQuest {
     pub quest_key: String,
     pub category: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct CharacterInfo {
     pub character_name: String,
     pub server_name: String,
     pub latest_snapshot: String,
+    #[specta(type = u32)]
     pub snapshot_count: usize,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct SkillDiff {
     pub skill_name: String,
     pub old_level: i32,
     pub new_level: i32,
     pub level_change: i32,
+    #[specta(type = u32)]
     pub old_xp: i64,
+    #[specta(type = u32)]
     pub new_xp: i64,
 }
 
@@ -1477,5 +1494,59 @@ mod tests {
             )
             .expect("sword slash");
         assert_eq!(has_slash, 1);
+    }
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `character` IPC payload shapes derive `specta::Type` so
+// `src/types/character.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test character_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<ImportResult>()
+        .register::<CharacterSnapshotSummary>()
+        .register::<SnapshotSkillLevel>()
+        .register::<SnapshotSkillAbility>()
+        .register::<SnapshotNpcFavor>()
+        .register::<SnapshotRecipeCompletion>()
+        .register::<SnapshotStat>()
+        .register::<SnapshotCurrency>()
+        .register::<SnapshotActiveQuest>()
+        .register::<CharacterInfo>()
+        .register::<SkillDiff>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/character.specta.ts` must equal
+    /// what `export_bindings` derives from the `character` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test character_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_character_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/character.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
     }
 }
