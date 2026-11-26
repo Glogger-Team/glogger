@@ -81,6 +81,7 @@
               :title="isCollapsed(status.npc.key) ? 'Expand' : 'Collapse'"
               @click="toggleCollapsed(status.npc.key)">
               <span class="text-text-dim font-mono text-xs w-3 shrink-0">{{ isCollapsed(status.npc.key) ? '▸' : '▾' }}</span>
+              <span class="text-xs font-medium text-text-primary flex-1 truncate">{{ status.npc.name }}</span>
               <span v-if="status.favorTier" class="text-[0.6rem] text-text-dim shrink-0">{{ tierDisplayName(status.favorTier) }}</span>
               <span class="text-[0.6rem] text-text-dim shrink-0">{{ status.maxGifts - status.giftsThisWeek }} left</span>
             </button>
