@@ -10,7 +10,7 @@
           <!-- Header -->
           <div class="px-5 pt-5 pb-2 flex items-center gap-2">
             <span class="text-accent-red text-lg">!</span>
-            <h3 class="text-sm font-semibold text-text-primary">Game Data Update Available</h3>
+            <h3 class="dialog-title">Game Data Update Available</h3>
           </div>
 
           <!-- Content -->

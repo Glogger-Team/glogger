@@ -1,7 +1,7 @@
 <template>
   <div class="fixed inset-0 bg-surface-dark flex items-center justify-center">
     <div class="w-full max-w-md px-8">
-      <h1 class="text-2xl font-bold text-accent-gold mb-2 text-center tracking-wide">glogger</h1>
+      <h1 class="h1-brand mb-2 text-center">glogger</h1>
       <p class="text-text-muted text-sm mb-8 text-center">Starting up...</p>
 
       <div class="space-y-3">

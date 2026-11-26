@@ -16,6 +16,18 @@
     @apply text-[10px] font-semibold text-text-muted uppercase tracking-wider;
   }
 
+  .dialog-title {
+    @apply text-sm font-semibold text-text-primary;
+  }
+
+  .display-title {
+    @apply text-accent-gold text-lg font-semibold;
+  }
+
+  .h1-brand {
+    @apply text-2xl font-bold text-accent-gold tracking-wide;
+  }
+
   .btn {
     @apply px-3 py-1.5 rounded text-sm font-medium transition-colors cursor-pointer font-mono;
   }
@@ -74,7 +86,7 @@
   }
 
   .settings-section h3 {
-    @apply text-text-primary mt-0 mb-4 text-lg;
+    @apply mt-0 mb-4;
   }
 
   .error-box {

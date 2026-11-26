@@ -9,7 +9,7 @@
         <div class="relative bg-surface-base border border-border-default rounded-lg shadow-xl w-[40rem] max-w-[92vw] flex flex-col max-h-[85vh]">
           <!-- Header -->
           <div class="px-4 pt-4 pb-2 shrink-0">
-            <h3 class="text-sm font-semibold text-text-primary">Import Equipped Gear</h3>
+            <h3 class="dialog-title">Import Equipped Gear</h3>
             <!-- Work-in-progress warning banner -->
             <div class="mt-2 text-xs text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded px-3 py-2 leading-snug">
               <span class="font-semibold">⚠ Work in progress —</span>

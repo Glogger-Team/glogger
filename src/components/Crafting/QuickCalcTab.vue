@@ -2,7 +2,7 @@
   <div class="flex gap-4 h-[calc(100vh-200px)]">
     <!-- Left panel: recipe search + selection -->
     <div class="w-80 shrink-0 flex flex-col gap-3">
-      <h3 class="text-text-primary text-sm font-semibold m-0">Quick Calculator</h3>
+      <h3 class="dialog-title m-0">Quick Calculator</h3>
 
       <!-- Search -->
       <input

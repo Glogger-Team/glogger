@@ -3,7 +3,7 @@
     <!-- Left Sidebar: Watch Rules list + CRUD -->
     <div class="w-72 bg-surface-dark border-r border-border-default flex flex-col">
       <div class="p-4 border-b border-border-default flex justify-between items-center">
-        <h3 class="m-0 text-accent-gold text-lg font-semibold">Watch Rules</h3>
+        <h3 class="display-title m-0">Watch Rules</h3>
         <button
           class="px-3 py-1.5 bg-surface-elevated border border-border-light rounded text-text-secondary text-sm cursor-pointer hover:bg-surface-base hover:text-text-primary hover:border-border-hover transition-all"
           @click="openNewRule"

@@ -66,7 +66,7 @@
       <!-- Gift Planner -->
       <div class="border-t border-border pt-3 flex flex-col gap-2">
         <div class="flex items-center justify-between flex-wrap gap-2">
-          <h3 class="text-sm font-semibold text-text-primary">Gift Planner</h3>
+          <h3 class="dialog-title">Gift Planner</h3>
           <button
             class="text-xs px-2 py-1 rounded bg-accent-gold/15 text-accent-gold hover:bg-accent-gold/25 disabled:opacity-40"
             :disabled="planner.loading.value || giftableStatuses.length === 0"

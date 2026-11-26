@@ -2,7 +2,7 @@
   <div class="fixed inset-0 bg-surface-dark flex items-center justify-center p-8">
     <div class="w-full max-w-md">
       <div class="mb-8 text-center">
-        <h1 class="text-2xl font-bold text-accent-gold tracking-wide">glogger</h1>
+        <h1 class="h1-brand">glogger</h1>
         <p class="text-text-muted text-xs mt-1">Select Character</p>
       </div>
 

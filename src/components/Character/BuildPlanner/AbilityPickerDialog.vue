@@ -10,7 +10,7 @@
           <!-- Header -->
           <div class="flex items-center justify-between px-4 pt-4 pb-2 shrink-0">
             <div class="flex items-center gap-3">
-              <h3 class="text-sm font-semibold text-text-primary">
+              <h3 class="dialog-title">
                 {{ barDisplayLabel }} — Slot {{ targetSlot + 1 }}
               </h3>
               <span v-if="currentSlotAbilityName" class="text-xs text-text-muted">

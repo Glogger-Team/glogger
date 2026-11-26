@@ -3,7 +3,7 @@
     <!-- Bar header -->
     <div class="flex items-center justify-between px-1">
       <div class="flex items-center gap-2">
-        <h3 class="text-sm font-semibold text-text-primary">{{ barLabel }} Abilities</h3>
+        <h3 class="dialog-title">{{ barLabel }} Abilities</h3>
         <span class="text-xs text-text-muted">
           {{ barAbilities.length }}/{{ maxSlots }} slots
         </span>
