@@ -1,19 +1,22 @@
 // TypeScript types for the Farming Calculator feature
 // (historic loot/drop-rate database + corpse-extract details; live
 // sessions are frozen — the Combat view covers live kills/deaths/XP).
+//
+// Byte-identical shapes are re-exported from the generated Specta bindings
+// (`killTracking.specta.ts`, `farming.specta.ts`). The hand definitions that
+// remain differ from the bindings: `EnemyLootStat.drop_rate`,
+// `EnemyKillStats` (via its loot), and `ItemDropSource.drop_rate` are
+// `number` here but `number | null` in the bindings. `DatabaseScope` has no
+// generated counterpart.
 
-// Per-corpse butchering detail for an item, from the `get_corpse_extract_details`
-// backend command (lifetime, persisted) — used by the History tab hover.
-export interface ExtractDetail {
-  corpse_name: string | null
-  skill: string
-  times: number
-  total_quantity: number
-  skill_level: number | null
-  equipment_bonus: number | null
-  anatomy_family: string | null
-  anatomy_level: number | null
-}
+export type {
+  ExtractDetail,
+  EnemySearchResult,
+  ItemSearchResult,
+  HarvestSearchResult,
+  ImportSummary,
+  ImportedSource,
+} from './killTracking.specta'
 
 // === Loot drop breakdown (hover popover) ===
 
@@ -35,26 +38,6 @@ export interface EnemyKillStats {
 
 export type DatabaseScope = 'mine' | 'imported' | 'combined'
 
-export interface EnemySearchResult {
-  enemy_name: string
-  zone: string | null   // internal area key (null = unknown zone)
-  total_kills: number
-  distinct_loot_items: number
-}
-
-export interface ItemSearchResult {
-  item_name: string
-  total_quantity: number
-  distinct_enemies: number
-}
-
-export interface HarvestSearchResult {
-  item_name: string
-  total_quantity: number
-  distinct_corpses: number
-  total_extracts: number
-}
-
 export interface ItemDropSource {
   enemy_name: string
   zone: string | null   // internal area key (null = unknown zone)
@@ -64,21 +47,12 @@ export interface ItemDropSource {
   drop_rate: number
 }
 
-export interface ImportSummary {
-  source_label: string
-  enemies_imported: number
-  loot_rows_imported: number
-}
-
-export interface ImportedSource {
-  source_label: string
-  display_name: string
-  imported_at: string
-  enemy_count: number
-}
-
 // === Historical (loaded from DB) ===
-
+//
+// Stays hand-written: `favors[].delta` is `number` here but `number | null`
+// in the bindings (`FarmingFavorRecord`), so re-exporting would widen every
+// favor-delta consumer to null checks (HistoricalTab renders `fav.delta`
+// directly today).
 export interface HistoricalFarmingSession {
   id: number
   name: string

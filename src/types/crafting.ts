@@ -1,27 +1,19 @@
 // ── Backend types (match Rust structs) ───────────────────────────────────────
+//
+// Byte-identical shapes are re-exported from the generated Specta bindings
+// (`crafting.specta.ts`). `CraftingProject` stays hand-written: its
+// `fee_config`/`customer_provides` are parsed objects here but raw JSON strings
+// in the bindings. `VaultStock` stays hand-written: it carries optional
+// `item_id`/`item_name` for dynamic-material vault entries (read in
+// `PickupList.vue`, written in `craftingStore.ts`), which the bindings lack.
 
-export interface CraftingProjectSummary {
-  id: number
-  name: string
-  notes: string
-  group_name: string | null
-  created_at: string
-  updated_at: string
-  entry_count: number
-}
-
-export interface CraftingProjectEntry {
-  id: number
-  project_id: number
-  recipe_id: number
-  recipe_name: string
-  quantity: number
-  sort_order: number
-  expanded_ingredient_ids: number[]
-  target_stock: number | null
-  /** Item IDs pinned to the recipe's variable slots, in slot order. Empty = generic. */
-  slot_item_ids: number[]
-}
+export type {
+  CraftingProjectSummary,
+  CraftingProjectEntry,
+  WorkOrderPresence,
+  MaterialAvailability,
+} from './crafting.specta'
+import type { CraftingProjectEntry } from './crafting.specta'
 
 export interface CraftingProject {
   id: number
@@ -155,14 +147,6 @@ export interface VaultStock {
   item_name?: string
 }
 
-export interface MaterialAvailability {
-  item_type_id: number
-  item_name: string
-  inventory_quantity: number
-  storage_quantity: number
-  vault_breakdown: VaultStock[]
-  total_available: number
-}
 
 export interface MaterialNeed {
   item_id: number
@@ -346,18 +330,6 @@ export interface WorkOrderSnapshotData {
   active: string[]
   completed: string[]
   inventory_item_ids: number[]
-}
-
-/**
- * Cross-character work-order presence for a single quest key, read from each
- * character's latest snapshot. `category` is `work_order` or
- * `completed_work_order`.
- */
-export interface WorkOrderPresence {
-  character_name: string
-  server_name: string
-  quest_key: string
-  category: string
 }
 
 /** Enriched work order for display */

@@ -1,43 +1,62 @@
 // Database statistics and admin types
+//
+// Byte-identical shapes are re-exported from the generated Specta bindings
+// (`admin` / `character` / `inventory` / `chat` / `settings` / `chatDb`
+// `*.specta.ts`). The hand definitions that remain differ from the bindings
+// (`PurgeOptions` optional vs required-null; `MarketPrice*`/`Sale*` prices are
+// `number` here but `number | null` in the bindings and vendor/method fields
+// are narrow unions here but `string` there; `EventLogRecord` carries an extra
+// `event_data` payload the bindings skip; `WatchRule.match_mode`/`source` are
+// required here but optional in the bindings; `ChatMessage.from_player` is
+// optional here but required in `ChatMessageRow`; `SnapshotStat.value` and
+// `InventorySummary.total_value` are `number` here but `number | null` in the
+// bindings; `SnapshotActiveQuest.category` is a narrow union here but `string`
+// in the bindings; `SnapshotItem` lacks the bindings' newer nullable columns)
+// or have no generated counterpart (all survey types, `ChatFilter`).
 
-export interface TableSize {
-  name: string;
-  size_bytes: number;
-}
-
-export interface DatabaseStats {
-  total_size_bytes: number;
-  cdn_size_bytes: number;
-  player_data_size_bytes: number;
-  free_bytes: number;
-  market_prices_count: number;
-  sales_history_count: number;
-  survey_sessions_count: number;
-  event_log_count: number;
-  item_transactions_count: number;
-  chat_messages_count: number;
-  largest_tables: TableSize[];
-}
+export type {
+  TableSize,
+  DatabaseStats,
+  PurgeResult,
+  CompactResult,
+} from './admin.specta'
+export type {
+  CharacterSnapshotSummary,
+  SnapshotSkillLevel,
+  SnapshotSkillAbility,
+  SnapshotNpcFavor,
+  SnapshotRecipeCompletion,
+  SnapshotCurrency,
+  ImportResult,
+  SkillDiff,
+  CharacterInfo,
+} from './character.specta'
+export type {
+  InventorySnapshotSummary,
+  InventoryImportResult,
+  CrossCharacterItem,
+} from './inventory.specta'
+export type {
+  ScanResult,
+  ChannelStat,
+  WatchRuleTriggered,
+} from './chat.specta'
+export type { ConditionMatch, WatchCondition } from './settings.specta'
+export type { WatchNotifyConfig } from './settings.specta'
+export type {
+  ChatItemLinkRow as ChatItemLink,
+  ChatDayRow as ChatDay,
+} from './chatDb.specta'
+import type { ChatItemLinkRow as ChatItemLink } from './chatDb.specta'
+import type {
+  ConditionMatch,
+  WatchCondition,
+  WatchNotifyConfig,
+} from './settings.specta'
 
 export interface PurgeOptions {
   older_than_days?: number;
   purge_all: boolean;
-}
-
-export interface PurgeResult {
-  market_prices_deleted: number;
-  sales_deleted: number;
-  survey_sessions_deleted: number;
-  events_deleted: number;
-  item_transactions_deleted: number;
-  chat_messages_deleted: number;
-  bytes_reclaimed: number;
-}
-
-export interface CompactResult {
-  bytes_before: number;
-  bytes_after: number;
-  bytes_reclaimed: number;
 }
 
 // Market price types
@@ -254,12 +273,6 @@ export interface SurveyImportInfo {
 }
 
 // Chat message types
-export interface ChatItemLink {
-  raw_text: string;
-  item_name: string;
-  item_id: number | null;
-}
-
 export interface ChatMessage {
   id: number;
   timestamp: string;
@@ -286,15 +299,7 @@ export interface ChatFilter extends Record<string, unknown> {
   jsonScope?: 'only' | 'exclude';
 }
 
-export interface ScanResult {
-  files_processed: number;
-  messages_imported: number;
-  lines_read: number;
-}
-
 // Watch rule types
-
-export type ConditionMatch = 'All' | 'Any';
 
 export interface WatchRule {
   id: number;
@@ -307,87 +312,11 @@ export interface WatchRule {
   source: string | null;
 }
 
-export interface WatchCondition {
-  type: 'ContainsText' | 'ContainsItemLink' | 'FromSender';
-  value: string;
-}
-
-export interface WatchNotifyConfig {
-  sound: boolean;
-  toast: boolean;
-  highlight: boolean;
-}
-
-export interface WatchRuleTriggered {
-  rule_id: number;
-  rule_name: string;
-  notify: WatchNotifyConfig;
-  channel: string | null;
-  sender: string | null;
-  message: string;
-  timestamp: string;
-}
-
-export interface ChannelStat {
-  channel: string;
-  count: number;
-}
-
-// Chat day navigation
-export interface ChatDay {
-  day: string;
-  count: number;
-}
-
 // Character import types
-
-export interface CharacterSnapshotSummary {
-  id: number
-  character_name: string
-  server_name: string
-  snapshot_timestamp: string
-  race: string
-  import_date: string
-  skill_count: number
-}
-
-export interface SnapshotSkillLevel {
-  skill_name: string
-  level: number
-  bonus_levels: number
-  xp_toward_next: number
-  xp_needed_for_next: number
-}
-export interface SnapshotSkillAbility {
-  skill_name: string
-  ability_key: string
-}
-
-
-export interface SnapshotNpcFavor {
-  npc_key: string
-  favor_level: string
-  favor: number | null
-  councils_spent_at_vendor: number | null
-  vendor_reset_time: string | null
-  player_notes: string | null
-  gifts_this_week: number | null
-  snapshot_timestamp: string | null
-}
-
-export interface SnapshotRecipeCompletion {
-  recipe_key: string
-  completions: number
-}
 
 export interface SnapshotStat {
   stat_key: string
   value: number
-}
-
-export interface SnapshotCurrency {
-  currency_key: string
-  amount: number
 }
 
 export interface SnapshotActiveQuest {
@@ -395,45 +324,7 @@ export interface SnapshotActiveQuest {
   category: 'active' | 'work_order' | 'completed_work_order' | 'completed'
 }
 
-export interface ImportResult {
-  character_name: string
-  server_name: string
-  snapshot_timestamp: string
-  skills_imported: number
-  npcs_imported: number
-  recipes_imported: number
-  stats_imported: number
-  currencies_imported: number
-  quests_imported: number
-  was_duplicate: boolean
-}
-
-export interface SkillDiff {
-  skill_name: string
-  old_level: number
-  new_level: number
-  level_change: number
-  old_xp: number
-  new_xp: number
-}
-
-export interface CharacterInfo {
-  character_name: string
-  server_name: string
-  latest_snapshot: string
-  snapshot_count: number
-}
-
 // Inventory import types
-
-export interface InventorySnapshotSummary {
-  id: number
-  character_name: string
-  server_name: string
-  snapshot_timestamp: string
-  import_date: string
-  item_count: number
-}
 
 export interface SnapshotItem {
   id: number
@@ -459,14 +350,6 @@ export interface SnapshotItem {
   pet_husbandry_state: string | null
 }
 
-export interface InventoryImportResult {
-  character_name: string
-  server_name: string
-  snapshot_timestamp: string
-  items_imported: number
-  was_duplicate: boolean
-}
-
 export interface InventorySummary {
   total_items: number
   total_stacks: number
@@ -474,18 +357,4 @@ export interface InventorySummary {
   unique_items: number
   items_by_vault: Record<string, number>
   items_by_rarity: Record<string, number>
-}
-
-/** One item from a character's latest inventory snapshot, tagged with its owner.
- *  Returned by `get_all_character_items` for the cross-character storage search. */
-export interface CrossCharacterItem {
-  character_name: string
-  server_name: string
-  item_name: string
-  storage_vault: string
-  is_in_inventory: boolean
-  stack_size: number
-  type_id: number
-  rarity: string | null
-  value: number | null
 }

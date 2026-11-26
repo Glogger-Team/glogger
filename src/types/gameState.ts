@@ -1,4 +1,24 @@
 // TypeScript types matching Rust game state query response structs
+//
+// Byte-identical shapes are re-exported from the generated Specta bindings
+// (`gameState.specta.ts`, `cdn.specta.ts`). The hand definitions that remain
+// differ from the bindings: `source` is a narrow `'log' | 'snapshot'` union
+// here but a plain `string` in the bindings, and several numerics are
+// non-nullable here but `| null` in the bindings (`GameStateAttribute.value`,
+// `GameStateFavor.session_delta`, `GameStateCurrency.amount`,
+// `GameStateVendor.councils_earned_*`).
+
+export type {
+  GameStateActiveSkills,
+  GameStateWeather,
+  GameStateCombat,
+  GameStateMount,
+  GameStateArea,
+  GameStateWorld,
+  GameStateEquipmentSlot,
+  GameStateEffect,
+} from './gameState.specta'
+export type { StorageVaultDetail } from './cdn.specta'
 
 export interface GameStateSkill {
   skill_id: number
@@ -29,42 +49,6 @@ export interface GameStateAttribute {
   last_confirmed_at: string
 }
 
-export interface GameStateActiveSkills {
-  skill1_id: number
-  skill1_name: string
-  skill2_id: number
-  skill2_name: string
-  last_confirmed_at: string
-}
-
-export interface GameStateWeather {
-  weather_name: string
-  is_active: boolean
-  last_confirmed_at: string
-}
-
-export interface GameStateCombat {
-  in_combat: boolean
-  last_confirmed_at: string
-}
-
-export interface GameStateMount {
-  is_mounted: boolean
-  last_confirmed_at: string
-}
-
-export interface GameStateArea {
-  area_name: string
-  last_confirmed_at: string
-}
-
-export interface GameStateWorld {
-  weather: GameStateWeather | null
-  combat: GameStateCombat | null
-  mount: GameStateMount | null
-  area: GameStateArea | null
-}
-
 export interface GameStateInventoryItem {
   instance_id: number
   item_name: string
@@ -82,12 +66,6 @@ export interface GameStateRecipe {
   source: 'log' | 'snapshot'
 }
 
-export interface GameStateEquipmentSlot {
-  slot: string
-  appearance_key: string
-  last_confirmed_at: string
-}
-
 export interface GameStateFavor {
   npc_key: string
   npc_name: string
@@ -102,13 +80,6 @@ export interface GameStateCurrency {
   amount: number
   last_confirmed_at: string
   source: 'log' | 'snapshot'
-}
-
-export interface GameStateEffect {
-  effect_instance_id: number
-  effect_name: string | null
-  source_entity_id: number
-  last_confirmed_at: string
 }
 
 export interface GameStateStorageItem {
@@ -132,20 +103,4 @@ export interface GameStateVendor {
   last_confirmed_at: string
   councils_earned_current: number
   councils_earned_lifetime: number
-}
-
-export interface StorageVaultDetail {
-  key: string
-  id: number
-  npc_friendly_name: string | null
-  area: string | null
-  area_name: string | null
-  grouping: string | null
-  grouping_name: string | null
-  num_slots: number | null
-  levels: Record<string, number> | null
-  slot_attribute: string | null
-  required_item_keywords: string[] | null
-  requirement_description: string | null
-  num_slots_script_atomic_max: number | null
 }
