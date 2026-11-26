@@ -5,7 +5,7 @@ use std::collections::HashMap;
 // ── Parsed structs (app shape) ───────────────────────────────────────────────
 
 /// A single skill definition.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct SkillInfo {
     pub id: u32,
     pub name: String,
@@ -18,15 +18,20 @@ pub struct SkillInfo {
     // Phase 2 typed fields
     pub combat: Option<bool>,
     pub max_bonus_levels: Option<u32>,
+    #[specta(skip)]
     pub parents: Vec<Value>,
     pub advancement_table: Option<String>,
     pub guest_level_cap: Option<u32>,
     pub hide_when_zero: Option<bool>,
+    #[specta(skip)]
     pub advancement_hints: Option<Value>,
+    #[specta(skip)]
     pub rewards: Option<Value>,
+    #[specta(skip)]
     pub reports: Option<Vec<Value>>,
 
     // Full raw JSON
+    #[specta(skip)]
     pub raw_json: Value,
 }
 

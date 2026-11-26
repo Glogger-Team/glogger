@@ -39,7 +39,7 @@ pub enum SurveyKind {
 /// A single item definition, suitable for serialising to the frontend.
 /// Contains typed fields for commonly-used data, plus the full raw JSON
 /// so no CDN data is ever lost.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct ItemInfo {
     pub id: u32,
     pub name: String,
@@ -55,8 +55,11 @@ pub struct ItemInfo {
     pub food_desc: Option<String>,
     pub equip_slot: Option<String>,
     pub num_uses: Option<u32>,
+    #[specta(skip)]
     pub skill_reqs: Option<Value>,
+    #[specta(skip)]
     pub behaviors: Option<Vec<Value>>,
+    #[specta(skip)]
     pub bestow_recipes: Option<Vec<Value>>,
     pub bestow_ability: Option<String>,
     pub bestow_quest: Option<String>,
@@ -66,6 +69,7 @@ pub struct ItemInfo {
     pub tsys_profile: Option<String>,
 
     // ── Full raw JSON (source of truth) ─────────────────────────────────
+    #[specta(skip)]
     pub raw_json: Value,
 }
 

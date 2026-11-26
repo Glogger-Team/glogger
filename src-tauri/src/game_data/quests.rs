@@ -13,9 +13,10 @@ pub struct RawQuestInfo {
 
 // ── Parsed structs (app shape) ───────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Clone, Default, specta::Type)]
 pub struct QuestInfo {
     pub internal_name: String,
+    #[specta(skip)]
     pub raw: serde_json::Value,
 }
 

@@ -3,12 +3,13 @@ use std::collections::HashMap;
 
 // ── Parsed structs (app shape) ───────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct AchievementInfo {
     pub id: String,
     pub name: Option<String>,
     pub description: Option<String>,
     pub icon_type: Option<String>,
+    #[specta(skip)]
     pub raw_json: serde_json::Value,
 }
 

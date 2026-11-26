@@ -14,24 +14,29 @@ use crate::cdn::{DATA_FILES, TRANSLATION_FILES};
 // ── Types ────────────────────────────────────────────────────────────────────
 
 /// Per-file summary: how many entries were added, removed, or changed.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct FileDiffSummary {
     pub file_name: String,
+    #[specta(type = u32)]
     pub added_count: usize,
+    #[specta(type = u32)]
     pub removed_count: usize,
+    #[specta(type = u32)]
     pub changed_count: usize,
 }
 
 /// A single field-level change within an entry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct FieldChange {
     pub field: String,
+    #[specta(skip)]
     pub old_value: Value,
+    #[specta(skip)]
     pub new_value: Value,
 }
 
 /// Diff for a single entry (one key in a data file).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct EntryDiff {
     pub key: String,
     /// Human-readable label extracted from Name/InternalName if available.
@@ -40,13 +45,15 @@ pub struct EntryDiff {
     /// For added/removed entries, this is empty (use `data` instead).
     pub field_changes: Vec<FieldChange>,
     /// The full JSON value (new for added, old for removed, new for changed).
+    #[specta(skip)]
     pub data: Option<Value>,
     /// For removed entries, the old JSON value.
+    #[specta(skip)]
     pub old_data: Option<Value>,
 }
 
 /// Full diff for a single data file.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct FileDiff {
     pub file_name: String,
     pub added: Vec<EntryDiff>,

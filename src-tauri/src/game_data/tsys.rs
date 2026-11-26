@@ -5,7 +5,7 @@ use std::collections::HashMap;
 // ── Parsed structs (app shape) ───────────────────────────────────────────────
 
 /// A single tier within a TSys power.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct TsysTierInfo {
     pub effect_descs: Vec<String>,
     pub min_level: Option<u32>,

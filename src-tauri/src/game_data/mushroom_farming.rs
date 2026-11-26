@@ -20,7 +20,7 @@
 use serde::Serialize;
 
 /// One row of the mushroom farming reference table.
-#[derive(Debug, Serialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Clone, PartialEq, specta::Type)]
 pub struct MushroomFarmingInfo {
     pub name: &'static str,
     pub mycology_req: Option<u32>,

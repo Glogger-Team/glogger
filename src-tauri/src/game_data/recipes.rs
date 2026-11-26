@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 // ── Parsed structs (app shape) ───────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct RecipeIngredient {
     pub item_id: Option<u32>,
     pub item_keys: Vec<String>,
@@ -14,13 +14,13 @@ pub struct RecipeIngredient {
 }
 
 /// A non-item cost paid when using the recipe (Combat Wisdom, Fae Energy, …).
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct RecipeCost {
     pub currency: String,
     pub price: f32,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct RecipeResultItem {
     pub item_id: u32,
     pub stack_size: f32,
@@ -28,7 +28,7 @@ pub struct RecipeResultItem {
 }
 
 /// A single recipe definition.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct RecipeInfo {
     pub id: u32,
     pub name: String,
@@ -57,6 +57,7 @@ pub struct RecipeInfo {
     pub shares_name_with_item_id: Option<u32>,
 
     // Full raw JSON
+    #[specta(skip)]
     pub raw_json: Value,
 }
 

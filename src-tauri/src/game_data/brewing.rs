@@ -7,7 +7,7 @@ use super::recipes::RecipeInfo;
 // ── Brewing-specific structs (derived from existing recipe/item data) ────────
 
 /// The category of a brewing recipe.
-#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, specta::Type)]
 pub enum BrewingCategory {
     Beer,
     BeerKeg,
@@ -18,7 +18,7 @@ pub enum BrewingCategory {
 }
 
 /// A parsed `BrewItem(...)` ResultEffect string.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct BrewItemEffect {
     /// Tier number (1-5 for beers, 1001+ for liquors, 2001+ for wines)
     pub tier: u32,
@@ -31,7 +31,7 @@ pub struct BrewItemEffect {
 }
 
 /// A single variable ingredient slot in a brewing recipe.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct BrewingVariableSlot {
     /// The keyword that items must have to fill this slot (e.g., "BrewingMushroomC4")
     pub keyword: String,
@@ -44,7 +44,7 @@ pub struct BrewingVariableSlot {
 }
 
 /// A fixed ingredient in a brewing recipe (specific item required).
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct BrewingFixedIngredient {
     pub item_id: u32,
     pub stack_size: f32,
@@ -52,7 +52,7 @@ pub struct BrewingFixedIngredient {
 }
 
 /// A brewing recipe with all data needed for the Brewery tab.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct BrewingRecipe {
     pub recipe_id: u32,
     pub name: String,
@@ -72,7 +72,7 @@ pub struct BrewingRecipe {
 }
 
 /// An item that can be used as a brewing ingredient, with its brewing keywords.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct BrewingIngredient {
     pub item_id: u32,
     pub name: String,
