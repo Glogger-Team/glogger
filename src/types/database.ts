@@ -4,8 +4,8 @@
 // (`admin` / `character` / `inventory` / `chat` / `settings` / `chatDb`
 // `*.specta.ts`). The hand definitions that remain differ from the bindings
 // (`PurgeOptions` optional vs required-null; `MarketPrice*`/`Sale*` prices are
-// `number` here but `number | null` in the bindings and vendor/method fields
-// are narrow unions here but `string` there; `EventLogRecord` carries an extra
+// `number` here but `number | null` in the bindings and `*Input` vendor/method
+// fields are narrow unions here but `string` there; `EventLogRecord` carries an extra
 // `event_data` payload the bindings skip; `WatchRule.match_mode`/`source` are
 // required here but optional in the bindings; `ChatMessage.from_player` is
 // optional here but required in `ChatMessageRow`; `SnapshotStat.value` and
