@@ -169,6 +169,44 @@ pub(crate) fn kill_receipt_join_on(kill: &str, ledger: &str) -> String {
     )
 }
 
+/// Death-veto window predicate (sole owner of the death match rule).
+///
+/// A lootless kill followed by a same-identity player death within 5 minutes
+/// was never looted, so it must not dilute denominators. The callers AND
+/// this with the join's NOT EXISTS, so looted kills are never vetoed (loot
+/// proves the corpse was reached — where the join can see the loot, i.e.
+/// dated kills per the #363 premise). Forward-only: a death before the kill
+/// never vetoes.
+///
+/// Family-aware, mirroring the #363 evening time-only fix shape: the two
+/// arms are independent disjuncts so neither family's shape leaks into the
+/// other's comparison. The full arm fires only when both stamps carry a
+/// date (`length > 8`); both sides normalize through `datetime()` (identity
+/// on contract rows, so byte-identical to the old space-format predicate
+/// for space/space rows) which additionally maps T-family deaths onto the
+/// contract. The time arm fires only for time-only kills (`length = 8`,
+/// Player.log era, date unrecoverable): the death's time-of-day — whatever
+/// family the death arrived in — falls in the kill's 5-minute time-of-day
+/// window. Accepted limits (documented, not silent): a dateless death never
+/// vetoes a dated kill (no ordering without a date — the kill counts), and
+/// midnight wraparound (kill 23:58, death 00:02) misses in the time arm
+/// while full-date rows order correctly in the full arm. Over-vetoing one
+/// denominator row still beats counting an unlootable kill.
+///
+/// `kill`/`death` are the SQL aliases at the call site. Both veto call sites
+/// (`mine_total_kills`, `search_database_enemies`) build their match from
+/// this, so the call sites cannot drift.
+fn death_veto_window_on(kill: &str, death: &str) -> String {
+    format!(
+        "((length({kill}.killed_at) > 8 AND length({death}.died_at) > 8 \
+         AND datetime({death}.died_at) >= datetime({kill}.killed_at) \
+         AND datetime({death}.died_at) <= datetime({kill}.killed_at, '+5 minutes')) \
+         OR (length({kill}.killed_at) = 8 \
+         AND time({death}.died_at) >= time({kill}.killed_at) \
+         AND time({death}.died_at) <= time({kill}.killed_at, '+5 minutes')))"
+    )
+}
+
 /// Player's own kill count for drop-rate denominators. Excludes the
 /// died-before-looting shape: a lootless kill followed by a recorded player
 /// death within 5 minutes (live: City Slime #488970 killed 17:08:21, player
@@ -177,6 +215,11 @@ pub(crate) fn kill_receipt_join_on(kill: &str, ledger: &str) -> String {
 /// corpse was reached). Legacy rows with no character keep old behavior.
 /// Forward-only on purpose: a death *before* the kill means the player rezzed
 /// and killed afterwards, so a later lootless kill is a real denominator row.
+/// Family-aware window (see `death_veto_window_on`): time-only kills match
+/// deaths by time-of-day across families; full rows compare exact stamps
+/// with T-family deaths normalized. A dateless death never vetoes a dated
+/// kill; midnight wraparound misses on dateless rows — both accepted, the
+/// kill counts (denominator-only skew, never a wrong attribution).
 /// Residual skew (an unrelated death inside the window over-vetoing a
 /// genuinely unlooted kill) is accepted — the window covers loot lag, and
 /// over-vetoing one denominator row beats counting an unlootable kill.
@@ -187,12 +230,13 @@ fn mine_total_kills<C: DbRead + ?Sized>(
     lf: &LoadoutFilter,
 ) -> Result<i64, String> {
     let join_on = kill_receipt_join_on("k", "it");
+    let veto_on = death_veto_window_on("k", "d");
     let sql = format!(
         "SELECT COUNT(*) FROM enemy_kills k WHERE k.enemy_name = ?{zf}
          AND NOT EXISTS (
             SELECT 1 FROM character_deaths d
              WHERE d.character_name = k.character_name AND d.server_name = k.server_name
-               AND d.died_at >= k.killed_at AND d.died_at <= datetime(k.killed_at, '+5 minutes')
+               AND {veto_on}
                AND NOT EXISTS (SELECT 1 FROM item_transactions it WHERE {join_on})
          ){lf}",
         zf = zf.sql("k.zone"),
@@ -696,15 +740,17 @@ pub fn search_database_enemies(
     let mut agg: EnemyAgg = HashMap::new();
 
     if scope == "mine" || scope == "combined" {
-        // Same died-before-looting veto as `mine_total_kills`: lootless kills
-        // followed by a player death within 5 minutes never got looted, so
-        // they must not inflate these totals either.
+        // Same died-before-looting veto as `mine_total_kills`
+        // (see `death_veto_window_on`): lootless kills followed by a player
+        // death within 5 minutes never got looted, so they must not inflate
+        // these totals either.
         let join_on = kill_receipt_join_on("k", "it");
+        let veto_on = death_veto_window_on("k", "d");
         let sql = format!(
             "SELECT enemy_name, zone, COUNT(*) FROM enemy_kills k WHERE NOT EXISTS (
                 SELECT 1 FROM character_deaths d
                  WHERE d.character_name = k.character_name AND d.server_name = k.server_name
-                   AND d.died_at >= k.killed_at AND d.died_at <= datetime(k.killed_at, '+5 minutes')
+                   AND {veto_on}
                    AND NOT EXISTS (SELECT 1 FROM item_transactions it WHERE {join_on})
             ){} GROUP BY enemy_name, zone",
             lf.sql("k.combat_skills"),
@@ -2297,6 +2343,8 @@ mod tests {
             ),
         );
         // Veto double-NOT-EXISTS (death lookup + join lookup per kill).
+        // Mirrors the production veto verbatim via the shared helpers.
+        let veto_on = death_veto_window_on("k", "d");
         check(
             "veto",
             format!(
@@ -2304,7 +2352,7 @@ mod tests {
                  AND NOT EXISTS (
                     SELECT 1 FROM character_deaths d
                      WHERE d.character_name = k.character_name AND d.server_name = k.server_name
-                       AND d.died_at >= k.killed_at AND d.died_at <= datetime(k.killed_at, '+5 minutes')
+                       AND {veto_on}
                        AND NOT EXISTS (SELECT 1 FROM item_transactions it WHERE {join_on})
                  )"
             ),
@@ -2397,6 +2445,96 @@ mod tests {
             mine_total_kills(&conn, "City Slime", &ZoneFilter::All, &LoadoutFilter::All).unwrap();
         // Looted kill counts; the lootless kill 1s before death is vetoed.
         assert_eq!(total, 1);
+    }
+
+    /// Death-veto family-awareness (residual from #363): the old space-format
+    /// window was a benign no-op on mixed families — a time-only kill never
+    /// matched a full-date death, so the lootless kill inflated the
+    /// denominator. The arms are independent per-family disjuncts (mirroring
+    /// the #363 evening fix): full rows compare exact stamps with T-family
+    /// deaths normalized, time-only kills compare time-of-day whatever family
+    /// the death arrived in. Each case is an isolated DB (one kill + one
+    /// death, no receipt unless noted), so the total is 0 when vetoed, 1
+    /// when counted. The veto only ever removes denominator rows — never a
+    /// wrong attribution.
+    #[test]
+    fn death_veto_is_family_aware_across_mixed_timestamp_families() {
+        let lootless_kill = |conn: &Connection, entity: &str, killed_at: &str| {
+            record_test_kill(conn, "T", "Dreva", entity, killed_at).unwrap();
+        };
+        let die = |conn: &Connection, died_at: &str| {
+            conn.execute(
+                "INSERT INTO character_deaths (character_name, server_name, died_at, killer_name, killing_ability, health_damage)
+                 VALUES ('T', 'Dreva', ?1, 'Rat', 'Bite', 1)",
+                rusqlite::params![died_at],
+            )
+            .unwrap();
+        };
+        let total = |conn: &Connection| {
+            mine_total_kills(conn, "City Slime", &ZoneFilter::All, &LoadoutFilter::All).unwrap()
+        };
+
+        // Time-only kill + full-date death inside the time-of-day window:
+        // the veto fires (the old lexicographic window missed this entirely).
+        let conn = setup();
+        lootless_kill(&conn, "42", "19:29:10");
+        die(&conn, "2026-04-13 19:29:35");
+        assert_eq!(total(&conn), 0, "mixed-family death in window must veto");
+
+        // Same shapes, death on the inclusive upper edge: still vetoes.
+        let conn = setup();
+        lootless_kill(&conn, "42", "19:29:10");
+        die(&conn, "2026-04-13 19:34:10");
+        assert_eq!(total(&conn), 0, "window upper edge is inclusive");
+
+        // Same shapes, death one second past the window: no veto, no
+        // over-match from the time arm.
+        let conn = setup();
+        lootless_kill(&conn, "42", "19:29:10");
+        die(&conn, "2026-04-13 19:34:11");
+        assert_eq!(total(&conn), 1, "death past the window must not veto");
+
+        // Same shapes, death before the kill: forward-only holds across
+        // families too.
+        let conn = setup();
+        lootless_kill(&conn, "42", "19:29:10");
+        die(&conn, "2026-04-13 19:29:09");
+        assert_eq!(total(&conn), 1, "death before the kill must not veto");
+
+        // Evening hour (the #363 shape): a `2x:xx:xx` time-only kill sorts
+        // after any same-day full stamp at byte 1, so a shared outer bound
+        // could never match it — the arms stay independent disjuncts.
+        let conn = setup();
+        lootless_kill(&conn, "43", "21:45:00");
+        die(&conn, "2026-04-13 21:47:00");
+        assert_eq!(total(&conn), 0, "evening mixed-family death in window must veto");
+        let conn = setup();
+        lootless_kill(&conn, "43", "21:45:00");
+        die(&conn, "2026-04-13 22:16:00");
+        assert_eq!(total(&conn), 1, "evening death past the window must not veto");
+
+        // T-family death against a space kill: `datetime()` normalizes the T
+        // onto the contract, so the in-window death vetoes (the old raw
+        // comparison missed it: 'T' > ' ' at byte 10 broke the upper bound).
+        let conn = setup();
+        lootless_kill(&conn, "44", "2026-11-17 12:00:00");
+        die(&conn, "2026-11-17T12:02:00+00:00");
+        assert_eq!(total(&conn), 0, "T-family death in window must veto");
+
+        // Dateless death against a dated kill: no ordering without a date,
+        // so no veto — the kill counts (accepted, denominator-only).
+        let conn = setup();
+        lootless_kill(&conn, "44", "2026-11-17 12:00:00");
+        die(&conn, "12:00:01");
+        assert_eq!(total(&conn), 1, "dateless death must never veto a dated kill");
+
+        // Loot proves the corpse was reached: a looted dated kill with an
+        // in-window death still counts.
+        let conn = setup();
+        lootless_kill(&conn, "45", "2026-11-17 12:00:00");
+        insert_test_receipt(&conn, "T", "Dreva", "45", "2026-11-17 12:01:00", "Salad");
+        die(&conn, "2026-11-17 12:02:00");
+        assert_eq!(total(&conn), 1, "looted kill is never vetoed");
     }
 
     /// After migration v53, removing an entry from the Imported Sources list
