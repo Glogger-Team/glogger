@@ -6,37 +6,42 @@ use tauri::State;
 
 // ── Response Types ──────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GameStateSkill {
+    #[specta(type = u32)]
     pub skill_id: i64,
     pub skill_name: String,
     pub level: i32,
     pub base_level: i32,
     pub bonus_levels: i32,
+    #[specta(type = u32)]
     pub xp: i64,
+    #[specta(type = u32)]
     pub tnl: i64,
     pub max_level: i32,
     pub last_confirmed_at: String,
     pub source: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GameStateAttribute {
     pub attribute_name: String,
     pub value: f64,
     pub last_confirmed_at: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GameStateActiveSkills {
+    #[specta(type = u32)]
     pub skill1_id: i64,
     pub skill1_name: String,
+    #[specta(type = u32)]
     pub skill2_id: i64,
     pub skill2_name: String,
     pub last_confirmed_at: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GameStateWorld {
     pub weather: Option<GameStateWeather>,
     pub combat: Option<GameStateCombat>,
@@ -44,33 +49,34 @@ pub struct GameStateWorld {
     pub area: Option<GameStateArea>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GameStateArea {
     pub area_name: String,
     pub last_confirmed_at: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GameStateWeather {
     pub weather_name: String,
     pub is_active: bool,
     pub last_confirmed_at: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GameStateCombat {
     pub in_combat: bool,
     pub last_confirmed_at: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GameStateMount {
     pub is_mounted: bool,
     pub last_confirmed_at: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GameStateInventoryItem {
+    #[specta(type = u32)]
     pub instance_id: i64,
     pub item_name: String,
     pub item_type_id: Option<i32>,
@@ -80,7 +86,7 @@ pub struct GameStateInventoryItem {
     pub source: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GameStateRecipe {
     pub recipe_id: i32,
     pub completion_count: i32,
@@ -88,14 +94,14 @@ pub struct GameStateRecipe {
     pub source: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GameStateEquipmentSlot {
     pub slot: String,
     pub appearance_key: String,
     pub last_confirmed_at: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GameStateFavor {
     pub npc_key: String,
     pub npc_name: String,
@@ -105,7 +111,7 @@ pub struct GameStateFavor {
     pub source: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GameStateCurrency {
     pub currency_name: String,
     pub amount: f64,
@@ -118,27 +124,33 @@ pub struct GameStateCurrency {
 /// parsed from chat. `estimated = anchor_amount + delta_since`. `has_anchor` is
 /// false until a character export seeds the anchor — until then the estimate is
 /// not meaningful and the UI should prompt for an export.
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct CurrencyEstimate {
     pub currency_name: String,
+    #[specta(type = u32)]
     pub anchor_amount: i64,
     pub anchor_at: Option<String>,
+    #[specta(type = u32)]
     pub delta_since: i64,
+    #[specta(type = u32)]
     pub estimated: i64,
     pub has_anchor: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GameStateEffect {
+    #[specta(type = u32)]
     pub effect_instance_id: i64,
     pub effect_name: Option<String>,
+    #[specta(type = u32)]
     pub source_entity_id: i64,
     pub last_confirmed_at: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GameStateStorageItem {
     pub vault_key: String,
+    #[specta(type = u32)]
     pub instance_id: i64,
     pub item_name: String,
     pub item_type_id: Option<i32>,
@@ -646,13 +658,13 @@ pub fn get_game_state_storage(
 
 // ── Tracked Skills ─────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct TrackedSkill {
     pub skill_name: String,
     pub sort_order: i32,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct TrackedSkillEntry {
     pub skill_name: String,
     pub sort_order: i32,
@@ -802,7 +814,7 @@ pub(crate) fn apply_chat_level_up(l: &ChatLevelUp<'_>) -> Result<bool, String> {
     Ok(changed > 0)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GiftLogEntry {
     pub npc_key: String,
     pub npc_name: String,
@@ -888,16 +900,20 @@ pub fn remove_last_gift(
 
 // ── Vendor State ───────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct GameStateVendor {
     pub npc_key: String,
+    #[specta(type = Option<u32>)]
     pub vendor_gold_available: Option<i64>,
+    #[specta(type = Option<u32>)]
     pub vendor_gold_max: Option<i64>,
     pub vendor_gold_timer_start: Option<String>,
     pub last_interaction_at: Option<String>,
     pub last_sell_at: Option<String>,
     pub last_confirmed_at: String,
+    #[specta(type = Option<u32>)]
     pub councils_earned_current: Option<i64>,
+    #[specta(type = Option<u32>)]
     pub councils_earned_lifetime: Option<i64>,
 }
 
@@ -1028,7 +1044,7 @@ pub fn record_cow_milk(
 
 // ── Character stats ─────────────────────────────────────────────
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
 pub struct CharacterReportStat {
     pub category: String,
     pub stat_name: String,
@@ -1096,9 +1112,10 @@ pub fn get_character_report_stats(
 
 // ── Player Milking Leaderboard ──────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct PlayerMilkingEntry {
     pub player_name: String,
+    #[specta(type = u32)]
     pub count: i64,
 }
 
@@ -1177,13 +1194,17 @@ pub fn record_milking_event(
 /// (fed by the live Combat-channel hook and the Chat.log backfill). The
 /// `skill_*` fields mirror the character's Dungcrafting skill row — the game
 /// names the skill "Dungcrafting" while its skill type/xp_table is "Pooping".
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct PoopingStats {
+    #[specta(type = u32)]
     pub total_poops: i64,
+    #[specta(type = u32)]
     pub days_pooped: i64,
     pub first_poop: Option<String>,
     pub last_poop: Option<String>,
+    #[specta(type = Option<u32>)]
     pub skill_level: Option<i64>,
+    #[specta(type = Option<u32>)]
     pub skill_max_level: Option<i64>,
 }
 
@@ -1314,7 +1335,7 @@ pub(crate) fn normalize_contract_ts(s: &str) -> String {
 
 // ── Harvest Almanac ────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct HarvestAlmanacEntry {
     pub monster_name: String,
     pub description: Option<String>,
@@ -1813,7 +1834,7 @@ pub fn import_garden_almanac(
 }
 // ── Garden Almanac ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct GardenAlmanacEntry {
     pub crop_name: String,
     pub zone_name: String,
@@ -1856,7 +1877,7 @@ pub fn get_garden_almanac(
         .map_err(|e| format!("Row error: {e}"))
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct GardenAlmanacHistoryEntry {
     pub crop_name: String,
     pub zone_name: String,
@@ -1900,14 +1921,15 @@ pub fn get_garden_almanac_history(
 
 // ── Computed Stats ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct SkillCraftingBreakdown {
     pub skill_name: String,
+    #[specta(type = u32)]
     pub total_crafted: i64,
     pub crafting_seconds: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct AttributeExtreme {
     pub attribute_name: String,
     pub current_value: f64,
@@ -1915,17 +1937,27 @@ pub struct AttributeExtreme {
     pub max_value: f64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct ComputedStats {
+    #[specta(type = u32)]
     pub total_level: i64,
+    #[specta(type = u32)]
     pub total_base_level: i64,
+    #[specta(type = u32)]
     pub total_bonus_levels: i64,
+    #[specta(type = u32)]
     pub skill_count: i64,
+    #[specta(type = u32)]
     pub total_xp_earned: i64,
+    #[specta(type = u32)]
     pub items_crafted: i64,
+    #[specta(type = u32)]
     pub items_distilled: i64,
+    #[specta(type = u32)]
     pub items_deconstructed: i64,
+    #[specta(type = u32)]
     pub times_teleported: i64,
+    #[specta(type = u32)]
     pub items_dyed: i64,
     pub total_crafting_seconds: f64,
     // Rate stats (None if time_played not available from /age report)
@@ -2221,7 +2253,7 @@ pub fn get_attribute_extremes(
 
 // ── Teleportation bind queries ───────────────────────────────────────────────
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, specta::Type)]
 pub struct TeleportationBinds {
     pub primary_bind: Option<String>,
     pub secondary_bind: Option<String>,
@@ -2295,14 +2327,16 @@ pub async fn set_mushroom_circles(
 
 // ── Item ownership lookup ──────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct ItemOwnershipLocation {
     pub location: String,
+    #[specta(type = u32)]
     pub count: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct ItemOwnershipInfo {
+    #[specta(type = u32)]
     pub total_count: i64,
     pub locations: Vec<ItemOwnershipLocation>,
 }
@@ -3268,5 +3302,80 @@ mod tests {
             )
             .unwrap();
         assert_eq!(hist, 1);
+    }
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `game_state` IPC payload shapes derive `specta::Type` so
+// `src/types/gameState.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test game_state_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<GameStateSkill>()
+        .register::<GameStateAttribute>()
+        .register::<GameStateActiveSkills>()
+        .register::<GameStateWorld>()
+        .register::<GameStateArea>()
+        .register::<GameStateWeather>()
+        .register::<GameStateCombat>()
+        .register::<GameStateMount>()
+        .register::<GameStateInventoryItem>()
+        .register::<GameStateRecipe>()
+        .register::<GameStateEquipmentSlot>()
+        .register::<GameStateFavor>()
+        .register::<GameStateCurrency>()
+        .register::<CurrencyEstimate>()
+        .register::<GameStateEffect>()
+        .register::<GameStateStorageItem>()
+        .register::<TrackedSkill>()
+        .register::<TrackedSkillEntry>()
+        .register::<GiftLogEntry>()
+        .register::<GameStateVendor>()
+        .register::<CharacterReportStat>()
+        .register::<PlayerMilkingEntry>()
+        .register::<PoopingStats>()
+        .register::<HarvestAlmanacEntry>()
+        .register::<GardenAlmanacEntry>()
+        .register::<GardenAlmanacHistoryEntry>()
+        .register::<SkillCraftingBreakdown>()
+        .register::<AttributeExtreme>()
+        .register::<ComputedStats>()
+        .register::<TeleportationBinds>()
+        .register::<ItemOwnershipLocation>()
+        .register::<ItemOwnershipInfo>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/gameState.specta.ts` must equal
+    /// what `export_bindings` derives from the `game_state` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test game_state_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_game_state_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/gameState.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
     }
 }
