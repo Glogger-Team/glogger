@@ -11,7 +11,7 @@
           <div class="flex items-center justify-between px-6 py-4 border-b border-border-default bg-surface-base/50 shrink-0">
             <div class="flex items-center gap-3">
               <img src="/glogger.png" alt="" class="size-7 rounded-lg" />
-              <h2 class="text-accent-gold m-0 text-lg font-semibold tracking-wide">Glogger</h2>
+              <h2 class="display-title m-0 tracking-wide">Glogger</h2>
             </div>
             <button
               class="text-text-dim hover:text-text-primary bg-surface-base hover:bg-surface-elevated border border-border-default rounded-lg cursor-pointer size-8 flex items-center justify-center text-sm transition-colors"
