@@ -10,6 +10,12 @@
 
       <!-- Filters -->
       <div v-if="npcStatuses.length > 0" class="flex items-center gap-4 flex-wrap text-xs">
+        <!-- Text search across NPC and gift names (applies to all tabs) -->
+        <input
+          v-model="searchQuery"
+          type="text"
+          placeholder="Search NPCs or gifts…"
+          class="bg-surface-elevated border border-border-default rounded px-1.5 py-0.5 text-xs text-text-primary placeholder:text-text-dim w-44" />
         <!-- Hide at-or-above favor tier -->
         <label class="flex items-center gap-1.5 text-text-secondary">
           Hide at/above
@@ -39,29 +45,126 @@
 
       </div>
 
+      <!-- View tabs: all three render from the same filtered+searched statuses -->
+      <TabBar v-if="npcStatuses.length > 0" v-model="activeTab" :tabs="tabs" />
+
       <EmptyState
         v-if="!loading && npcStatuses.length === 0"
         primary="No Statehelm NPCs found."
         secondary="NPC data may still be loading — the CDN game data is fetched in the background at startup." />
 
       <EmptyState
-        v-else-if="npcStatuses.length > 0 && filteredStatuses.length === 0"
+        v-else-if="npcStatuses.length > 0 && searchedStatuses.length === 0"
         primary="All NPCs hidden by filters."
-        secondary="Adjust the filter controls above to show NPCs." />
+        secondary="Adjust the filter controls or search above to show NPCs." />
 
-      <!-- NPC Cards -->
-      <div v-if="filteredStatuses.length > 0" class="grid grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 min-[1800px]:grid-cols-5 gap-2">
-        <NpcCard
-          v-for="status in filteredStatuses"
-          :key="status.npc.key"
-          :npc="status.npc"
-          :favor-tier="status.favorTier"
-          :vendor-status="gameState.vendorByNpc[status.npc.key] ?? null"
-          :gift-tracking="{ giftsThisWeek: status.giftsThisWeek, maxGifts: status.maxGifts }"
-          :show-gift-tracking="status.giftTracking"
-          :selected="selectedNpcKey === status.npc.key"
-          @select="selectNpc(status.npc.key)"
-        />
+      <!-- By NPC: collapsible cards (header always visible, body expands) -->
+      <div v-if="searchedStatuses.length > 0 && activeTab === 'npc'" class="flex flex-col gap-2">
+        <div class="flex items-center justify-end gap-2 text-xs">
+          <button
+            class="text-text-dim hover:text-text-primary"
+            @click="expandAllNpcs()">
+            Expand all
+          </button>
+          <span class="text-border-default">|</span>
+          <button
+            class="text-text-dim hover:text-text-primary"
+            @click="collapseAllNpcs()">
+            Collapse all
+          </button>
+        </div>
+        <div class="grid grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 min-[1800px]:grid-cols-5 gap-2">
+          <div v-for="status in searchedStatuses" :key="status.npc.key" class="flex flex-col gap-1 min-w-0">
+            <button
+              class="flex items-center gap-2 px-2 py-1 rounded border text-left"
+              :class="selectedNpcKey === status.npc.key ? 'border-green-700/40 bg-surface-elevated' : 'border-border-default bg-surface-elevated/50 hover:bg-surface-elevated'"
+              :title="isCollapsed(status.npc.key) ? 'Expand' : 'Collapse'"
+              @click="toggleCollapsed(status.npc.key)">
+              <span class="text-text-dim font-mono text-xs w-3 shrink-0">{{ isCollapsed(status.npc.key) ? '▸' : '▾' }}</span>
+              <span class="text-xs font-medium text-text-primary flex-1 truncate">{{ status.npc.name }}</span>
+              <span v-if="status.favorTier" class="text-[0.6rem] text-text-dim shrink-0">{{ tierDisplayName(status.favorTier) }}</span>
+              <span class="text-[0.6rem] text-text-dim shrink-0">{{ status.maxGifts - status.giftsThisWeek }} left</span>
+            </button>
+            <NpcCard
+              v-show="!isCollapsed(status.npc.key)"
+              :npc="status.npc"
+              :favor-tier="status.favorTier"
+              :vendor-status="gameState.vendorByNpc[status.npc.key] ?? null"
+              :gift-tracking="{ giftsThisWeek: status.giftsThisWeek, maxGifts: status.maxGifts }"
+              :show-gift-tracking="status.giftTracking"
+              :show-header="false"
+              :selected="selectedNpcKey === status.npc.key"
+              @select="selectNpc(status.npc.key)"
+            />
+          </div>
+        </div>
+      </div>
+
+      <!-- By Gift: one row per gift, listing the NPCs that want it -->
+      <div v-if="searchedStatuses.length > 0 && activeTab === 'gift'" class="flex flex-col gap-2">
+        <EmptyState
+          v-if="giftGroups.length === 0"
+          primary="No gift preferences found."
+          secondary="The shown NPCs have no recorded likes or loves." />
+        <div
+          v-for="g in giftGroups"
+          :key="g.key"
+          class="bg-surface-elevated border border-border-default rounded px-2.5 py-2 flex flex-col gap-1.5">
+          <div class="flex items-center gap-2 min-w-0">
+            <span
+              class="text-[0.6rem] px-1 py-0.5 rounded border min-w-8 text-center shrink-0"
+              :class="g.want === 'Love' ? 'bg-red-900/30 border-red-700/40 text-red-300' : 'bg-green-900/30 border-green-700/40 text-green-300'">
+              {{ g.want === 'Love' ? '♥' : '♦' }} {{ g.want }}
+            </span>
+            <span class="text-sm font-medium text-text-primary truncate">{{ g.label }}</span>
+            <span class="text-xs text-text-dim shrink-0">({{ g.entries.length }} NPC{{ g.entries.length === 1 ? '' : 's' }})</span>
+          </div>
+          <div class="flex flex-wrap gap-1">
+            <button
+              v-for="e in g.entries"
+              :key="e.npcKey"
+              class="text-xs px-1.5 py-0.5 rounded bg-surface-inset border hover:border-accent-gold/50"
+              :class="selectedNpcKey === e.npcKey ? 'border-green-700/40 text-text-primary' : 'border-border-default text-text-secondary'"
+              :title="e.remaining > 0 ? `${e.remaining} weekly gifts left` : 'At the weekly gift cap'"
+              @click="selectNpc(e.npcKey)">
+              {{ e.npcName }}
+              <span class="text-text-dim">{{ e.remaining > 0 ? `(${e.remaining} left)` : '(capped)' }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Shopping List: flat consolidated gift + qty (actionable slots only) -->
+      <div v-if="searchedStatuses.length > 0 && activeTab === 'list'" class="flex flex-col gap-2">
+        <EmptyState
+          v-if="shoppingRows.length === 0 && giftGroups.length === 0"
+          primary="No gift preferences found."
+          secondary="The shown NPCs have no recorded likes or loves." />
+        <EmptyState
+          v-else-if="shoppingRows.length === 0"
+          primary="Nothing left to shop for."
+          secondary="Every NPC wanting these gifts is at the weekly cap." />
+        <div
+          v-else
+          class="flex flex-col rounded border border-border-default overflow-hidden">
+          <div class="grid grid-cols-[minmax(0,1.4fr)_minmax(0,2fr)_auto_auto] gap-2 px-2 py-1 text-[0.6rem] uppercase tracking-widest text-text-dim border-b border-border-default bg-surface-elevated items-baseline">
+            <span>Gift</span>
+            <span>For</span>
+            <span>Want</span>
+            <span class="text-right">Qty</span>
+          </div>
+          <div
+            v-for="r in shoppingRows"
+            :key="r.key"
+            class="grid grid-cols-[minmax(0,1.4fr)_minmax(0,2fr)_auto_auto] gap-2 px-2 py-1 text-xs border-b border-border-default/50 last:border-0 bg-surface-elevated/50 items-baseline">
+            <span class="text-text-primary truncate">{{ r.item }}</span>
+            <span class="text-text-secondary truncate" :title="r.npcs">{{ r.npcs }}</span>
+            <span :class="r.want === 'Love' ? 'text-accent-red' : 'text-accent-gold'" class="whitespace-nowrap">
+              {{ r.want === 'Love' ? '♥' : '♦' }} {{ r.want }}
+            </span>
+            <span class="text-right font-mono text-text-primary">×{{ r.qty }}</span>
+          </div>
+        </div>
       </div>
       <!-- Gift Planner -->
       <div class="border-t border-border pt-3 flex flex-col gap-2">
@@ -158,8 +261,10 @@ import { useGameStateStore } from '../../stores/gameStateStore'
 import { useGameDataStore } from '../../stores/gameDataStore'
 import { tierDisplayName, isTierAtOrAbove, FAVOR_TIERS } from '../../composables/useFavorTiers'
 import { getServices } from '../../composables/useNpcServices'
+import type { NpcPreference } from '../../types/gameData/npcs'
 import EmptyState from '../Shared/EmptyState.vue'
 import PaneLayout from '../Shared/PaneLayout.vue'
+import TabBar, { type Tab } from '../Shared/TabBar.vue'
 import NpcCard from '../Shared/NPC/NpcCard.vue'
 import DataTable, { type ColumnDef } from '../Shared/DataTable.vue'
 import NpcDetailPanel from './NpcDetailPanel.vue'
@@ -283,5 +388,145 @@ const filteredStatuses = computed(() => {
     return true
   })
 })
+
+// ── Tabs + search ───────────────────────────────────────────────────────────
+// All three tabs render from `searchedStatuses`: the tier/service filters
+// plus the text search over NPC and gift names.
+const activeTab = ref('npc')
+const tabs: Tab[] = [
+  { id: 'npc', label: 'By NPC' },
+  { id: 'gift', label: 'By Gift' },
+  { id: 'list', label: 'Shopping List' },
+]
+const searchQuery = ref('')
+
+function prefLabel(pref: NpcPreference): string {
+  return pref.name ?? pref.keywords.join(', ')
+}
+
+// A "want" is a giftable preference — loves and likes. Hates (and anything
+// else) are never something to shop for, so they stay out of the gift views
+// (they still show on the NPC cards themselves).
+function isGiftableDesire(desire: string): boolean {
+  const d = desire.toLowerCase()
+  return d === 'love' || d === 'like'
+}
+
+const searchedStatuses = computed(() => {
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return filteredStatuses.value
+  return filteredStatuses.value.filter(status => {
+    if (status.npc.name.toLowerCase().includes(q)) return true
+    return (status.npc.preferences ?? []).some(p => prefLabel(p).toLowerCase().includes(q))
+  })
+})
+
+// ── Collapsible NPC cards ───────────────────────────────────────────────────
+// Header row per card is always visible; the NpcCard body expands beneath it.
+// Default is expanded (previous behavior); collapse-all gives the scannable
+// overview for the 20+ card grid.
+const collapsedNpcKeys = ref<Set<string>>(new Set())
+function isCollapsed(npcKey: string): boolean {
+  return collapsedNpcKeys.value.has(npcKey)
+}
+function toggleCollapsed(npcKey: string) {
+  const next = new Set(collapsedNpcKeys.value)
+  if (next.has(npcKey)) next.delete(npcKey)
+  else next.add(npcKey)
+  collapsedNpcKeys.value = next
+}
+function expandAllNpcs() {
+  collapsedNpcKeys.value = new Set()
+}
+function collapseAllNpcs() {
+  collapsedNpcKeys.value = new Set(searchedStatuses.value.map(s => s.npc.key))
+}
+
+// ── By Gift + Shopping List ─────────────────────────────────────────────────
+interface GiftWantEntry {
+  npcKey: string
+  npcName: string
+  remaining: number
+  desire: string
+}
+interface GiftGroup {
+  key: string
+  label: string
+  want: 'Love' | 'Like'
+  entries: GiftWantEntry[]
+}
+
+// One group per distinct gift label across the searched statuses; the group's
+// want is Love if any wanting NPC loves it. Sorted Love-first, then A–Z.
+const giftGroups = computed<GiftGroup[]>(() => {
+  const byKey = new Map<string, GiftGroup>()
+  for (const status of searchedStatuses.value) {
+    const remaining = status.maxGifts - status.giftsThisWeek
+    for (const pref of status.npc.preferences ?? []) {
+      if (!isGiftableDesire(pref.desire)) continue
+      const label = prefLabel(pref)
+      const key = label.toLowerCase()
+      let group = byKey.get(key)
+      if (!group) {
+        group = {
+          key,
+          label,
+          want: pref.desire.toLowerCase() === 'love' ? 'Love' : 'Like',
+          entries: [],
+        }
+        byKey.set(key, group)
+      } else if (pref.desire.toLowerCase() === 'love') {
+        group.want = 'Love'
+      }
+      group.entries.push({
+        npcKey: status.npc.key,
+        npcName: status.npc.name,
+        remaining,
+        desire: pref.desire,
+      })
+    }
+  }
+  const groups = [...byKey.values()]
+  for (const g of groups) g.entries.sort((a, b) => a.npcName.localeCompare(b.npcName))
+  groups.sort((a, b) => {
+    if (a.want !== b.want) return a.want === 'Love' ? -1 : 1
+    return a.label.localeCompare(b.label)
+  })
+  // Narrow groups to the search: keep a group when the gift label matches or
+  // when a wanting NPC's name matches.
+  const q = searchQuery.value.trim().toLowerCase()
+  if (!q) return groups
+  return groups.filter(g =>
+    g.label.toLowerCase().includes(q) ||
+    g.entries.some(e => e.npcName.toLowerCase().includes(q)),
+  )
+})
+
+// Flat consolidated gift + qty list (plain div rows — not a DataTable — so the
+// grid-standards DataTable census in TODO.md stays untouched). Only actionable
+// slots count: NPCs at the weekly cap contribute 0 and drop out, so an empty
+// list means capped — not missing preferences (that case has its own empty
+// state).
+interface ShoppingRow {
+  key: string
+  item: string
+  want: 'Love' | 'Like'
+  npcs: string
+  qty: number
+}
+const shoppingRows = computed<ShoppingRow[]>(() =>
+  giftGroups.value
+    .map((g) => {
+      const actionable = g.entries.filter(e => e.remaining > 0)
+      return {
+        key: g.key,
+        item: g.label,
+        want: g.want,
+        npcs: actionable.map(e => e.npcName).join(', '),
+        qty: actionable.reduce((sum, e) => sum + e.remaining, 0),
+      }
+    })
+    .filter(r => r.qty > 0),
+)
 
 </script>

@@ -8,7 +8,7 @@
     @click="emit('select')"
   >
     <!-- Header: NPC name + pin + favor badge -->
-    <div class="flex items-center justify-between gap-1">
+    <div v-if="showHeader" class="flex items-center justify-between gap-1">
       <NpcInline :reference="npc.key" />
       <div class="flex items-center gap-1 shrink-0">
         <button
@@ -203,6 +203,7 @@ const props = withDefaults(defineProps<{
   selected?: boolean
   giftTracking?: GiftTracking | null
   showFavor?: boolean
+  showHeader?: boolean
   showVendorGold?: boolean
   showStorage?: boolean
   showGiftTracking?: boolean
@@ -218,6 +219,7 @@ const props = withDefaults(defineProps<{
   selected: false,
   giftTracking: null,
   showFavor: true,
+  showHeader: true,
   showVendorGold: true,
   showStorage: true,
   showGiftTracking: false,
