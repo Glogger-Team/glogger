@@ -726,9 +726,15 @@ pub fn search_database_enemies(
             agg.entry((enemy_name, zone)).or_default().0 += kills;
         }
 
+        // CROSS JOIN (not INNER): forces the kill-driven plan. The bare
+        // JOIN lets the planner scan the ledger's item index for pre-grouped
+        // rows (160k probes on a live ledger, ~200s measured) instead of
+        // seeking per kill through idx_item_tx_kill_join (~instant).
+        // SQLite never reorders CROSS JOIN inputs; the EXPLAIN pin below
+        // locks this shape.
         let sql = format!(
             "SELECT DISTINCT k.enemy_name, k.zone, it.item_name
-             FROM enemy_kills k JOIN item_transactions it ON {join_on}{}",
+             FROM enemy_kills k CROSS JOIN item_transactions it ON {join_on}{}",
             lf.where_clause("k.combat_skills")
         );
         let mut loot_stmt = tx
@@ -853,11 +859,14 @@ pub fn search_database_items(
     let mut agg: ItemAgg = HashMap::new();
 
     if scope == "mine" || scope == "combined" {
+        // CROSS JOIN (not INNER): forces the kill-driven plan — same trap as
+        // the enemies DISTINCT arm (~200s ledger scan measured on a live
+        // ledger without it). SQLite never reorders CROSS JOIN inputs.
         let join_on = kill_receipt_join_on("k", "it");
         let sql = format!(
             "SELECT it.item_name, SUM(it.quantity), k.enemy_name, k.zone
              FROM enemy_kills k
-             JOIN item_transactions it ON {join_on}{}
+             CROSS JOIN item_transactions it ON {join_on}{}
              GROUP BY it.item_name, k.enemy_name, k.zone",
             lf.where_clause("k.combat_skills")
         );
@@ -2226,12 +2235,15 @@ mod tests {
         );
     }
 
-    /// Index pin: on a live-size ledger the join must hit
+    /// Index pins on production query shapes: every mine-scope read must hit
     /// `idx_item_tx_kill_join`, never fall back to a full ledger scan per
     /// kill (the v94 full-core spin the covering index was built to kill).
     /// Filler rows force the planner past the tiny-table scan preference.
+    /// Shapes pinned (mirroring the reader SQL verbatim):
+    /// mine_loot_rows GROUP BY, the DISTINCT search arm (CROSS JOIN,
+    /// kill-driven), and the veto double-NOT-EXISTS.
     #[test]
-    fn join_hits_covering_index_not_ledger_scan() {
+    fn join_shapes_hit_covering_index_not_ledger_scan() {
         let conn = setup();
         record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
         insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad");
@@ -2249,23 +2261,53 @@ mod tests {
         // them, so only the kill's own receipt surfaces.
         assert_eq!(loot_rows(&conn), vec![("Salad".to_string(), 2, 1)]);
         let join_on = kill_receipt_join_on("k", "it");
-        let plan: Vec<String> = conn
-            .prepare(&format!(
-                "EXPLAIN QUERY PLAN SELECT it.item_name FROM enemy_kills k JOIN item_transactions it ON {join_on}"
-            ))
-            .unwrap()
-            .query_map([], |r| r.get::<_, String>(3))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert!(!plan.is_empty(), "query plan must not be empty");
-        assert!(
-            plan.iter().any(|d| d.contains("idx_item_tx_kill_join")),
-            "join must use the covering index, plan was: {plan:?}"
+        let check = |label: &str, sql: String| {
+            let plan: Vec<String> = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert!(!plan.is_empty(), "{label}: query plan must not be empty");
+            assert!(
+                plan.iter().any(|d| d.contains("idx_item_tx_kill_join")),
+                "{label}: join must use the covering index, plan was: {plan:?}"
+            );
+            assert!(
+                !plan.iter().any(|d| d.contains("SCAN it")),
+                "{label}: join must not full-scan the ledger per kill, plan was: {plan:?}"
+            );
+        };
+        // mine_loot_rows GROUP BY (enemy-filtered).
+        check(
+            "mine_loot_rows",
+            format!(
+                "SELECT it.item_name, SUM(it.quantity), COUNT(DISTINCT k.id)
+                 FROM enemy_kills k JOIN item_transactions it ON {join_on}
+                 WHERE k.enemy_name = 'City Slime' GROUP BY it.item_name"
+            ),
         );
-        assert!(
-            !plan.iter().any(|d| d.contains("SCAN it")),
-            "join must not full-scan the ledger per kill, plan was: {plan:?}"
+        // DISTINCT search arm (unfiltered, CROSS JOIN kill-driven).
+        check(
+            "search_distinct",
+            format!(
+                "SELECT DISTINCT k.enemy_name, k.zone, it.item_name
+                 FROM enemy_kills k CROSS JOIN item_transactions it ON {join_on}"
+            ),
+        );
+        // Veto double-NOT-EXISTS (death lookup + join lookup per kill).
+        check(
+            "veto",
+            format!(
+                "SELECT COUNT(*) FROM enemy_kills k WHERE k.enemy_name = 'City Slime'
+                 AND NOT EXISTS (
+                    SELECT 1 FROM character_deaths d
+                     WHERE d.character_name = k.character_name AND d.server_name = k.server_name
+                       AND d.died_at >= k.killed_at AND d.died_at <= datetime(k.killed_at, '+5 minutes')
+                       AND NOT EXISTS (SELECT 1 FROM item_transactions it WHERE {join_on})
+                 )"
+            ),
         );
     }
 
@@ -2877,7 +2919,7 @@ mod tests {
         let after_sum: std::collections::HashMap<String, i64> = after
             .prepare(&format!(
                 "SELECT it.item_name, SUM(it.quantity) FROM enemy_kills k
-                 JOIN item_transactions it ON {join_on} GROUP BY it.item_name"
+                 CROSS JOIN item_transactions it ON {join_on} GROUP BY it.item_name"
             ))
             .unwrap()
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
