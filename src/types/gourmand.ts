@@ -49,15 +49,12 @@ export interface FoodItem {
   craft_skills: string[]
 }
 
-export interface GourmandFoodEntry {
-  name: string
-  count: number
-  manually_marked: boolean
-}
-
-export interface GourmandImportResult {
-  foods_imported: number
-}
+// `GourmandFoodEntry` / `GourmandImportResult` are byte-identical to the
+// generated Specta bindings (`gourmand.specta.ts`). `FoodItem` stays
+// hand-written: its `source_kinds` is a narrow `FoodSourceKind[]` here but a
+// plain `string[]` in the bindings, and the presentation helpers below depend
+// on the narrow kind.
+export type { GourmandFoodEntry, GourmandImportResult } from './gourmand.specta'
 
 // ── Source kind presentation ─────────────────────────────────────────────────
 

@@ -1,6 +1,15 @@
 // Mirrors the Rust `game_data::ability_stats` output structs returned by the
 // `compute_ability_build_stats` Tauri command. serde serializes Rust field names
 // as-is (snake_case), so these interfaces use snake_case to match the wire shape.
+//
+// Byte-identical shapes are re-exported from the generated Specta bindings
+// (`cdn.specta.ts`). The hand definitions that remain differ from the bindings:
+// every numeric breakdown field is `number` here but `number | null` in the
+// bindings (Rust `Option<f64>`), so `ValueBreakdown`, `DotBreakdown`,
+// `AbilityBuildStats`, `SpecialValueBreakdown`, and `DirectDamageBreakdown`
+// stay hand-written to avoid widening every consumer to null checks.
+
+export type { AbilityModRef, AbilityItemRef } from './cdn.specta'
 
 /** One contributing gear-mod line attached to a computed stat. */
 export interface ContributionLine {
@@ -56,18 +65,6 @@ export interface AbilityBuildStats {
   any_modified: boolean
 }
 
-/** A single assigned build mod, as passed to `compute_ability_build_stats`. */
-export interface AbilityModRef {
-  power_name: string
-  tier: number
-  slot_label: string
-}
-
-/** An equipped slot item, as passed to `compute_ability_build_stats` (folds in its innate bonuses). */
-export interface AbilityItemRef {
-  item_id: number
-  slot_label: string
-}
 
 /** Whether a value breakdown was actually changed by the build's mods. */
 export function isValueModified(v: ValueBreakdown): boolean {
