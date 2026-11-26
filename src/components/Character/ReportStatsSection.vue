@@ -39,7 +39,7 @@
 
       <div class="flex-1 overflow-y-auto min-h-0">
       <div v-for="group in groupedFiltered" :key="group.category" class="mb-3">
-        <h4 class="text-xs font-semibold text-text-muted uppercase tracking-wider mb-1 px-2">
+        <h4 class="panel-label mb-1 px-2">
           {{ formatCategory(group.category) }}
         </h4>
         <table class="w-full text-sm border-collapse">
