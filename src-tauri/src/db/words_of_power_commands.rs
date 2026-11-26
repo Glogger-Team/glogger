@@ -10,8 +10,13 @@ use tauri::State;
 
 // ── Output types ────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct WordOfPower {
+    /// SQLite rowid. Exported as `number`: JSON has no int widths, and
+    /// rowids fit `u32` for any realistic database. The override keeps the
+    /// `specta-typescript` BigInt guard (which forbids bare `i64`) satisfied
+    /// with `specta` alone, so the TS exporter stays a dev-only dependency.
+    #[specta(type = u32)]
     pub id: i64,
     pub character_name: String,
     pub server_name: String,
@@ -61,7 +66,7 @@ struct WordOfPowerRow {
 
 // ── Input types ─────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct AddWordInput {
     pub word: String,
     pub power_name: String,
@@ -453,6 +458,23 @@ pub fn backfill_words_of_power_usage(
     backfill_used_words_from_chat_logs(&settings, &db)
 }
 
+// ── Specta pilot (TODO: shared schema contract) ─────────────────────────────
+//
+// Words-of-power pilot for `specta` (plain `specta`, no `tauri-specta`):
+// `WordOfPower` (output) + `AddWordInput` (input) derive `specta::Type` so
+// `src/types/wordsOfPower.specta.ts` can be generated from these shapes.
+// Test-only plumbing: the exporters live in `[dev-dependencies]`, so no new
+// runtime dependency ships beyond `specta` itself, and this fn compiles out
+// of non-test builds. Regenerate with
+// `OVERWRITE_BINDINGS=1 cargo test words_of_power_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<WordOfPower>()
+        .register::<AddWordInput>();
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,5 +639,32 @@ mod tests {
         assert_eq!(rows[0].0, "NOWWORD");
         assert_eq!(rows[1].0, "LATEWORD");
         assert_eq!(rows[2], ("EARLYWORD".to_string(), "2026-07-01 14:30:00".to_string()));
+    }
+
+    /// Specta pilot pin: the checked-in `src/types/wordsOfPower.specta.ts`
+    /// must equal what `export_bindings` derives from `WordOfPower` +
+    /// `AddWordInput`. Any shape change (field add/remove/rename, serde
+    /// attribute) fails here until the bindings are regenerated — that
+    /// failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test words_of_power_specta`, inspect the
+    /// diff, and confirm it matches the hand-mirrored `WordOfPower`
+    /// interface in `WordsOfPowerWidget.vue` before committing.
+    #[test]
+    fn test_words_of_power_specta_bindings_are_fresh() {
+        let fresh = super::export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/wordsOfPower.specta.ts"
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1"
+        );
     }
 }
