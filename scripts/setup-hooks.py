@@ -226,11 +226,19 @@ def self_test() -> int:
         proc.returncode == 0 and len(marker.read_text().splitlines()) == 2,
         f"rc={proc.returncode} err={proc.stderr.strip()}",
     )
-    # Drill 5: no toolchain fails open.
+    # Drill 5: no toolchain fails open. PATH must still expose git (via a
+    # shim delegating to the real git) but no mise/npm/npm.cmd, so the hook
+    # survives the toplevel gate and actually reaches the no-toolchain else.
     shutil.rmtree(repo / "node_modules")
     (repo / "package-lock.json").write_text('{"v":3}\n', encoding="utf-8")
-    empty = Path(tempfile.mkdtemp(prefix="post-checkout-nop-"))
-    env = dict(os.environ, PATH=empty.as_posix())
+    gitonly = Path(tempfile.mkdtemp(prefix="post-checkout-gitonly-"))
+    real_git = shutil.which("git")
+    assert real_git is not None, "self-test needs git on PATH"
+    (gitonly / "git").write_text(
+        f'#!/bin/sh\nexec "{real_git}" "$@"\n', encoding="utf-8"
+    )
+    os.chmod(gitonly / "git", 0o755)
+    env = dict(os.environ, PATH=gitonly.as_posix())
     proc = subprocess.run(
         ["sh", str(repo / "post-checkout"), "HEAD", "HEAD", "1"],
         cwd=repo,
@@ -241,7 +249,9 @@ def self_test() -> int:
     )
     check(
         "missing toolchain exits 0 with one line",
-        proc.returncode == 0 and len(proc.stderr.strip().splitlines()) == 1,
+        proc.returncode == 0
+        and proc.stderr.strip().splitlines()
+        == ["post-checkout: no npm toolchain found, skipping npm sync"],
         f"rc={proc.returncode} err={proc.stderr.strip()!r}",
     )
 
