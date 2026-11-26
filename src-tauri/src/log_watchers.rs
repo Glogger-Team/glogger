@@ -215,6 +215,43 @@ impl PlayerLogWatcher {
         std::mem::take(&mut self.raw_lines_buffer)
     }
 
+    /// Get the full file path (batch key for the player retry cap).
+    pub fn get_file_path(&self) -> &PathBuf {
+        &self.file_path
+    }
+
+    /// Rewind the in-memory cursor so the next `poll` replays bytes it
+    /// already consumed (player drain: the `ChatLogPath` switch failed
+    /// after `poll` advanced past the tail). Backward-only — a target at
+    /// or past the cursor is ignored, so a stale batch start can never
+    /// skip live bytes. Never touches the persisted cursor (the caller
+    /// persists on success) or the rotation flag.
+    pub fn rewind_to(&mut self, position: u64) {
+        if position < self.current_position {
+            self.current_position = position;
+        }
+    }
+
+    /// Fingerprint of the file's first 512 bytes for the player retry key
+    /// (P2: rotation reuses the path at offset 0, so path+offset alone
+    /// aliases a new file's batch onto the old file's retry count).
+    /// Same bytes hash the same: a replaced file with different content
+    /// re-keys, while same-file appends leave the prefix untouched so a
+    /// poison batch still accumulates toward the skip-ahead cap while
+    /// the log grows. `None` (open/read failed) degrades to the
+    /// path+offset key — same as before this helper existed.
+    pub fn prefix_fingerprint(&self) -> Option<u64> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        use std::io::Read;
+        let file = std::fs::File::open(&self.file_path).ok()?;
+        let mut buf = Vec::new();
+        file.take(512).read_to_end(&mut buf).ok()?;
+        let mut hasher = DefaultHasher::new();
+        buf.hash(&mut hasher);
+        Some(hasher.finish())
+    }
+
     /// Parse a single line from Player.log
     fn parse_line(&mut self, line: &str) -> Option<LogEvent> {
         let matchers = self.pattern_matchers.clone();
