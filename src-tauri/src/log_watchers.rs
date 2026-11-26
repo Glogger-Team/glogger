@@ -215,6 +215,23 @@ impl PlayerLogWatcher {
         std::mem::take(&mut self.raw_lines_buffer)
     }
 
+    /// Get the full file path (batch key for the player retry cap).
+    pub fn get_file_path(&self) -> &PathBuf {
+        &self.file_path
+    }
+
+    /// Rewind the in-memory cursor so the next `poll` replays bytes it
+    /// already consumed (player drain: the `ChatLogPath` switch failed
+    /// after `poll` advanced past the tail). Backward-only — a target at
+    /// or past the cursor is ignored, so a stale batch start can never
+    /// skip live bytes. Never touches the persisted cursor (the caller
+    /// persists on success) or the rotation flag.
+    pub fn rewind_to(&mut self, position: u64) {
+        if position < self.current_position {
+            self.current_position = position;
+        }
+    }
+
     /// Parse a single line from Player.log
     fn parse_line(&mut self, line: &str) -> Option<LogEvent> {
         let matchers = self.pattern_matchers.clone();
