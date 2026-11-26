@@ -527,6 +527,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         migration_v99_drop_kill_loot_link_table(conn)?;
         super::record_migration(conn, 99)?;
     }
+    if current_version < 100 {
+        migration_v100_drop_player_prev_loot_added(conn)?;
+        super::record_migration(conn, 100)?;
+    }
+
     tx.commit()?;
     Ok(())
 }
@@ -1900,6 +1905,62 @@ fn migration_v99_drop_kill_loot_link_table(conn: &Connection) -> Result<()> {
             [],
         )?;
     }
+    Ok(())
+}
+
+/// Migration V100: drop the dead `player_prev_ingests.loot_added` column.
+///
+/// Disposition: dead-at-birth. The column was created in V48 alongside
+/// `kills_added` but never written and never read — no writer or reader
+/// exists anywhere in the tree (only the V48 CREATE mentions it). SQLite
+/// cannot DROP COLUMN on older versions carried by this chain, so the
+/// table is rebuilt without the column following the V97 precedent:
+/// CREATE-without-column, exact copy, drop, rename.
+///
+/// The rebuild preserves every surviving column (`content_hash` stays the
+/// PRIMARY KEY; `source_path`, `ingested_at`, `kills_added` copy over) and
+/// carries no indexes (the table never had any beyond the PK, which the
+/// CREATE restores). Fresh DBs CREATE (v48) then rebuild — accepted, same
+/// as the v95/v97/v99 drop precedents; v48 stays in the chain untouched.
+fn migration_v100_drop_player_prev_loot_added(conn: &Connection) -> Result<()> {
+    // Minimal-fixture guard (same as v80/v96/v97/v98/v99): skip when the
+    // ingest-tracking table is absent.
+    let has_table: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'player_prev_ingests')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_table {
+        return Ok(());
+    }
+    // Re-runs (and already-migrated DBs reaching this fn directly) are
+    // no-ops once the column is gone.
+    let has_column: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('player_prev_ingests') WHERE name = 'loot_added')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_column {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE player_prev_ingests_new (
+            content_hash TEXT PRIMARY KEY,
+            source_path TEXT,
+            ingested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            kills_added INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO player_prev_ingests_new
+            (content_hash, source_path, ingested_at, kills_added)
+            SELECT content_hash, source_path, ingested_at, kills_added
+              FROM player_prev_ingests;
+        DROP TABLE player_prev_ingests;
+        ALTER TABLE player_prev_ingests_new RENAME TO player_prev_ingests;",
+    )?;
     Ok(())
 }
 
@@ -5157,13 +5218,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            99,
+            100,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 99);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 100);
     }
 
     #[test]
@@ -5286,13 +5347,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 99) plus the purge itself on the three aggregate source tables.
+        // 100) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 99, "migration chain head");
+        assert_eq!(head, 100, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -5338,8 +5399,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 99 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id + v97 favor source-line id + v98 timestamp space contract + v99 kill-loot link-table drop). Repair: a
+        // Chain wiring: full run_migrations head must be 100 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id + v97 favor source-line id + v98 timestamp space contract + v99 kill-loot link-table drop + v100 player-prev loot_added drop). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -5347,7 +5408,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 99, "migration chain head");
+        assert_eq!(head, 100, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -6434,6 +6495,58 @@ mod tests {
         // Absent tables (minimal fixtures) stay no-ops.
         let bare = Connection::open_in_memory().unwrap();
         migration_v99_drop_kill_loot_link_table(&bare).unwrap();
+    }
+
+    #[test]
+    fn v100_drops_loot_added_column_keeping_rows() {
+        // Pre-v100 shape: v48 ingest-tracking table with the dead column.
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE player_prev_ingests (
+                content_hash TEXT PRIMARY KEY,
+                source_path TEXT,
+                ingested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                kills_added INTEGER NOT NULL DEFAULT 0,
+                loot_added INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO player_prev_ingests (content_hash, source_path, kills_added, loot_added)
+                VALUES ('abc123', 'Player-prev.log', 7, 0);",
+        )
+        .unwrap();
+        migration_v100_drop_player_prev_loot_added(&c).unwrap();
+        let cols: Vec<String> = c
+            .prepare("SELECT name FROM pragma_table_info('player_prev_ingests') ORDER BY cid")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            cols,
+            vec!["content_hash", "source_path", "ingested_at", "kills_added"],
+            "loot_added must go, every surviving column must stay in order"
+        );
+        let kept: (String, Option<String>, i64) = c
+            .query_row(
+                "SELECT content_hash, source_path, kills_added FROM player_prev_ingests",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            kept,
+            ("abc123".to_string(), Some("Player-prev.log".to_string()), 7),
+            "rebuild must preserve rows exactly"
+        );
+        // Idempotent: a second run is a no-op.
+        migration_v100_drop_player_prev_loot_added(&c).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM player_prev_ingests", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "second run must keep the row");
+        // Absent table (minimal fixtures) stays a no-op.
+        let bare = Connection::open_in_memory().unwrap();
+        migration_v100_drop_player_prev_loot_added(&bare).unwrap();
     }
 }
 
