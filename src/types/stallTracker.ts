@@ -1,7 +1,13 @@
 // TypeScript shapes that mirror the Rust serde structs in
 // src-tauri/src/db/stall_tracker_commands.rs and src-tauri/src/stall_aggregations.rs.
 //
-// Keep this file in sync when the Rust types change.
+// Byte-identical shapes are re-exported from the generated Specta bindings
+// (`stall.specta.ts`). The hand definitions that remain differ from the
+// bindings: every filter/params type is all-optional here but required-nullable
+// in the bindings, `sortDir`/`granularity`/`period` are narrow literal unions
+// here but plain `string` in the bindings, and `InventoryItem.avg_per_day` /
+// `InventoryResult.avg_daily_revenue` are `number` here but `number | null` in
+// the bindings. `Granularity` / `TrendsPeriod` have no generated counterpart.
 //
 // Naming convention:
 // - Response types use snake_case because the Rust structs have no
@@ -10,44 +16,24 @@
 //   `#[serde(rename_all = "camelCase")]` (StallEventsFilters, StallEventsParams,
 //   StallRevenueParams, StallInventoryParams).
 
-export interface StallEvent {
-  id: number;
-  event_timestamp: string;
-  event_at: string | null;
-  log_timestamp: string;
-  log_title: string;
-  action: string;
-  player: string;
-  owner: string | null;
-  item: string | null;
-  quantity: number;
-  price_unit: number | null;
-  price_total: number | null;
-  raw_message: string;
-  entry_index: number;
-  ignored: boolean;
-  created_at: string;
-}
-
-export interface StallEventsPage {
-  rows: StallEvent[];
-  total_count: number;
-}
-
-export interface StallStats {
-  total_sales: number;
-  total_revenue: number;
-  unique_buyers: number;
-  unique_items: number;
-}
-
-export interface StallFilterOptions {
-  buyers: string[];
-  players: string[];
-  items: string[];
-  dates: string[];
-  actions: string[];
-}
+export type {
+  StallEvent,
+  StallEventsPage,
+  StallStats,
+  StallFilterOptions,
+  RevenuePeriod,
+  RevenueCell,
+  RevenueResult,
+  PriceTier,
+  StallBaseline,
+  TimeseriesLine,
+  SalesTimeseriesResult,
+  ImportResult,
+  ExportResult,
+  RecountLine,
+  RecountPreview,
+} from './stall.specta'
+import type { PriceTier } from './stall.specta'
 
 /** Filter shape sent to backend. camelCase to match Rust serde rename. */
 export interface StallEventsFilters {
@@ -73,28 +59,6 @@ export interface StallEventsParams extends StallEventsFilters {
 
 export type Granularity = 'daily' | 'weekly' | 'monthly';
 
-export interface RevenuePeriod {
-  key: string;
-  label: string;
-}
-
-export interface RevenueCell {
-  item: string;
-  period_key: string;
-  revenue: number;
-}
-
-export interface RevenueResult {
-  periods: RevenuePeriod[];
-  items: string[];
-  cells: RevenueCell[];
-  /** Per-item totals as `[item, total]` pairs, sorted by item. */
-  row_totals: [string, number][];
-  /** Per-period totals as `[period_key, total]` pairs, sorted by key. */
-  col_totals: [string, number][];
-  grand_total: number;
-}
-
 export interface StallRevenueParams {
   owner?: string | null;
   granularity?: Granularity | null;
@@ -105,12 +69,6 @@ export interface StallRevenueParams {
 }
 
 // ── Inventory (aggregations) ────────────────────────────────────────────
-
-export interface PriceTier {
-  qty: number;
-  /** `null` for unpriced tiers (added but never made visible). */
-  price: number | null;
-}
 
 export interface InventoryItem {
   item: string;
@@ -157,17 +115,6 @@ export interface StallInventoryParams {
 
 // ── Opening-stock baseline (manual ground truth) ─────────────────────────
 
-/** One row of the `stall_inventory_baseline` table. camelCase to match
- * the Rust `StallBaseline` serde rename. */
-export interface StallBaseline {
-  id: number;
-  owner: string;
-  item: string;
-  quantity: number;
-  priceUnit: number | null;
-  recordedAt: string;
-  note: string | null;
-}
 /** Input for `save_stall_baseline`. `quantity: 0` stores a zero row that
  * clears the item (supersedes pre-clear history). */
 export interface StallBaselineInput {
@@ -180,24 +127,6 @@ export interface StallBaselineInput {
 
 // ── Sales time-series (Trends tab) ──────────────────────────────────────
 
-/** One drawable line. `gold` and `units` both align to `SalesTimeseriesResult.periods`. */
-export interface TimeseriesLine {
-  /** Item name, or the literal `"Total"` for the aggregate line. */
-  item: string;
-  gold: number[];
-  units: number[];
-  total_gold: number;
-  total_units: number;
-}
-
-export interface SalesTimeseriesResult {
-  /** X-axis buckets, oldest-first. Series indices align to this. */
-  periods: RevenuePeriod[];
-  lines: TimeseriesLine[];
-  /** Bucket granularity used: `"hour" | "day" | "week" | "month"`. */
-  bucket: string;
-}
-
 export type TrendsPeriod = '1d' | '3d' | '7d' | '1m' | 'all';
 
 export interface StallTimeseriesParams {
@@ -207,41 +136,4 @@ export interface StallTimeseriesParams {
   item?: string | null;
   /** 5 or 10 for top-grossing mode. Both `item`/`topN` unset → Total line. */
   topN?: number | null;
-}
-
-// ── Import / Export ─────────────────────────────────────────────────────
-
-export interface ImportResult {
-  total_entries: number;
-  new_entries: number;
-  /** The owner the rows were stamped with — parser hint or current_owner fallback. */
-  effective_owner: string | null;
-  /** True when the file had no owner actions and was claimed for the active character. */
-  owner_claimed: boolean;
-}
-
-export interface ExportResult {
-  files_written: number;
-  events_exported: number;
-}
-
-/** One counted line of a recount preview. camelCase to match Rust serde rename. */
-export interface RecountLine {
-  item: string
-  quantity: number
-  priceUnit: number | null
-}
-
-/** Preview of `preview_stall_recount`: counts from the fresh book plus the
- * in-stock items the book does not cover (zeroed on apply). `contentHash`
- * identifies the exact book bytes; apply echoes it back and aborts on drift.
- * `bookLatestAt` is the book's newest entry time; apply stamps
- * `min(now, bookLatestAt)` so post-book events stay in the replay. */
-export interface RecountPreview {
-  owner: string
-  counted: RecountLine[]
-  zeroed: string[]
-  bookEntries: number
-  contentHash: string
-  bookLatestAt: string | null
 }
