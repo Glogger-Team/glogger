@@ -28,6 +28,7 @@ import VendorCouncilWidget from "./widgets/VendorCouncilWidget.vue";
 import RouletteWidget from "./widgets/RouletteWidget.vue";
 import ArenaWidget from "./widgets/ArenaWidget.vue";
 import StatehelmSummaryWidget from "./widgets/StatehelmSummaryWidget.vue";
+import StatehelmPlannerWidget from "./widgets/StatehelmPlannerWidget.vue";
 export type WidgetSize = "small" | "medium" | "large";
 
 export interface DashboardWidget {
@@ -123,6 +124,12 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     name: "Statehelm Gifts",
     component: StatehelmSummaryWidget,
     defaultSize: "medium",
+  },
+  {
+    id: "statehelm-planner",
+    name: "Statehelm Gift Planner",
+    component: StatehelmPlannerWidget,
+    defaultSize: "small",
   },
   {
     id: "watchword-detections",
