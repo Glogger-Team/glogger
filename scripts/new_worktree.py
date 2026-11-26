@@ -12,6 +12,7 @@ pre-push lint:typecheck fail on missing vue-tsc.
 """
 
 import argparse
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -53,6 +54,20 @@ def main() -> int:
 
     run(["git", "worktree", "add", "-b", args.branch, str(path), args.base])
     run(["mise", "exec", "--", "npm", "install"], cwd=str(path))
+    base_sha = run(["git", "rev-parse", args.base])
+    # Cut-time baseline: setup (npm install) can stamp tracked files
+    # (observed: package-lock.json M dirt). Record what the cut owned so a
+    # later "dirty tree" triages in one read — setup-owned, preserve never drop.
+    manifest = path.parent / f"{slug}.cut-baseline"
+    status = run(["git", "status", "--porcelain"], cwd=str(path))
+    lock = path / "package-lock.json"
+    lock_hash = (
+        hashlib.sha256(lock.read_bytes()).hexdigest() if lock.exists() else "absent"
+    )
+    manifest.write_text(
+        f"base: {args.base} {base_sha}\nstatus-at-cut:\n{status}\npackage-lock-sha256: {lock_hash}\n"
+    )
+    print(f"Baseline: {manifest}")
     print(f"Ready: {path} on {args.branch} (node_modules installed).")
     return 0
 
