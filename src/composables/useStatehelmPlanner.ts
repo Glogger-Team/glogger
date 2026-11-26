@@ -1,9 +1,10 @@
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useGameStateStore } from '../stores/gameStateStore'
 import { useSettingsStore } from '../stores/settingsStore'
 import { useStatehelmTracker, MAX_GIFTS_PER_WEEK } from './useStatehelmTracker'
 import { CASINO_PORTAL_BY_PHASE, type MoonPhaseName } from './useMoonPhase'
+import { assignGifts, buildPickupStops } from './statehelmPlannerLogic'
 
 /** One vault→NPC gift candidate from the backend matcher. */
 export interface StatehelmGiftMatch {
@@ -151,20 +152,18 @@ export function useStatehelmPlanner() {
    * weekly counts from the tracker (manual entries included).
    */
   const assignments = computed<GiftAssignment[]>(() => {
-    const remaining = { ...remainingByNpc.value }
-    const claimedItems = new Set<string>()
-    const out: GiftAssignment[] = []
-    for (const m of matches.value) {
-      if (excludedNpcKeys.value.has(m.npc_key)) continue
-      if ((remaining[m.npc_key] ?? 0) <= 0) continue
-      const itemKey = JSON.stringify([m.vault_key, m.item_name])
-      if (claimedItems.has(itemKey)) continue
-      claimedItems.add(itemKey)
-      remaining[m.npc_key] = (remaining[m.npc_key] ?? 0) - 1
+    const claimed = assignGifts(matches.value, remainingByNpc.value, excludedNpcKeys.value)
+    return claimed.map((m) => {
       const meta = vaultMeta(m.vault_key)
-      out.push({ match: m, vaultArea: meta.area, vaultLabel: meta.label })
-    }
-    return out
+      return { match: m, vaultArea: meta.area, vaultLabel: meta.label }
+    })
+  })
+
+  // P2-1: assignments recompute live from the tracker (gifts, +/- to cap),
+  // but the rendered route is a point-in-time plan — drop it the moment the
+  // tables change, mirroring TripPlannerWidget's input watchers.
+  watch(assignments, () => {
+    route.value = null
   })
 
   /** Assignments grouped by vault for the match table. */
@@ -216,18 +215,13 @@ export function useStatehelmPlanner() {
     if (assignments.value.length === 0) return
     planning.value = true
     try {
-      const stops: RouteStop[] = []
-      const seenAreas = new Set<string>()
-      for (const g of vaultGroups.value) {
-        if (!g.vaultArea || seenAreas.has(g.vaultArea)) continue
-        seenAreas.add(g.vaultArea)
-        const items = g.assignments.map((a) => a.match.item_name).join(', ')
-        stops.push({
-          zone: g.vaultArea,
-          purpose: 'pickup',
-          details: `Pick up ${items} from ${g.vaultLabel}`,
-        })
-      }
+      const stops: RouteStop[] = buildPickupStops(
+        vaultGroups.value.map((g) => ({
+          vaultArea: g.vaultArea,
+          vaultLabel: g.vaultLabel,
+          items: g.assignments.map((a) => a.match.item_name),
+        })),
+      )
       const recipients = assignedNpcKeys.value
         .map((k) => tracker.npcStatuses.value.find((s) => s.npc.key === k)?.npc.name ?? k)
         .join(', ')
