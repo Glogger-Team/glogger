@@ -2,7 +2,7 @@
   <div class="flex flex-col gap-3 h-full min-h-0">
     <!-- Slot header -->
     <div class="flex items-center gap-3 px-1 shrink-0">
-      <h3 class="text-sm font-semibold text-text-primary">{{ slotLabel }}</h3>
+      <h3 class="dialog-title">{{ slotLabel }}</h3>
       <span
         v-if="isFixedSlot"
         class="text-xs font-semibold px-1.5 py-0.5 rounded bg-surface-hover text-text-muted">

@@ -1,7 +1,7 @@
 <template>
   <div class="flex flex-col gap-4 h-[calc(100vh-200px)] overflow-y-auto">
     <div class="flex items-center justify-between">
-      <h3 class="text-text-primary text-sm font-semibold m-0">Crafting History</h3>
+      <h3 class="dialog-title m-0">Crafting History</h3>
       <button
         class="text-text-muted text-xs cursor-pointer bg-transparent border border-border-light rounded px-2 py-0.5 hover:text-text-primary hover:border-border-default"
         :disabled="loading"
@@ -24,7 +24,7 @@
       <!-- Top crafted recipes -->
       <div class="flex flex-col gap-2">
         <div class="flex items-center justify-between">
-          <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
+          <h4 class="panel-label m-0">
             Top Crafted Recipes
           </h4>
           <!-- Skill filter -->

@@ -11,7 +11,7 @@
       <!-- Header row -->
       <div class="flex items-center justify-between shrink-0">
         <div class="flex items-center gap-4">
-          <h2 class="text-lg font-semibold text-text-primary">
+          <h2 class="screen-title">
             {{ store.selectedCharacter?.character_name ?? 'Character' }}
           </h2>
           <span v-if="store.selectedCharacter" class="text-sm text-text-muted">

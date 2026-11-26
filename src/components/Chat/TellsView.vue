@@ -2,7 +2,7 @@
   <div class="flex h-full">
     <div class="w-62.5 bg-surface-dark border-r border-border-default flex flex-col">
       <div class="p-4 border-b border-border-default">
-        <h3 class="m-0 text-accent-gold text-lg font-semibold">Conversations</h3>
+        <h3 class="display-title m-0">Conversations</h3>
       </div>
       <div class="flex-1 overflow-y-auto p-2">
         <button

@@ -28,26 +28,26 @@
       <!-- Summary cards -->
       <div class="grid grid-cols-4 gap-3">
         <div class="bg-surface-elevated rounded border border-border-default p-3">
-          <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">Kills</h3>
+          <h3 class="section-heading mb-2">Kills</h3>
           <div class="text-lg font-bold text-text-primary">{{ combat.liveKills }} <span class="text-xs font-normal text-text-muted">live / {{ combat.lifetimeKills }} lifetime</span></div>
         </div>
         <div class="bg-surface-elevated rounded border border-border-default p-3">
-          <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">Deaths</h3>
+          <h3 class="section-heading mb-2">Deaths</h3>
           <div class="text-lg font-bold text-text-primary">{{ deathStore.totalDeaths }}</div>
         </div>
         <div class="bg-surface-elevated rounded border border-border-default p-3">
-          <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">XP (live)</h3>
+          <h3 class="section-heading mb-2">XP (live)</h3>
           <div class="text-lg font-bold text-[#7ec87e]">{{ combat.liveXp.toLocaleString() }}</div>
         </div>
         <div class="bg-surface-elevated rounded border border-border-default p-3">
-          <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">Wisdom (session)</h3>
+          <h3 class="section-heading mb-2">Wisdom (session)</h3>
           <div class="text-lg font-bold text-accent-gold">{{ gameState.combatWisdomSession.total.toLocaleString() }}</div>
         </div>
       </div>
 
       <!-- Kills by enemy -->
       <div v-if="combat.killRows.length > 0" class="flex flex-col gap-1">
-        <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider">Kills by enemy</h3>
+        <h3 class="section-heading">Kills by enemy</h3>
         <div class="overflow-auto max-h-64">
           <DataTable
             :columns="killColumns"
@@ -70,7 +70,7 @@
 
       <!-- XP by skill -->
       <div v-if="combat.xpRows.length > 0" class="flex flex-col gap-1">
-        <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider">XP by skill</h3>
+        <h3 class="section-heading">XP by skill</h3>
         <div class="overflow-auto max-h-64">
           <DataTable
             :columns="xpColumns"
@@ -96,7 +96,7 @@
 
       <!-- Recent deaths -->
       <div v-if="deathStore.deaths.length > 0" class="flex flex-col gap-1">
-        <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider">Recent deaths</h3>
+        <h3 class="section-heading">Recent deaths</h3>
         <div class="overflow-auto max-h-64">
           <DataTable
             :columns="deathColumns"
@@ -119,7 +119,7 @@
 
       <!-- Wisdom earns -->
       <div v-if="gameState.combatWisdomSession.earns.length > 0" class="flex flex-col gap-1">
-        <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider">Wisdom earns this session</h3>
+        <h3 class="section-heading">Wisdom earns this session</h3>
         <div class="flex flex-col gap-1">
           <div v-for="(e, i) in gameState.combatWisdomSession.earns" :key="i" class="flex items-baseline justify-between gap-2 text-sm">
             <span class="text-text-primary truncate">{{ e.name ?? 'Prodigy Level' }}<span v-if="e.zone" class="text-text-dim text-[11px]"> ({{ e.zone }})</span></span>
@@ -131,7 +131,7 @@
       <!-- Event log -->
       <div class="flex flex-col gap-1">
         <div class="flex items-center justify-between">
-          <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider">Event log</h3>
+          <h3 class="section-heading">Event log</h3>
           <div class="flex items-center gap-1">
             <button
               v-for="opt in filterOptions"

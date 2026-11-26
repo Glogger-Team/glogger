@@ -9,7 +9,7 @@
         <div class="relative bg-surface-base border border-border-default rounded-lg shadow-xl w-96 max-w-[90vw]">
           <!-- Header -->
           <div class="px-4 pt-4 pb-2">
-            <h3 class="text-sm font-semibold text-text-primary">{{ title }}</h3>
+            <h3 class="dialog-title">{{ title }}</h3>
           </div>
 
           <!-- Content -->

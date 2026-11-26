@@ -285,7 +285,7 @@
 
       <!-- Pricing Summary (pricing mode only) -->
       <div v-if="pricingMode && pricingCalculation && pricingCalculation.materials.length > 0" class="flex flex-col gap-2 border-t border-surface-elevated pt-3">
-        <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">Pricing Summary</h4>
+        <h4 class="panel-label m-0">Pricing Summary</h4>
 
         <div class="flex flex-col gap-1 text-xs">
           <div class="flex justify-between">

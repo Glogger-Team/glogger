@@ -1,6 +1,6 @@
 <template>
   <div class="flex flex-col gap-3">
-    <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
+    <h4 class="panel-label m-0">
       Crafting Progress by Skill
     </h4>
 

@@ -1,7 +1,7 @@
 <template>
   <div class="fixed inset-0 bg-surface-dark flex flex-col items-center justify-center p-8">
     <div class="mb-8 text-center">
-      <h1 class="text-2xl font-bold text-accent-gold tracking-wide">glogger</h1>
+      <h1 class="h1-brand">glogger</h1>
       <p class="text-text-muted text-xs mt-1">First-Time Setup</p>
     </div>
 

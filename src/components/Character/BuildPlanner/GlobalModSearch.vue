@@ -1,7 +1,7 @@
 <template>
   <div class="flex flex-col gap-3 h-full min-h-0 px-1">
     <div class="flex items-center gap-2">
-      <h3 class="text-sm font-semibold text-text-primary shrink-0">Search All Mods</h3>
+      <h3 class="dialog-title shrink-0">Search All Mods</h3>
       <input
         v-model="query"
         type="text"

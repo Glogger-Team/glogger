@@ -6,7 +6,7 @@
         <span
           class="w-2 h-2 rounded-full"
           :class="store.tracker.active ? 'bg-status-active animate-pulse' : 'bg-text-muted'" />
-        <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
+        <h4 class="panel-label m-0">
           Live Tracking
         </h4>
       </div>

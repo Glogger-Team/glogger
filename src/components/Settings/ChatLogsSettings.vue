@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="settings-section">
-      <h3>Manual Import</h3>
+      <h3 class="panel-label">Manual Import</h3>
 
       <div class="mb-4">
         <button
@@ -37,7 +37,7 @@
     </div>
 
     <div class="settings-section">
-      <h3>Excluded Channels</h3>
+      <h3 class="panel-label">Excluded Channels</h3>
       <p class="text-text-muted text-xs leading-relaxed mb-4">
         Messages from these channels will not be imported when parsing chat logs.
       </p>
@@ -69,7 +69,7 @@
     </div>
 
     <div class="settings-section">
-      <h3>Chat Log Storage</h3>
+      <h3 class="panel-label">Chat Log Storage</h3>
 
       <div class="mb-4">
         <div v-if="chatStats" class="status-panel">
@@ -89,7 +89,7 @@
     </div>
 
     <div class="settings-section">
-      <h3>Delete Chat Data</h3>
+      <h3 class="panel-label">Delete Chat Data</h3>
 
       <div class="mb-4">
         <button

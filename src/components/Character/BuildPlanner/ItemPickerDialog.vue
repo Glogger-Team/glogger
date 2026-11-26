@@ -7,7 +7,7 @@
         <div class="relative bg-surface-base border border-border-default rounded-lg shadow-xl w-[90vw] max-w-275 h-[85vh] flex flex-col">
           <!-- Header -->
           <div class="flex items-center justify-between px-4 pt-4 pb-2 shrink-0">
-            <h3 class="text-sm font-semibold text-text-primary">Select Base Item — {{ slotLabel }}</h3>
+            <h3 class="dialog-title">Select Base Item — {{ slotLabel }}</h3>
             <button
               class="text-text-muted hover:text-text-primary text-lg cursor-pointer leading-none"
               @click="close">

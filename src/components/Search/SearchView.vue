@@ -83,7 +83,7 @@
         <div class="text-sm text-center mb-6">Searches all game data, your inventory, skills, and market values</div>
 
         <div class="bg-surface-base border border-border-default rounded-lg p-5">
-          <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider m-0 mb-3">Search Syntax</h3>
+          <h3 class="section-heading m-0 mb-3">Search Syntax</h3>
           <div class="flex flex-col gap-2 text-xs">
             <div class="flex items-baseline gap-3">
               <code class="text-accent-gold bg-surface-dark px-1.5 py-0.5 rounded-sm shrink-0">fire sword</code>
@@ -123,7 +123,7 @@
             </div>
           </div>
 
-          <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider m-0 mt-4 mb-2">Examples</h3>
+          <h3 class="section-heading m-0 mt-4 mb-2">Examples</h3>
           <div class="flex flex-col gap-1 text-xs">
             <div><code class="text-text-secondary bg-surface-dark px-1.5 py-0.5 rounded-sm">type:item keyword:Food level:30-50</code> — food items in a level range</div>
             <div><code class="text-text-secondary bg-surface-dark px-1.5 py-0.5 rounded-sm">type:recipe skill:Cooking soup</code> — cooking recipes matching "soup"</div>

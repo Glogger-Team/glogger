@@ -2,7 +2,7 @@
   <div class="flex flex-col gap-4 h-[calc(100vh-200px)]">
     <!-- Header -->
     <div class="flex items-center justify-between">
-      <h3 class="text-text-primary text-sm font-semibold m-0">Work Orders</h3>
+      <h3 class="dialog-title m-0">Work Orders</h3>
       <div class="flex items-center gap-3">
         <label class="flex items-center gap-2 text-text-dim text-xs cursor-pointer">
           <input

@@ -1,7 +1,7 @@
 <template>
   <div class="flex flex-col gap-4 h-full min-h-0 overflow-y-auto">
     <div class="flex items-center justify-between">
-      <h2 class="text-lg font-semibold text-text-primary">Deaths</h2>
+      <h2 class="screen-title">Deaths</h2>
       <span class="text-sm text-text-muted">{{ store.totalDeaths }} total</span>
     </div>
 
@@ -14,7 +14,7 @@
     <div v-if="store.totalDeaths > 0" class="grid grid-cols-4 gap-3">
       <!-- Top killers -->
       <div class="bg-surface-elevated rounded border border-border-default p-3">
-        <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">Top Killers</h3>
+        <h3 class="section-heading mb-2">Top Killers</h3>
         <div class="flex flex-col gap-1">
           <div
             v-for="entry in store.deathsByKiller.slice(0, 5)"
@@ -28,7 +28,7 @@
 
       <!-- Top abilities -->
       <div class="bg-surface-elevated rounded border border-border-default p-3">
-        <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">Deadliest Abilities</h3>
+        <h3 class="section-heading mb-2">Deadliest Abilities</h3>
         <div class="flex flex-col gap-1">
           <div
             v-for="entry in store.deathsByAbility.slice(0, 5)"
@@ -42,7 +42,7 @@
 
       <!-- Top areas -->
       <div class="bg-surface-elevated rounded border border-border-default p-3">
-        <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">Deadliest Areas</h3>
+        <h3 class="section-heading mb-2">Deadliest Areas</h3>
         <div class="flex flex-col gap-1">
           <div
             v-for="entry in store.deathsByArea.slice(0, 5)"
@@ -56,7 +56,7 @@
 
       <!-- Top damage types -->
       <div class="bg-surface-elevated rounded border border-border-default p-3">
-        <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-2">Damage Types</h3>
+        <h3 class="section-heading mb-2">Damage Types</h3>
         <div class="flex flex-col gap-1">
           <div
             v-for="entry in store.deathsByDamageType.slice(0, 5)"

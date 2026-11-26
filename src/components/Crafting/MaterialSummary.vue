@@ -1,7 +1,7 @@
 <template>
   <div class="flex flex-col gap-3">
     <div v-if="!bare" class="flex items-center justify-between">
-      <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
+      <h4 class="panel-label m-0">
         Material Availability
       </h4>
       <div class="flex gap-3 text-[0.65rem] text-text-muted">

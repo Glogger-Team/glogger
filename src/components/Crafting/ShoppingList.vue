@@ -7,7 +7,7 @@
     <!-- Vendor-purchasable items -->
     <template v-if="vendorItems.length > 0">
       <div v-if="!bare" class="flex items-center justify-between">
-        <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
+        <h4 class="panel-label m-0">
           Shopping / Gathering List
         </h4>
         <span class="text-text-muted text-[10px]">
@@ -35,7 +35,7 @@
 
     <!-- Items that need to be sourced elsewhere -->
     <template v-if="sourceItems.length > 0">
-      <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
+      <h4 class="panel-label m-0">
         Source Elsewhere
       </h4>
       <p class="text-text-dim text-[10px] -mt-2 m-0">

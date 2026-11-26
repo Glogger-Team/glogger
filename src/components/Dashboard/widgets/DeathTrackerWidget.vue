@@ -2,7 +2,7 @@
   <div class="flex flex-col gap-3 text-sm">
     <!-- Recent deaths -->
     <div>
-      <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-1.5">Recent Deaths</h3>
+      <h3 class="section-heading mb-1.5">Recent Deaths</h3>
       <div v-if="deathStore.deaths.length === 0" class="text-xs text-text-dim italic">
         No deaths recorded yet.
       </div>
@@ -26,7 +26,7 @@
 
     <!-- Last rezzed by -->
     <div v-if="rezStore.lastRezzedBy">
-      <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-1.5">Last Rezzed By</h3>
+      <h3 class="section-heading mb-1.5">Last Rezzed By</h3>
       <div class="flex items-center justify-between gap-2 py-0.5">
         <span class="text-value-positive">{{ rezStore.lastRezzedBy.caster_name }}</span>
         <span class="text-text-dim text-xs font-mono whitespace-nowrap">
@@ -37,7 +37,7 @@
 
     <!-- Top rezzers (who rezzed you most) -->
     <div v-if="rezStore.topRezzers.length > 0">
-      <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-1.5">Top Rezzers</h3>
+      <h3 class="section-heading mb-1.5">Top Rezzers</h3>
       <div class="flex flex-col gap-0.5">
         <div
           v-for="entry in rezStore.topRezzers.slice(0, 5)"
@@ -51,7 +51,7 @@
 
     <!-- Top rezzed (who you rezzed most) -->
     <div v-if="rezStore.topRezzed.length > 0">
-      <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-1.5">You Rezzed</h3>
+      <h3 class="section-heading mb-1.5">You Rezzed</h3>
       <div class="flex flex-col gap-0.5">
         <div
           v-for="entry in rezStore.topRezzed.slice(0, 5)"
