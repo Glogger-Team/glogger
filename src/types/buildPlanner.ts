@@ -1,43 +1,29 @@
 // ── Build Planner Types ─────────────────────────────────────────────────────
+//
+// Byte-identical shapes are re-exported from the generated Specta bindings
+// (`buildPlanner.specta.ts`, `cdn.specta.ts`). The hand definitions that remain
+// differ from the bindings: `BuildPresetAbility.bar` and
+// `CpRecipeOption.effect_type` are narrow string-literal unions here but plain
+// `string` in the bindings. Everything else below has no generated counterpart.
 
-/** Persisted build preset from the database */
-export interface BuildPreset {
-  id: number
-  character_id: string
-  name: string
-  skill_primary: string | null
-  skill_secondary: string | null
-  target_level: number
-  target_rarity: string
-  notes: string | null
-  created_at: string
-  updated_at: string
-}
-
-/** A mod assigned to a specific slot in a build */
-export interface BuildPresetMod {
-  id: number
-  preset_id: number
-  equip_slot: string
-  power_name: string
-  tier: number | null
-  is_augment: boolean
-  sort_order: number
-}
-
-/** A base item assigned to a slot in a build */
-export interface BuildPresetSlotItem {
-  preset_id: number
-  equip_slot: string
-  item_id: number
-  item_name: string | null
-  slot_level: number
-  slot_rarity: string
-  is_crafted: boolean
-  is_masterwork: boolean
-  slot_skill_primary: string | null
-  slot_skill_secondary: string | null
-}
+export type {
+  BuildPreset,
+  BuildPresetMod,
+  BuildPresetSlotItem,
+  BuildPresetAbilityInput,
+  BuildPresetModInput,
+  BuildPresetCpRecipe,
+  EquippedGearMod,
+  EquippedCandidate,
+  EquippedSlotCandidates,
+} from './buildPlanner.specta'
+import type { TsysTierSummary } from './cdn.specta'
+export type { TsysTierSummary }
+import type {
+  BuildPresetSlotItem,
+  EquippedCandidate,
+  EquippedSlotCandidates,
+} from './buildPlanner.specta'
 
 /** A saved ability assignment in a build bar */
 export interface BuildPresetAbility {
@@ -47,23 +33,6 @@ export interface BuildPresetAbility {
   slot_position: number
   ability_id: number
   ability_name: string | null
-}
-
-/** Input for saving abilities (no id, server-assigned) */
-export interface BuildPresetAbilityInput {
-  bar: string
-  slot_position: number
-  ability_id: number
-  ability_name: string | null
-}
-
-/** Input for saving mods (no id, server-assigned) */
-export interface BuildPresetModInput {
-  equip_slot: string
-  power_name: string
-  tier: number | null
-  is_augment: boolean
-  sort_order: number
 }
 
 /** A CP-consuming recipe option returned from CDN query */
@@ -79,46 +48,6 @@ export interface CpRecipeOption {
   effect_description: string
 }
 
-/** A CP recipe assigned to a slot in a saved build */
-export interface BuildPresetCpRecipe {
-  id: number
-  preset_id: number
-  equip_slot: string
-  recipe_id: number
-  recipe_name: string | null
-  cp_cost: number
-  effect_type: string
-  effect_key: string
-  sort_order: number
-}
-
-/** A mod pulled from an equipped item (a TSys power or its imbued augment) */
-export interface EquippedGearMod {
-  power_name: string
-  tier: number | null
-  is_augment: boolean
-}
-
-/** One candidate item that could be worn in a planner slot (from the latest items report) */
-export interface EquippedCandidate {
-  item_id: number
-  item_name: string | null
-  slot_level: number
-  slot_rarity: string
-  is_crafted: boolean
-  /** Item has a durability value (has been used) — a hint it's actually worn */
-  is_worn: boolean
-  /** Item is attuned/bound to this character — another worn hint */
-  is_attuned: boolean
-  mods: EquippedGearMod[]
-}
-
-/** All candidate items for one planner slot, ordered best-guess first */
-export interface EquippedSlotCandidates {
-  equip_slot: string
-  candidates: EquippedCandidate[]
-}
-
 /** Result of fetching equipped-gear candidates for the loadout picker */
 export interface EquippedCandidatesResult {
   reason: 'no-preset' | 'no-character' | 'no-gear' | null
@@ -129,17 +58,6 @@ export interface EquippedCandidatesResult {
 export interface EquippedSelection {
   equip_slot: string
   item: EquippedCandidate
-}
-
-/** A TSys power eligible for a slot, returned from the backend query */
-export interface TsysTierSummary {
-  tier_id: string
-  min_level: number
-  max_level: number
-  min_rarity: string | null
-  skill_level_prereq: number | null
-  effects: string[]
-  icon_id: number | null
 }
 
 export interface SlotTsysPower {
