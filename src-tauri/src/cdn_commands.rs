@@ -6290,3 +6290,353 @@ mod resolve_batch_reference_tests {
         assert!(resolve_batch_reference(&data, "Apple Kilt Powder").is_none());
     }
 }
+
+// ── Statehelm favor planner ─────────────────────────────────────────────────
+/// A vault item matching one NPC's gift preference.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct StatehelmGiftMatch {
+    pub item_name: String,
+    pub item_type_id: Option<u32>,
+    pub vault_key: String,
+    pub stack_size: i32,
+    pub npc_key: String,
+    pub npc_name: String,
+    pub desire: String,
+    pub pref: f32,
+    pub match_type: String,
+}
+
+/// One aggregated storage row feeding the matcher.
+struct StorageRow {
+    vault_key: String,
+    item_name: String,
+    item_type_id: Option<u32>,
+    stack_size: i32,
+}
+
+/// Rank for giftability: Love (1) outranks Like (0); anything else is
+/// unrankable and filtered out before matching.
+fn desire_rank(desire: &str) -> Option<u8> {
+    match desire {
+        "Love" => Some(1),
+        "Like" => Some(0),
+        _ => None,
+    }
+}
+
+/// Pure matcher: cross-reference aggregated vault rows with the NPC favor
+/// reverse indices. Kept free of Tauri state so unit tests can drive it.
+fn match_storage_gifts(
+    data: &GameData,
+    wanted: &std::collections::HashSet<String>,
+    rows: Vec<StorageRow>,
+) -> Vec<StatehelmGiftMatch> {
+    // Best candidate per (vault, item, npc): Love outranks Like, then pref.
+    let mut best: std::collections::HashMap<(String, String, String), StatehelmGiftMatch> =
+        std::collections::HashMap::new();
+    let mut consider = |row: &StorageRow,
+                        item_name: &str,
+                        npc_key: &str,
+                        desire: &str,
+                        pref: f32,
+                        match_type: String| {
+        if !wanted.contains(npc_key) {
+            return;
+        }
+        if desire_rank(desire).is_none() {
+            return;
+        }
+        let npc_name = data
+            .npcs
+            .get(npc_key)
+            .map(|n| n.name.clone())
+            .unwrap_or_default();
+        let key = (
+            row.vault_key.clone(),
+            item_name.to_string(),
+            npc_key.to_string(),
+        );
+        let candidate = StatehelmGiftMatch {
+            item_name: item_name.to_string(),
+            item_type_id: row.item_type_id,
+            vault_key: row.vault_key.clone(),
+            stack_size: row.stack_size,
+            npc_key: npc_key.to_string(),
+            npc_name,
+            desire: desire.to_string(),
+            pref,
+            match_type,
+        };
+        match best.get(&key) {
+            Some(prev) => {
+                let prev_rank = desire_rank(&prev.desire).unwrap_or(0);
+                let next_rank = desire_rank(&candidate.desire).unwrap_or(0);
+                if (next_rank, candidate.pref) > (prev_rank, prev.pref) {
+                    best.insert(key, candidate);
+                }
+            }
+            None => {
+                best.insert(key, candidate);
+            }
+        }
+    };
+
+    for row in &rows {
+        // Prefer the numeric type id (exact); fall back to the exact-name
+        // index. Unresolvable rows are skipped — the frontend never sees them.
+        let item = match row.item_type_id {
+            Some(id) if id > 0 => data.items.get(&id),
+            _ => None,
+        }
+        .or_else(|| {
+            data.item_name_index
+                .get(&row.item_name)
+                .and_then(|id| data.items.get(id))
+        });
+        let item = match item {
+            Some(item) => item,
+            None => continue,
+        };
+
+        if let Some(entries) = data
+            .npc_favor_by_item_name
+            .get(&item.name.to_lowercase())
+        {
+            for (npc_key, desire, pref) in entries {
+                consider(row, &item.name, npc_key, desire, *pref, "name".to_string());
+            }
+        }
+        for keyword in &item.keywords {
+            if let Some(entries) = data.npc_favor_by_keyword.get(keyword) {
+                for (npc_key, desire, pref) in entries {
+                    consider(
+                        row,
+                        &item.name,
+                        npc_key,
+                        desire,
+                        *pref,
+                        format!("keyword:{keyword}"),
+                    );
+                }
+            }
+        }
+    }
+
+    let mut out: Vec<StatehelmGiftMatch> = best.into_values().collect();
+    // Greedy-assignment order: Love before Like, higher pref first.
+    out.sort_by(|a, b| {
+        desire_rank(&b.desire)
+            .unwrap_or(0)
+            .cmp(&desire_rank(&a.desire).unwrap_or(0))
+            .then(
+                b.pref
+                    .partial_cmp(&a.pref)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+            )
+            .then(a.npc_name.cmp(&b.npc_name))
+            .then(a.item_name.cmp(&b.item_name))
+            // Total order over the (vault, item, npc) dedup key: without it
+            // same-item/same-NPC rows in two vaults tie on all four keys and
+            // `best.into_values()` (fresh HashMap seed per call) leaves them
+            // in random order across invocations.
+            .then(a.vault_key.cmp(&b.vault_key))
+    });
+    out
+}
+
+/// Cross-reference the character's seeded vault rows (`game_state_storage`,
+/// written by both the character-report and inventory import paths) with NPC
+/// gift preferences for the requested NPC keys. Returns one match per
+/// (vault, item, NPC) with the best desire/pref when several prefs hit.
+#[tauri::command]
+pub async fn plan_statehelm_gifts(
+    character_name: String,
+    server_name: String,
+    npc_keys: Vec<String>,
+    db: State<'_, DbPool>,
+    state: State<'_, GameDataState>,
+) -> Result<Vec<StatehelmGiftMatch>, String> {
+    let wanted: std::collections::HashSet<String> = npc_keys.into_iter().collect();
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    // rusqlite handles are `!Send`: finish all DB work in this block so
+    // nothing borrow-linked to the connection lives across the await below.
+    let rows: Vec<StorageRow> = {
+        let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT vault_key, item_name, item_type_id, SUM(stack_size)
+             FROM game_state_storage WHERE character_name = ?1 AND server_name = ?2
+             GROUP BY vault_key, item_name, item_type_id",
+            )
+            .map_err(|e| format!("Query error: {e}"))?;
+        stmt.query_map(rusqlite::params![character_name, server_name], |row| {
+            Ok(StorageRow {
+                vault_key: row.get(0)?,
+                item_name: row.get(1)?,
+                item_type_id: row.get::<_, Option<i64>>(2)?.map(|id| id as u32),
+                stack_size: row.get(3)?,
+            })
+        })
+        .map_err(|e| format!("Query error: {e}"))?
+        .filter_map(|r| r.ok())
+        .collect()
+    };
+
+    let data = state.read().await;
+    Ok(match_storage_gifts(&data, &wanted, rows))
+}
+
+#[cfg(test)]
+mod plan_statehelm_gifts_tests {
+    use super::{match_storage_gifts, StorageRow};
+    use crate::game_data::{GameData, ItemInfo, NpcInfo};
+    use std::collections::{HashMap, HashSet};
+
+    fn item(id: u32, name: &str, keywords: &[&str]) -> ItemInfo {
+        ItemInfo {
+            id,
+            name: name.to_string(),
+            description: None,
+            icon_id: None,
+            value: None,
+            max_stack_size: None,
+            keywords: keywords.iter().map(|s| s.to_string()).collect(),
+            effect_descs: Vec::new(),
+            internal_name: None,
+            food_desc: None,
+            equip_slot: None,
+            num_uses: None,
+            skill_reqs: None,
+            behaviors: None,
+            bestow_recipes: None,
+            bestow_ability: None,
+            bestow_quest: None,
+            bestow_title: None,
+            craft_points: None,
+            crafting_target_level: None,
+            tsys_profile: None,
+            raw_json: serde_json::Value::Null,
+        }
+    }
+
+    fn npc(key: &str, name: &str) -> NpcInfo {
+        NpcInfo {
+            key: key.to_string(),
+            name: name.to_string(),
+            desc: None,
+            area_name: None,
+            area_friendly_name: None,
+            trains_skills: Vec::new(),
+            preferences: Vec::new(),
+            gift_favor_tiers: Vec::new(),
+            pos: None,
+            services: None,
+            raw_json: serde_json::Value::Null,
+        }
+    }
+
+    fn fixture() -> GameData {
+        let mut data = GameData::empty();
+        data.items = HashMap::from([
+            (7u32, item(7, "Garlic", &["Vegetable"])),
+            (9u32, item(9, "Red Rose", &["Flower"])),
+        ]);
+        data.item_name_index =
+            HashMap::from([("Garlic".to_string(), 7u32), ("Red Rose".to_string(), 9u32)]);
+        data.npcs = HashMap::from([
+            ("NPC_A".to_string(), npc("NPC_A", "Auntie")),
+            ("NPC_B".to_string(), npc("NPC_B", "Baker")),
+            ("NPC_OUT".to_string(), npc("NPC_OUT", "Outsider")),
+        ]);
+        // Mirror the dispatcher-built reverse indices (lowercased names).
+        data.npc_favor_by_item_name = HashMap::from([(
+            "garlic".to_string(),
+            vec![
+                ("NPC_A".to_string(), "Love".to_string(), 30.0),
+                ("NPC_B".to_string(), "Like".to_string(), 50.0),
+            ],
+        )]);
+        data.npc_favor_by_keyword = HashMap::from([(
+            "Flower".to_string(),
+            vec![
+                ("NPC_A".to_string(), "Hate".to_string(), 99.0),
+                ("NPC_B".to_string(), "Like".to_string(), 12.0),
+            ],
+        )]);
+        data
+    }
+
+    fn wanted(keys: &[&str]) -> HashSet<String> {
+        keys.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn row(vault: &str, name: &str, type_id: Option<u32>, stack: i32) -> StorageRow {
+        StorageRow {
+            vault_key: vault.to_string(),
+            item_name: name.to_string(),
+            item_type_id: type_id,
+            stack_size: stack,
+        }
+    }
+
+    #[test]
+    fn love_outranks_like_and_hate_is_dropped() {
+        let data = fixture();
+        let rows = vec![
+            row("V1", "Garlic", Some(7), 3),
+            row("V1", "Red Rose", Some(9), 1),
+        ];
+        let got = match_storage_gifts(&data, &wanted(&["NPC_A", "NPC_B"]), rows);
+        // Garlic→A (Love), Garlic→B (Like), Rose→B (Like); Rose→A is Hate.
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[0].npc_key, "NPC_A");
+        assert_eq!(got[0].desire, "Love");
+        assert!(got.iter().all(|m| m.desire != "Hate"));
+    }
+
+    #[test]
+    fn unrequested_npcs_and_unknown_items_are_skipped() {
+        let data = fixture();
+        let rows = vec![
+            row("V1", "Garlic", Some(7), 1),
+            row("V1", "Mystery Meat", None, 2),
+        ];
+        let got = match_storage_gifts(&data, &wanted(&["NPC_A"]), rows);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].npc_key, "NPC_A");
+        assert_eq!(got[0].item_name, "Garlic");
+    }
+
+    #[test]
+    fn name_fallback_resolves_by_exact_name_without_type_id() {
+        let data = fixture();
+        let rows = vec![row("V2", "Garlic", None, 1)];
+        let got = match_storage_gifts(&data, &wanted(&["NPC_A"]), rows);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].vault_key, "V2");
+    }
+
+    #[test]
+    fn empty_wanted_list_matches_nothing() {
+        let data = fixture();
+        let rows = vec![row("V1", "Garlic", Some(7), 1)];
+        assert!(match_storage_gifts(&data, &wanted(&[]), rows).is_empty());
+    }
+
+    #[test]
+    fn same_item_same_npc_two_vaults_orders_by_vault() {
+        let data = fixture();
+        // Same item + same NPC in two vaults ties on desire/pref/npc/item —
+        // only the vault_key tiebreak keeps the output deterministic.
+        let rows = vec![
+            row("V2", "Garlic", Some(7), 1),
+            row("V1", "Garlic", Some(7), 1),
+        ];
+        let got = match_storage_gifts(&data, &wanted(&["NPC_A"]), rows);
+        assert_eq!(got.len(), 2);
+        let vaults: Vec<&str> = got.iter().map(|m| m.vault_key.as_str()).collect();
+        assert_eq!(vaults, vec!["V1", "V2"]);
+    }
+}

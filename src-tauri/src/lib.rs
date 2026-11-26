@@ -86,6 +86,7 @@ use cdn_commands::{
     get_npcs_training_skill,
     // Cross-reference commands
     get_npcs_wanting_item,
+    plan_statehelm_gifts,
     get_quest_sources,
     get_quests_by_moon_phase,
     get_quests_for_npc,
@@ -817,6 +818,7 @@ pub fn run() {
             get_vendors_for_item,
             // Cross-reference queries
             get_npcs_wanting_item,
+            plan_statehelm_gifts,
             get_npcs_training_skill,
             get_quests_for_npc,
             get_quests_for_skill,
