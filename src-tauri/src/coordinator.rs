@@ -256,8 +256,20 @@ pub struct DataIngestCoordinator<R: Runtime = Wry> {
     /// Reset on any success.
     player_batch_retries: u32,
     /// Batch the retry count belongs to: Player.log path + byte offset
-    /// the failed batch started at. A different batch resets the count.
-    player_retry_batch_start: Option<(String, u64)>,
+    /// the failed batch started at + the file's prefix fingerprint at
+    /// failure time. A different batch resets the count — and the
+    /// fingerprint re-keys across replace-rotations that path+offset
+    /// alone would alias (P2: a new file's batch @0 onto the old file's
+    /// count). Same-file appends keep the prefix, so a poison batch
+    /// still accumulates toward the cap while the log grows. `0` when
+    /// the file could not be read (degrades to the path+offset key).
+    player_retry_batch_start: Option<(String, u64, u64)>,
+    /// Whether the player watcher's rotation flag was set on the previous
+    /// poll. Edge-detects a newly observed reset: an observed rotation
+    /// always restarts the new file at 0, so a stale count keyed to the
+    /// old file's offsets is dropped (P2). The watcher's own flag is
+    /// still owned by the save path — this only selects the key epoch.
+    player_reset_seen: bool,
 }
 
 impl<R: Runtime> DataIngestCoordinator<R> {
@@ -307,6 +319,7 @@ impl<R: Runtime> DataIngestCoordinator<R> {
             chat_retry_batch_start: None,
             player_batch_retries: 0,
             player_retry_batch_start: None,
+            player_reset_seen: false,
         })
     }
 
@@ -768,15 +781,28 @@ impl<R: Runtime> DataIngestCoordinator<R> {
     /// batch, in which case the cursor is left advanced (skip-ahead) so
     /// a poison batch can't livelock the poll loop. The caller still
     /// surfaces the original error either way; a skip is loud on
-    /// stderr. A different batch (file or start offset) resets the
-    /// count. The stashed `pending_chat_switch` (if the failed batch
-    /// carried a `ChatLogPath`) is left for the next poll's switch
-    /// retry; the replay re-runs the same trigger.
-    fn note_player_batch_failure(&mut self, batch_start: u64) {
-        let key: Option<(String, u64)> = self.player_watcher.as_ref().map(|w| {
+    /// stderr. A different batch (file, start offset, or file identity)
+    /// resets the count. `fresh_epoch` is true when this poll newly
+    /// observed the watcher's rotation flag: the new file restarts at 0,
+    /// so any stale count is dropped before keying (P2).
+    /// A skip-ahead drops the poison batch WHOLE (P1): the rewound bytes
+    /// are abandoned AND any stashed `pending_chat_switch` from the
+    /// batch's trigger is discarded with its own loud line. Leaving the
+    /// stash would red-forever every later poll at the stash retry (the
+    /// trigger bytes are gone) while starving the chat poll, the
+    /// position saves, and live mode. The stashed switch is only ever
+    /// retried while its trigger bytes are still replayable.
+    fn note_player_batch_failure(&mut self, batch_start: u64, fresh_epoch: bool) {
+        if fresh_epoch {
+            self.player_batch_retries = 0;
+            self.player_retry_batch_start = None;
+        }
+        let start = if fresh_epoch { 0 } else { batch_start };
+        let key: Option<(String, u64, u64)> = self.player_watcher.as_ref().map(|w| {
             (
                 w.get_file_path().to_string_lossy().to_string(),
-                batch_start,
+                start,
+                w.prefix_fingerprint().unwrap_or(0),
             )
         });
         let key = match key {
@@ -794,10 +820,16 @@ impl<R: Runtime> DataIngestCoordinator<R> {
                 "[coordinator] player batch @{} in {} failed {} times; skipping ahead (poison batch dropped) to keep polling",
                 key.1, key.0, self.player_batch_retries
             );
+            if let Some(stashed) = self.pending_chat_switch.take() {
+                eprintln!(
+                    "[coordinator] dropping stashed chat switch to {} with the poison player batch (never-viable target); polling continues without it",
+                    stashed.display()
+                );
+            }
             self.player_batch_retries = 0;
             self.player_retry_batch_start = None;
         } else if let Some(watcher) = self.player_watcher.as_mut() {
-            watcher.rewind_to(batch_start);
+            watcher.rewind_to(start);
         }
     }
 
@@ -814,14 +846,29 @@ impl<R: Runtime> DataIngestCoordinator<R> {
         if let Some(watcher) = &mut self.player_watcher {
             let batch_start = watcher.get_position();
             let events = watcher.poll()?;
+            // Read AFTER the poll: the flag is set by the poll that
+            // observes the truncation, so a pre-poll read would miss
+            // this poll's own rotation edge.
+            let rotated = watcher.position_was_reset();
+            // Rotation edge (P2): the watcher restarts a rotated file at
+            // 0, so a stale count keyed to the old file's offsets must
+            // go — the new file's batches earn their own retries. Edge,
+            // not level: the flag stays set until a successful poll's
+            // save clears it, and clearing every level-true poll would
+            // pin the count at 1 so a poison batch after a rotation
+            // could never skip. The watcher's flag itself is still
+            // owned by the save path; this only selects the key epoch.
+            let fresh_epoch = rotated && !self.player_reset_seen;
+            self.player_reset_seen = rotated;
             // Player D5-47 wiring: the poll above consumed the tail's bytes
             // before the drain ran. On a drain failure (the `ChatLogPath`
             // switch is the single fallible path), rewind (or skip-ahead
-            // past a poison batch) instead of advancing past the
-            // unprocessed tail — then surface the error so the poll cycle
-            // visibly fails and retries.
+            // past a poison batch, dropping a poison stash with it)
+            // instead of advancing past the unprocessed tail — then
+            // surface the error so the poll cycle visibly fails and
+            // retries.
             if let Err(e) = self.process_player_events(events) {
-                self.note_player_batch_failure(batch_start);
+                self.note_player_batch_failure(batch_start, fresh_epoch);
                 return Err(e);
             }
             self.player_batch_retries = 0;
@@ -4234,10 +4281,24 @@ mod retryable_player_drain_tests {
             0,
             "poison batch dropped, nothing stored"
         );
+        // P1: the skip drops the poison batch WHOLE — the stash goes with
+        // the bytes, so no later poll reds at the stash retry.
+        assert!(
+            coord.pending_chat_switch.is_none(),
+            "skip discards the poison stash with the bytes"
+        );
+        {
+            let w = coord.chat_watcher.as_ref().expect("old watcher kept");
+            assert_eq!(
+                w.get_file_name(),
+                "Chat-old.log",
+                "poison switch abandoned, not completed"
+            );
+        }
 
         // An empty follow-up poll succeeds even with the outage still on —
-        // the loop is not wedged (the stashed switch completes on an
-        // empty flush, and the empty new-log poll stores nothing).
+        // the loop is not wedged (no stash retry to fail, the old
+        // watcher polls empty, and the empty poll stores nothing).
         assert!(coord.poll().is_ok());
         remove_insert_failure(&pool);
 
@@ -4294,5 +4355,160 @@ mod retryable_player_drain_tests {
             assert_eq!(w.get_file_path(), &missing, "switch completed");
         }
         assert_eq!(player_position(&coord), player_end);
+    }
+
+    /// P1: a never-viable stashed target reaches the cap, the cursor skips
+    /// AND the stash clears with it — subsequent empty polls succeed
+    /// instead of redding forever at the stash retry (which would starve
+    /// the chat poll, the position saves, and live mode).
+    #[test]
+    fn skip_ahead_drops_poison_stash_and_poll_recovers() {
+        let dir = tmpdir("poisonstash");
+        let missing = dir.join("Chat-never.log");
+        let player = write_player_log(
+            &dir,
+            "Player.log",
+            &[&format!("Logging chat to {}", missing.to_string_lossy())],
+        );
+        let player_end = std::fs::metadata(&player).expect("meta").len();
+        let pool = pool();
+        let app = tauri::test::mock_app();
+        let mut coord = coordinator(pool.clone(), &dir, &app);
+        attach_player(&mut coord, player);
+
+        for i in 1..=PLAYER_BATCH_RETRY_CAP + 1 {
+            assert!(coord.poll().is_err(), "poll {i} still fails");
+            if i <= PLAYER_BATCH_RETRY_CAP {
+                assert_eq!(player_position(&coord), 0, "attempt {i} rewinds");
+                assert!(
+                    coord.pending_chat_switch.is_some(),
+                    "attempt {i} keeps the stash for retry"
+                );
+            }
+        }
+        assert_eq!(player_position(&coord), player_end, "cap overflow skips ahead");
+        assert_eq!(coord.player_batch_retries, 0, "skip resets the count");
+        assert!(
+            coord.pending_chat_switch.is_none(),
+            "skip discards the poison stash with the bytes"
+        );
+
+        // The loop recovers: empty polls succeed with no stash to retry,
+        // positions persist, and live mode engages.
+        assert!(coord.poll().is_ok());
+        assert!(coord.pending_chat_switch.is_none());
+        assert!(coord.chat_watcher.is_none(), "no switch ever completed");
+        assert!(coord.poll().is_ok());
+    }
+
+    /// P2: a replace-rotation reuses the path at offset 0. The new file
+    /// has a new identity, so its batch @0 earns its own retries instead
+    /// of inheriting the old file's count and skipping after one failure.
+    #[test]
+    fn replace_rotation_rekeys_retry_count() {
+        let dir = tmpdir("replace");
+        let missing_a = dir.join("Chat-a.log");
+        let player = write_player_log(
+            &dir,
+            "Player.log",
+            &[&format!("Logging chat to {}", missing_a.to_string_lossy())],
+        );
+        let pool = pool();
+        let app = tauri::test::mock_app();
+        let mut coord = coordinator(pool.clone(), &dir, &app);
+        attach_player(&mut coord, player);
+
+        for i in 1..=PLAYER_BATCH_RETRY_CAP {
+            assert!(coord.poll().is_err(), "old poll {i} still fails");
+        }
+        assert_eq!(coord.player_batch_retries, PLAYER_BATCH_RETRY_CAP);
+        assert_eq!(player_position(&coord), 0);
+
+        // Game rotates: fresh Player.log at the same path (new identity)
+        // carrying a trigger for another never-viable target.
+        std::fs::remove_file(dir.join("Player.log")).expect("rotate away old Player.log");
+        let missing_b = dir.join("Chat-b.log");
+        write_player_log(
+            &dir,
+            "Player.log",
+            &[&format!("Logging chat to {}", missing_b.to_string_lossy())],
+        );
+        assert!(coord.poll().is_err(), "new batch fails on its own");
+        assert_eq!(
+            coord.player_batch_retries, 1,
+            "new file's batch earns its own retries (not 4 -> skip)"
+        );
+        assert_eq!(
+            player_position(&coord),
+            0,
+            "new batch rewinds instead of skipping ahead"
+        );
+    }
+
+    /// P2: an observed truncation (same file, smaller) restarts the new
+    /// content at 0. The rotation edge drops the stale count even though
+    /// the path is unchanged — and the truncated file keeps the SAME
+    /// 512-byte prefix, so the fingerprint alone would alias it onto the
+    /// old batch's key and skip after a single failure. Only the edge
+    /// re-keys this case.
+    #[test]
+    fn observed_truncation_rekeys_retry_count() {
+        let dir = tmpdir("truncate");
+        // Pad the first batch well past the fingerprint window so the
+        // later truncation is both observable (size < cursor) and
+        // prefix-preserving: filler matches no pattern, so the first
+        // poll succeeds and advances.
+        let unit = "filler line with no markers ";
+        let player = write_player_log(&dir, "Player.log", &[&unit.repeat(30)]);
+        let pad_end = std::fs::metadata(&player).expect("meta").len();
+        assert!(pad_end > 512, "pad must exceed the fingerprint window");
+        let missing = dir.join("Chat-gone.log");
+        let pool = pool();
+        let app = tauri::test::mock_app();
+        let mut coord = coordinator(pool.clone(), &dir, &app);
+        attach_player(&mut coord, player.clone());
+        assert!(coord.poll().is_ok());
+        assert_eq!(player_position(&coord), pad_end);
+
+        // Append a poison trigger: batch @pad_end fails 3x (rewinds to pad_end).
+        use std::io::Write as _;
+        let trigger = format!("Logging chat to {}\n", missing.to_string_lossy());
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&player)
+            .expect("open log")
+            .write_all(trigger.as_bytes())
+            .expect("append");
+        for i in 1..=PLAYER_BATCH_RETRY_CAP {
+            assert!(coord.poll().is_err(), "poison poll {i} still fails");
+            assert_eq!(player_position(&coord), pad_end, "attempt {i} rewinds");
+        }
+        assert_eq!(coord.player_batch_retries, PLAYER_BATCH_RETRY_CAP);
+
+        // Game truncates in place (same file, smaller, same 512-byte
+        // prefix): the next poll observes the reset and the new batch @0
+        // starts its own count.
+        let shrunk = format!("{}{}", unit.repeat(20), trigger);
+        assert!(
+            (shrunk.len() as u64) < pad_end,
+            "shrunk file must stay under the old cursor to be observed"
+        );
+        std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&player)
+            .expect("open log")
+            .write_all(shrunk.as_bytes())
+            .expect("truncate");
+        assert!(coord.poll().is_err(), "truncated batch fails on its own");
+        assert_eq!(
+            coord.player_batch_retries, 1,
+            "observed rotation drops the stale count (not 4 -> skip)"
+        );
+        assert_eq!(
+            player_position(&coord),
+            0,
+            "new batch rewinds instead of skipping ahead"
+        );
     }
 }
