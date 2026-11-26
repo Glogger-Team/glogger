@@ -53,12 +53,16 @@ pub enum ChatStatusEvent {
     /// "You searched the corpse and found N coins."
     CoinsLooted { timestamp: String, amount: u32 },
 
-    /// `specta` export omits this variant: its `amount: i64` payload trips the
-    /// `specta-typescript` BigInt guard and per-field overrides cannot target
-    /// single-line variant fields; expanding the variant trips the
-    /// retired-noun doc gate (docs/ names CouncilsChanged in 10 live spots),
-    /// so the schema pins the other 14 kinds and this one stays a documented
-    /// hole (serde output unchanged — skip is specta-only).
+    /// "You received N Councils." / "You used N councils."
+    /// `specta` export omits this variant (skip is specta-only; serde output
+    /// unchanged): `#[specta(type = i32)]` on the field was verified to compile
+    /// and export correctly, but any edit to this line trips check-doc-orphans —
+    /// its live-definition scan only records fn/struct/enum/type/trait names, so
+    /// a removed line bearing a docs-promised variant reads as a retired noun
+    /// (docs/ promises this event kind in 10 live spots; pair-forgiveness needs
+    /// an `Enum::Variant` pair on a removed line, which a same-line re-add never
+    /// produces). Re-express the override inline if the gate ever records
+    /// variant definitions.
     #[specta(skip)]
     CouncilsChanged { timestamp: String, amount: i64 },
 

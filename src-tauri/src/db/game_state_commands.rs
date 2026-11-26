@@ -132,7 +132,7 @@ pub struct CurrencyEstimate {
     pub anchor_at: Option<String>,
     #[specta(type = i32)]
     pub delta_since: i64,
-    #[specta(type = u32)]
+    #[specta(type = i32)]
     pub estimated: i64,
     pub has_anchor: bool,
 }

@@ -66,7 +66,7 @@ pub struct ArenaBettingSummary {
     #[specta(type = u32)]
     pub total_won: i64,
     /// Net profit/loss (total_won - total_wagered).
-    #[specta(type = u32)]
+    #[specta(type = i32)]
     pub net_profit: i64,
 }
 
