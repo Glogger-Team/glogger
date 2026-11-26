@@ -6,8 +6,13 @@
 //! Multiple features feed stops into the solver: work order fulfillment,
 //! crafting project pickup lists, delivery quests, inventory consolidation.
 
+use crate::cdn_commands::GameDataState;
+use crate::game_data::GameData;
 use crate::zone_graph::ZoneGraph;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
+use tauri::State;
 
 // ── Input types ─────────────────────────────────────────────────────────────
 
@@ -490,6 +495,272 @@ fn resolve_travel_config(graph: &ZoneGraph, mut config: TravelConfig) -> TravelC
     config
 }
 
+// ── Work order trip planning ─────────────────────────────────────────────────
+
+/// One work order to route: quest key + quantity.
+///
+/// Keys come from `get_work_orders_from_snapshot` (active keys) or the
+/// uncompleted-work-orders backlog (`WorkOrderTodo` rows carry both fields).
+/// Quantities are the quest's total Collect counts — no remaining-count data
+/// exists, so partial progress is not modeled. A zero quantity falls back to
+/// the quest's Collect objective number during stop construction.
+#[derive(Debug, Clone, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkOrderTripItem {
+    pub quest_key: String,
+    pub quantity: u32,
+}
+
+/// Turn-in board NPC display name → overworld CDN area key.
+///
+/// Every `WorkOrder`-keyword quest delivers to one of nine fixed boards
+/// (verified against `docs/CDN-full-examples/quests.json`). The primary
+/// turn-in lookup is the CDN (`NpcInfo.area_name` via `GameData::resolve_npc`);
+/// this table is the fallback for boards whose NPC is absent from the CDN
+/// snapshot (Ogamboe had no entry in the November 2026 sample).
+static BOARD_TURNIN_ZONES: &[(&str, &str)] = &[
+    ("Irkima", "AreaCasino"),
+    ("Sheyna", "AreaRahu"),
+    ("Fitz the Boatman", "AreaSerbule"),
+    ("Ogamboe", "AreaFaeRealm1"),
+    ("Thimble Pete", "AreaEltibule"),
+    ("Viedesi", "AreaSunVale"),
+    ("Gremix", "AreaDesert1"),
+    ("Laura Neth", "AreaKurMountains"),
+    ("Korbok", "AreaVidaria"),
+];
+
+/// Station requirement patterns from `docs/features/trip-routing.md`:
+/// `"Requires a <station>"` (mostly Cooking) and `"Must be near a <station>"`
+/// (Armorsmithing, Leatherworking, …). Single `[^.)]+` captures, no nested
+/// quantifiers — no catastrophic-backtracking shape.
+static STATION_REQUIRES_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[Rr]equires a ([^.)]+)").unwrap());
+static STATION_NEAR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[Mm]ust be near a ([^.)]+)").unwrap());
+
+/// Extract the crafting-station requirement from a recipe description, if the
+/// recipe states one. Trailing prose is trimmed at the first comma (`tanning
+/// rack, for some reason` in the live CDN) — no real station name contains one.
+fn station_from_description(desc: &str) -> Option<String> {
+    STATION_REQUIRES_RE
+        .captures(desc)
+        .or_else(|| STATION_NEAR_RE.captures(desc))
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().split(',').next().unwrap_or("").trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The Scripted `Deliver to <NPC>` objective names the turn-in board NPC.
+/// Mirrors `parseWorkOrderBoard` in `QuestsScreen.vue` — the two must agree
+/// on which objective carries the NPC.
+fn deliver_to_npc(raw: &serde_json::Value) -> Option<String> {
+    const PREFIX: &str = "deliver to ";
+    let objectives = raw.get("Objectives")?.as_array()?;
+    for objective in objectives {
+        if objective.get("Type").and_then(|t| t.as_str()) != Some("Scripted") {
+            continue;
+        }
+        let desc = objective.get("Description").and_then(|d| d.as_str())?;
+        let prefix = desc.get(..PREFIX.len())?;
+        if !prefix.eq_ignore_ascii_case(PREFIX) {
+            continue;
+        }
+        let npc = desc[PREFIX.len()..].trim();
+        if !npc.is_empty() {
+            return Some(npc.to_string());
+        }
+    }
+    None
+}
+
+/// The Collect objective names the crafted item and how many the quest wants.
+fn collect_objective(raw: &serde_json::Value) -> (Option<String>, u32) {
+    let objectives = match raw.get("Objectives").and_then(|o| o.as_array()) {
+        Some(objectives) => objectives,
+        None => return (None, 0),
+    };
+    for objective in objectives {
+        if objective.get("Type").and_then(|t| t.as_str()) != Some("Collect") {
+            continue;
+        }
+        let item = objective
+            .get("ItemName")
+            .and_then(|n| n.as_str())
+            .map(|s| s.to_string());
+        let number = objective
+            .get("Number")
+            .and_then(|n| n.as_u64())
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(0);
+        return (item, number);
+    }
+    (None, 0)
+}
+
+/// Station hint for the crafted item: the lowest-id recipe producing it that
+/// states a station requirement (lowest id keeps the pick deterministic —
+/// the producing index is built from hash iteration order). `None` means no
+/// producing recipe states one, not "no station needed".
+fn station_for_item(game_data: &GameData, item_internal_name: &str) -> Option<String> {
+    let item = game_data.item_by_internal_name(item_internal_name)?;
+    let producers = game_data.recipes_producing_item.get(&item.id)?;
+    let mut recipe_ids: Vec<u32> = producers.clone();
+    recipe_ids.sort_unstable();
+    for id in recipe_ids {
+        let recipe = match game_data.recipes.get(&id) {
+            Some(recipe) => recipe,
+            None => continue,
+        };
+        let desc = recipe
+            .raw_json
+            .get("Description")
+            .and_then(|d| d.as_str())?;
+        if let Some(station) = station_from_description(desc) {
+            return Some(station);
+        }
+    }
+    None
+}
+
+/// Resolve the turn-in board NPC to its overworld zone: CDN `area_name`
+/// first (exact key/display-name, then a case-insensitive display-name scan
+/// for CDN case drift), then the static nine-board fallback. `None` fails
+/// the plan loudly at the call site — a work order never silently drops.
+fn turn_in_zone(game_data: &GameData, npc_name: &str) -> Option<String> {
+    if let Some(area) = game_data
+        .resolve_npc(npc_name)
+        .and_then(|npc| npc.area_name.clone())
+    {
+        return Some(area);
+    }
+    for npc in game_data.npcs.values() {
+        if npc.name.eq_ignore_ascii_case(npc_name) {
+            if let Some(area) = npc.area_name.clone() {
+                return Some(area);
+            }
+            break;
+        }
+    }
+    BOARD_TURNIN_ZONES
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(npc_name))
+        .map(|(_, zone)| zone.to_string())
+}
+
+/// Build `RouteStop`s for work orders: one `Craft` stop at the turn-in board
+/// town plus one `TurnIn` stop per order. Boards sit in towns with stations,
+/// so crafting rides along in the turn-in zone; the station the recipe needs,
+/// when the CDN states one, is named in the Craft details. (Zone→station
+/// curation is `docs/features/trip-routing.md` future work — this stays
+/// honest by naming the station instead of placing it.) The solver groups
+/// same-zone stops and orders Craft before TurnIn within a zone.
+///
+/// Failures name the quest: unknown quest key, missing Deliver-to objective,
+/// or unresolvable turn-in zone all error — a work order never silently
+/// drops off the trip.
+pub fn build_work_order_stops(
+    game_data: &GameData,
+    orders: &[WorkOrderTripItem],
+) -> Result<Vec<RouteStop>, String> {
+    let mut stops = Vec::with_capacity(orders.len() * 2);
+    for order in orders {
+        let quest = game_data.resolve_quest(&order.quest_key).ok_or_else(|| {
+            format!("Unknown work order quest: {}", order.quest_key)
+        })?;
+        let raw = &quest.raw;
+        let quest_name = raw
+            .get("Name")
+            .and_then(|n| n.as_str())
+            .unwrap_or(&order.quest_key);
+        let skill = raw
+            .get("WorkOrderSkill")
+            .and_then(|s| s.as_str())
+            .unwrap_or("Unknown");
+        let (item_internal, collect_qty) = collect_objective(raw);
+        let qty = if order.quantity > 0 {
+            order.quantity
+        } else {
+            collect_qty
+        };
+        let item_label = item_internal
+            .as_deref()
+            .and_then(|internal| game_data.item_by_internal_name(internal))
+            .map(|item| item.name.clone())
+            .or(item_internal.clone())
+            .unwrap_or_else(|| quest_name.to_string());
+        let npc = deliver_to_npc(raw).ok_or_else(|| {
+            format!(
+                "Work order '{}' has no Deliver-to objective",
+                order.quest_key
+            )
+        })?;
+        let zone = turn_in_zone(game_data, &npc).ok_or_else(|| {
+            format!(
+                "Work order '{}': turn-in NPC '{}' has no known zone",
+                order.quest_key, npc
+            )
+        })?;
+        let station = item_internal
+            .as_deref()
+            .and_then(|internal| station_for_item(game_data, internal));
+        let mut craft_details =
+            format!("Craft {qty}x {item_label} ({skill}) for '{quest_name}'");
+        if let Some(station) = station {
+            craft_details.push_str(&format!(" [needs {station}]"));
+        }
+        stops.push(RouteStop {
+            zone: zone.clone(),
+            purpose: StopPurpose::Craft,
+            details: craft_details,
+        });
+        stops.push(RouteStop {
+            zone,
+            purpose: StopPurpose::TurnIn,
+            details: format!("Turn in {qty}x {item_label} to {npc} - '{quest_name}'"),
+        });
+    }
+    Ok(stops)
+}
+
+/// Plan a multi-zone trip to craft and turn in work orders.
+///
+/// Resolves each order's turn-in zone from CDN quest/NPC data (static
+/// nine-board fallback), emits Craft + TurnIn stops, and runs the existing
+/// `plan_route` solver unchanged. Graph construction mirrors `plan_trip`
+/// (duplicated intentionally — this slice leaves `plan_trip` untouched).
+#[tauri::command]
+pub async fn plan_work_order_trip(
+    game_data: State<'_, GameDataState>,
+    start_zone: String,
+    orders: Vec<WorkOrderTripItem>,
+    travel_config: Option<TravelConfig>,
+) -> Result<PlannedRoute, String> {
+    // Scoped read: pure in-memory stop construction under the CDN lock, no I/O.
+    let stops = {
+        let data = game_data.read().await;
+        build_work_order_stops(&data, &orders)?
+    };
+    let config = travel_config.unwrap_or_default();
+
+    let portal = config.casino_portal.as_deref().unwrap_or("");
+    let excluded: Vec<(&str, &str)> = if portal.eq_ignore_ascii_case("rahu") {
+        vec![("AreaCasino", "AreaStatehelm")]
+    } else if portal.eq_ignore_ascii_case("statehelm") {
+        vec![("AreaCasino", "AreaRahu")]
+    } else {
+        vec![]
+    };
+    let graph = if excluded.is_empty() {
+        ZoneGraph::new()
+    } else {
+        ZoneGraph::new_excluding(&excluded)
+    };
+
+    let config = resolve_travel_config(&graph, config);
+    plan_route(&graph, &start_zone, &stops, &config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -768,6 +1039,313 @@ mod tests {
         )
         .is_ok());
     }
+
+    // ── Work order stop construction ──────────────────────────────────────
+    //
+    // Fixture quests mirror real CDN shapes (`docs/CDN-full-examples/quests.json`:
+    // quest_50301 Carpentry/Fitz, quest_50054 gathering/Sheyna). NPC rows carry
+    // the real CDN areas; Ogamboe is deliberately absent from the NPC map to
+    // pin the static nine-board fallback.
+    fn fixture_game_data() -> GameData {
+        let mut data = GameData::empty();
+        data.quests.insert(
+            "quest_wo_fitz".to_string(),
+            crate::game_data::QuestInfo {
+                internal_name: "Carpentry_TestStools".to_string(),
+                raw: serde_json::json!({
+                    "Name": "Test Meditation Stools",
+                    "WorkOrderSkill": "Carpentry",
+                    "Objectives": [
+                        {"Type": "Collect", "ItemName": "TestStool", "Number": 10, "Description": "Obtain Test Stools"},
+                        {"Type": "Scripted", "Number": 1, "Description": "Deliver to Fitz the Boatman"}
+                    ],
+                }),
+            },
+        );
+        data.quests.insert(
+            "quest_wo_sheyna".to_string(),
+            crate::game_data::QuestInfo {
+                internal_name: "Unknown_ManticoreTailTips".to_string(),
+                raw: serde_json::json!({
+                    "Name": "Manticore Tail Tips",
+                    "WorkOrderSkill": "Unknown",
+                    "Objectives": [
+                        {"Type": "Collect", "ItemName": "ManticoreTailTip", "Number": 10, "Description": "Obtain Manticore Tail Tips"},
+                        {"Type": "Scripted", "Number": 1, "Description": "Deliver to Sheyna"}
+                    ],
+                }),
+            },
+        );
+        data.quests.insert(
+            "quest_wo_ogamboe".to_string(),
+            crate::game_data::QuestInfo {
+                internal_name: "Fae_TestOrder".to_string(),
+                raw: serde_json::json!({
+                    "Name": "Fae Test Order",
+                    "WorkOrderSkill": "Textiles",
+                    "Objectives": [
+                        {"Type": "Collect", "ItemName": "FaeCloth", "Number": 5, "Description": "Obtain Fae Cloth"},
+                        {"Type": "Scripted", "Number": 1, "Description": "Deliver to Ogamboe"}
+                    ],
+                }),
+            },
+        );
+        data.npcs.insert(
+            "NPC_Fitz".to_string(),
+            crate::game_data::NpcInfo {
+                key: "NPC_Fitz".to_string(),
+                name: "Fitz the Boatman".to_string(),
+                desc: None,
+                area_name: Some("AreaSerbule".to_string()),
+                area_friendly_name: Some("Serbule".to_string()),
+                trains_skills: Vec::new(),
+                preferences: Vec::new(),
+                gift_favor_tiers: Vec::new(),
+                pos: None,
+                services: None,
+                raw_json: serde_json::json!({}),
+            },
+        );
+        data.npcs.insert(
+            "NPC_Sheyna".to_string(),
+            crate::game_data::NpcInfo {
+                key: "NPC_Sheyna".to_string(),
+                name: "Sheyna".to_string(),
+                desc: None,
+                area_name: Some("AreaRahu".to_string()),
+                area_friendly_name: Some("Rahu".to_string()),
+                trains_skills: Vec::new(),
+                preferences: Vec::new(),
+                gift_favor_tiers: Vec::new(),
+                pos: None,
+                services: None,
+                raw_json: serde_json::json!({}),
+            },
+        );
+        data.npc_name_index
+            .insert("Fitz the Boatman".to_string(), "NPC_Fitz".to_string());
+        data.npc_name_index
+            .insert("Sheyna".to_string(), "NPC_Sheyna".to_string());
+        data.quest_internal_name_index.insert(
+            "Unknown_ManticoreTailTips".to_string(),
+            "quest_wo_sheyna".to_string(),
+        );
+        data.items.insert(
+            9001,
+            crate::game_data::ItemInfo {
+                id: 9001,
+                name: "Shoddy Test Stool".to_string(),
+                description: None,
+                icon_id: None,
+                value: None,
+                max_stack_size: None,
+                keywords: Vec::new(),
+                effect_descs: Vec::new(),
+                internal_name: Some("TestStool".to_string()),
+                food_desc: None,
+                equip_slot: None,
+                num_uses: None,
+                skill_reqs: None,
+                behaviors: None,
+                bestow_recipes: None,
+                bestow_ability: None,
+                bestow_quest: None,
+                bestow_title: None,
+                craft_points: None,
+                crafting_target_level: None,
+                tsys_profile: None,
+                raw_json: serde_json::json!({}),
+            },
+        );
+        data.item_internal_name_index
+            .insert("TestStool".to_string(), 9001);
+        data.recipes.insert(
+            7001,
+            crate::game_data::RecipeInfo {
+                id: 7001,
+                name: "Test Stool Recipe".to_string(),
+                description: None,
+                internal_name: None,
+                icon_id: None,
+                skill: Some("Carpentry".to_string()),
+                skill_level_req: None,
+                ingredients: Vec::new(),
+                costs: Vec::new(),
+                result_items: Vec::new(),
+                reward_skill: None,
+                reward_skill_xp: None,
+                reward_skill_xp_first_time: None,
+                prereq_recipe: None,
+                keywords: Vec::new(),
+                ingredient_item_ids: Vec::new(),
+                result_item_ids: vec![9001],
+                result_effects: Vec::new(),
+                usage_delay: None,
+                reward_skill_xp_drop_off_level: None,
+                sort_skill: None,
+                action_label: None,
+                shares_name_with_item_id: None,
+                raw_json: serde_json::json!({
+                    "Description": "Must be near a tanning rack, for some reason."
+                }),
+            },
+        );
+        data.recipes_producing_item.insert(9001, vec![7001]);
+        data
+    }
+
+    fn wo_item(key: &str, quantity: u32) -> WorkOrderTripItem {
+        WorkOrderTripItem {
+            quest_key: key.to_string(),
+            quantity,
+        }
+    }
+
+    #[test]
+    fn test_wo_stops_empty_input() {
+        let data = fixture_game_data();
+        let stops = build_work_order_stops(&data, &[]).unwrap();
+        assert!(stops.is_empty());
+    }
+
+    #[test]
+    fn test_wo_stops_resolve_zones_and_purposes() {
+        let data = fixture_game_data();
+        // Sheyna order passes quantity 0 → falls back to the Collect number (10);
+        // the internal name exercises the quest_internal_name_index tier.
+        let orders = vec![wo_item("quest_wo_fitz", 10), wo_item("Unknown_ManticoreTailTips", 0)];
+        let stops = build_work_order_stops(&data, &orders).unwrap();
+        assert_eq!(stops.len(), 4);
+        assert_eq!(stops[0].zone, "AreaSerbule");
+        assert_eq!(stops[0].purpose, StopPurpose::Craft);
+        assert_eq!(stops[1].zone, "AreaSerbule");
+        assert_eq!(stops[1].purpose, StopPurpose::TurnIn);
+        assert_eq!(stops[2].zone, "AreaRahu");
+        assert_eq!(stops[2].purpose, StopPurpose::Craft);
+        assert_eq!(stops[3].zone, "AreaRahu");
+        assert_eq!(stops[3].purpose, StopPurpose::TurnIn);
+        // Display name (not the internal name) + skill land in the details.
+        assert!(stops[0].details.contains("10x Shoddy Test Stool"));
+        assert!(stops[0].details.contains("Carpentry"));
+        assert!(stops[1].details.contains("Fitz the Boatman"));
+        // Zero input quantity fell back to the quest Collect number.
+        assert!(stops[3].details.contains("10x"));
+    }
+
+    #[test]
+    fn test_wo_stops_static_board_fallback() {
+        // Ogamboe has no NPC entry in the fixture (as in the CDN sample) —
+        // the nine-board table still places the stops in the Fae Realm.
+        let data = fixture_game_data();
+        let stops = build_work_order_stops(&data, &[wo_item("quest_wo_ogamboe", 5)]).unwrap();
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[0].zone, "AreaFaeRealm1");
+        assert_eq!(stops[0].purpose, StopPurpose::Craft);
+        assert_eq!(stops[1].zone, "AreaFaeRealm1");
+        assert_eq!(stops[1].purpose, StopPurpose::TurnIn);
+        assert!(stops[1].details.contains("Ogamboe"));
+    }
+
+    #[test]
+    fn test_wo_stops_unknown_quest_errors() {
+        let data = fixture_game_data();
+        let result = build_work_order_stops(&data, &[wo_item("quest_nope", 1)]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("quest_nope"));
+    }
+
+    #[test]
+    fn test_wo_stops_missing_deliver_to_errors() {
+        let mut data = fixture_game_data();
+        data.quests.insert(
+            "quest_wo_broken".to_string(),
+            crate::game_data::QuestInfo {
+                internal_name: "Broken_Order".to_string(),
+                raw: serde_json::json!({
+                    "Name": "Broken Order",
+                    "WorkOrderSkill": "Carpentry",
+                    "Objectives": [
+                        {"Type": "Collect", "ItemName": "TestStool", "Number": 3}
+                    ],
+                }),
+            },
+        );
+        let result = build_work_order_stops(&data, &[wo_item("quest_wo_broken", 3)]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("quest_wo_broken"));
+    }
+
+    #[test]
+    fn test_wo_stops_unknown_turnin_zone_errors() {
+        let mut data = fixture_game_data();
+        data.quests.insert(
+            "quest_wo_nowhere".to_string(),
+            crate::game_data::QuestInfo {
+                internal_name: "Nowhere_Order".to_string(),
+                raw: serde_json::json!({
+                    "Name": "Nowhere Order",
+                    "WorkOrderSkill": "Carpentry",
+                    "Objectives": [
+                        {"Type": "Collect", "ItemName": "TestStool", "Number": 3},
+                        {"Type": "Scripted", "Number": 1, "Description": "Deliver to Nobody Real"}
+                    ],
+                }),
+            },
+        );
+        let result = build_work_order_stops(&data, &[wo_item("quest_wo_nowhere", 3)]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Nobody Real"));
+    }
+
+    #[test]
+    fn test_wo_station_hint_in_craft_details() {
+        let data = fixture_game_data();
+        let stops = build_work_order_stops(&data, &[wo_item("quest_wo_fitz", 10)]).unwrap();
+        assert!(stops[0].details.contains("[needs tanning rack]"));
+        // Gathering order with no resolvable producing recipe: no hint, still plans.
+        let stops = build_work_order_stops(&data, &[wo_item("quest_wo_sheyna", 10)]).unwrap();
+        assert!(!stops[0].details.contains("[needs"));
+    }
+
+    #[test]
+    fn test_wo_route_end_to_end() {
+        let data = fixture_game_data();
+        let orders = vec![wo_item("quest_wo_fitz", 10), wo_item("quest_wo_sheyna", 10)];
+        let stops = build_work_order_stops(&data, &orders).unwrap();
+        let g = make_graph();
+        let route = plan_route(&g, "AreaSerbule", &stops, &TravelConfig::default()).unwrap();
+        // Serbule group first (no travel), then Rahu via Eltibule + Casino: 3 hops.
+        assert_eq!(route.total_hops, 3);
+        let actions: Vec<_> = route.steps.iter().map(|s| &s.action).collect();
+        assert_eq!(
+            actions,
+            [
+                &RouteAction::Craft,
+                &RouteAction::TurnIn,
+                &RouteAction::Travel,
+                &RouteAction::Travel,
+                &RouteAction::Travel,
+                &RouteAction::Craft,
+                &RouteAction::TurnIn
+            ]
+        );
+    }
+
+    #[test]
+    fn test_station_from_description_patterns() {
+        assert_eq!(
+            station_from_description("Creates a tasty meal. Requires a stove or fire pit."),
+            Some("stove or fire pit".to_string())
+        );
+        assert_eq!(
+            // Live CDN wart: trailing prose after a comma is trimmed.
+            station_from_description("Must be near a tanning rack, for some reason."),
+            Some("tanning rack".to_string())
+        );
+        assert_eq!(station_from_description("No station mentioned here."), None);
+        assert_eq!(station_from_description("Requires a ."), None);
+    }
 }
 
 // ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
@@ -782,6 +1360,7 @@ pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
         .register::<RouteStop>()
         .register::<StopPurpose>()
         .register::<TravelConfig>()
+        .register::<WorkOrderTripItem>()
         .register::<PlannedRoute>()
         .register::<RouteStep>()
         .register::<RouteAction>()

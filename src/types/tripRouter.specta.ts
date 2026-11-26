@@ -72,3 +72,17 @@ export type TravelConfig = {
 	 */
 	casinoPortal: string | null,
 };
+
+/**
+ *  One work order to route: quest key + quantity.
+ * 
+ *  Keys come from `get_work_orders_from_snapshot` (active keys) or the
+ *  uncompleted-work-orders backlog (`WorkOrderTodo` rows carry both fields).
+ *  Quantities are the quest's total Collect counts — no remaining-count data
+ *  exists, so partial progress is not modeled. A zero quantity falls back to
+ *  the quest's Collect objective number during stop construction.
+ */
+export type WorkOrderTripItem = {
+	questKey: string,
+	quantity: number,
+};
