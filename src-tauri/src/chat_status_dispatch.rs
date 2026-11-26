@@ -1073,26 +1073,13 @@ fn insert_json_receipt_guarded(
         )
         .is_ok()
     };
-    // Both twin orders converge here, so this is also the loot↔kill join
-    // point: the receipt's entity links the item to its FATALITY row.
-    // Attempt the link only when the ledger row exists (Persisted or
-    // AlreadyPresent); a failed insert must not create a dangling loot row.
-    match from_entity_id {
-        Some(entity_id) if wrote || exists_after => {
-            if let Err(e) = crate::db::kill_tracking_commands::link_kill_loot(
-                &conn,
-                character,
-                server,
-                &entity_id.to_string(),
-                timestamp,
-                item_name,
-                quantity as i64,
-            ) {
-                eprintln!("[dispatch] kill-loot link failed (rescan heals): {e}");
-            }
-        }
-        _ => {}
-    }
+    // Both twin orders converge here, and the receipt's entity stamps onto
+    // the ledger row above (twin-claim stamping for English-first pairs,
+    // direct insert for JSON-first). That stamping is now the SOLE entity
+    // source the kill↔loot read-time join depends on — the retired
+    // `link_kill_loot` call used to re-derive it here, so the stamp path
+    // must stay exactly as is. No link call: mine-scope readers join
+    // `item_transactions` to `enemy_kills` on next query.
     wrote
 }
 
@@ -4332,25 +4319,48 @@ mod tests {
         );
         let mut st = state(&mut arena, &mut dmg);
         dispatch(&pool, &gd, Some(&id()), &receipt, "26-11-17 17:04:47", &mut st);
-        let loot: Vec<(String, i64)> = pool
+        // The ledger row carries the stamped entity — the join's only key.
+        let ledger: Vec<(String, i64, Option<i64>)> = pool
             .get_write()
             .unwrap()
-            .prepare("SELECT item_name, quantity FROM enemy_kill_loot")
+            .prepare("SELECT item_name, quantity, from_entity_id FROM item_transactions")
             .unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .unwrap()
             .collect::<Result<_, _>>()
             .unwrap();
-        assert_eq!(loot, vec![("Coin Sack".to_string(), 1)]);
-        // Receipt rescan links nothing new.
-        let mut st = state(&mut arena, &mut dmg);
-        dispatch(&pool, &gd, Some(&id()), &receipt, "26-11-17 17:04:47", &mut st);
-        let count: i64 = pool
+        assert_eq!(ledger, vec![("Coin Sack".to_string(), 1, Some(488966))]);
+        // Join-equivalent attribution: the receipt falls in the kill's window.
+        let join_on = crate::db::kill_tracking_commands::kill_receipt_join_on("k", "it");
+        let joined: i64 = pool
             .get_write()
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM enemy_kill_loot", [], |r| r.get(0))
+            .query_row(
+                &format!("SELECT COUNT(*) FROM enemy_kills k JOIN item_transactions it ON {join_on}"),
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(joined, 1);
+        // Receipt rescan: still one ledger row, join still attributes one.
+        let mut st = state(&mut arena, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &receipt, "26-11-17 17:04:47", &mut st);
+        let ledger_count: i64 = pool
+            .get_write()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM item_transactions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ledger_count, 1);
+        let joined: i64 = pool
+            .get_write()
+            .unwrap()
+            .query_row(
+                &format!("SELECT COUNT(*) FROM enemy_kills k JOIN item_transactions it ON {join_on}"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(joined, 1);
     }
 
     #[test]
@@ -4359,7 +4369,8 @@ mod tests {
         let gd = game_data();
         let mut arena = ArenaTracker::new();
         let mut dmg = Vec::new();
-        // FATALITY with no receipt (live #488964): kill recorded, no loot.
+        // FATALITY with no receipt (live #488964): kill recorded, join finds
+        // no receipts.
         let kill = combat_msg(
             "Alice: Claw 9 on City Slime #488964! Dmg: 1822 health. (FATALITY!)",
             "26-11-17 17:05:16",
@@ -4371,12 +4382,17 @@ mod tests {
             .unwrap()
             .query_row("SELECT COUNT(*) FROM enemy_kills", [], |r| r.get(0))
             .unwrap();
-        let loot: i64 = pool
+        let join_on = crate::db::kill_tracking_commands::kill_receipt_join_on("k", "it");
+        let joined: i64 = pool
             .get_write()
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM enemy_kill_loot", [], |r| r.get(0))
+            .query_row(
+                &format!("SELECT COUNT(*) FROM enemy_kills k JOIN item_transactions it ON {join_on}"),
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!((kills, loot), (1, 0));
+        assert_eq!((kills, joined), (1, 0));
     }
 
     #[test]

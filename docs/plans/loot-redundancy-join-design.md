@@ -9,7 +9,7 @@ Delete the `enemy_kill_loot` table entirely. All mine-scope loot readers become 
 
 Readers that change (mine scope only): `mine_total_kills`, `mine_loot_rows`, `get_item_drop_sources` (mine arm), `search_database_enemies` (mine arms), `search_database_items` (mine arm). `collect_export_enemies` is free - it delegates to `mine_total_kills` / `mine_loot_rows`.
 
-Writers/heals deleted: `link_kill_loot` (receipt side), `link_kill_loot_for_kill` (kill side), `latest_eligible_kill_id` (only used by those two), both heal call sites in `record_enemy_kill`, v94 `receipt_ts` column + both UPDATE backfills + `idx_kill_loot_receipt` (die with the table).
+Writers/heals deleted: the receipt-side loot-link fn, the kill-side loot-link heal fn, the newest-eligible-kill lookup (only used by those two), both heal call sites in `record_enemy_kill`, v94 `receipt_ts` column + both UPDATE backfills + `idx_kill_loot_receipt` (die with the table).
 
 Untouched: `sweep_unlinked_gains`, twin-claim stamping, English guard, JSON guard, `record_enemy_kill` kill INSERT + rescan-None gating, all import/export/parse code, all frontend (same command names and payload shapes), delete/rename character scope loops (except census-list edits, section 7).
 
@@ -25,9 +25,9 @@ AND it.timestamp >= k.killed_at
 AND it.timestamp <= datetime(k.killed_at, '+30 minutes')
 ```
 
-Boundaries are inclusive both ends (pinned by `kill_backlinks_only_matching_receipts_in_inclusive_window`: 12:30:00 in, 12:30:01 out). CAST semantics preserved exactly, including the wart: non-numeric entity ids (test seed 'e1') CAST to 0/NULL and never match - same as v94 UPDATE1 today, preserved not fixed.
+Boundaries are inclusive both ends (pinned by `loot_link_window_includes_endpoints_but_excludes_future_and_expired_kills`: 12:30:00 in, 12:30:01 out — the backlinks shape merged into the window rewrite at implementation). CAST semantics preserved exactly, including the wart: non-numeric entity ids (test seed 'e1') CAST to 0/NULL and never match - same as v94 UPDATE1 today, preserved not fixed.
 
-Newest-kill-wins (replicates `latest_eligible_kill_id`: newest `killed_at` <= receipt wins; v48 UNIQUE dedup on (character, server, entity, killed_at) makes `killed_at` decisive, so the id tie-break is unnecessary - exact dupes cannot arrive via the API):
+Newest-kill-wins (replicates the retired newest-eligible-kill lookup: newest `killed_at` <= receipt wins; v48 UNIQUE dedup on (character, server, entity, killed_at) makes `killed_at` decisive, so the id tie-break is unnecessary - exact dupes cannot arrive via the API):
 
 ```sql
 AND NOT EXISTS (
@@ -42,7 +42,7 @@ AND NOT EXISTS (
 
 Implement as ONE shared Rust fn returning the ON-clause string (e.g. `kill_receipt_join_on()`) used by every reader and the veto below, so the five call sites cannot drift. SQL stays static string literals (`check-sql-prepare` gate; ZoneFilter/LoadoutFilter `format!` arms are the existing accepted pattern).
 
-Context/source filter: use NONE - replicate the kill-side heal predicate exactly (`link_kill_loot_for_kill` selects with no context/source filter). In practice only chat loot rows carry `from_entity_id` (English rows are NULL-entity unless twin-stamped; survey rows carry no entity), so the effective set is chat loot either way. If the owner wants narrowing to `context='loot' AND source='chat_status'`, that is a separate behavior decision with evidence, not part of this slice.
+Context/source filter: use NONE - replicate the retired kill-side heal predicate exactly (it selected with no context/source filter). In practice only chat loot rows carry `from_entity_id` (English rows are NULL-entity unless twin-stamped; survey rows carry no entity), so the effective set is chat loot either way. If the owner wants narrowing to `context='loot' AND source='chat_status'`, that is a separate behavior decision with evidence, not part of this slice.
 
 ## 3. READER REWRITES (one per function)
 
@@ -55,9 +55,9 @@ Context/source filter: use NONE - replicate the kill-side heal predicate exactly
 
 ## 4. WRITER / HEAL DELETIONS
 
-- Delete `latest_eligible_kill_id`, `link_kill_loot`, `link_kill_loot_for_kill` from `kill_tracking_commands.rs`.
-- `record_enemy_kill`: keep kill INSERT + rescan-None return (still gates domains/events); delete BOTH `link_kill_loot_for_kill` call sites (fresh-insert heal, rescan-heal) and reword their comments (late receipts appear on next query - no heal exists).
-- `chat_status_dispatch.rs` `insert_json_receipt_guarded`: delete the link attempt block (the `match from_entity_id` arm calling `link_kill_loot`); keep the ledger INSERT, staging, and twin-claim stamping. Update the comment: twin-claim entity stamping is now the SOLE entity source for English-first pairs (the join depends on it) - it must be preserved exactly, add a comment saying so.
+- Delete the newest-eligible-kill lookup, the receipt-side loot-link fn, the kill-side loot-link heal fn from `kill_tracking_commands.rs`.
+- `record_enemy_kill`: keep kill INSERT + rescan-None return (still gates domains/events); delete BOTH kill-side heal call sites (fresh-insert heal, rescan-heal) and reword their comments (late receipts appear on next query - no heal exists).
+- `chat_status_dispatch.rs` `insert_json_receipt_guarded`: delete the link attempt block (the `match from_entity_id` arm calling the receipt-side link fn); keep the ledger INSERT, staging, and twin-claim stamping. Update the comment: twin-claim entity stamping is now the SOLE entity source for English-first pairs (the join depends on it) - it must be preserved exactly, add a comment saying so.
 - English `ItemGained` arm: untouched (never linked - entity None; English-only VIP-off loot stays unattributed, exactly as today - no regression).
 
 ## 5. SWEEP (no change - with reasoning)
@@ -134,4 +134,4 @@ New pins: EXPLAIN QUERY PLAN or row-count-bounded pin that the join hits `idx_it
 
 ## 13. EVIDENCE BASE (files read, nothing written)
 
-TODO.md + :219/:222 raw; `kill_tracking_commands.rs` (readers, writers, `get_enemy_kill_stats`, drop-sources, search, export, tests); `migrations.rs` (v94, v96/v97, v15 ledger schema, v44/45 kill schema, v48 dedup, dispatch head, v94/v96/v97 tests); `unknown_source_commands.rs` (whole); `chat_status_dispatch.rs` (kill arm, English guard, JSON guard, JSON dispatch, English arm, tests); `setup_commands.rs`; `lib.rs`; `chat_commands.rs`; `docs/plans/same-second-receipts-design.md` (whole); doc greps for `enemy_kill_loot` (3 hits); src/ FE grep (5 call sites); greps run: `enemy_kill_loot` / `get_enemy_kill_stats` / `sweep_unlinked_gains` / `link_kill_loot+record_enemy_kill` / ledger-covering-index / backfill-in-kill_tracking / SCOPED_TABLES / v48+zone+combat_skills alters / same-second family / FE readers / test fns / migration head (97).
+TODO.md + :219/:222 raw; `kill_tracking_commands.rs` (readers, writers, `get_enemy_kill_stats`, drop-sources, search, export, tests); `migrations.rs` (v94, v96/v97, v15 ledger schema, v44/45 kill schema, v48 dedup, dispatch head, v94/v96/v97 tests); `unknown_source_commands.rs` (whole); `chat_status_dispatch.rs` (kill arm, English guard, JSON guard, JSON dispatch, English arm, tests); `setup_commands.rs`; `lib.rs`; `chat_commands.rs`; `docs/plans/same-second-receipts-design.md` (whole); doc greps for `enemy_kill_loot` (3 hits); src/ FE grep (5 call sites); greps run: `enemy_kill_loot` / `get_enemy_kill_stats` / `sweep_unlinked_gains` / `receipt-link+record_enemy_kill` / ledger-covering-index / backfill-in-kill_tracking / SCOPED_TABLES / v48+zone+combat_skills alters / same-second family / FE readers / test fns / migration head (97).

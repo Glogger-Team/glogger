@@ -59,7 +59,7 @@ Three steps (`:850-911`):
 3. `exists_after` — same predicate as step 1 (`:902-911`). Hit → `false`
    (AlreadyPresent, still links kill loot); miss → INSERT with
    `source_details = '{"json_twin":true}'` provenance (`:916-941`) and
-   `link_kill_loot` on the receipt's entity (`:946-961`).
+   the retired loot-link pass on the receipt's entity (`:946-961`).
 
 Second genuine JSON receipt, same entity/item/qty/second: hits step 1
 (`exact_exists`) → collapses. No second row, no second link call with a new
@@ -159,13 +159,21 @@ SELECT EXISTS(SELECT 1 FROM item_transactions
         OR source_line_id IS NULL))
 ```
 
-The `source_line_id IS NULL` arm is the legacy back-compat: pre-identity rows keep match-any collapse so old replays stay safe, at the accepted cost that genuine duplicates among legacy rows still collapse. New rows always carry non-NULL ids. Hit (own insert replayed, or own claim replayed) → return `false` (AlreadyPresent, still `link_kill_loot`, still no staging — E2/J2's event staged exactly once at its English insert); miss → INSERT with `json_twin` provenance as today.
+The `source_line_id IS NULL` arm is the legacy back-compat: pre-identity rows keep match-any collapse so old replays stay safe, at the accepted cost that genuine duplicates among legacy rows still collapse. New rows always carry non-NULL ids. Hit (own insert replayed, or own claim replayed) → return `false` (AlreadyPresent, still runs the retired loot-link pass, still no staging — E2/J2's event staged exactly once at its English insert); miss → INSERT with `json_twin` provenance as today.
 
 Re-trace of test 2 (`json_genuine_duplicate_same_entity_keeps_two_rows`: J1 line M1, J2 line M2, same entity/item/qty/second, no English rows): J1 step 1 misses (empty) → step 2 finds no unstamped English row → `exists_after` misses (no row carries M1) → INSERTs row1 (`source_line_id`=M1, entity set). J2 (M2): step 1 misses — row1 matches key+entity but `source_line_id`=M1 ≠ M2 and claimant is NULL, and the legacy arm does not fire (row1's id is non-NULL) → step 2 finds no unstamped English row → `exists_after` misses for the same reason → **INSERTs row2**. Two rows, staged twice. J1/J2 replays: step 1 hits via `source_line_id` equality → collapse. Green on paper.
 
 Genuine JSON-only duplicates (no English lines at all): different line ids → each INSERTs its own row. Replays (same line id) → collapse. T44/T43 invariants hold: sourced replay still never stamps an unsourced row (step-1 same-line/own-claim check precedes any claim, and the claim still requires entity `Some` plus the `json_twin`-marker exclusion, so unsourced JSON rows stay unclaimable and their own replays hit only via `source_line_id` equality).
 
-### Link layer — deliberately unchanged
+### Link layer — SUPERSEDED by the read-time join (v99, 2026-11-26)
+
+> The residual below is fixed, not worked around: the `enemy_kill_loot`
+> table (and its `(kill_id, item, qty, receipt_ts)` key) was dropped in
+> migration v99. Mine-scope readers join `item_transactions` to
+> `enemy_kills` read-time on identity + the inclusive 30-minute window,
+> counting ledger rows directly — identical same-second same-qty stacks
+> both land in `SUM`, one kill in `COUNT(DISTINCT)`. What follows is the
+> pre-join text, kept for history.
 
 `enemy_kill_loot`'s `(kill_id, item, qty, receipt_ts)` key will still
 collapse two *identical* same-second same-qty stacks from one kill into one
@@ -251,10 +259,11 @@ corpses must still yield distinct rows — already covered by
    queryable for the read-time join) vs `source_details` JSON key
    (no migration, unindexed — same perf class as today's unindexed
    `EXISTS`, but opaque to future readers). Recommend the column.
-3. **Link-layer interim**: leave the `(kill_id, item, qty, receipt_ts)`
+3. **Link-layer interim**: ~~leave the `(kill_id, item, qty, receipt_ts)`
    collapse documented (§5 residual) vs emitting one loot row per linked
-   ledger row by including the timestamp tie-break differently. Recommend
-   leaving it — the read-time join deletes the question.
+   ledger row by including the timestamp tie-break differently~~ —
+   SUPERSEDED: the read-time join (v99) deleted the question; identical
+   twins both count in `SUM`.
 4. **Scope**: ledger-guard fix only (this design) vs bundling the read-time
    join + timestamp normalization. Recommend separate slices: the ledger
    fix is a prerequisite that stands regardless, and each half is

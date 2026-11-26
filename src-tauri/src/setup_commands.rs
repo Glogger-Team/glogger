@@ -553,19 +553,15 @@ fn delete_character_on_write_conn(
     )
     .map_err(|e| format!("Delete failed: {e}"))?;
 
-    // character_deaths children (death_damage_sources) and enemy_kills
-    // children (enemy_kill_loot): deleted by parent id before the parents
-    // were removed in Group 2... except Group 2 already removed the parents.
-    // Re-resolve: both child tables CASCADE on FK, and FKs are enforced on
-    // the pool, so orphans cannot survive. Belt-and-braces: delete any child
-    // rows whose parent id no longer exists.
+    // character_deaths children (death_damage_sources): deleted by parent id
+    // before the parents were removed in Group 2... except Group 2 already
+    // removed the parents. Re-resolve: the child table CASCADES on FK, and
+    // FKs are enforced on the pool, so orphans cannot survive.
+    // Belt-and-braces: delete any child rows whose parent id no longer
+    // exists. (The enemy_kill_loot arm died with the table in v99 — join
+    // keys (character, server) move with item_transactions in SCOPED_TABLES.)
     conn.execute(
         "DELETE FROM death_damage_sources WHERE death_id NOT IN (SELECT id FROM character_deaths)",
-        [],
-    )
-    .map_err(|e| format!("Delete failed: {e}"))?;
-    conn.execute(
-        "DELETE FROM enemy_kill_loot WHERE kill_id NOT IN (SELECT id FROM enemy_kills)",
         [],
     )
     .map_err(|e| format!("Delete failed: {e}"))?;
@@ -1354,12 +1350,8 @@ mod tests {
             rusqlite::params![who, SERVER],
         )
         .unwrap();
-        let kill_id = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO enemy_kill_loot (kill_id,item_name) VALUES (?1,'Bone')",
-            rusqlite::params![kill_id],
-        )
-        .unwrap();
+        // No loot seed: the kill row above exercises the read-time join with
+        // zero receipts (post-v99 there is no link table to seed).
         conn.execute(
             "INSERT INTO favor_events (character_name,server_name,npc_key,timestamp,delta) VALUES (?1,?2,'npc','2026-01-01',1.0)",
             rusqlite::params![who, SERVER],
@@ -1572,7 +1564,6 @@ mod tests {
             "snapshot_skill_abilities",
             "character_snapshot_items",
             "death_damage_sources",
-            "enemy_kill_loot",
         ] {
             let total: i64 = conn
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
@@ -1618,7 +1609,6 @@ mod tests {
             "snapshot_skill_abilities",
             "character_snapshot_items",
             "death_damage_sources",
-            "enemy_kill_loot",
         ] {
             let total: i64 = conn
                 .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
