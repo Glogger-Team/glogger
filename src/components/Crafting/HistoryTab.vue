@@ -24,7 +24,7 @@
       <!-- Top crafted recipes -->
       <div class="flex flex-col gap-2">
         <div class="flex items-center justify-between">
-          <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
+          <h4 class="panel-label m-0">
             Top Crafted Recipes
           </h4>
           <!-- Skill filter -->

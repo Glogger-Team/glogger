@@ -5,7 +5,7 @@
       @click="open = !open">
       <div class="flex items-center gap-2">
         <span class="text-text-secondary text-xs transition-transform" :class="{ 'rotate-90': open }">&#9654;</span>
-        <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
+        <h4 class="panel-label m-0">
           <slot name="title" />
         </h4>
       </div>

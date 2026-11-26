@@ -1,7 +1,7 @@
 <template>
   <div class="flex flex-col gap-3">
     <div v-if="!bare" class="flex items-center justify-between">
-      <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
+      <h4 class="panel-label m-0">
         Pickup List
       </h4>
       <span class="text-text-muted text-[10px]">{{ areas.length }} area{{ areas.length !== 1 ? 's' : '' }} to visit</span>

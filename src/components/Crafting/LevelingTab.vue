@@ -322,7 +322,7 @@
 
       <!-- Right panel: Materials summary -->
       <div class="w-72 shrink-0 overflow-y-auto border border-surface-elevated rounded p-3 min-h-0 flex flex-col gap-2">
-        <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">Materials</h4>
+        <h4 class="panel-label m-0">Materials</h4>
 
         <div v-if="state.planLevels.length === 0" class="text-text-muted text-[0.65rem] text-center py-4">
           Materials will appear here as you add recipes to your plan.

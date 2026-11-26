@@ -146,7 +146,7 @@
 
         <!-- Ingredient tree -->
         <div>
-          <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide mb-2">Ingredients</h4>
+          <h4 class="panel-label mb-2">Ingredients</h4>
           <IngredientTreeNode
             v-for="ing in resolved.ingredients"
             :key="ing.item_id ?? ing.item_name"

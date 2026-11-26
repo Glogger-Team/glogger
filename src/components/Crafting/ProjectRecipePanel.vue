@@ -142,7 +142,7 @@
       <!-- Fee Configuration (pricing mode only) -->
       <div v-if="pricingMode" class="flex flex-col gap-2 border-t border-surface-elevated pt-3">
         <div class="flex items-center justify-between">
-          <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">Crafting Fee</h4>
+          <h4 class="panel-label m-0">Crafting Fee</h4>
           <div class="flex gap-1">
             <button
               class="text-text-muted text-[0.65rem] cursor-pointer bg-transparent border-none hover:text-accent-gold"

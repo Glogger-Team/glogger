@@ -179,7 +179,7 @@
           :class="{ 'rotate-90': advancedOpen }">
           ▶
         </span>
-        <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
+        <h4 class="panel-label m-0">
           Advanced
         </h4>
         <span class="text-xs text-text-secondary italic hidden sm:inline ml-auto">
@@ -216,7 +216,7 @@
             :class="{ 'rotate-90': baselineOpen }">
             ▶
           </span>
-          <h4 class="text-text-secondary text-xs font-semibold uppercase tracking-wide m-0">
+          <h4 class="panel-label m-0">
             Manual stock entry ({{ visibleBaselines.length }})
           </h4>
         </button>

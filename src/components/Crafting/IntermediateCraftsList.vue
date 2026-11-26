@@ -1,6 +1,6 @@
 <template>
   <div v-if="intermediates.length > 0">
-    <h4 v-if="!bare" class="text-text-secondary text-xs font-semibold uppercase tracking-wide mb-2">
+    <h4 v-if="!bare" class="panel-label mb-2">
       Intermediate Crafts
     </h4>
     <div class="flex flex-col gap-1">
