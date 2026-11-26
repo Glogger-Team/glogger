@@ -9,11 +9,13 @@ entries as fixtures land and recorders ship.
 - **Recorder:** `record_enemy_kill` writes every FATALITY to `enemy_kills`
   (rescan-safe on character/server/entity/killed_at), hooked in the shared
   dispatch arm — live + scan (manual `replay_chat_log` is emit-only, never writes). `enemy-killed` event still emitted.
-- **Loot link:** `link_kill_loot` runs in `insert_json_receipt_guarded` (both
-  twin orders converge there): latest kill for the receipt entity within
-  30 min → `enemy_kill_loot` row, rescan-safe. Unlooted kills link nothing
-  (no inference). This lights up `get_enemy_kill_stats` /
-  `get_item_drop_sources` "mine" scope.
+- **Loot link:** `insert_json_receipt_guarded` stamps the receipt's entity
+  onto the ledger row (both twin orders converge there; twin-claim stamping
+  is the SOLE entity source for English-first pairs). No link call: mine
+  readers join `item_transactions` to `enemy_kills` read-time (identity +
+  30 min window) — the `enemy_kill_loot` link table was dropped in v99.
+  Unlooted kills attribute nothing (no inference). This lights up
+  `get_enemy_kill_stats` / `get_item_drop_sources` "mine" scope.
 - **Join key proof:** FATALITY → receipt entity match ×3 — City Slime #488966
   (17:04:42 → 17:04:47), #488976 (17:06:36 → 17:06:39), Clawstrider Shark
   #19868 (17:12:46 → 17:12:51). Denominator: #488964 FATALITY, no receipt.

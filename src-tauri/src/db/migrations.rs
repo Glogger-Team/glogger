@@ -523,6 +523,10 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         migration_v98_timestamp_space_contract(conn)?;
         super::record_migration(conn, 98)?;
     }
+    if current_version < 99 {
+        migration_v99_drop_kill_loot_link_table(conn)?;
+        super::record_migration(conn, 99)?;
+    }
     tx.commit()?;
     Ok(())
 }
@@ -1857,6 +1861,44 @@ fn migration_v98_timestamp_space_contract(conn: &Connection) -> Result<()> {
              WHERE {column} LIKE '%T%'"
         );
         conn.execute(&sql, [])?;
+    }
+    Ok(())
+}
+
+/// Migration V99: drop the `enemy_kill_loot` link table (read-time join).
+///
+/// Mine-scope loot readers no longer read persisted links: they join
+/// `item_transactions` receipts to `enemy_kills` read-time on identity +
+/// the inclusive 30-minute window (see `kill_receipt_join_on` in
+/// `kill_tracking_commands.rs`). The table, its `receipt_ts` column (v94),
+/// and both `idx_kill_loot_*` indexes die here; the v94 backfills are
+/// retired with them (their product was `receipt_ts` values the join
+/// computes live). Fresh DBs CREATE (v45) then DROP the table — accepted,
+/// same as the v95 drop precedent; v45/v48/v94 stay in the chain untouched.
+///
+/// The permanent covering index is this slice's doing: v94's `tmp_*` index
+/// was dropped after backfill, and the live ledger's (char,server) index
+/// alone re-scans the character's ledger per kill. Column order mirrors
+/// the join predicate (equality cols first, timestamp last). The kills
+/// side is already covered (`idx_enemy_kills_dedup`,
+/// `idx_enemy_kills_name_zone`, `idx_enemy_kills_entity`).
+fn migration_v99_drop_kill_loot_link_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch("DROP TABLE IF EXISTS enemy_kill_loot;")?;
+    // Minimal-fixture guard (same as v94/v96/v97): skip the index when the
+    // ledger table is absent. In the real chain v15 always created it.
+    let has_ledger: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'item_transactions')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if has_ledger {
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_item_tx_kill_join
+                 ON item_transactions(character_name, server_name, from_entity_id, timestamp)",
+            [],
+        )?;
     }
     Ok(())
 }
@@ -5115,13 +5157,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            98,
+            99,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 98);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 99);
     }
 
     #[test]
@@ -5244,13 +5286,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 98) plus the purge itself on the three aggregate source tables.
+        // 99) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 98, "migration chain head");
+        assert_eq!(head, 99, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -5296,8 +5338,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 98 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id + v97 favor source-line id + v98 timestamp space contract). Repair: a
+        // Chain wiring: full run_migrations head must be 99 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id + v97 favor source-line id + v98 timestamp space contract + v99 kill-loot link-table drop). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -5305,7 +5347,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 98, "migration chain head");
+        assert_eq!(head, 99, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -6356,6 +6398,42 @@ mod tests {
             )
             .unwrap();
         assert_eq!(wop_again, "2026-05-02 03:59:25|2026-04-13 22:01:42");
+    }
+
+    #[test]
+    fn v99_drops_kill_loot_table_and_adds_join_index() {
+        // Pre-v99 shape: link table with both indexes, ledger without the
+        // covering index.
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE enemy_kills (id INTEGER PRIMARY KEY AUTOINCREMENT, enemy_name TEXT, killed_at TEXT);
+             CREATE TABLE enemy_kill_loot (id INTEGER PRIMARY KEY AUTOINCREMENT, kill_id INTEGER NOT NULL, item_name TEXT NOT NULL, quantity INTEGER NOT NULL DEFAULT 1, receipt_ts TEXT);
+             CREATE INDEX idx_kill_loot_kill ON enemy_kill_loot(kill_id);
+             CREATE INDEX idx_kill_loot_receipt ON enemy_kill_loot(kill_id, item_name, quantity, receipt_ts);
+             CREATE TABLE item_transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, character_name TEXT, server_name TEXT, from_entity_id INTEGER, timestamp TEXT);",
+        )
+        .unwrap();
+        migration_v99_drop_kill_loot_link_table(&c).unwrap();
+        let gone = |kind: &str, name: &str| -> bool {
+            c.query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type = ?1 AND name = ?2)",
+                [kind, name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(gone("table", "enemy_kill_loot"), "link table must go");
+        assert!(gone("index", "idx_kill_loot_kill"), "kill-side link index dies with the table");
+        assert!(gone("index", "idx_kill_loot_receipt"), "v94 receipt index dies with the table");
+        assert!(!gone("table", "enemy_kills"), "kills table must stay");
+        assert!(!gone("table", "item_transactions"), "ledger must stay");
+        assert!(!gone("index", "idx_item_tx_kill_join"), "covering join index must land");
+        // Idempotent: a second run is a no-op.
+        migration_v99_drop_kill_loot_link_table(&c).unwrap();
+        assert!(gone("table", "enemy_kill_loot"), "second run must stay dropped");
+        // Absent tables (minimal fixtures) stay no-ops.
+        let bare = Connection::open_in_memory().unwrap();
+        migration_v99_drop_kill_loot_link_table(&bare).unwrap();
     }
 }
 

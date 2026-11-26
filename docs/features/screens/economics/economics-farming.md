@@ -96,9 +96,9 @@ Kill tracking operates at two levels, both frozen for new data. Chat kills/death
 
 ### Standalone Kill Database (historic + imported only)
 
-Each searched lootable corpse used to persist to the `enemy_kills` table. When the player looted a corpse, items with `CorpseSearch` provenance were linked to the kill via entity_id matching and stored in `enemy_kill_loot`. No new rows accrue (client writes no loot lines); historic + imported rows remain queryable.
+Each searched lootable corpse used to persist to the `enemy_kills` table. When the player looted a corpse, items with `CorpseSearch` provenance were attributed to the kill via a read-time join: ledger rows (`item_transactions` with `from_entity_id`) matched to `enemy_kills` on identity plus the inclusive 30-minute window, newest kill winning overlaps. No link table exists (the `enemy_kill_loot` link table was dropped in v99). No new rows accrue (client writes no loot lines); historic + imported rows remain queryable.
 
-The kill-to-loot link used a short-lived in-memory map (`recent_kills`) mapping `enemy_entity_id -> kill_row_id`. When items arrived with `CorpseSearch { entity_id }` provenance, the coordinator looked up the matching kill and inserted into `enemy_kill_loot`. Entries expired after 120 seconds.
+The pre-join kill-to-loot link used a short-lived in-memory map (`recent_kills`) mapping `enemy_entity_id -> kill_row_id`. When items arrived with `CorpseSearch { entity_id }` provenance, the coordinator looked up the matching kill and inserted into the link table. Entries expired after 120 seconds.
 
 ### Farming Session Integration (removed)
 
@@ -112,9 +112,8 @@ Live session kill attribution is deleted (Combat view covers live kills; the Act
 - **`farming_session_favors`** — favor changes per NPC per session
 - **`farming_session_kills`** — kill counts per enemy type per session
 - **`enemy_kills`** — standalone record of every enemy kill (not session-scoped)
-- **`enemy_kill_loot`** — items attributed to specific kills via entity_id matching
 
-`farming_session_*` tables cascade on delete from `farming_sessions`. `enemy_kill_loot` cascades on delete from `enemy_kills`.
+`farming_session_*` tables cascade on delete from `farming_sessions`. Mine-scope loot is a read-time join over `item_transactions` (scoped by character/server like its parent kills), so it follows character deletes/renames with the ledger — no link-table cascade remains.
 
 ## Time Handling (historical — live-session clock deleted)
 

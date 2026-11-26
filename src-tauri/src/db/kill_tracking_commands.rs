@@ -1,7 +1,7 @@
 /// Kill tracking queries — enemy kill stats and loot drop rates.
 ///
 /// Three data scopes:
-/// - "mine": the player's own observed kills (`enemy_kills` / `enemy_kill_loot`)
+/// - "mine": the player's own observed kills (`enemy_kills` joined read-time to `item_transactions` receipts)
 /// - "imported": aggregated data imported from other players' exports
 ///   (`imported_enemy_kills_agg` / `imported_enemy_kill_loot_agg`), tagged by
 ///   `source_label` so a re-import of the same file replaces rather than
@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use tauri::State;
-use rusqlite::OptionalExtension;
 
 #[derive(Serialize)]
 pub struct EnemyLootDrop {
@@ -135,6 +134,41 @@ fn drop_binds(
     binds
 }
 
+/// Read-time kill↔receipt join predicate (sole owner of the match rule).
+///
+/// A ledger row `ledger` belongs to kill `kill` iff all hold: same
+/// (character, server), `from_entity_id` equals the kill's entity id, the
+/// receipt timestamp falls in the kill's inclusive 30-minute loot window,
+/// and no newer same-entity kill also covers the receipt (newest-kill-wins;
+/// replicates the retired `latest_eligible_kill_id` resolution, including
+/// the CAST wart: non-numeric entity ids CAST to 0/NULL and never match).
+/// No context/source filter: replicates the retired kill-side heal
+/// predicate exactly (in practice only chat loot rows carry
+/// `from_entity_id`). Time-only legacy kills carry no date, so the
+/// lexicographic window never matches them — accepted, date
+/// unrecoverable (#363 premise).
+///
+/// `kill`/`ledger` are the SQL aliases at the call site. Every mine-scope
+/// reader and the death veto below build their match from this, so the
+/// call sites cannot drift.
+pub(crate) fn kill_receipt_join_on(kill: &str, ledger: &str) -> String {
+    format!(
+        "{ledger}.character_name = {kill}.character_name \
+         AND {ledger}.server_name = {kill}.server_name \
+         AND {ledger}.from_entity_id = CAST({kill}.enemy_entity_id AS INTEGER) \
+         AND {ledger}.timestamp >= {kill}.killed_at \
+         AND {ledger}.timestamp <= datetime({kill}.killed_at, '+30 minutes') \
+         AND NOT EXISTS ( \
+           SELECT 1 FROM enemy_kills k2 \
+            WHERE k2.character_name = {kill}.character_name \
+              AND k2.server_name = {kill}.server_name \
+              AND k2.enemy_entity_id = {kill}.enemy_entity_id \
+              AND k2.killed_at > {kill}.killed_at \
+              AND k2.killed_at <= {ledger}.timestamp \
+         )"
+    )
+}
+
 /// Player's own kill count for drop-rate denominators. Excludes the
 /// died-before-looting shape: a lootless kill followed by a recorded player
 /// death within 5 minutes (live: City Slime #488970 killed 17:08:21, player
@@ -152,13 +186,14 @@ fn mine_total_kills<C: DbRead + ?Sized>(
     zf: &ZoneFilter,
     lf: &LoadoutFilter,
 ) -> Result<i64, String> {
+    let join_on = kill_receipt_join_on("k", "it");
     let sql = format!(
         "SELECT COUNT(*) FROM enemy_kills k WHERE k.enemy_name = ?{zf}
          AND NOT EXISTS (
             SELECT 1 FROM character_deaths d
              WHERE d.character_name = k.character_name AND d.server_name = k.server_name
                AND d.died_at >= k.killed_at AND d.died_at <= datetime(k.killed_at, '+5 minutes')
-               AND NOT EXISTS (SELECT 1 FROM enemy_kill_loot l WHERE l.kill_id = k.id)
+               AND NOT EXISTS (SELECT 1 FROM item_transactions it WHERE {join_on})
          ){lf}",
         zf = zf.sql("k.zone"),
         lf = lf.sql("k.combat_skills")
@@ -194,12 +229,13 @@ fn mine_loot_rows<C: DbRead + ?Sized>(
     zf: &ZoneFilter,
     lf: &LoadoutFilter,
 ) -> Result<Vec<(String, i64, i64)>, String> {
+    let join_on = kill_receipt_join_on("k", "it");
     let sql = format!(
-        "SELECT l.item_name, SUM(l.quantity), COUNT(DISTINCT l.kill_id)
-         FROM enemy_kill_loot l
-         JOIN enemy_kills k ON l.kill_id = k.id
+        "SELECT it.item_name, SUM(it.quantity), COUNT(DISTINCT k.id)
+         FROM enemy_kills k
+         JOIN item_transactions it ON {join_on}
          WHERE k.enemy_name = ?{}{}
-         GROUP BY l.item_name",
+         GROUP BY it.item_name",
         zf.sql("k.zone"),
         lf.sql("k.combat_skills")
     );
@@ -318,11 +354,8 @@ pub fn record_enemy_kill(
         )
         .map_err(|e| format!("Failed to record enemy kill: {e}"))?;
     if inserted == 0 {
-        // Rescan heal: even when the row already existed, re-link loot so
-        // receipts that arrived in a different scan window attach.
-        if let Err(e) = link_kill_loot_for_kill(conn, character, server, enemy_entity_id, killed_at) {
-            eprintln!("[dispatch] kill-loot link failed (rescan heals): {e}");
-        }
+        // Rescan replay: the row already exists. Late receipts need no heal —
+        // the read-time join matches them on the next query.
         return Ok(None);
     }
     let kill_id = conn
@@ -334,224 +367,9 @@ pub fn record_enemy_kill(
             |row| row.get::<_, i64>(0),
         )
         .map_err(|e| format!("Failed to read back kill id: {e}"))?;
-    // Link any receipt rows that arrived before this FATALITY (newest-first
-    // scans) — idempotent.
-    if let Err(e) = link_kill_loot_for_kill(conn, character, server, enemy_entity_id, killed_at) {
-        eprintln!("[dispatch] kill-loot link failed (rescan heals): {e}");
-    }
+    // Receipts that arrived before this FATALITY (newest-first scans) need
+    // no backlink: the read-time join matches them on the next query.
     Ok(Some(kill_id))
-}
-
-/// Latest kill eligible for a receipt at `receipt_ts`: the newest kill for
-/// (character, server, entity) at or before the receipt within the 30-minute
-/// corpse-search/loot-lag window. Tie-break is `(killed_at, id)` — later rows
-/// win ties so resolution is deterministic no matter which side asks (the v48
-/// dedup UNIQUE index makes `killed_at` decisive for API-reachable rows; the
-/// `id` half keeps the query total regardless). Shared by both link
-/// directions so each receipt resolves to exactly one kill.
-///
-/// Family-aware: Player.log-era kills carry time-only `killed_at` (no date),
-/// for which the lexicographic arm below is vacuous or year-2000 on one bound
-/// or the other (`datetime('19:29:10','-30 minutes')` is `2000-01-01 …`, and a
-/// `2x:xx:xx` stamp sorts *after* any same-day full stamp at byte 1) — a
-/// silent no-match against full-date receipts. Those rows take the `time()`
-/// arm instead: same entity, time-of-day within the window. The arms are
-/// independent disjuncts (not a shared outer bound) so neither family's
-/// shape leaks into the other's comparison. Midnight wraparound (kill 23:55,
-/// receipt 00:05) misses there too — an accepted limit on ancient rows,
-/// documented, not a silent regression: the full-format path is
-/// byte-identical to before.
-fn latest_eligible_kill_id(
-    conn: &rusqlite::Connection,
-    character: &str,
-    server: &str,
-    enemy_entity_id: &str,
-    receipt_ts: &str,
-) -> Result<Option<i64>, String> {
-    let receipt_norm = normalize_contract_ts(receipt_ts);
-    let receipt_ts: &str = &receipt_norm;
-    conn.query_row(
-        "SELECT id FROM enemy_kills
-          WHERE character_name = ?1 AND server_name = ?2
-            AND enemy_entity_id = ?3
-            AND ((killed_at <= ?4 AND killed_at >= datetime(?4, '-30 minutes'))
-                 OR (length(killed_at) = 8
-                     AND time(killed_at) <= time(?4)
-                     AND time(killed_at) >= time(?4, '-30 minutes')))
-          ORDER BY killed_at DESC, id DESC LIMIT 1",
-        rusqlite::params![character, server, enemy_entity_id, receipt_ts],
-        |row| row.get(0),
-    )
-    .optional()
-    .map_err(|e| format!("Failed to look up kill for loot link: {e}"))
-}
-
-/// Link receipt rows that arrived before the kill line (newest-first
-/// cross-file scans) for the same entity to this kill. Each receipt resolves
-/// to the latest eligible kill via `latest_eligible_kill_id`, so a rescan heal
-/// for an older kill never steals a receipt that belongs to a newer one —
-/// poison is strictly older-linking-forward. Idempotent per receipt via
-/// `WHERE NOT EXISTS` on `(kill_id, item_name, quantity, receipt_ts)`: two
-/// same-item receipts from one kill link two rows (D5-56), and a rescan heal
-/// finds both keys present and links nothing new.
-pub fn link_kill_loot_for_kill(
-    conn: &rusqlite::Connection,
-    character: &str,
-    server: &str,
-    enemy_entity_id: &str,
-    killed_at: &str,
-) -> Result<usize, String> {
-    // Contract: normalize the incoming stamp so the kill lookup below and the
-    // receipt scan share one shape with the stored rows (migration v98
-    // backfills the T-family; time-only passes through to the `time()` scan).
-    let killed_at_norm = normalize_contract_ts(killed_at);
-    let killed_at: &str = &killed_at_norm;
-    // Same-identity rows are unique via the `record_enemy_kill` dedupe; the
-    // `id` tie-break keeps the lookup total (newest wins) if duplicates ever
-    // land directly, matching the receipt-side resolution below.
-    let kill_id: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM enemy_kills
-              WHERE character_name = ?1 AND server_name = ?2
-                AND enemy_entity_id = ?3 AND killed_at = ?4
-              ORDER BY id DESC LIMIT 1",
-            rusqlite::params![character, server, enemy_entity_id, killed_at],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| format!("Failed to look up kill for loot link: {e}"))?;
-    let Some(kill_id) = kill_id else {
-        return Ok(0);
-    };
-    // Per-receipt timestamps: DISTINCT (item, qty) alone cannot resolve which
-    // kill a receipt belongs to when two kills share the window, so resolve
-    // each receipt row and keep only the ones this kill wins.
-    // Time-only legacy kills carry no date: the lexicographic window below
-    // can never match them (`datetime('19:29:10','+30 minutes')` is year-2000,
-    // so the scan was a silent no-op on exactly those kills). Those rows scan
-    // by time-of-day instead — still scoped by character/server/entity, so the
-    // per-receipt `latest_eligible_kill_id` resolution below stays precise.
-    // Two static statements (not one `format!` predicate) so the SQL-prepare
-    // gate still resolves every DML statically.
-    let mut stmt = if killed_at.len() == 8 {
-        conn.prepare(
-            "SELECT DISTINCT item_name, quantity, timestamp FROM item_transactions
-              WHERE character_name = ?1 AND server_name = ?2
-                AND from_entity_id = ?3
-                AND time(timestamp) >= time(?4)
-                AND time(timestamp) <= time(?4, '+30 minutes')",
-        )
-    } else {
-        conn.prepare(
-            "SELECT DISTINCT item_name, quantity, timestamp FROM item_transactions
-              WHERE character_name = ?1 AND server_name = ?2
-                AND from_entity_id = ?3
-                AND timestamp >= ?4
-                AND timestamp <= datetime(?4, '+30 minutes')",
-        )
-    }
-    .map_err(|e| format!("Failed to prepare receipt lookup: {e}"))?;
-    let rows: Vec<(String, i64, String)> = stmt
-        .query_map(
-            rusqlite::params![character, server, enemy_entity_id, killed_at],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .map_err(|e| format!("Failed to query receipts: {e}"))?
-        .collect::<Result<_, _>>()
-        .map_err(|e| format!("Failed to collect receipts: {e}"))?;
-    // One transaction for the whole heal: a failure between rows must roll
-    // back, not half-persist (the pool is the only lock, so BEGIN IMMEDIATE
-    // is enough — single write connection, no outer transaction open at the
-    // dispatch call sites, which check out the writer per call).
-    conn.execute_batch("BEGIN IMMEDIATE")
-        .map_err(|e| format!("Failed to begin kill-loot heal: {e}"))?;
-    let healed = (|| -> Result<usize, String> {
-        let mut linked = 0usize;
-        for (item, qty, receipt_ts) in rows {
-            let latest =
-                latest_eligible_kill_id(conn, character, server, enemy_entity_id, &receipt_ts)?;
-            if latest != Some(kill_id) {
-                continue;
-            }
-            let n = conn
-                .execute(
-                    "INSERT INTO enemy_kill_loot (kill_id, item_name, quantity, receipt_ts)
-                     SELECT ?1, ?2, ?3, ?4
-                     WHERE NOT EXISTS (
-                        SELECT 1 FROM enemy_kill_loot
-                         WHERE kill_id = ?1 AND item_name = ?2 AND quantity = ?3
-                           AND receipt_ts = ?4
-                     )",
-                    rusqlite::params![kill_id, item, qty, receipt_ts],
-                )
-                .map_err(|e| format!("Failed to link kill loot: {e}"))?;
-            if n > 0 {
-                linked += 1;
-            }
-        }
-        Ok(linked)
-    })();
-    match healed {
-        Ok(n) => conn
-            .execute_batch("COMMIT")
-            .map_err(|e| {
-                // A failed COMMIT leaves the transaction active; roll back
-                // deterministically instead of relying on connection teardown.
-                let _ = conn.execute_batch("ROLLBACK");
-                format!("Failed to commit kill-loot heal: {e}")
-            })
-            .map(|_| n),
-        Err(e) => {
-            let _ = conn.execute_batch("ROLLBACK");
-            Err(e)
-        }
-    }
-}
-
-/// Attach a loot receipt to its kill via the looted-from entity id. Finds the
-/// latest kill for (character, server, entity) at or before the receipt
-/// (30-minute window — corpse search/loot lag, never future kills; ties break
-/// by `(killed_at, id)`) and links the item row, rescan-safe per receipt on
-/// (kill_id, item, quantity, receipt_ts). A second same-item receipt from the
-/// same kill links a second row (D5-56); replaying the same receipt finds its
-/// key present and returns `false`. Returns `false` when no kill matches
-/// (unlooted kill, or the kill line never reached us).
-pub fn link_kill_loot(
-    conn: &rusqlite::Connection,
-    character: &str,
-    server: &str,
-    enemy_entity_id: &str,
-    receipt_ts: &str,
-    item_name: &str,
-    quantity: i64,
-) -> Result<bool, String> {
-    // Contract: the stored `receipt_ts` is space-format naive UTC — normalize
-    // the incoming receipt first so the link key and the `latest_eligible`
-    // resolution below share one shape (migration v98 backfills the rest).
-    let receipt_norm = normalize_contract_ts(receipt_ts);
-    let receipt_ts: &str = &receipt_norm;
-    // Distinguishable failure: a missing row is `Ok(false)` (unlooted kill
-    // or a kill line that never arrived); a DB error propagates instead of
-    // masquerading as "no match". Resolution matches the kill side
-    // (`latest_eligible_kill_id`, `(killed_at, id)` tie-break) so both sides
-    // agree on the receipt's owner.
-    let kill_id = latest_eligible_kill_id(conn, character, server, enemy_entity_id, receipt_ts)?;
-    let Some(kill_id) = kill_id else {
-        return Ok(false);
-    };
-    let rows = conn
-        .execute(
-            "INSERT INTO enemy_kill_loot (kill_id, item_name, quantity, receipt_ts)
-             SELECT ?1, ?2, ?3, ?4
-             WHERE NOT EXISTS (
-                SELECT 1 FROM enemy_kill_loot
-                 WHERE kill_id = ?1 AND item_name = ?2 AND quantity = ?3
-                   AND receipt_ts = ?4
-             )",
-            rusqlite::params![kill_id, item_name, quantity, receipt_ts],
-        )
-        .map_err(|e| format!("Failed to link kill loot: {e}"))?;
-    Ok(rows > 0)
 }
 
 /// All-time kill/loot stats for a monster. `zone` scopes the stats by area:
@@ -726,11 +544,12 @@ pub fn get_item_drop_sources(
     };
 
     if scope == "mine" || scope == "combined" {
+        let join_on = kill_receipt_join_on("k", "it");
         let sql = format!(
-            "SELECT k.enemy_name, k.zone, COUNT(DISTINCT l.kill_id), SUM(l.quantity)
-             FROM enemy_kill_loot l
-             JOIN enemy_kills k ON l.kill_id = k.id
-             WHERE (l.item_name = ? OR l.item_name = ?){}
+            "SELECT k.enemy_name, k.zone, COUNT(DISTINCT k.id), SUM(it.quantity)
+             FROM enemy_kills k
+             JOIN item_transactions it ON {join_on}
+             WHERE (it.item_name = ? OR it.item_name = ?){}
              GROUP BY k.enemy_name, k.zone",
             lf.sql("k.combat_skills")
         );
@@ -880,12 +699,13 @@ pub fn search_database_enemies(
         // Same died-before-looting veto as `mine_total_kills`: lootless kills
         // followed by a player death within 5 minutes never got looted, so
         // they must not inflate these totals either.
+        let join_on = kill_receipt_join_on("k", "it");
         let sql = format!(
             "SELECT enemy_name, zone, COUNT(*) FROM enemy_kills k WHERE NOT EXISTS (
                 SELECT 1 FROM character_deaths d
                  WHERE d.character_name = k.character_name AND d.server_name = k.server_name
                    AND d.died_at >= k.killed_at AND d.died_at <= datetime(k.killed_at, '+5 minutes')
-                   AND NOT EXISTS (SELECT 1 FROM enemy_kill_loot l WHERE l.kill_id = k.id)
+                   AND NOT EXISTS (SELECT 1 FROM item_transactions it WHERE {join_on})
             ){} GROUP BY enemy_name, zone",
             lf.sql("k.combat_skills"),
         );
@@ -907,8 +727,8 @@ pub fn search_database_enemies(
         }
 
         let sql = format!(
-            "SELECT DISTINCT k.enemy_name, k.zone, l.item_name
-             FROM enemy_kill_loot l JOIN enemy_kills k ON l.kill_id = k.id{}",
+            "SELECT DISTINCT k.enemy_name, k.zone, it.item_name
+             FROM enemy_kills k JOIN item_transactions it ON {join_on}{}",
             lf.where_clause("k.combat_skills")
         );
         let mut loot_stmt = tx
@@ -1033,11 +853,12 @@ pub fn search_database_items(
     let mut agg: ItemAgg = HashMap::new();
 
     if scope == "mine" || scope == "combined" {
+        let join_on = kill_receipt_join_on("k", "it");
         let sql = format!(
-            "SELECT l.item_name, SUM(l.quantity), k.enemy_name, k.zone
-             FROM enemy_kill_loot l
-             JOIN enemy_kills k ON l.kill_id = k.id{}
-             GROUP BY l.item_name, k.enemy_name, k.zone",
+            "SELECT it.item_name, SUM(it.quantity), k.enemy_name, k.zone
+             FROM enemy_kills k
+             JOIN item_transactions it ON {join_on}{}
+             GROUP BY it.item_name, k.enemy_name, k.zone",
             lf.where_clause("k.combat_skills")
         );
         let mut stmt = conn
@@ -1871,7 +1692,7 @@ fn parse_sqlite_drop_data(path: &str) -> Result<Vec<ExportedEnemy>, String> {
 /// `delete_imported_source`) no longer deletes it. Tagged by the file's name
 /// (`source_label`) so re-importing the same file replaces just that source's rows
 /// instead of double-counting. Never touches the player's own
-/// `enemy_kills`/`enemy_kill_loot` ground truth.
+/// `enemy_kills`/ledger ground truth.
 #[tauri::command]
 pub fn import_kill_loot_database(
     db: State<'_, DbPool>,
@@ -2213,202 +2034,35 @@ mod tests {
         assert!(global.iter().any(|r| r.enemy_name == "Boss Vex" && r.killed_at == "2026-11-17 12:33:00"));
     }
 
+    /// Mine-scope loot through the read-time join, sorted for determinism
+    /// (`mine_loot_rows` groups without ORDER BY).
+    fn loot_rows(conn: &Connection) -> Vec<(String, i64, i64)> {
+        let mut rows =
+            mine_loot_rows(conn, "City Slime", &ZoneFilter::All, &LoadoutFilter::All).unwrap();
+        rows.sort();
+        rows
+    }
+
+    /// Per-kill attribution through the shared join (kill id → summed qty),
+    /// proving which kill a receipt resolved to — not just the item totals.
+    fn attributed_qty(conn: &Connection) -> Vec<(i64, i64)> {
+        let join_on = kill_receipt_join_on("k", "it");
+        conn.prepare(&format!(
+            "SELECT k.id, SUM(it.quantity) FROM enemy_kills k
+             JOIN item_transactions it ON {join_on}
+             GROUP BY k.id ORDER BY k.id"
+        ))
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+    }
+
     #[test]
     fn loot_link_window_includes_endpoints_but_excludes_future_and_expired_kills() {
         let conn = setup();
-        let kill = record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
-        for (receipt_ts, expected) in [
-            ("2026-11-17 11:59:59", false),
-            ("2026-11-17 12:00:00", true),
-            ("2026-11-17 12:30:00", true),
-            ("2026-11-17 12:30:01", false),
-        ] {
-            assert_eq!(link_kill_loot(&conn, "T", "Dreva", "42", receipt_ts, receipt_ts, 1).unwrap(), expected, "receipt at {receipt_ts}");
-        }
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM enemy_kill_loot WHERE kill_id = ?1", [kill], |r| r.get(0)).unwrap();
-        assert_eq!(count, 2);
-    }
-
-    #[test]
-    fn loot_uses_latest_matching_kill_and_replays_are_silent() {
-        let conn = setup();
         record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
-        let latest = record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:10:00").unwrap();
-        // More recent rows belonging to another identity/entity must not win.
-        for (character, server, entity) in [("Other", "Dreva", "42"), ("T", "Other", "42"), ("T", "Dreva", "43")] {
-            record_test_kill(&conn, character, server, entity, "2026-11-17 12:11:00").unwrap();
-        }
-        assert!(link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:12:00", "Salad", 2).unwrap());
-        assert!(!link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:12:00", "Salad", 2).unwrap());
-        let rows: Vec<(i64, String, i64)> = conn.prepare("SELECT kill_id, item_name, quantity FROM enemy_kill_loot").unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
-            .collect::<Result<_, _>>().unwrap();
-        assert_eq!(rows, vec![(latest, "Salad".into(), 2)]);
-    }
-
-    /// D5-56: two same-item receipts from one kill link two loot rows — one
-    /// per receipt identity — on both link paths. Pre-fix the
-    /// `(kill_id, item, quantity)` NOT EXISTS collapsed the second receipt,
-    /// so the `assert!(... second ...)` / `== 2` pins fail on the old guard.
-    #[test]
-    fn same_item_receipts_link_one_row_each() {
-        fn linked(conn: &Connection) -> Vec<(String, String, i64, String)> {
-            conn.prepare(
-                "SELECT k.killed_at, l.item_name, l.quantity, l.receipt_ts
-                   FROM enemy_kill_loot l
-                   JOIN enemy_kills k ON k.id = l.kill_id
-                  ORDER BY l.receipt_ts",
-            ).unwrap()
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap()
-                .collect::<Result<_, _>>().unwrap()
-        }
-        let expected = vec![
-            ("2026-11-17 12:00:00".to_string(), "Salad".to_string(), 2, "2026-11-17 12:01:00".to_string()),
-            ("2026-11-17 12:00:00".to_string(), "Salad".to_string(), 2, "2026-11-17 12:02:00".to_string()),
-        ];
-        // Receipt side: one link call per receipt timestamp.
-        let receipt_side = setup();
-        record_test_kill(&receipt_side, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
-        insert_test_receipt(&receipt_side, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad");
-        insert_test_receipt(&receipt_side, "T", "Dreva", "42", "2026-11-17 12:02:00", "Salad");
-        assert!(link_kill_loot(&receipt_side, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 2).unwrap());
-        assert!(link_kill_loot(&receipt_side, "T", "Dreva", "42", "2026-11-17 12:02:00", "Salad", 2).unwrap());
-        assert_eq!(linked(&receipt_side), expected);
-        // Kill side: one heal links both stored receipts.
-        let kill_side = setup();
-        record_test_kill(&kill_side, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
-        insert_test_receipt(&kill_side, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad");
-        insert_test_receipt(&kill_side, "T", "Dreva", "42", "2026-11-17 12:02:00", "Salad");
-        assert_eq!(link_kill_loot_for_kill(&kill_side, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap(), 2);
-        assert_eq!(linked(&kill_side), expected);
-    }
-
-    /// D5-56: kill-side and receipt-side links converge on the same
-    /// (kill, item, qty, receipt) mapping, and every rescan shape — receipt
-    /// replay, kill-side heal, full kill replay — links nothing new.
-    #[test]
-    fn receipt_identity_links_agree_and_heals_stay_silent() {
-        fn linked(conn: &Connection) -> Vec<(String, String, i64, String)> {
-            conn.prepare(
-                "SELECT k.killed_at, l.item_name, l.quantity, l.receipt_ts
-                   FROM enemy_kill_loot l
-                   JOIN enemy_kills k ON k.id = l.kill_id
-                  ORDER BY l.receipt_ts",
-            ).unwrap()
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap()
-                .collect::<Result<_, _>>().unwrap()
-        }
-        let expected = vec![
-            ("2026-11-17 12:00:00".to_string(), "Salad".to_string(), 2, "2026-11-17 12:01:00".to_string()),
-            ("2026-11-17 12:00:00".to_string(), "Salad".to_string(), 2, "2026-11-17 12:02:00".to_string()),
-        ];
-        // Receipt-side order: kill, receipts, per-receipt links, rescan replay.
-        let a = setup();
-        record_test_kill(&a, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
-        insert_test_receipt(&a, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad");
-        insert_test_receipt(&a, "T", "Dreva", "42", "2026-11-17 12:02:00", "Salad");
-        assert!(link_kill_loot(&a, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 2).unwrap());
-        assert!(link_kill_loot(&a, "T", "Dreva", "42", "2026-11-17 12:02:00", "Salad", 2).unwrap());
-        // Kill-side order: receipts land before the kill line (newest-first
-        // scan), attach via the kill-side backlink on record.
-        let b = setup();
-        insert_test_receipt(&b, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad");
-        insert_test_receipt(&b, "T", "Dreva", "42", "2026-11-17 12:02:00", "Salad");
-        record_test_kill(&b, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
-        assert_eq!(linked(&a), expected);
-        assert_eq!(linked(&b), expected, "scan order must not change the history");
-        // Rescan heals on both DBs link nothing new.
-        for conn in [&a, &b] {
-            assert!(!link_kill_loot(conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 2).unwrap());
-            assert!(!link_kill_loot(conn, "T", "Dreva", "42", "2026-11-17 12:02:00", "Salad", 2).unwrap());
-            assert_eq!(link_kill_loot_for_kill(conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap(), 0);
-            assert_eq!(record_test_kill(conn, "T", "Dreva", "42", "2026-11-17 12:00:00"), None);
-            assert_eq!(linked(conn).len(), 2);
-        }
-    }
-
-    /// Heal atomicity: a failure between loot rows rolls back the whole heal,
-    /// not half-persist it. A TEMP trigger aborts the kill's second insert;
-    /// which receipt lands first is irrelevant — exactly one insert succeeds
-    /// before the abort, so a non-transactional loop would leave one row.
-    /// Pre-transaction this pin fails with `count == 1`.
-    #[test]
-    fn kill_heal_rolls_back_when_a_row_fails() {
-        let conn = setup();
-        record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
-        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Apple");
-        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:02:00", "Salad");
-        conn.execute_batch(
-            "CREATE TEMP TRIGGER kill_heal_abort_second
-             BEFORE INSERT ON enemy_kill_loot
-             WHEN (SELECT COUNT(*) FROM enemy_kill_loot) >= 1
-             BEGIN
-                 SELECT RAISE(ABORT, 'injected heal failure');
-             END;",
-        )
-        .unwrap();
-        assert!(link_kill_loot_for_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").is_err());
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM enemy_kill_loot", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 0, "failed heal must roll back, not half-persist");
-    }
-
-    /// New contract (replaces `same_second_twins_stay_collapsed`, retired —
-    /// its pin now lives in git history): the ledger holds one row per
-    /// genuine same-second receipt (distinct `source_line_id`s), and the
-    /// link layer emits one loot row per (item, qty, receipt_ts) key.
-    /// Distinct-qty stacks off one corpse link separately; identical
-    /// same-second same-qty stacks still share one loot row (accepted
-    /// residual — the read-time join counts ledger rows directly, where
-    /// both stacks survive).
-    #[test]
-    fn same_second_twins_keep_two_ledger_rows_and_link_by_qty() {
-        let ledger_row = |conn: &Connection, qty: i64, line: &str| {
-            conn.execute(
-                "INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, quantity, context, source, from_entity_id, source_line_id)
-                 VALUES ('2026-11-17 12:01:00', 'T', 'Dreva', 'Salad', ?1, 'inventory', 'chat_status', 42, ?2)",
-                rusqlite::params![qty, line],
-            )
-            .unwrap();
-        };
-        // Distinct-qty stacks: two genuine receipts, two loot rows.
-        let conn = setup();
-        record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
-        ledger_row(&conn, 2, "Chat.log:11");
-        ledger_row(&conn, 3, "Chat.log:12");
-        assert!(link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 2).unwrap());
-        assert!(link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 3).unwrap());
-        // Replaying either receipt links nothing new from either side.
-        assert!(!link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 2).unwrap());
-        assert!(!link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 3).unwrap());
-        assert_eq!(link_kill_loot_for_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap(), 0);
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM enemy_kill_loot", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 2, "distinct-qty stacks link separately");
-        let ledger: i64 = conn.query_row("SELECT COUNT(*) FROM item_transactions", [], |r| r.get(0)).unwrap();
-        assert_eq!(ledger, 2, "two genuine receipts keep two ledger rows");
-        // Identical-qty residual: two ledger rows, one loot row.
-        let conn = setup();
-        record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
-        ledger_row(&conn, 2, "Chat.log:11");
-        ledger_row(&conn, 2, "Chat.log:12");
-        assert!(link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 2).unwrap());
-        assert!(!link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad", 2).unwrap());
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM enemy_kill_loot", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 1, "identical same-qty stacks share one loot row (residual)");
-    }
-
-    fn insert_test_receipt(conn: &Connection, character: &str, server: &str, entity: &str, ts: &str, item: &str) {
-        conn.execute(
-            "INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, quantity, context, source, from_entity_id)
-             VALUES (?1, ?2, ?3, ?4, 2, 'inventory', 'chat_status', ?5)",
-            rusqlite::params![ts, character, server, item, entity],
-        ).unwrap();
-    }
-
-    #[test]
-    fn kill_backlinks_only_matching_receipts_in_inclusive_window() {
-        let conn = setup();
         for (character, server, entity, ts, item) in [
             ("T", "Dreva", "42", "2026-11-17 12:00:00", "Immediate"),
             ("T", "Dreva", "42", "2026-11-17 12:30:00", "At limit"),
@@ -2420,106 +2074,216 @@ mod tests {
         ] {
             insert_test_receipt(&conn, character, server, entity, ts, item);
         }
-        let kill = record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
-        let rows: Vec<(String, i64)> = conn.prepare("SELECT item_name, quantity FROM enemy_kill_loot WHERE kill_id = ?1 ORDER BY item_name").unwrap()
-            .query_map([kill], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
-            .collect::<Result<_, _>>().unwrap();
-        assert_eq!(rows, vec![("At limit".into(), 2), ("Immediate".into(), 2)]);
-        assert_eq!(link_kill_loot_for_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap(), 0);
+        // Inclusive both ends, identity-scoped: only the two in-window rows.
+        assert_eq!(
+            loot_rows(&conn),
+            vec![("At limit".to_string(), 2, 1), ("Immediate".to_string(), 2, 1)]
+        );
+        // Re-query is idempotent: no heal runs, nothing accumulates.
+        assert_eq!(loot_rows(&conn), loot_rows(&conn));
     }
 
     #[test]
-    fn kill_replay_heals_late_receipts_without_emitting_a_new_kill() {
-        let conn = setup();
-        let ts = "2026-11-17 12:00:00";
-        let kill = record_test_kill(&conn, "T", "Dreva", "42", ts).unwrap();
-        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad");
-        assert_eq!(record_test_kill(&conn, "T", "Dreva", "42", ts), None);
-        assert_eq!(record_test_kill(&conn, "T", "Dreva", "42", ts), None);
-        let row: (i64, String, i64) = conn.query_row(
-            "SELECT kill_id, item_name, quantity FROM enemy_kill_loot", [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        ).unwrap();
-        assert_eq!(row, (kill, "Salad".into(), 2));
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM enemy_kill_loot", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 1);
-    }
-
-    /// D5-55: a rescan heal for the older of two kills must not steal a receipt
-    /// that resolves to the newer kill. K1 12:00 + K2 12:10, receipt 12:12 is
-    /// in both windows — it belongs to K2 from both sides, and replaying K1
-    /// (the `record_enemy_kill` None path) must not double-link it to K1.
-    #[test]
-    fn rescan_heal_over_two_kills_does_not_double_link() {
+    fn loot_uses_latest_matching_kill_and_replays_are_silent() {
         let conn = setup();
         record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
-        let newer = record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:10:00").unwrap();
+        let latest = record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:10:00").unwrap();
+        // More recent rows belonging to another identity/entity must not win.
+        for (character, server, entity) in [("Other", "Dreva", "42"), ("T", "Other", "42"), ("T", "Dreva", "43")] {
+            record_test_kill(&conn, character, server, entity, "2026-11-17 12:11:00").unwrap();
+        }
         insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:12:00", "Salad");
-        assert!(link_kill_loot(&conn, "T", "Dreva", "42", "2026-11-17 12:12:00", "Salad", 2).unwrap());
-        // Kill-side heal for the older kill: nothing to link, receipt stays K2's.
-        assert_eq!(link_kill_loot_for_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap(), 0);
-        // Full rescan replay of both kills heals nothing new either.
-        assert_eq!(record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00"), None);
-        assert_eq!(record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:10:00"), None);
-        let rows: Vec<(i64, String, i64)> = conn.prepare("SELECT kill_id, item_name, quantity FROM enemy_kill_loot").unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
-            .collect::<Result<_, _>>().unwrap();
-        assert_eq!(rows, vec![(newer, "Salad".into(), 2)]);
+        assert_eq!(loot_rows(&conn), vec![("Salad".to_string(), 2, 1)]);
+        // Re-query idempotent: the SELECT computes the same match every time.
+        assert_eq!(loot_rows(&conn), vec![("Salad".to_string(), 2, 1)]);
+        // Attributed to the newest matching kill, not the older one.
+        assert_eq!(
+            attributed_qty(&conn).iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![latest]
+        );
     }
 
-    /// D5-55: both link directions resolve each receipt to the same kill —
-    /// newest `killed_at` wins. (`id` is the secondary tie-break in
-    /// `latest_eligible_kill_id`, but the v48 dedup UNIQUE index on
-    /// (character, server, entity, killed_at) makes `killed_at` decisive for
-    /// any row reachable through the API, so the pin is newest-wins agreement
-    /// from both sides rather than same-timestamp rows, which cannot exist.)
+    /// D5-56, join resolution: two same-item receipts from one kill are two
+    /// SUM contributions (the retired `(kill_id, item, qty, receipt_ts)` link
+    /// key still collapsed identical same-second stacks to one loot row;
+    /// the join counts ledger rows directly where both stacks survive).
     #[test]
-    fn both_sides_agree_on_latest_eligible_kill() {
-        // Kill-side only: each receipt links to exactly the kill that wins it.
+    fn same_item_receipts_sum_both_contributions() {
+        let conn = setup();
+        record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
+        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad");
+        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:02:00", "Salad");
+        assert_eq!(
+            loot_rows(&conn),
+            vec![("Salad".to_string(), 4, 1)],
+            "two receipts: two SUM contributions, one kill in times_dropped"
+        );
+    }
+
+    /// Residual fix (replaces the same-second-design section-5 residual):
+    /// the ledger holds one row per genuine same-second receipt (distinct
+    /// `source_line_id`s), and the read-time join counts both ledger rows
+    /// directly — identical same-qty stacks now both land in SUM.
+    #[test]
+    fn same_second_twins_keep_two_ledger_rows_and_link_by_qty() {
+        let ledger_row = |conn: &Connection, qty: i64, line: &str| {
+            conn.execute(
+                "INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, quantity, context, source, from_entity_id, source_line_id)
+                 VALUES ('2026-11-17 12:01:00', 'T', 'Dreva', 'Salad', ?1, 'inventory', 'chat_status', 42, ?2)",
+                rusqlite::params![qty, line],
+            )
+            .unwrap();
+        };
+        // Distinct-qty stacks: two genuine receipts, both counted.
+        let conn = setup();
+        record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
+        ledger_row(&conn, 2, "Chat.log:11");
+        ledger_row(&conn, 3, "Chat.log:12");
+        assert_eq!(loot_rows(&conn), vec![("Salad".to_string(), 5, 1)]);
+        let ledger: i64 = conn.query_row("SELECT COUNT(*) FROM item_transactions", [], |r| r.get(0)).unwrap();
+        assert_eq!(ledger, 2, "two genuine receipts keep two ledger rows");
+        // Identical-qty residual fixed: two ledger rows, both summed.
+        let conn = setup();
+        record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
+        ledger_row(&conn, 2, "Chat.log:11");
+        ledger_row(&conn, 2, "Chat.log:12");
+        assert_eq!(
+            loot_rows(&conn),
+            vec![("Salad".to_string(), 4, 1)],
+            "identical same-qty stacks both count in SUM now (residual fix)"
+        );
+    }
+
+    fn insert_test_receipt(conn: &Connection, character: &str, server: &str, entity: &str, ts: &str, item: &str) {
+        conn.execute(
+            "INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, quantity, context, source, from_entity_id)
+             VALUES (?1, ?2, ?3, ?4, 2, 'inventory', 'chat_status', ?5)",
+            rusqlite::params![ts, character, server, item, entity],
+        ).unwrap();
+    }
+
+    #[test]
+    fn late_receipt_visible_without_heal_and_replays_stay_silent() {
+        let conn = setup();
+        let ts = "2026-11-17 12:00:00";
+        record_test_kill(&conn, "T", "Dreva", "42", ts).unwrap();
+        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad");
+        // No heal call exists: the late receipt is visible on the next query.
+        assert_eq!(loot_rows(&conn), vec![("Salad".to_string(), 2, 1)]);
+        // Kill rescan replays stay silent and change nothing.
+        assert_eq!(record_test_kill(&conn, "T", "Dreva", "42", ts), None);
+        assert_eq!(record_test_kill(&conn, "T", "Dreva", "42", ts), None);
+        assert_eq!(loot_rows(&conn), vec![("Salad".to_string(), 2, 1)]);
+        assert_eq!(
+            mine_total_kills(&conn, "City Slime", &ZoneFilter::All, &LoadoutFilter::All).unwrap(),
+            1
+        );
+    }
+
+    /// D5-55, join resolution: a receipt in K1+K2 windows attributes to K2
+    /// only, from both read directions, with no heal. Replaying either kill
+    /// (the `record_enemy_kill` None path) changes nothing.
+    #[test]
+    fn receipt_attributes_to_newest_kill_only() {
         let conn = setup();
         let older = record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
         let newer = record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:10:00").unwrap();
-        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:05:00", "Apple");
         insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:12:00", "Salad");
-        assert_eq!(latest_eligible_kill_id(&conn, "T", "Dreva", "42", "2026-11-17 12:05:00").unwrap(), Some(older));
-        assert_eq!(latest_eligible_kill_id(&conn, "T", "Dreva", "42", "2026-11-17 12:12:00").unwrap(), Some(newer));
-        assert_eq!(link_kill_loot_for_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap(), 1);
-        assert_eq!(link_kill_loot_for_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:10:00").unwrap(), 1);
-        let kill_side: Vec<(i64, String, i64)> = conn.prepare("SELECT kill_id, item_name, quantity FROM enemy_kill_loot ORDER BY item_name").unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
-            .collect::<Result<_, _>>().unwrap();
-        // Receipt-side only reaches the identical mapping.
-        let receipt_side_conn = setup();
-        let older = record_test_kill(&receipt_side_conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
-        let newer = record_test_kill(&receipt_side_conn, "T", "Dreva", "42", "2026-11-17 12:10:00").unwrap();
-        insert_test_receipt(&receipt_side_conn, "T", "Dreva", "42", "2026-11-17 12:05:00", "Apple");
-        insert_test_receipt(&receipt_side_conn, "T", "Dreva", "42", "2026-11-17 12:12:00", "Salad");
-        assert!(link_kill_loot(&receipt_side_conn, "T", "Dreva", "42", "2026-11-17 12:05:00", "Apple", 2).unwrap());
-        assert!(link_kill_loot(&receipt_side_conn, "T", "Dreva", "42", "2026-11-17 12:12:00", "Salad", 2).unwrap());
-        let receipt_side: Vec<(i64, String, i64)> = receipt_side_conn.prepare("SELECT kill_id, item_name, quantity FROM enemy_kill_loot ORDER BY item_name").unwrap()
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
-            .collect::<Result<_, _>>().unwrap();
-        // Row ids restart per fresh in-memory DB, so both DBs share the shape.
-        assert_eq!(kill_side, vec![(older, "Apple".into(), 2), (newer, "Salad".into(), 2)]);
-        assert_eq!(receipt_side, vec![(older, "Apple".into(), 2), (newer, "Salad".into(), 2)]);
+        assert_eq!(loot_rows(&conn), vec![("Salad".to_string(), 2, 1)]);
+        assert_eq!(
+            attributed_qty(&conn),
+            vec![(newer, 2)],
+            "receipt in both windows belongs to the newer kill, never the older"
+        );
+        // Full rescan replay of both kills changes nothing.
+        assert_eq!(record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00"), None);
+        assert_eq!(record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:10:00"), None);
+        assert_eq!(attributed_qty(&conn), vec![(newer, 2)]);
+        assert!(older != newer, "sanity: two distinct kill rows");
     }
 
-    /// D5-55: the loot history is a pure function of the kill + receipt sets —
-    /// the chronological scan order and the newest-first scan order converge on
-    /// the same (kill, item, qty) links. A receipt in both windows belongs to
-    /// the newer kill; one predating the newer kill stays with the older.
-    /// (Kill lines arriving out of chronological order can still strand a
-    /// receipt on the older kill until a full rebuild — live links are never
-    /// re-homed, by design — so the pin is scan-order convergence, the orders
-    /// the coordinator actually produces.)
+    /// Newest-wins anti-join pin: three same-entity kills sharing one window;
+    /// each receipt attributes to exactly the newest kill covering it. R1
+    /// predates K2 (K1 only), R2 sits in K1+K2 windows (K2), R3 sits in all
+    /// three windows (K3).
     #[test]
-    fn link_history_is_pure_function_of_kill_and_receipt_sets() {
-        fn linked(conn: &Connection) -> Vec<(String, String, i64)> {
-            conn.prepare(
-                "SELECT k.killed_at, l.item_name, l.quantity FROM enemy_kill_loot l
-                 JOIN enemy_kills k ON k.id = l.kill_id
-                 ORDER BY k.killed_at, l.item_name",
-            ).unwrap()
+    fn newest_wins_anti_join_over_three_kills_in_one_window() {
+        let conn = setup();
+        let k1 = record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
+        let k2 = record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:10:00").unwrap();
+        let k3 = record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:20:00").unwrap();
+        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:05:00", "Apple");
+        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:12:00", "Salad");
+        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:25:00", "Bone");
+        assert_eq!(attributed_qty(&conn), vec![(k1, 2), (k2, 2), (k3, 2)]);
+        assert_eq!(
+            loot_rows(&conn),
+            vec![
+                ("Apple".to_string(), 2, 1),
+                ("Bone".to_string(), 2, 1),
+                ("Salad".to_string(), 2, 1),
+            ]
+        );
+    }
+
+    /// Index pin: on a live-size ledger the join must hit
+    /// `idx_item_tx_kill_join`, never fall back to a full ledger scan per
+    /// kill (the v94 full-core spin the covering index was built to kill).
+    /// Filler rows force the planner past the tiny-table scan preference.
+    #[test]
+    fn join_hits_covering_index_not_ledger_scan() {
+        let conn = setup();
+        record_test_kill(&conn, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
+        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-11-17 12:01:00", "Salad");
+        for i in 0..300 {
+            insert_test_receipt(
+                &conn,
+                "T",
+                "Dreva",
+                "99",
+                &format!("2026-11-{:02} 12:01:00", (i % 27) + 1),
+                "Filler",
+            );
+        }
+        // Filler rows carry an unattributed entity: the INNER JOIN excludes
+        // them, so only the kill's own receipt surfaces.
+        assert_eq!(loot_rows(&conn), vec![("Salad".to_string(), 2, 1)]);
+        let join_on = kill_receipt_join_on("k", "it");
+        let plan: Vec<String> = conn
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN SELECT it.item_name FROM enemy_kills k JOIN item_transactions it ON {join_on}"
+            ))
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(!plan.is_empty(), "query plan must not be empty");
+        assert!(
+            plan.iter().any(|d| d.contains("idx_item_tx_kill_join")),
+            "join must use the covering index, plan was: {plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|d| d.contains("SCAN it")),
+            "join must not full-scan the ledger per kill, plan was: {plan:?}"
+        );
+    }
+
+    /// Join purity: the attributed history is a pure function of the kill +
+    /// receipt sets — the chronological scan order and the newest-first scan
+    /// order converge on the same match with no heal in either path. A
+    /// receipt in both windows belongs to the newer kill; one predating the
+    /// newer kill stays with the older.
+    #[test]
+    fn join_history_is_pure_function_of_kill_and_receipt_sets() {
+        fn history(conn: &Connection) -> Vec<(String, String, i64)> {
+            let join_on = kill_receipt_join_on("k", "it");
+            conn.prepare(&format!(
+                "SELECT k.killed_at, it.item_name, SUM(it.quantity) FROM enemy_kills k
+                 JOIN item_transactions it ON {join_on}
+                 GROUP BY k.killed_at, it.item_name ORDER BY k.killed_at, it.item_name"
+            ))
+            .unwrap()
                 .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
                 .collect::<Result<_, _>>().unwrap()
         }
@@ -2527,41 +2291,27 @@ mod tests {
             ("2026-11-17 12:00:00".to_string(), "Apple".to_string(), 2),
             ("2026-11-17 12:10:00".to_string(), "Salad".to_string(), 2),
         ];
-        // Order A: chronological scan — kill lines then their receipts, then a
-        // full rescan replay over everything.
+        // Order A: chronological scan — kill lines then their receipts, then
+        // a full rescan replay over everything.
         let a = setup();
         record_test_kill(&a, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
         insert_test_receipt(&a, "T", "Dreva", "42", "2026-11-17 12:05:00", "Apple");
-        assert!(link_kill_loot(&a, "T", "Dreva", "42", "2026-11-17 12:05:00", "Apple", 2).unwrap());
         record_test_kill(&a, "T", "Dreva", "42", "2026-11-17 12:10:00").unwrap();
         insert_test_receipt(&a, "T", "Dreva", "42", "2026-11-17 12:12:00", "Salad");
-        assert!(link_kill_loot(&a, "T", "Dreva", "42", "2026-11-17 12:12:00", "Salad", 2).unwrap());
         assert_eq!(record_test_kill(&a, "T", "Dreva", "42", "2026-11-17 12:00:00"), None);
         assert_eq!(record_test_kill(&a, "T", "Dreva", "42", "2026-11-17 12:10:00"), None);
-        // Order B: newest-first scan — receipts land before their kill lines
-        // and attach via the kill-side backlink, then the same rescan replay.
+        // Order B: newest-first scan — receipts land before their kill lines,
+        // then the same rescan replay. No backlink exists to attach them;
+        // the join matches them anyway.
         let b = setup();
         insert_test_receipt(&b, "T", "Dreva", "42", "2026-11-17 12:12:00", "Salad");
-        assert!(!link_kill_loot(&b, "T", "Dreva", "42", "2026-11-17 12:12:00", "Salad", 2).unwrap());
         record_test_kill(&b, "T", "Dreva", "42", "2026-11-17 12:10:00").unwrap();
         insert_test_receipt(&b, "T", "Dreva", "42", "2026-11-17 12:05:00", "Apple");
-        assert!(!link_kill_loot(&b, "T", "Dreva", "42", "2026-11-17 12:05:00", "Apple", 2).unwrap());
         record_test_kill(&b, "T", "Dreva", "42", "2026-11-17 12:00:00").unwrap();
         assert_eq!(record_test_kill(&b, "T", "Dreva", "42", "2026-11-17 12:00:00"), None);
         assert_eq!(record_test_kill(&b, "T", "Dreva", "42", "2026-11-17 12:10:00"), None);
-        assert_eq!(linked(&a), expected);
-        assert_eq!(linked(&b), expected, "scan order must not change the history");
-    }
-
-    #[test]
-    fn loot_link_distinguishes_no_match_from_database_error() {
-        let conn = setup();
-        assert!(!link_kill_loot(&conn, "T", "Dreva", "missing", "2026-11-17 12:00:00", "Salad", 1).unwrap());
-        assert_eq!(link_kill_loot_for_kill(&conn, "T", "Dreva", "missing", "2026-11-17 12:00:00").unwrap(), 0);
-        let empty = Connection::open_in_memory().unwrap();
-        assert!(link_kill_loot(&empty, "T", "Dreva", "42", "2026-11-17 12:00:00", "Salad", 1).is_err());
-        assert!(link_kill_loot_for_kill(&empty, "T", "Dreva", "42", "2026-11-17 12:00:00").is_err());
-        assert!(record_enemy_kill(&empty, "T", "Dreva", "Slime", "42", "Claw", 1, 0, None, "2026-11-17 12:00:00").is_err());
+        assert_eq!(history(&a), expected);
+        assert_eq!(history(&b), expected, "scan order must not change the history");
     }
 
     #[test]
@@ -2595,8 +2345,8 @@ mod tests {
             "INSERT INTO enemy_kills (enemy_name, enemy_entity_id, killing_ability, killed_at, character_name, server_name) VALUES
                 ('City Slime', '488976', 'Smell Fear 8', '2026-11-17 17:06:36', 'T', 'Dreva'),
                 ('City Slime', '488970', 'Pack Attack 7', '2026-11-17 17:08:21', 'T', 'Dreva');
-             INSERT INTO enemy_kill_loot (kill_id, item_name, quantity) VALUES
-                ((SELECT id FROM enemy_kills WHERE enemy_entity_id = '488976'), 'Support Local Fauna Initiative', 1);
+             INSERT INTO item_transactions (timestamp, character_name, server_name, item_name, quantity, context, source, from_entity_id) VALUES
+                ('2026-11-17 17:06:39', 'T', 'Dreva', 'Support Local Fauna Initiative', 1, 'loot', 'chat_status', 488976);
              INSERT INTO character_deaths (character_name, server_name, died_at, killer_name, killing_ability, health_damage) VALUES
                 ('T', 'Dreva', '2026-11-17 17:08:22', 'Ratkin Mugger', 'Pound', 35);",
         )
@@ -2975,50 +2725,256 @@ mod tests {
         );
     }
 
+    /// Live-smoke for the read-time join (kept `#[ignore]`): runs the mine
+    /// readers + a before/after SUM census against a real Release profile
+    /// copy. Run explicitly with:
+    /// `cargo test --lib live_smoke_join_on_release_copy -- --ignored --nocapture`.
+    /// Resolves `%APPDATA%/glogger.Release/glogger.db` (override with
+    /// `GLOGGER_SMOKE_PROFILE`); skips cleanly when absent so CI stays
+    /// green. Copies db (+wal/shm siblings) to a temp dir — never touches
+    /// the live file. `before.db` stays pre-migration (link-table census);
+    /// `after.db` runs the full chain (v99 drops the table) then the join
+    /// census. Commit-body numbers come from the printed census.
     #[test]
-    fn time_only_kill_heals_against_full_date_ledger() {
-        let conn = setup();
-        // Census shape: Player.log-era time-only kill, full-date Chat.log
-        // ledger receipt for the same entity 25s later. The old lexicographic
-        // scan was a silent no-op here (`datetime('19:29:10','+30 minutes')`
-        // is year-2000, so the receipt fell outside the window).
-        record_test_kill(&conn, "T", "Dreva", "42", "19:29:10")
-            .expect("legacy kill lands");
-        conn.execute(
-            "INSERT INTO item_transactions
-                (timestamp, character_name, server_name, item_name, quantity, context, source, from_entity_id)
-             VALUES ('2026-04-13 19:29:35', 'T', 'Dreva', 'Bone', 1, 'loot', 'chat_status', 42)",
-            [],
-        )
-        .unwrap();
-        let healed = link_kill_loot_for_kill(&conn, "T", "Dreva", "42", "19:29:10").unwrap();
-        assert_eq!(healed, 1, "rescan heal must match the previously time-only kill");
-        let receipt: Option<String> = conn
-            .query_row("SELECT receipt_ts FROM enemy_kill_loot", [], |r| r.get(0))
+    #[ignore]
+    fn live_smoke_join_on_release_copy() {
+        let profile = std::env::var("GLOGGER_SMOKE_PROFILE").unwrap_or_else(|_| {
+            let appdata = std::env::var("APPDATA").unwrap_or_default();
+            format!("{appdata}/glogger.Release/glogger.db")
+        });
+        if !std::path::Path::new(&profile).exists() {
+            eprintln!("smoke skipped: no profile copy at {profile} (set GLOGGER_SMOKE_PROFILE)");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("glogger-join-smoke-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Sidecars keep SQLite's own suffix convention (`X.db-wal` next to
+        // `X.db`) so either copy opens with its journal intact.
+        for (src_name, before_name, after_name) in [
+            ("glogger.db", "before.db", "after.db"),
+            ("glogger.db-wal", "before.db-wal", "after.db-wal"),
+            ("glogger.db-shm", "before.db-shm", "after.db-shm"),
+        ] {
+            let src = std::path::Path::new(&profile).with_file_name(src_name);
+            if src.exists() {
+                std::fs::copy(&src, dir.join(before_name)).unwrap();
+                std::fs::copy(&src, dir.join(after_name)).unwrap();
+            }
+        }
+        eprintln!("smoke copies staged under {}", dir.display());
+        // Link-table SQL must stay opaque to the SQL-prepare gate (it runs
+        // against the post-v99 schema where the table is gone): table name
+        // via format!, never a static literal.
+        let loot_table = "enemy_kill_loot";
+        let before = Connection::open(dir.join("before.db")).unwrap();
+        // Measurement-only scaffolding: the pre-migration copy has no
+        // covering index, which turns the join-side EXISTS below quadratic.
+        // The index changes no results; it is dropped before the copy is
+        // removed. (The migrated copy gets the real one from v99.)
+        before
+            .execute(
+                "CREATE INDEX IF NOT EXISTS idx_smoke_cover
+                 ON item_transactions(character_name, server_name, from_entity_id, timestamp)",
+                [],
+            )
             .unwrap();
-        assert_eq!(receipt.as_deref(), Some("2026-04-13 19:29:35"));
-        // Rescan heal finds its own key present: idempotent.
-        assert_eq!(link_kill_loot_for_kill(&conn, "T", "Dreva", "42", "19:29:10").unwrap(), 0);
-        // Receipt-side direction agrees: the full-date receipt resolves to
-        // the time-only kill (already linked above, so it reports present).
-        assert!(!link_kill_loot(&conn, "T", "Dreva", "42", "2026-04-13 19:29:35", "Bone", 1).unwrap());
-        // A same-entity receipt outside the time-of-day window stays unlinked.
-        assert!(!link_kill_loot(&conn, "T", "Dreva", "42", "2026-04-13 20:29:35", "Bone", 1).unwrap());
-        // Evening hour: a `2x:xx:xx` time-only kill sorts *after* any same-day
-        // full stamp at byte 1, so a shared outer `killed_at <= ?4` bound can
-        // never match it — the arms must stay independent disjuncts. Same
-        // entity, full-date receipt 16 min later: heals and links.
-        record_test_kill(&conn, "T", "Dreva", "43", "21:45:00")
-            .expect("evening legacy kill lands");
-        conn.execute(
-            "INSERT INTO item_transactions
-                (timestamp, character_name, server_name, item_name, quantity, context, source, from_entity_id)
-             VALUES ('2026-04-13 22:01:00', 'T', 'Dreva', 'Bone', 1, 'loot', 'chat_status', 43)",
-            [],
-        )
-        .unwrap();
-        assert_eq!(link_kill_loot_for_kill(&conn, "T", "Dreva", "43", "21:45:00").unwrap(), 1);
-        // Just past the window stays unlinked (no over-match from the rework).
-        assert!(!link_kill_loot(&conn, "T", "Dreva", "43", "2026-04-13 22:16:00", "Bone", 1).unwrap());
+        let before_sum: std::collections::HashMap<String, i64> = before
+            .prepare(&format!(
+                "SELECT l.item_name, SUM(l.quantity) FROM {loot_table} l
+                 JOIN enemy_kills k ON l.kill_id = k.id GROUP BY l.item_name"
+            ))
+            .unwrap()
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        let before_space_sum: i64 = before
+            .query_row(
+                &format!(
+                    "SELECT COALESCE(SUM(l.quantity), 0) FROM {loot_table} l
+                     JOIN enemy_kills k ON l.kill_id = k.id
+                     WHERE length(k.killed_at) > 8"
+                ),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let (space_kills, time_kills): (i64, i64) = before
+            .query_row(
+                "SELECT SUM(length(killed_at) > 8), SUM(length(killed_at) = 8) FROM enemy_kills",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        // B3 denominator exposure, as bounded aggregates (no per-kill loop):
+        // kills vetoed under link semantics vs join semantics. Only kills
+        // whose looted status flips AND that sit in a death window can move
+        // the denominator.
+        let join_on = kill_receipt_join_on("k", "it");
+        let t_denom = std::time::Instant::now();
+        let (denom_link, denom_join): (i64, i64) = before
+            .query_row(
+                &format!(
+                    "SELECT
+                     SUM(NOT EXISTS (SELECT 1 FROM character_deaths d
+                      WHERE d.character_name = k.character_name AND d.server_name = k.server_name
+                        AND d.died_at >= k.killed_at AND d.died_at <= datetime(k.killed_at, '+5 minutes')
+                        AND NOT EXISTS (SELECT 1 FROM {loot_table} l WHERE l.kill_id = k.id))),
+                     SUM(NOT EXISTS (SELECT 1 FROM character_deaths d
+                      WHERE d.character_name = k.character_name AND d.server_name = k.server_name
+                        AND d.died_at >= k.killed_at AND d.died_at <= datetime(k.killed_at, '+5 minutes')
+                        AND NOT EXISTS (SELECT 1 FROM item_transactions it WHERE {join_on})))
+                     FROM enemy_kills k"
+                ),
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        eprintln!("smoke denominators: link={denom_link} join={denom_join} took={:?}", t_denom.elapsed());
+        // B1 twin exposure: duplicate ledger groups (same second, key,
+        // entity) inside a space kill window, and the extra qty the join now
+        // counts. Link rows for those groups collapsed them to one row each.
+        let (twin_groups, twin_extra): (i64, i64) = before
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*), COALESCE(SUM((n - 1) * quantity), 0) FROM (
+                       SELECT it.quantity, COUNT(*) n FROM item_transactions it
+                        WHERE length(it.timestamp) > 8
+                        GROUP BY it.timestamp, it.character_name, it.server_name,
+                                 it.item_name, it.quantity, it.from_entity_id
+                       HAVING COUNT(*) > 1 AND EXISTS (
+                         SELECT 1 FROM enemy_kills k WHERE {join_on}))
+                    "
+                ),
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        eprintln!("smoke twins: groups={twin_groups} extra-qty-now-counted={twin_extra}");
+        // AFTER: migrate the second copy, prove the drop, run the readers.
+        let after = Connection::open(dir.join("after.db")).unwrap();
+        run_migrations(&after, None).unwrap();
+        let loot_gone: bool = after
+            .query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'enemy_kill_loot')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(loot_gone, "v99 must drop the link table");
+        let join_idx: bool = after
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_item_tx_kill_join')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(join_idx, "v99 covering index must land");
+        // Full census first, as ONE aggregate GROUP BY with the shared
+        // predicate (no per-enemy loop cost); the reader sample below covers
+        // correctness on bounded input.
+        let t0 = std::time::Instant::now();
+        let after_sum: std::collections::HashMap<String, i64> = after
+            .prepare(&format!(
+                "SELECT it.item_name, SUM(it.quantity) FROM enemy_kills k
+                 JOIN item_transactions it ON {join_on} GROUP BY it.item_name"
+            ))
+            .unwrap()
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        let elapsed = t0.elapsed();
+        let kill_total: i64 = after
+            .query_row("SELECT COUNT(*) FROM enemy_kills", [], |r| r.get(0))
+            .unwrap();
+        assert!(
+            after_sum.values().sum::<i64>() > 0,
+            "join attributes no loot on a live profile"
+        );
+        // Bounded reader exercise: a 20-enemy sample across zones proves the
+        // Tauri-called readers run clean on live rows.
+        let sample: Vec<(String, Option<String>)> = after
+            .prepare(
+                "SELECT enemy_name, zone FROM enemy_kills
+                 GROUP BY enemy_name, zone ORDER BY COUNT(*) DESC LIMIT 20",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(!sample.is_empty(), "profile has no kills to smoke");
+        let t_sample = std::time::Instant::now();
+        for (enemy, zone) in &sample {
+            let zf = ZoneFilter::from_stored(zone.clone());
+            let kills =
+                mine_total_kills(&after, enemy, &zf, &LoadoutFilter::All).unwrap();
+            let loot =
+                mine_loot_rows(&after, enemy, &zf, &LoadoutFilter::All).unwrap();
+            eprintln!("smoke sample: {enemy} zone={zone:?} kills={kills} items={}", loot.len());
+        }
+        eprintln!("smoke sample: 20-enemy reader exercise took {:?}", t_sample.elapsed());
+        // Drop-source reader shape (3c arm), guaranteed to fire: top three
+        // attributed items from the census above.
+        let mut top: Vec<(&String, &i64)> = after_sum.iter().collect();
+        top.sort_by_key(|(_, q)| **q);
+        top.reverse();
+        assert!(top.len() >= 3, "census too thin for drop-source exercise");
+        for (item, _) in top.iter().take(3) {
+            let sources: Vec<(String, i64)> = after
+                .prepare(&format!(
+                    "SELECT k.enemy_name, SUM(it.quantity) FROM enemy_kills k
+                     JOIN item_transactions it ON {join_on}
+                     WHERE (it.item_name = ?1) GROUP BY k.enemy_name, k.zone"
+                ))
+                .unwrap()
+                .query_map([item], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+            assert!(!sources.is_empty(), "drop-source shape finds no source for {item}");
+            eprintln!("smoke drop-source: {item} sources={}", sources.len());
+        }
+        let plan: Vec<String> = after
+            .prepare(&format!(
+                "EXPLAIN QUERY PLAN SELECT it.item_name FROM enemy_kills k
+                 JOIN item_transactions it ON {join_on} WHERE k.enemy_name = ?1"
+            ))
+            .unwrap()
+            .query_map(["x"], |r| r.get::<_, String>(3))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        // Printed census: paste into the commit body per design section 10.
+        eprintln!("smoke profile: {profile}");
+        eprintln!("smoke kills: total={kill_total} space={space_kills} time-only={time_kills}");
+        eprintln!(
+            "smoke before: items={} grand={} space-grand={}",
+            before_sum.len(),
+            before_sum.values().sum::<i64>(),
+            before_space_sum
+        );
+        eprintln!(
+            "smoke after: items={} grand={} census-query={elapsed:?}",
+            after_sum.len(),
+            after_sum.values().sum::<i64>(),
+        );
+        let mut keys: Vec<&String> = before_sum.keys().chain(after_sum.keys()).collect();
+        keys.sort();
+        keys.dedup();
+        let mut deltas: Vec<(&String, i64, i64)> = keys
+            .into_iter()
+            .map(|k| (k, before_sum.get(k).copied().unwrap_or(0), after_sum.get(k).copied().unwrap_or(0)))
+            .collect();
+        deltas.sort_by_key(|(_, b, a)| (b - a).abs());
+        deltas.reverse();
+        for (item, b, a) in deltas.iter().take(15) {
+            eprintln!("smoke delta: {item}: {b} -> {a} (d={})", a - b);
+        }
+        for detail in &plan {
+            eprintln!("smoke plan: {detail}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
