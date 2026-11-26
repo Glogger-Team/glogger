@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="settings-section">
-      <h3>User Data Storage</h3>
+      <h3 class="panel-label">User Data Storage</h3>
 
       <div class="mb-4">
         <div v-if="dbStats" class="status-panel">
@@ -75,7 +75,7 @@
     </div>
 
     <div class="settings-section">
-      <h3>Backup &amp; Export</h3>
+      <h3 class="panel-label">Backup &amp; Export</h3>
 
       <div class="mb-4">
         <button @click="backupData" :disabled="backingUp" class="btn btn-secondary">
@@ -90,7 +90,7 @@
     </div>
 
     <div class="settings-section">
-      <h3>Auto-Purge</h3>
+      <h3 class="panel-label">Auto-Purge</h3>
 
       <div class="mb-4">
         <label class="flex items-center gap-2 cursor-pointer text-text-primary">
@@ -127,7 +127,7 @@
     </div>
 
     <div class="settings-section">
-      <h3>Manual Purge</h3>
+      <h3 class="panel-label">Manual Purge</h3>
 
       <div class="mb-4">
         <label class="block text-text-secondary mb-1">Delete records older than:</label>
@@ -189,7 +189,7 @@
     </div>
 
     <div class="settings-section">
-      <h3>Reports Import</h3>
+      <h3 class="panel-label">Reports Import</h3>
 
       <p class="mt-2 text-text-muted text-xs leading-relaxed">
         Automatic report importing is live — see Advanced &gt; Character Report Watching.

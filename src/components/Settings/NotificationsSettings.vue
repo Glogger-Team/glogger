@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="settings-section">
-      <h3>Notifications</h3>
+      <h3 class="panel-label">Notifications</h3>
 
       <p class="mt-2 text-text-muted text-xs leading-relaxed">
         Notifications are live through Chat watch rules. A matching message can

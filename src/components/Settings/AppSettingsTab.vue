@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="settings-section">
-      <h3>Appearance</h3>
+      <h3 class="panel-label">Appearance</h3>
 
       <div class="mb-4">
         <label for="ui-font-family" class="block text-text-secondary mb-2 text-sm">Interface Font</label>
@@ -100,7 +100,7 @@
     </div>
 
     <div class="settings-section">
-      <h3>Dashboard</h3>
+      <h3 class="panel-label">Dashboard</h3>
 
       <div class="mb-2">
         <label for="widget-opacity" class="block text-text-secondary mb-2 text-sm">

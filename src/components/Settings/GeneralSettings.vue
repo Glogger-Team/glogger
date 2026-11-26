@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="settings-section">
-      <h3>Game Data Directory</h3>
+      <h3 class="panel-label">Game Data Directory</h3>
 
       <div class="mb-4">
         <label for="game-data-path" class="block text-text-secondary mb-2 text-sm">Project Gorgon Data Folder</label>
@@ -122,7 +122,7 @@
     </div>
 
     <div class="settings-section">
-      <h3>Startup Behavior</h3>
+      <h3 class="panel-label">Startup Behavior</h3>
 
       <div class="mb-4">
         <label class="flex items-center gap-2 cursor-pointer text-text-primary">
@@ -155,7 +155,7 @@
     </div>
 
     <div class="settings-section">
-      <h3>Timestamp Display</h3>
+      <h3 class="panel-label">Timestamp Display</h3>
 
       <div class="mb-4">
         <label class="block text-text-secondary mb-2 text-sm">Display timestamps in</label>
@@ -214,7 +214,7 @@
     </div>
 
     <div class="settings-section">
-      <h3>Crafting</h3>
+      <h3 class="panel-label">Crafting</h3>
 
       <div>
         <label class="flex items-center gap-2 cursor-pointer text-text-primary">
@@ -234,7 +234,7 @@
       </div>
     </div>
     <div class="settings-section">
-      <h3>Characters</h3>
+      <h3 class="panel-label">Characters</h3>
 
       <div v-if="characters.length === 0" class="text-sm text-text-muted">
         No characters yet — add one from the character picker in the header.

@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="flex items-center justify-between mb-4">
-      <h3 class="m-0">Game State Inspector</h3>
+      <h3 class="panel-label m-0">Game State Inspector</h3>
       <button class="btn btn-secondary text-xs" @click="gameState.loadAll()">
         Reload All
       </button>

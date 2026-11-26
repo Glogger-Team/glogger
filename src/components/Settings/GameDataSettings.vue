@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="settings-section">
-      <h3>CDN Game Data Versions</h3>
+      <h3 class="panel-label">CDN Game Data Versions</h3>
 
       <div class="mb-4">
         <div v-if="gameDataStore.cacheStatus" class="status-panel">
@@ -36,7 +36,7 @@
     </div>
 
     <div class="settings-section">
-      <h3>Force Rebuild</h3>
+      <h3 class="panel-label">Force Rebuild</h3>
 
       <div class="mb-4">
         <button
@@ -69,7 +69,7 @@
     </div>
 
     <div class="settings-section">
-      <h3>Auto-Update</h3>
+      <h3 class="panel-label">Auto-Update</h3>
 
       <div class="mb-4">
         <label class="flex items-center gap-2 cursor-pointer text-text-primary">

@@ -1,7 +1,7 @@
 <template>
   <div>
     <div class="settings-section">
-      <h3>Developer Mode</h3>
+      <h3 class="panel-label">Developer Mode</h3>
 
       <div class="mb-4">
         <label class="flex items-center gap-2 cursor-pointer text-text-primary">
@@ -20,7 +20,7 @@
     </div>
 
     <div class="settings-section">
-      <h3>Data Browser</h3>
+      <h3 class="panel-label">Data Browser</h3>
 
       <div class="mb-4">
         <label class="flex items-center gap-2 cursor-pointer text-text-primary">
@@ -69,7 +69,7 @@
     </div>
 
     <div class="settings-section">
-      <h3>Character Report Watching</h3>
+      <h3 class="panel-label">Character Report Watching</h3>
 
       <div class="mb-4">
         <label class="flex items-center gap-2 cursor-pointer text-text-primary">
@@ -104,7 +104,7 @@
 
     <template v-if="devMode">
     <div class="settings-section">
-      <h3>Chat-Log Replay</h3>
+      <h3 class="panel-label">Chat-Log Replay</h3>
 
       <p class="mb-3 text-xs text-text-muted leading-relaxed">
         Re-parse a Chat.log and re-emit its chat events for debugging. This
