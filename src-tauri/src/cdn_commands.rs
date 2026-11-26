@@ -6435,6 +6435,11 @@ fn match_storage_gifts(
             )
             .then(a.npc_name.cmp(&b.npc_name))
             .then(a.item_name.cmp(&b.item_name))
+            // Total order over the (vault, item, npc) dedup key: without it
+            // same-item/same-NPC rows in two vaults tie on all four keys and
+            // `best.into_values()` (fresh HashMap seed per call) leaves them
+            // in random order across invocations.
+            .then(a.vault_key.cmp(&b.vault_key))
     });
     out
 }
@@ -6618,5 +6623,20 @@ mod plan_statehelm_gifts_tests {
         let data = fixture();
         let rows = vec![row("V1", "Garlic", Some(7), 1)];
         assert!(match_storage_gifts(&data, &wanted(&[]), rows).is_empty());
+    }
+
+    #[test]
+    fn same_item_same_npc_two_vaults_orders_by_vault() {
+        let data = fixture();
+        // Same item + same NPC in two vaults ties on desire/pref/npc/item —
+        // only the vault_key tiebreak keeps the output deterministic.
+        let rows = vec![
+            row("V2", "Garlic", Some(7), 1),
+            row("V1", "Garlic", Some(7), 1),
+        ];
+        let got = match_storage_gifts(&data, &wanted(&["NPC_A"]), rows);
+        assert_eq!(got.len(), 2);
+        let vaults: Vec<&str> = got.iter().map(|m| m.vault_key.as_str()).collect();
+        assert_eq!(vaults, vec!["V1", "V2"]);
     }
 }
