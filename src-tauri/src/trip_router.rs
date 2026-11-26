@@ -705,7 +705,7 @@ pub fn build_work_order_stops(
             .as_deref()
             .and_then(|internal| station_for_item(game_data, internal));
         let mut craft_details =
-            format!("Craft {qty}x {item_label} ({skill}) for '{quest_name}'");
+            format!("Craft {qty}x {item_label} (total) ({skill}) for '{quest_name}'");
         if let Some(station) = station {
             craft_details.push_str(&format!(" [needs {station}]"));
         }
@@ -717,7 +717,7 @@ pub fn build_work_order_stops(
         stops.push(RouteStop {
             zone,
             purpose: StopPurpose::TurnIn,
-            details: format!("Turn in {qty}x {item_label} to {npc} - '{quest_name}'"),
+            details: format!("Turn in {qty}x {item_label} (total) to {npc} - '{quest_name}'"),
         });
     }
     Ok(stops)
@@ -1226,10 +1226,13 @@ mod tests {
         assert_eq!(stops[3].purpose, StopPurpose::TurnIn);
         // Display name (not the internal name) + skill land in the details.
         assert!(stops[0].details.contains("10x Shoddy Test Stool"));
+        assert!(stops[0].details.contains("10x Shoddy Test Stool (total)"));
         assert!(stops[0].details.contains("Carpentry"));
         assert!(stops[1].details.contains("Fitz the Boatman"));
+        assert!(stops[1].details.contains("(total)"));
         // Zero input quantity fell back to the quest Collect number.
         assert!(stops[3].details.contains("10x"));
+        assert!(stops[3].details.contains("(total)"));
     }
 
     #[test]
