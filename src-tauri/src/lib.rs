@@ -237,7 +237,7 @@ use setup_commands::{
     import_reports_for_server, rename_character, save_user_character, scan_reports_for_characters,
     set_active_character, validate_game_data_path,
 };
-use trip_router::plan_trip;
+use trip_router::{plan_trip, plan_work_order_trip};
 use unified_search::unified_search;
 
 /// Timestamped log line for startup diagnostics.
@@ -1083,6 +1083,7 @@ pub fn run() {
             get_harvest_almanac,
             // Trip routing
             plan_trip,
+            plan_work_order_trip,
             // External content
             fetch_github_releases,
             fetch_pg_news,

@@ -82,6 +82,16 @@
       {{ planning ? 'Planning...' : 'Plan Route' }}
     </button>
 
+    <!-- Plan work orders button -->
+    <button
+      class="w-full px-2 py-1.5 rounded text-xs font-medium bg-surface-elevated border border-border-light text-text-secondary hover:text-text-primary cursor-pointer transition-colors"
+      :disabled="!startZone || woPlanning"
+      title="Plan crafting + turn-in stops for your active work orders"
+      @click="planWorkOrders">
+      {{ woPlanning ? 'Planning work orders...' : 'Plan Work Orders' }}
+    </button>
+    <div v-if="woError" class="text-accent-red text-xs">{{ woError }}</div>
+
     <!-- Route display -->
     <div v-if="route" class="flex flex-col gap-0.5 overflow-y-auto max-h-64 pr-1">
       <div class="flex items-center justify-between text-[0.6rem] text-text-dim mb-1">
@@ -109,10 +119,12 @@ import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { useGameStateStore } from '../../../stores/gameStateStore'
 import { useSettingsStore } from '../../../stores/settingsStore'
+import { useCraftingStore } from '../../../stores/craftingStore'
 import { CASINO_PORTAL_BY_PHASE, type MoonPhaseName } from '../../../composables/useMoonPhase'
 
 const gameState = useGameStateStore()
 const settingsStore = useSettingsStore()
+const craftingStore = useCraftingStore()
 
 // ── Zone list (matches zone_graph.rs overworld zones) ───────────────────────
 
@@ -166,6 +178,8 @@ const useTeleports = ref(false)
 const useTpMachine = ref(false)
 const planning = ref(false)
 const error = ref('')
+const woPlanning = ref(false)
+const woError = ref('')
 
 interface PlannedRoute {
   steps: { zone: string; action: string; details: string }[]
@@ -288,6 +302,17 @@ function useCurrentZone() {
   }
 }
 
+function buildTravelConfig() {
+  return {
+    primaryBind: useTeleports.value ? config.primaryBind : null,
+    secondaryBind: useTeleports.value ? config.secondaryBind : null,
+    mushroomCircle1: useTeleports.value ? config.mushroomCircle : null,
+    mushroomCircle2: null,
+    useTpMachine: useTeleports.value && useTpMachine.value,
+    casinoPortal: casinoPortal.value,
+  }
+}
+
 async function planRoute() {
   if (!startZone.value || !endZone.value) return
   planning.value = true
@@ -295,24 +320,41 @@ async function planRoute() {
   route.value = null
 
   try {
-    const travelConfig = {
-      primaryBind: useTeleports.value ? config.primaryBind : null,
-      secondaryBind: useTeleports.value ? config.secondaryBind : null,
-      mushroomCircle1: useTeleports.value ? config.mushroomCircle : null,
-      mushroomCircle2: null,
-      useTpMachine: useTeleports.value && useTpMachine.value,
-      casinoPortal: casinoPortal.value,
-    }
-
     route.value = await invoke<PlannedRoute>('plan_trip', {
       startZone: startZone.value,
       stops: [{ zone: endZone.value, purpose: 'pickup', details: `Arrive at ${zoneName(endZone.value)}` }],
-      travelConfig,
+      travelConfig: buildTravelConfig(),
     })
   } catch (e) {
     error.value = String(e)
   } finally {
     planning.value = false
+  }
+}
+
+async function planWorkOrders() {
+  if (!startZone.value) return
+  woPlanning.value = true
+  woError.value = ''
+  error.value = ''
+  route.value = null
+
+  try {
+    const orders = await craftingStore.getWorkOrders()
+    const active = orders.filter(o => o.is_active)
+    if (active.length === 0) {
+      woError.value = 'No active work orders.'
+      return
+    }
+    route.value = await invoke<PlannedRoute>('plan_work_order_trip', {
+      startZone: startZone.value,
+      orders: active.map(o => ({ questKey: o.quest_key, quantity: o.quantity })),
+      travelConfig: buildTravelConfig(),
+    })
+  } catch (e) {
+    woError.value = String(e)
+  } finally {
+    woPlanning.value = false
   }
 }
 
