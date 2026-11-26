@@ -4,19 +4,21 @@ use std::collections::HashMap;
 
 // ── Parsed structs (app shape) ───────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct EffectInfo {
     pub id: u32,
     pub name: Option<String>,
     pub desc: Option<String>,
     pub icon_id: Option<u32>,
     pub display_mode: Option<String>,
+    #[specta(skip)]
     pub duration: Option<serde_json::Value>,
     pub keywords: Vec<String>,
     pub ability_keywords: Vec<String>,
     pub stacking_type: Option<String>,
     pub stacking_priority: Option<u32>,
     pub particle: Option<String>,
+    #[specta(skip)]
     pub raw_json: serde_json::Value,
 }
 

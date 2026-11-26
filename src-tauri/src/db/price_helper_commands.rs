@@ -4,15 +4,16 @@ use tauri::State;
 
 // ── Input types ─────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct CreateQuoteInput {
     pub name: String,
     pub notes: Option<String>,
     pub fee_config: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct UpdateQuoteInput {
+    #[specta(type = u32)]
     pub id: i64,
     pub name: String,
     pub notes: String,
@@ -20,24 +21,28 @@ pub struct UpdateQuoteInput {
     pub customer_provides: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct AddQuoteEntryInput {
+    #[specta(type = u32)]
     pub quote_id: i64,
+    #[specta(type = u32)]
     pub recipe_id: i64,
     pub recipe_name: String,
     pub quantity: i32,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct UpdateQuoteEntryInput {
+    #[specta(type = u32)]
     pub id: i64,
     pub quantity: i32,
 }
 
 // ── Output types ────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct PriceHelperQuote {
+    #[specta(type = u32)]
     pub id: i64,
     pub name: String,
     pub notes: String,
@@ -48,23 +53,28 @@ pub struct PriceHelperQuote {
     pub entries: Vec<PriceHelperQuoteEntry>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct PriceHelperQuoteEntry {
+    #[specta(type = u32)]
     pub id: i64,
+    #[specta(type = u32)]
     pub quote_id: i64,
+    #[specta(type = u32)]
     pub recipe_id: i64,
     pub recipe_name: String,
     pub quantity: i32,
     pub sort_order: i32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct PriceHelperQuoteSummary {
+    #[specta(type = u32)]
     pub id: i64,
     pub name: String,
     pub notes: String,
     pub created_at: String,
     pub updated_at: String,
+    #[specta(type = u32)]
     pub entry_count: i64,
 }
 
@@ -319,4 +329,54 @@ pub fn remove_price_helper_entry(db: State<'_, DbPool>, entry_id: i64) -> Result
     conn.commit()
         .map_err(|e| format!("Failed to commit transaction: {e}"))?;
     Ok(())
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `price_helper` IPC payload shapes derive `specta::Type` so
+// `src/types/priceHelper.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test price_helper_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<CreateQuoteInput>()
+        .register::<UpdateQuoteInput>()
+        .register::<AddQuoteEntryInput>()
+        .register::<UpdateQuoteEntryInput>()
+        .register::<PriceHelperQuote>()
+        .register::<PriceHelperQuoteEntry>()
+        .register::<PriceHelperQuoteSummary>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/priceHelper.specta.ts` must equal
+    /// what `export_bindings` derives from the `price_helper` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test price_helper_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_price_helper_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/priceHelper.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
+    }
 }

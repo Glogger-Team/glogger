@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 // ── Parsed structs (app shape) ───────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct PlayerTitleInfo {
     pub id: u32,
     pub title: Option<String>,
@@ -12,6 +12,7 @@ pub struct PlayerTitleInfo {
     pub keywords: Vec<String>,
     pub account_wide: Option<bool>,
     pub soul_wide: Option<bool>,
+    #[specta(skip)]
     pub raw_json: serde_json::Value,
 }
 

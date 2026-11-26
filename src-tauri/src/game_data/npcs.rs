@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 // ── Parsed structs (app shape) ───────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Clone, Default, specta::Type)]
 pub struct NpcPreference {
     pub name: Option<String>,
     pub desire: String,
@@ -12,7 +12,7 @@ pub struct NpcPreference {
     pub pref: f32,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct NpcInfo {
     pub key: String,
     pub name: String,
@@ -24,10 +24,13 @@ pub struct NpcInfo {
     pub gift_favor_tiers: Vec<String>,
 
     // Phase 4 typed fields
+    #[specta(skip)]
     pub pos: Option<Value>,
+    #[specta(skip)]
     pub services: Option<Vec<Value>>,
 
     // Full raw JSON
+    #[specta(skip)]
     pub raw_json: Value,
 }
 

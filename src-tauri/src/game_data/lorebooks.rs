@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 // ── Parsed structs (app shape) ───────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct LorebookEntry {
     pub id: u32,
     pub title: Option<String>,
@@ -17,7 +17,7 @@ pub struct LorebookEntry {
     pub is_client_local: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Clone, Default, specta::Type)]
 pub struct LorebookCategoryInfo {
     pub key: String,
     pub title: Option<String>,

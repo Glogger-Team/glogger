@@ -32,7 +32,7 @@ pub struct ModEffect {
 }
 
 /// One contributing mod line attached to a computed stat, for the breakdown UI.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct ContributionLine {
     pub source: String,
     pub label: String,
@@ -44,7 +44,7 @@ pub struct ContributionLine {
 }
 
 /// A base value and its build-modified effective value, with the mods responsible.
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Clone, Default, specta::Type)]
 pub struct ValueBreakdown {
     pub base: f64,
     pub effective: f64,
@@ -70,7 +70,7 @@ impl ValueBreakdown {
 /// to three: normal `Damage`, armor-bypassing `HealthSpecificDamage`, and `ArmorSpecificDamage`.
 /// All three are governed by the same direct-damage modifier arrays (there are no per-shape mod
 /// arrays in the data), so each is folded with the same buckets — only the base differs.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct DirectDamageBreakdown {
     /// Which component this is: `normal` | `health` | `armor`. The frontend maps this to a label
     /// ("Damage" / "Damage to Health" / "Damage to Armor").
@@ -78,7 +78,7 @@ pub struct DirectDamageBreakdown {
     pub value: ValueBreakdown,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct DotBreakdown {
     pub damage_type: Option<String>,
     pub num_ticks: f64,
@@ -88,7 +88,7 @@ pub struct DotBreakdown {
     pub total_effective: f64,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct SpecialValueBreakdown {
     pub label: Option<String>,
     pub suffix: Option<String>,
@@ -97,7 +97,7 @@ pub struct SpecialValueBreakdown {
 }
 
 /// Full computed combat picture for one ability under a given build.
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Clone, Default, specta::Type)]
 pub struct AbilityBuildStats {
     pub damage_type: Option<String>,
     /// Every up-front damage component the ability has (normal / health-specific / armor-specific),

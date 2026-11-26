@@ -44,7 +44,7 @@ mod storage_vaults;
 mod tsys;
 mod xp_tables;
 /// A skillbook item: teaches an ability via `BestowAbility`.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SkillbookInfo {
     /// Numeric item ID.
     pub item_id: u32,

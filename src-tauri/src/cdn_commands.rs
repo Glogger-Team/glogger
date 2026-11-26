@@ -147,16 +147,18 @@ pub fn emit_startup_detail(app: &AppHandle, task: u32, detail: &str) {
 
 // ── CDN management commands ───────────────────────────────────────────────────
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, specta::Type)]
 pub struct CacheStatus {
     pub cached_version: Option<u32>,
     pub remote_version: Option<u32>,
     pub up_to_date: bool,
+    #[specta(type = u32)]
     pub item_count: usize,
+    #[specta(type = u32)]
     pub skill_count: usize,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, specta::Type)]
 pub struct CdnVersionCheck {
     pub update_available: bool,
     pub current_version: u32,
@@ -498,10 +500,11 @@ pub async fn get_items_by_keyword(
 /// (same case-insensitive match as `get_items_by_keyword`), so the
 /// Dynamic Items tab can paint sidebar badges from this single call
 /// instead of one `get_items_by_keyword` IPC per keyword.
-#[derive(Debug, serde::Serialize, Clone)]
+#[derive(Debug, serde::Serialize, Clone, specta::Type)]
 pub struct IngredientKeywordInfo {
     pub keyword: String,
     pub description: String,
+    #[specta(type = u32)]
     pub item_count: usize,
 }
 
@@ -949,7 +952,7 @@ pub async fn get_recipes_producing_items(
 
 // ── Moon phase commands ──────────────────────────────────────────────────────
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, specta::Type)]
 pub struct MoonPhaseResult {
     /// Game phase name (e.g. "FullMoon", "WaningGibbousMoon")
     pub game_phase: String,
@@ -961,7 +964,7 @@ pub struct MoonPhaseResult {
     pub days_until: Vec<DaysUntilPhase>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, specta::Type)]
 pub struct DaysUntilPhase {
     pub game_phase: String,
     pub label: String,
@@ -1419,12 +1422,14 @@ pub async fn get_npcs_in_area(
 }
 
 /// Summary info for one area, used by the area browser list.
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, specta::Type)]
 pub struct AreaSummary {
     pub key: String,
     pub friendly_name: String,
     pub short_friendly_name: Option<String>,
+    #[specta(type = u32)]
     pub npc_count: usize,
+    #[specta(type = u32)]
     pub monster_count: usize,
 }
 
@@ -1665,13 +1670,13 @@ pub async fn get_icon_path(
 
 // ── Source query commands ────────────────────────────────────────────────────
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, specta::Type)]
 pub struct QuestSummary {
     pub key: String,
     pub name: String,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, specta::Type)]
 pub struct EntitySources {
     pub cdn_sources: Vec<SourceEntry>,
     pub bestowed_by_items: Vec<ItemInfo>,
@@ -1848,7 +1853,7 @@ pub async fn get_vendor_purchasable_item_ids(
 }
 
 /// A compact item summary for vendor inventory display.
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, specta::Type)]
 pub struct VendorItemSummary {
     pub item_id: u32,
     pub name: String,
@@ -1902,7 +1907,7 @@ pub async fn get_vendor_item_counts(
 }
 
 /// Get the NPC keys and names that sell/barter a given item (for item tooltips).
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, specta::Type)]
 pub struct VendorNpcSummary {
     pub npc_key: String,
     pub name: String,
@@ -1934,7 +1939,7 @@ pub async fn get_vendors_for_item(
 
 // ── Effect description resolution ───────────────────────────────────────────
 
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, specta::Type)]
 pub struct ResolvedEffect {
     pub label: String,
     pub value: String,
@@ -2075,7 +2080,7 @@ fn format_effect_value(label: &str, value: f64, display_type: &str) -> String {
 
 // ── TSys power lookup ───────────────────────────────────────────────────────
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, specta::Type)]
 pub struct TsysPowerInfo {
     pub internal_name: String,
     pub skill: Option<String>,
@@ -3014,9 +3019,10 @@ fn resolve_direct_add(
 }
 
 /// One assigned build mod, as the frontend knows it (preset mods + slot label).
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, specta::Type)]
 pub struct AbilityModRef {
     pub power_name: String,
+    #[specta(type = u32)]
     pub tier: i64,
     /// Pre-formatted equipment slot label (e.g. "Hands") for source attribution.
     pub slot_label: String,
@@ -3024,7 +3030,7 @@ pub struct AbilityModRef {
 
 /// One equipped slot item, for folding its innate `{TOKEN}{VALUE}` bonuses (e.g. a focus's flat
 /// Direct/Indirect damage) into the calculation alongside the assigned gear mods.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, specta::Type)]
 pub struct AbilityItemRef {
     pub item_id: u32,
     /// Pre-formatted equipment slot label (e.g. "Head") for source attribution.
@@ -3288,7 +3294,7 @@ pub async fn compute_ability_build_stats(
 
 // ── Storage Vault query commands ─────────────────────────────────────────────
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, specta::Type)]
 pub struct StorageVaultZoneInfo {
     pub vault_key: String,
     pub area_key: Option<String>,
@@ -3327,7 +3333,7 @@ pub async fn get_storage_vault_zones(
 }
 
 /// Vault summary for a specific area (used by AreaBrowser).
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, specta::Type)]
 pub struct AreaVaultSummary {
     pub key: String,
     pub npc_friendly_name: String,
@@ -3363,7 +3369,7 @@ pub async fn get_storage_vaults_in_area(
     Ok(results)
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, specta::Type)]
 pub struct StorageVaultDetail {
     pub key: String,
     pub id: u32,
@@ -3438,19 +3444,22 @@ pub async fn get_combat_skills(state: State<'_, GameDataState>) -> Result<Vec<Sk
 }
 
 /// Summary of a single tier within a TSys power.
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, specta::Type)]
 pub struct TsysTierSummary {
     pub tier_id: String,
+    #[specta(type = u32)]
     pub min_level: i64,
+    #[specta(type = u32)]
     pub max_level: i64,
     pub min_rarity: Option<String>,
+    #[specta(type = Option<u32>)]
     pub skill_level_prereq: Option<i64>,
     pub effects: Vec<String>,
     pub icon_id: Option<u32>,
 }
 
 /// A single TSys power eligible for a specific equipment slot, with resolved effect text.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, specta::Type)]
 pub struct SlotTsysPower {
     /// The CDN key for this power (e.g. "power_12345")
     pub key: String,
@@ -3471,6 +3480,7 @@ pub struct SlotTsysPower {
     /// Minimum rarity required for this tier
     pub min_rarity: Option<String>,
     /// Skill level prerequisite for this tier
+    #[specta(type = Option<u32>)]
     pub skill_level_prereq: Option<i64>,
     /// Icon ID from the first effect's attribute definition
     pub icon_id: Option<u32>,
@@ -3713,7 +3723,7 @@ pub async fn get_tsys_powers_for_slot(
 // ── TSys browser commands ────────────────────────────────────────────────────
 
 /// Flattened TSys entry for the frontend browser (includes the CDN key).
-#[derive(Debug, serde::Serialize, Clone)]
+#[derive(Debug, serde::Serialize, Clone, specta::Type)]
 pub struct TsysBrowserEntry {
     pub key: String,
     pub internal_name: Option<String>,
@@ -3724,7 +3734,9 @@ pub struct TsysBrowserEntry {
     pub tiers: HashMap<String, TsysTierInfo>,
     pub is_unavailable: Option<bool>,
     pub is_hidden_from_transmutation: Option<bool>,
+    #[specta(type = u32)]
     pub tier_count: usize,
+    #[specta(skip)]
     pub raw_json: Value,
 }
 
@@ -3829,7 +3841,7 @@ pub async fn get_tsys_profiles(state: State<'_, GameDataState>) -> Result<Value,
 // ── Cross-reference commands for data browser linking ──────────────────────
 
 /// NPC favor entry returned to the frontend.
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, specta::Type)]
 pub struct NpcFavorEntry {
     pub npc_key: String,
     pub npc_name: String,
@@ -4046,7 +4058,7 @@ pub async fn get_recipes_for_keyword(
 
 // ── CP-consuming recipe queries ───────────────────────────────────────────
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, specta::Type)]
 pub struct CpRecipeOption {
     pub recipe_id: u32,
     pub recipe_name: String,
@@ -4421,7 +4433,7 @@ fn tsys_matches_ability(
 }
 
 /// Lightweight TSys summary returned for ability cross-references.
-#[derive(Debug, serde::Serialize, Clone)]
+#[derive(Debug, serde::Serialize, Clone, specta::Type)]
 pub struct TsysAbilityXref {
     pub key: String,
     pub internal_name: Option<String>,
@@ -4429,6 +4441,7 @@ pub struct TsysAbilityXref {
     pub prefix: Option<String>,
     pub suffix: Option<String>,
     pub slots: Vec<String>,
+    #[specta(type = u32)]
     pub tier_count: usize,
     /// Resolved effect descriptions from the highest tier
     pub top_tier_effects: Vec<String>,
@@ -4542,7 +4555,7 @@ pub async fn get_tsys_for_ability(
 }
 
 /// Lightweight ability summary returned for TSys cross-references.
-#[derive(Debug, serde::Serialize, Clone)]
+#[derive(Debug, serde::Serialize, Clone, specta::Type)]
 pub struct AbilityTsysXref {
     pub id: u32,
     pub name: String,
@@ -4706,7 +4719,7 @@ pub async fn get_abilities_for_tsys(
 /// A recipe item found in the player's inventory, with context about whether
 /// the recipes it teaches are already known or if the player meets the skill
 /// requirements to learn them.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
 pub struct RecipeItemMatch {
     /// The item's type ID from CDN
     pub item_id: u32,
@@ -4728,7 +4741,7 @@ pub struct RecipeItemMatch {
     pub unmet_requirements: Vec<UnmetRequirement>,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
 pub struct UnmetRequirement {
     pub skill_name: String,
     pub required: u32,
@@ -5170,7 +5183,7 @@ pub async fn get_enemy(
 
 /// A monster entry derived from translation strings, enriched with AI data
 /// when available. This is the primary data source for the Enemies browser.
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, specta::Type)]
 pub struct MonsterEntry {
     /// Internal identifier (e.g. "AreaSerbule/GiantRat")
     pub key: String,
@@ -5186,6 +5199,7 @@ pub struct MonsterEntry {
     pub comment: Option<String>,
     pub swimming: Option<bool>,
     pub uncontrolled_pet: Option<bool>,
+    #[specta(type = Option<u32>)]
     pub ability_count: Option<usize>,
     pub ability_names: Option<Vec<String>>,
 }
@@ -5333,7 +5347,7 @@ fn format_ai_key(key: &str) -> String {
 // ── Gardening product chain ─────────────────────────────────────────────────
 
 /// A compact item summary for gardening chain display.
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, specta::Type)]
 pub struct GardeningChainItem {
     pub id: u32,
     pub name: String,
@@ -5342,7 +5356,7 @@ pub struct GardeningChainItem {
 }
 
 /// A recipe in the gardening chain that connects a plant to its products.
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, specta::Type)]
 pub struct GardeningChainRecipe {
     pub id: u32,
     pub name: String,
@@ -5351,7 +5365,7 @@ pub struct GardeningChainRecipe {
 }
 
 /// The full gardening product chain for a seedling or plant item.
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, specta::Type)]
 pub struct GardeningProductChain {
     /// The seedling item (if found or if the input was a seedling)
     pub seedling: Option<GardeningChainItem>,
@@ -5364,7 +5378,7 @@ pub struct GardeningProductChain {
 }
 
 /// A single product produced from a plant via a recipe.
-#[derive(serde::Serialize, Clone)]
+#[derive(serde::Serialize, Clone, specta::Type)]
 pub struct GardeningChainProduct {
     pub recipe: GardeningChainRecipe,
     pub items: Vec<GardeningChainItem>,
@@ -6293,7 +6307,7 @@ mod resolve_batch_reference_tests {
 
 // ── Statehelm favor planner ─────────────────────────────────────────────────
 /// A vault item matching one NPC's gift preference.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, specta::Type)]
 pub struct StatehelmGiftMatch {
     pub item_name: String,
     pub item_type_id: Option<u32>,
@@ -6638,5 +6652,115 @@ mod plan_statehelm_gifts_tests {
         assert_eq!(got.len(), 2);
         let vaults: Vec<&str> = got.iter().map(|m| m.vault_key.as_str()).collect();
         assert_eq!(vaults, vec!["V1", "V2"]);
+    }
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `cdn` IPC payload shapes derive `specta::Type` so
+// `src/types/cdn.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test cdn_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<CacheStatus>()
+        .register::<CdnVersionCheck>()
+        .register::<IngredientKeywordInfo>()
+        .register::<MoonPhaseResult>()
+        .register::<DaysUntilPhase>()
+        .register::<AreaSummary>()
+        .register::<QuestSummary>()
+        .register::<EntitySources>()
+        .register::<VendorItemSummary>()
+        .register::<VendorNpcSummary>()
+        .register::<ResolvedEffect>()
+        .register::<TsysPowerInfo>()
+        .register::<AbilityModRef>()
+        .register::<AbilityItemRef>()
+        .register::<StorageVaultZoneInfo>()
+        .register::<AreaVaultSummary>()
+        .register::<StorageVaultDetail>()
+        .register::<TsysTierSummary>()
+        .register::<SlotTsysPower>()
+        .register::<TsysBrowserEntry>()
+        .register::<NpcFavorEntry>()
+        .register::<CpRecipeOption>()
+        .register::<TsysAbilityXref>()
+        .register::<AbilityTsysXref>()
+        .register::<RecipeItemMatch>()
+        .register::<UnmetRequirement>()
+        .register::<MonsterEntry>()
+        .register::<GardeningChainItem>()
+        .register::<GardeningChainRecipe>()
+        .register::<GardeningProductChain>()
+        .register::<GardeningChainProduct>()
+        .register::<StatehelmGiftMatch>()
+        .register::<crate::game_data::CombatStats>()
+        .register::<crate::game_data::DotEffect>()
+        .register::<crate::game_data::AbilityInfo>()
+        .register::<crate::game_data::AbilityFamily>()
+        .register::<crate::game_data::ability_stats::ContributionLine>()
+        .register::<crate::game_data::ability_stats::ValueBreakdown>()
+        .register::<crate::game_data::ability_stats::DirectDamageBreakdown>()
+        .register::<crate::game_data::ability_stats::DotBreakdown>()
+        .register::<crate::game_data::ability_stats::SpecialValueBreakdown>()
+        .register::<crate::game_data::ability_stats::AbilityBuildStats>()
+        .register::<crate::game_data::AchievementInfo>()
+        .register::<crate::game_data::AreaInfo>()
+        .register::<crate::game_data::brewing::BrewingCategory>()
+        .register::<crate::game_data::brewing::BrewItemEffect>()
+        .register::<crate::game_data::brewing::BrewingVariableSlot>()
+        .register::<crate::game_data::brewing::BrewingFixedIngredient>()
+        .register::<crate::game_data::brewing::BrewingRecipe>()
+        .register::<crate::game_data::brewing::BrewingIngredient>()
+        .register::<crate::game_data::EffectInfo>()
+        .register::<crate::game_data::ItemInfo>()
+        .register::<crate::game_data::LorebookEntry>()
+        .register::<crate::game_data::LorebookCategoryInfo>()
+        .register::<crate::game_data::MushroomFarmingInfo>()
+        .register::<crate::game_data::NpcInfo>()
+        .register::<crate::game_data::PlayerTitleInfo>()
+        .register::<crate::game_data::QuestInfo>()
+        .register::<crate::game_data::RecipeInfo>()
+        .register::<crate::game_data::SkillInfo>()
+        .register::<crate::game_data::SourceEntry>()
+        .register::<crate::game_data::TsysTierInfo>()
+        .register::<crate::game_data::SkillbookInfo>()
+        .register::<crate::cdn_diff::FileDiffSummary>()
+        .register::<crate::cdn_diff::FieldChange>()
+        .register::<crate::cdn_diff::EntryDiff>()
+        .register::<crate::cdn_diff::FileDiff>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/cdn.specta.ts` must equal
+    /// what `export_bindings` derives from the `cdn` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test cdn_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_cdn_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/cdn.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
     }
 }

@@ -4,12 +4,13 @@ use std::collections::HashMap;
 
 // ── Parsed structs (app shape) ───────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct AreaInfo {
     pub friendly_name: Option<String>,
     pub short_friendly_name: Option<String>,
 
     // Full raw JSON
+    #[specta(skip)]
     pub raw_json: Value,
 }
 

@@ -7,13 +7,15 @@ use tauri::State;
 
 // ── Response types ──────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct BrewingDiscovery {
+    #[specta(type = u32)]
     pub id: i64,
     pub character: String,
     pub recipe_id: u32,
     pub ingredient_ids: Vec<u32>,
     pub power: String,
+    #[specta(type = u32)]
     pub power_tier: i64,
     pub effect_label: Option<String>,
     pub race_restriction: Option<String>,
@@ -22,7 +24,7 @@ pub struct BrewingDiscovery {
     pub last_seen_at: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, specta::Type)]
 pub struct BrewingScanResult {
     pub new_discoveries: u32,
     pub updated_discoveries: u32,
@@ -900,4 +902,49 @@ pub async fn import_brewing_discoveries_csv(
         updated_discoveries,
         total_brewing_items,
     })
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `brewing` IPC payload shapes derive `specta::Type` so
+// `src/types/brewing.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test brewing_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<BrewingDiscovery>()
+        .register::<BrewingScanResult>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/brewing.specta.ts` must equal
+    /// what `export_bindings` derives from the `brewing` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test brewing_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_brewing_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/brewing.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
+    }
 }

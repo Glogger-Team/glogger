@@ -11,11 +11,12 @@ use tauri::State;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, specta::Type)]
 pub struct MarketValue {
     pub server_name: String,
     pub item_type_id: i32,
     pub item_name: String,
+    #[specta(type = u32)]
     pub market_value: i64,
     pub notes: Option<String>,
     pub updated_at: String,
@@ -30,10 +31,13 @@ pub struct MarketValueImportEntry {
     pub updated_at: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct ImportMarketValuesResult {
+    #[specta(type = u32)]
     pub imported: usize,
+    #[specta(type = u32)]
     pub skipped: usize,
+    #[specta(type = u32)]
     pub updated: usize,
 }
 
@@ -253,9 +257,10 @@ pub fn import_market_values(
 
 // ── Bulk operations ─────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct BulkMarketUpdate {
     pub item_type_id: i32,
+    #[specta(type = u32)]
     pub market_value: i64,
 }
 
@@ -364,4 +369,50 @@ fn get_market_values_internal(
 
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Row error: {e}"))
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `market` IPC payload shapes derive `specta::Type` so
+// `src/types/market.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test market_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<MarketValue>()
+        .register::<ImportMarketValuesResult>()
+        .register::<BulkMarketUpdate>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/market.specta.ts` must equal
+    /// what `export_bindings` derives from the `market` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test market_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_market_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/market.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
+    }
 }

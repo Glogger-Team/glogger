@@ -5,7 +5,7 @@ use std::collections::HashMap;
 // ── Parsed structs (app shape) ───────────────────────────────────────────────
 
 /// A single source entry describing where an ability/item/recipe comes from.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct SourceEntry {
     pub source_type: String,
     pub skill: Option<String>,
@@ -15,6 +15,7 @@ pub struct SourceEntry {
     pub recipe_id: Option<u32>,
     pub hang_out_id: Option<u32>,
     pub friendly_name: Option<String>,
+    #[specta(skip)]
     pub extra: Value,
 }
 

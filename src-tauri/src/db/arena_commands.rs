@@ -23,7 +23,7 @@ use crate::chat_parser::parse_chat_line;
 use crate::settings::SettingsManager;
 
 /// Per-fighter overall record.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct ArenaFighter {
     pub name: String,
     pub wins: u32,
@@ -33,7 +33,7 @@ pub struct ArenaFighter {
 }
 
 /// One directed head-to-head cell: `fighter` vs `opponent`.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct ArenaHeadToHead {
     pub fighter: String,
     pub opponent: String,
@@ -42,7 +42,7 @@ pub struct ArenaHeadToHead {
 }
 
 /// A recently-observed resolved match, newest first.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct ArenaRecentMatch {
     pub fought_at: String,
     pub fighter_a: String,
@@ -51,7 +51,7 @@ pub struct ArenaRecentMatch {
 }
 
 /// The player's personal betting summary (their own bets, from Player.log).
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Clone, Default, specta::Type)]
 pub struct ArenaBettingSummary {
     /// Resolved bets (win or loss).
     pub total: u32,
@@ -60,15 +60,18 @@ pub struct ArenaBettingSummary {
     /// Win percentage 0..=100.
     pub win_pct: f64,
     /// Total councils wagered across all resolved bets.
+    #[specta(type = u32)]
     pub total_wagered: i64,
     /// Total councils received from winning bets.
+    #[specta(type = u32)]
     pub total_won: i64,
     /// Net profit/loss (total_won - total_wagered).
+    #[specta(type = i32)]
     pub net_profit: i64,
 }
 
 /// Aggregate arena history for the dashboard widget.
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Clone, Default, specta::Type)]
 pub struct ArenaStats {
     pub total_matches: u32,
     /// Fighters sorted by win percentage descending (ties by wins).
@@ -84,7 +87,7 @@ pub struct ArenaStats {
 /// One arena tip for the current day, via the chat `EntityReport` twin
 /// (observed tipster: Eveline Rastin). Tips land in `player_messages`
 /// (message_type `entity_report`); the widget shows only today's.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct ArenaTip {
     pub received_at: String,
     pub tipster: String,
@@ -623,5 +626,54 @@ mod tests {
         // 2026-06-15 01:00 UTC is 2026-06-14 21:00 EDT: previous Eastern
         // day, so the 01:00 UTC shape is always excluded.
         assert!(!tips.iter().any(|t| t.body.contains("01:00 utc")));
+    }
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `arena` IPC payload shapes derive `specta::Type` so
+// `src/types/arena.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test arena_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<ArenaFighter>()
+        .register::<ArenaHeadToHead>()
+        .register::<ArenaRecentMatch>()
+        .register::<ArenaBettingSummary>()
+        .register::<ArenaStats>()
+        .register::<ArenaTip>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/arena.specta.ts` must equal
+    /// what `export_bindings` derives from the `arena` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test arena_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_arena_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/arena.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
     }
 }

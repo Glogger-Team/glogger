@@ -13,9 +13,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, specta::Type)]
 struct ScanProgress {
+    /// `specta-typescript` BigInt guard (words-of-power pilot precedent):
+    /// progress counts export as `number` via `u32` overrides.
+    #[specta(type = u32)]
     current: usize,
+    #[specta(type = u32)]
     total: usize,
     file_name: String,
 }
@@ -201,21 +205,29 @@ pub async fn scan_chat_logs(
     })
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, specta::Type)]
 pub struct ScanResult {
+    #[specta(type = u32)]
     pub files_processed: usize,
+    #[specta(type = u32)]
     pub messages_imported: usize,
+    #[specta(type = u32)]
     pub lines_read: usize,
 }
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, specta::Type)]
 pub struct AbilityHistoryBackfillResult {
+    #[specta(type = u32)]
     pub files_scanned: usize,
     /// Files the sweep couldn't read (locked, rotating, deleted mid-sweep). They
     /// are logged and skipped rather than aborting the rest of the archive.
+    #[specta(type = u32)]
     pub files_skipped: usize,
+    #[specta(type = u32)]
     pub poops_recorded: usize,
+    #[specta(type = u32)]
     pub self_milks_recorded: usize,
+    #[specta(type = u32)]
     pub milked_by_recorded: usize,
 }
 
@@ -1021,9 +1033,10 @@ pub async fn get_chat_channel_stats(
         .collect())
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, specta::Type)]
 pub struct ChannelStat {
     pub channel: String,
+    #[specta(type = u32)]
     pub count: i64,
 }
 
@@ -1749,5 +1762,56 @@ mod tests {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.to_string_lossy()));
         }
         let _ = std::fs::remove_dir_all(&settings_dir);
+    }
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `chat` IPC payload shapes derive `specta::Type` so
+// `src/types/chat.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test chat_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<ScanProgress>()
+        .register::<ScanResult>()
+        .register::<AbilityHistoryBackfillResult>()
+        .register::<ChannelStat>()
+        .register::<crate::chat_status_parser::ChatStatusEvent>()
+        .register::<crate::chat_combat_parser::ChatCombatEvent>()
+        .register::<crate::chat_resuscitate_parser::ChatResuscitateEvent>()
+        .register::<crate::watch_rules::WatchRuleTriggered>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/chat.specta.ts` must equal
+    /// what `export_bindings` derives from the `chat` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test chat_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_chat_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/chat.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
     }
 }

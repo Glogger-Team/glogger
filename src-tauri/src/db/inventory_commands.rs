@@ -65,74 +65,93 @@ pub struct TsysPower {
 
 // ── Command Response Types ───────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct InventoryImportResult {
     pub character_name: String,
     pub server_name: String,
     pub snapshot_timestamp: String,
+    #[specta(type = u32)]
     pub items_imported: usize,
     pub was_duplicate: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct InventorySnapshotSummary {
+    #[specta(type = u32)]
     pub id: i64,
     pub character_name: String,
     pub server_name: String,
     pub snapshot_timestamp: String,
     pub import_date: String,
+    #[specta(type = u32)]
     pub item_count: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct SnapshotItem {
+    #[specta(type = u32)]
     pub id: i64,
+    #[specta(type = u32)]
     pub type_id: i64,
     pub storage_vault: String,
     pub is_in_inventory: bool,
+    #[specta(type = u32)]
     pub stack_size: i64,
     pub value: Option<f64>,
     pub item_name: String,
     pub rarity: Option<String>,
     pub slot: Option<String>,
+    #[specta(type = Option<u32>)]
     pub level: Option<i64>,
     pub is_crafted: bool,
     pub crafter: Option<String>,
     pub durability: Option<f64>,
+    #[specta(type = Option<u32>)]
     pub craft_points: Option<i64>,
+    #[specta(type = Option<u32>)]
     pub uses_remaining: Option<i64>,
+    #[specta(type = Option<u32>)]
     pub transmute_count: Option<i64>,
     pub attuned_to: Option<String>,
     pub tsys_powers: Option<String>,
     pub tsys_imbue_power: Option<String>,
+    #[specta(type = Option<u32>)]
     pub tsys_imbue_power_tier: Option<i64>,
     pub pet_husbandry_state: Option<String>,
     pub is_augmented: Option<bool>,
+    #[specta(type = Option<u32>)]
     pub dye_count: Option<i64>,
     pub inscription: Option<String>,
     pub inscriber: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct InventorySummary {
+    #[specta(type = u32)]
     pub total_items: i64,
+    #[specta(type = u32)]
     pub total_stacks: i64,
     pub total_value: f64,
+    #[specta(type = u32)]
     pub unique_items: i64,
+    #[specta(type = std::collections::HashMap<String, u32>)]
     pub items_by_vault: HashMap<String, i64>,
+    #[specta(type = std::collections::HashMap<String, u32>)]
     pub items_by_rarity: HashMap<String, i64>,
 }
 
 /// One item row from the latest inventory snapshot of a given character,
 /// used by the cross-character storage search.
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct CrossCharacterItem {
     pub character_name: String,
     pub server_name: String,
     pub item_name: String,
     pub storage_vault: String,
     pub is_in_inventory: bool,
+    #[specta(type = u32)]
     pub stack_size: i64,
+    #[specta(type = u32)]
     pub type_id: i64,
     pub rarity: Option<String>,
     pub value: Option<f64>,
@@ -1203,5 +1222,53 @@ mod tests {
             .expect("count");
         assert_eq!(count, 0);
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `inventory` IPC payload shapes derive `specta::Type` so
+// `src/types/inventory.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test inventory_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<InventoryImportResult>()
+        .register::<InventorySnapshotSummary>()
+        .register::<SnapshotItem>()
+        .register::<InventorySummary>()
+        .register::<CrossCharacterItem>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/inventory.specta.ts` must equal
+    /// what `export_bindings` derives from the `inventory` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test inventory_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_inventory_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/inventory.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
     }
 }

@@ -6,7 +6,7 @@ use tauri::State;
 
 // ── Input types ─────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct CreateBuildPresetInput {
     pub character_id: String,
     pub name: String,
@@ -16,8 +16,9 @@ pub struct CreateBuildPresetInput {
     pub target_rarity: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct UpdateBuildPresetInput {
+    #[specta(type = u32)]
     pub id: i64,
     pub name: String,
     pub skill_primary: Option<String>,
@@ -27,7 +28,7 @@ pub struct UpdateBuildPresetInput {
     pub notes: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct BuildPresetModInput {
     pub equip_slot: String,
     pub power_name: String,
@@ -36,10 +37,12 @@ pub struct BuildPresetModInput {
     pub sort_order: i32,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct SetSlotItemInput {
+    #[specta(type = u32)]
     pub preset_id: i64,
     pub equip_slot: String,
+    #[specta(type = u32)]
     pub item_id: i64,
     pub item_name: Option<String>,
     pub slot_level: Option<i32>,
@@ -48,17 +51,19 @@ pub struct SetSlotItemInput {
     pub is_masterwork: Option<bool>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct BuildPresetAbilityInput {
     pub bar: String,
     pub slot_position: i32,
+    #[specta(type = u32)]
     pub ability_id: i64,
     pub ability_name: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct BuildPresetCpRecipeInput {
     pub equip_slot: String,
+    #[specta(type = u32)]
     pub recipe_id: i64,
     pub recipe_name: Option<String>,
     pub cp_cost: i32,
@@ -69,20 +74,25 @@ pub struct BuildPresetCpRecipeInput {
 
 // ── Output types ────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct BuildPresetAbility {
+    #[specta(type = u32)]
     pub id: i64,
+    #[specta(type = u32)]
     pub preset_id: i64,
     pub bar: String,
     pub slot_position: i32,
+    #[specta(type = u32)]
     pub ability_id: i64,
     pub ability_name: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct BuildPresetSlotItem {
+    #[specta(type = u32)]
     pub preset_id: i64,
     pub equip_slot: String,
+    #[specta(type = u32)]
     pub item_id: i64,
     pub item_name: Option<String>,
     pub slot_level: i32,
@@ -93,8 +103,9 @@ pub struct BuildPresetSlotItem {
     pub slot_skill_secondary: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct BuildPreset {
+    #[specta(type = u32)]
     pub id: i64,
     pub character_id: String,
     pub name: String,
@@ -107,9 +118,11 @@ pub struct BuildPreset {
     pub updated_at: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct BuildPresetMod {
+    #[specta(type = u32)]
     pub id: i64,
+    #[specta(type = u32)]
     pub preset_id: i64,
     pub equip_slot: String,
     pub power_name: String,
@@ -118,11 +131,14 @@ pub struct BuildPresetMod {
     pub sort_order: i32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct BuildPresetCpRecipe {
+    #[specta(type = u32)]
     pub id: i64,
+    #[specta(type = u32)]
     pub preset_id: i64,
     pub equip_slot: String,
+    #[specta(type = u32)]
     pub recipe_id: i64,
     pub recipe_name: Option<String>,
     pub cp_cost: i32,
@@ -520,7 +536,7 @@ pub fn get_build_preset_slot_items(
 // ── Import equipped gear ────────────────────────────────────────────────────
 
 /// A mod pulled from an equipped item's TSys powers (or its imbued augment).
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct EquippedGearMod {
     pub power_name: String,
     pub tier: Option<i32>,
@@ -534,8 +550,9 @@ pub struct EquippedGearMod {
 /// candidate per slot (best-first) so the user confirms the loadout, and expose the
 /// two signals that hint at which is actually worn: `is_worn` (the item has a
 /// durability value, i.e. it has been used) and `is_attuned` (bound to this character).
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct EquippedCandidate {
+    #[specta(type = u32)]
     pub item_id: i64,
     pub item_name: Option<String>,
     pub slot_level: i32,
@@ -547,7 +564,7 @@ pub struct EquippedCandidate {
 }
 
 /// All candidate items for one build-planner slot, ordered best-guess first.
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct EquippedSlotCandidates {
     /// Build-planner slot id (e.g. "Belt", not the game's "Waist").
     pub equip_slot: String,
@@ -1369,5 +1386,62 @@ mod equipped_gear_tests {
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].power, "AgonizeShortenReset");
         assert_eq!(parsed[1].tier, 9);
+    }
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `build_planner` IPC payload shapes derive `specta::Type` so
+// `src/types/buildPlanner.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test build_planner_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<CreateBuildPresetInput>()
+        .register::<UpdateBuildPresetInput>()
+        .register::<BuildPresetModInput>()
+        .register::<SetSlotItemInput>()
+        .register::<BuildPresetAbilityInput>()
+        .register::<BuildPresetCpRecipeInput>()
+        .register::<BuildPresetAbility>()
+        .register::<BuildPresetSlotItem>()
+        .register::<BuildPreset>()
+        .register::<BuildPresetMod>()
+        .register::<BuildPresetCpRecipe>()
+        .register::<EquippedGearMod>()
+        .register::<EquippedCandidate>()
+        .register::<EquippedSlotCandidates>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/buildPlanner.specta.ts` must equal
+    /// what `export_bindings` derives from the `build_planner` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test build_planner_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_build_planner_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/buildPlanner.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
     }
 }

@@ -36,26 +36,30 @@ pub struct RevenueEvent {
     pub price_total: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct RevenuePeriod {
     pub key: String,
     pub label: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct RevenueCell {
     pub item: String,
     pub period_key: String,
+    #[specta(type = u32)]
     pub revenue: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct RevenueResult {
     pub periods: Vec<RevenuePeriod>,
     pub items: Vec<String>,
     pub cells: Vec<RevenueCell>,
+    #[specta(type = Vec<(String, u32)>)]
     pub row_totals: Vec<(String, i64)>,
+    #[specta(type = Vec<(String, u32)>)]
     pub col_totals: Vec<(String, i64)>,
+    #[specta(type = u32)]
     pub grand_total: i64,
 }
 
@@ -229,19 +233,24 @@ pub struct InventoryEvent {
     pub price_total: Option<i64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct PriceTier {
+    #[specta(type = u32)]
     pub qty: i64,
     pub price: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct InventoryItem {
     pub item: String,
+    #[specta(type = u32)]
     pub quantity: i64,
     pub price_tiers: Vec<PriceTier>,
+    #[specta(type = u32)]
     pub estimated_value: i64,
+    #[specta(type = u32)]
     pub period_sold: i64,
+    #[specta(type = u32)]
     pub period_revenue: i64,
     pub avg_per_day: f64,
     pub last_sold_at: Option<String>,
@@ -254,6 +263,7 @@ pub struct InventoryItem {
     pub last_known_price: Option<f64>,
     /// Units priced at `last_known_price` because no priced tier survived.
     /// 0 when every unit has a real price or the item never had a price.
+    #[specta(type = u32)]
     pub fallback_priced_qty: i64,
     /// True when the earliest event for this item is NOT a baseline
     /// (`added`/`visible`/`configured`) — the log starts mid-history
@@ -262,18 +272,21 @@ pub struct InventoryItem {
     /// Winning baseline `recorded_at` for this item, `None` when no baseline row.
     pub baseline_at: Option<String>,
     /// Count of surviving (post-drop) events replayed on top of the baseline.
+    #[specta(type = u32)]
     pub events_since_baseline: i64,
     /// Earliest `event_at` seen for this item (`YYYY-MM-DD HH:MM:SS`).
     pub first_event_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct InventoryResult {
     pub items: Vec<InventoryItem>,
     /// Distinct dates with activity, **newest-first**, so the frontend can
     /// `.slice(0, N)` for the "Recently Sold Out in last N days" panel.
     pub active_dates: Vec<String>,
+    #[specta(type = u32)]
     pub estimated_value: i64,
+    #[specta(type = u32)]
     pub total_sold: i64,
     pub avg_daily_revenue: f64,
 }
@@ -778,17 +791,21 @@ impl Bucket {
 /// One drawable line. `gold` and `units` are both returned so the frontend's
 /// Gold/Units toggle never has to refetch — the payload is bounded by
 /// `lines × periods`, not by event count.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct TimeseriesLine {
     /// Item name, or the literal `"Total"` for the aggregate line.
     pub item: String,
+    #[specta(type = Vec<u32>)]
     pub gold: Vec<i64>,
+    #[specta(type = Vec<u32>)]
     pub units: Vec<i64>,
+    #[specta(type = u32)]
     pub total_gold: i64,
+    #[specta(type = u32)]
     pub total_units: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct SalesTimeseriesResult {
     /// X-axis buckets, oldest-first. Series indices align to this vector.
     pub periods: Vec<RevenuePeriod>,

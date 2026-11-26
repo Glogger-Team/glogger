@@ -349,8 +349,9 @@ pub fn insert_stall_events(db: &DbPool, events: &[StallEventInput]) -> Result<us
 // ============================================================
 
 /// A single stall event row as returned to the frontend.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct StallEvent {
+    #[specta(type = u32)]
     pub id: i64,
     pub event_timestamp: String,
     pub event_at: Option<String>,
@@ -360,10 +361,13 @@ pub struct StallEvent {
     pub player: String,
     pub owner: Option<String>,
     pub item: Option<String>,
+    #[specta(type = u32)]
     pub quantity: i64,
     pub price_unit: Option<f64>,
+    #[specta(type = Option<u32>)]
     pub price_total: Option<i64>,
     pub raw_message: String,
+    #[specta(type = u32)]
     pub entry_index: i64,
     pub ignored: bool,
     pub created_at: String,
@@ -372,7 +376,7 @@ pub struct StallEvent {
 /// Filter shape shared by list, stats, and aggregation queries. Every field
 /// is optional; `owner` is the only one that should always be populated by
 /// the frontend (missing/empty owner → empty results, by design).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct StallEventsFilters {
     pub owner: Option<String>,
@@ -385,35 +389,42 @@ pub struct StallEventsFilters {
 }
 
 /// Parameters for `get_stall_events` (pagination + sort + filters).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct StallEventsParams {
     #[serde(flatten)]
     pub filters: StallEventsFilters,
     pub sort_by: Option<String>,
     pub sort_dir: Option<String>,
+    #[specta(type = Option<u32>)]
     pub limit: Option<i64>,
+    #[specta(type = Option<u32>)]
     pub offset: Option<i64>,
     /// Override the default `action != 'unknown'` filter. Pass `Some("unknown")`
     /// from the Shop Log modal's "show unknowns" toggle.
     pub force_action: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct StallEventsPage {
     pub rows: Vec<StallEvent>,
+    #[specta(type = u32)]
     pub total_count: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct StallStats {
+    #[specta(type = u32)]
     pub total_sales: i64,
+    #[specta(type = u32)]
     pub total_revenue: i64,
+    #[specta(type = u32)]
     pub unique_buyers: i64,
+    #[specta(type = u32)]
     pub unique_items: i64,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct StallFilterOptions {
     pub buyers: Vec<String>,
     pub players: Vec<String>,
@@ -748,7 +759,7 @@ pub fn toggle_stall_event_ignored(
 
 /// Parameters for `get_stall_revenue`. Granularity is a string on the wire
 /// for natural JS interop (`"daily"` / `"weekly"` / `"monthly"`).
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct StallRevenueParams {
     pub owner: Option<String>,
@@ -759,10 +770,11 @@ pub struct StallRevenueParams {
     pub item: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct StallInventoryParams {
     pub owner: Option<String>,
+    #[specta(type = Option<u32>)]
     pub period_days: Option<i64>,
     /// History window: replay only ledger events with `event_at >= date('now', 'localtime', '-' || window_days || ' days')`.
     /// `None` (or <= 0) replays the full history. The stale-delist problem
@@ -772,6 +784,7 @@ pub struct StallInventoryParams {
     /// Sales period and cannot create phantom stock). Live 2026-11 case:
     /// full history shows 110 phantom rows for a 41-slot stall; a 100-day
     /// window shows 47. Frontend owns the value (view pref).
+    #[specta(type = Option<u32>)]
     pub window_days: Option<i64>,
 }
 
@@ -975,13 +988,14 @@ pub fn get_stall_inventory(
 /// - `item = Some(name)` → single-item line.
 /// - `top_n = Some(5|10)` → that many top-grossing item lines.
 /// - both `None` → a single `Total` line.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct StallTimeseriesParams {
     pub owner: Option<String>,
     /// `"1d" | "3d" | "7d" | "1m" | "all"`. Defaults to `"7d"`.
     pub period: Option<String>,
     pub item: Option<String>,
+    #[specta(type = Option<u32>)]
     pub top_n: Option<i64>,
 }
 
@@ -1099,9 +1113,11 @@ pub fn clear_stall_events(db: State<'_, DbPool>, owner: Option<String>) -> Resul
 // Phase 10 — Import / Export
 // ============================================================
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct ImportResult {
+    #[specta(type = u32)]
     pub total_entries: usize,
+    #[specta(type = u32)]
     pub new_entries: usize,
     /// The owner the rows were stamped with: parser-detected if the book
     /// contained owner-only actions, else the caller-supplied current_owner.
@@ -1112,9 +1128,11 @@ pub struct ImportResult {
     pub owner_claimed: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct ExportResult {
+    #[specta(type = u32)]
     pub files_written: usize,
+    #[specta(type = u32)]
     pub events_exported: usize,
 }
 
@@ -1308,10 +1326,11 @@ pub fn import_shop_log_file(
 
 /// One counted line of a recount preview: what the fresh book says the
 /// stall holds for one item right now.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RecountLine {
     pub item: String,
+    #[specta(type = u32)]
     pub quantity: i64,
     pub price_unit: Option<f64>,
 }
@@ -1320,12 +1339,13 @@ pub struct RecountLine {
 /// fresh book, plus the in-stock items the book does NOT mention (they get
 /// zero cutoffs on apply). Sales history is never touched — this only
 /// stages `stall_inventory_baseline` rows.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RecountPreview {
     pub owner: String,
     pub counted: Vec<RecountLine>,
     pub zeroed: Vec<String>,
+    #[specta(type = u32)]
     pub book_entries: usize,
     /// Content hash of the exact book bytes this preview was built from.
     /// `apply_stall_recount` must echo it back and aborts when the file no
@@ -2001,23 +2021,26 @@ pub async fn rescan_stall_books(app: AppHandle) -> Result<(usize, usize), String
 /// item. `quantity` is the counted stock, `price_unit` the current per-unit
 /// listing price (None = unpriced). Upserts on `UNIQUE(owner, item)` so
 /// re-counting the same item replaces the old row instead of duplicating it.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct StallBaselineInput {
     pub owner: Option<String>,
     pub item: Option<String>,
+    #[specta(type = Option<u32>)]
     pub quantity: Option<i64>,
     pub price_unit: Option<f64>,
     pub note: Option<String>,
 }
 
 /// The stored baseline row returned to the frontend.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct StallBaseline {
+    #[specta(type = u32)]
     pub id: i64,
     pub owner: String,
     pub item: String,
+    #[specta(type = u32)]
     pub quantity: i64,
     pub price_unit: Option<f64>,
     pub recorded_at: String,
@@ -3137,5 +3160,71 @@ mod tests {
         )
         .unwrap_err();
         assert!(err2.contains("no stock signal"), "unexpected: {err2}");
+    }
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `stall` IPC payload shapes derive `specta::Type` so
+// `src/types/stall.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test stall_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<StallEvent>()
+        .register::<StallEventsFilters>()
+        .register::<StallEventsParams>()
+        .register::<StallEventsPage>()
+        .register::<StallStats>()
+        .register::<StallFilterOptions>()
+        .register::<StallRevenueParams>()
+        .register::<StallInventoryParams>()
+        .register::<StallTimeseriesParams>()
+        .register::<ImportResult>()
+        .register::<ExportResult>()
+        .register::<RecountLine>()
+        .register::<RecountPreview>()
+        .register::<StallBaselineInput>()
+        .register::<StallBaseline>()
+        .register::<crate::stall_aggregations::RevenuePeriod>()
+        .register::<crate::stall_aggregations::RevenueCell>()
+        .register::<crate::stall_aggregations::RevenueResult>()
+        .register::<crate::stall_aggregations::PriceTier>()
+        .register::<crate::stall_aggregations::InventoryItem>()
+        .register::<crate::stall_aggregations::InventoryResult>()
+        .register::<crate::stall_aggregations::TimeseriesLine>()
+        .register::<crate::stall_aggregations::SalesTimeseriesResult>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/stall.specta.ts` must equal
+    /// what `export_bindings` derives from the `stall` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test stall_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_stall_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/stall.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
     }
 }

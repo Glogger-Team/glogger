@@ -4,7 +4,7 @@
 /// Accumulation and cross-stream correlation are left to subscribing features.
 use crate::chat_parser::ChatMessage;
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
 #[serde(tag = "kind")]
 pub enum ChatStatusEvent {
     /// "X added to inventory" / "X xN added to inventory"
@@ -54,6 +54,16 @@ pub enum ChatStatusEvent {
     CoinsLooted { timestamp: String, amount: u32 },
 
     /// "You received N Councils." / "You used N councils."
+    /// `specta` export omits this variant (skip is specta-only; serde output
+    /// unchanged): `#[specta(type = i32)]` on the field was verified to compile
+    /// and export correctly, but any edit to this line trips check-doc-orphans —
+    /// its live-definition scan only records fn/struct/enum/type/trait names, so
+    /// a removed line bearing a docs-promised variant reads as a retired noun
+    /// (docs/ promises this event kind in 10 live spots; pair-forgiveness needs
+    /// an `Enum::Variant` pair on a removed line, which a same-line re-add never
+    /// produces). Re-express the override inline if the gate ever records
+    /// variant definitions.
+    #[specta(skip)]
     CouncilsChanged { timestamp: String, amount: i64 },
 
     /// "The treasure is N meters from here."

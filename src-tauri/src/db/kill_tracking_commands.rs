@@ -14,18 +14,21 @@ use std::collections::HashMap;
 use std::fs;
 use tauri::State;
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct EnemyLootDrop {
     pub item_name: String,
+    #[specta(type = u32)]
     pub total_quantity: i64,
+    #[specta(type = u32)]
     pub times_dropped: i64,
     /// How many kills had this item drop (times_dropped / total_kills)
     pub drop_rate: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct EnemyKillStats {
     pub enemy_name: String,
+    #[specta(type = u32)]
     pub total_kills: i64,
     pub loot: Vec<EnemyLootDrop>,
 }
@@ -513,11 +516,13 @@ pub fn get_enemy_kill_stats(
 /// than the heuristic, never narrower; the damage arm and `LIKE` patterns
 /// above are the wide side. (`LIKE` is ASCII case-insensitive; exact-short
 /// names like `Boss` with no trailing space fall through to the damage arm.)
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct BossKillRow {
     pub enemy_name: String,
     pub killed_at: String,
+    #[specta(type = u32)]
     pub health_damage: i64,
+    #[specta(type = u32)]
     pub armor_damage: i64,
 }
 
@@ -565,14 +570,17 @@ pub fn get_boss_kill_times(
     boss_kill_times(&conn, character_name.as_deref(), server_name.as_deref())
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct ItemDropSource {
     pub enemy_name: String,
     /// Area key the kills happened in (null = unknown zone). Drop rates are
     /// per (enemy, zone), so the same monster in two zones is two sources.
     pub zone: Option<String>,
+    #[specta(type = u32)]
     pub total_kills: i64,
+    #[specta(type = u32)]
     pub times_dropped: i64,
+    #[specta(type = u32)]
     pub total_quantity: i64,
     pub drop_rate: f64,
 }
@@ -709,30 +717,37 @@ pub fn get_item_drop_sources(
 
 // ── Search (Database tab) ───────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct EnemySearchResult {
     pub enemy_name: String,
     /// Area key these stats are for (null = unknown zone). One result per
     /// (monster, zone) — the same monster in two zones is two rows.
     pub zone: Option<String>,
+    #[specta(type = u32)]
     pub total_kills: i64,
+    #[specta(type = u32)]
     pub distinct_loot_items: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct ItemSearchResult {
     pub item_name: String,
+    #[specta(type = u32)]
     pub total_quantity: i64,
+    #[specta(type = u32)]
     pub distinct_enemies: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct HarvestSearchResult {
     pub item_name: String,
+    #[specta(type = u32)]
     pub total_quantity: i64,
     /// Distinct corpse types this item was harvested from.
+    #[specta(type = u32)]
     pub distinct_corpses: i64,
     /// How many harvest pulls yielded this item.
+    #[specta(type = u32)]
     pub total_extracts: i64,
 }
 
@@ -1301,10 +1316,12 @@ pub fn export_kill_loot_database(db: State<'_, DbPool>, path: String) -> Result<
     Ok(enemies.len())
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct ImportSummary {
     pub source_label: String,
+    #[specta(type = u32)]
     pub enemies_imported: usize,
+    #[specta(type = u32)]
     pub loot_rows_imported: usize,
 }
 
@@ -1852,11 +1869,12 @@ pub fn import_kill_loot_database(
     })
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct ImportedSource {
     pub source_label: String,
     pub display_name: String,
     pub imported_at: String,
+    #[specta(type = u32)]
     pub enemy_count: i64,
 }
 
@@ -1911,17 +1929,22 @@ pub fn delete_imported_source(db: State<'_, DbPool>, source_label: String) -> Re
     Ok(())
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct ExtractDetail {
     pub corpse_name: Option<String>,
     pub skill: String,
+    #[specta(type = u32)]
     pub times: i64,
+    #[specta(type = u32)]
     pub total_quantity: i64,
     /// Representative (current) values. Skill/anatomy levels only ever rise, so
     /// MAX is the player's latest level; equipment bonus is stable per setup.
+    #[specta(type = Option<u32>)]
     pub skill_level: Option<i64>,
+    #[specta(type = Option<u32>)]
     pub equipment_bonus: Option<i64>,
     pub anatomy_family: Option<String>,
+    #[specta(type = Option<u32>)]
     pub anatomy_level: Option<i64>,
 }
 
@@ -1965,20 +1988,23 @@ pub fn get_corpse_extract_details(
     Ok(rows)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct EnemyHarvestStat {
     pub item_name: String,
     /// "Butchering" or "Skinning".
     pub skill: String,
+    #[specta(type = u32)]
     pub total_quantity: i64,
     /// How many harvest pulls yielded this item.
+    #[specta(type = u32)]
     pub times: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct EnemyHarvestStats {
     pub corpse_name: String,
     /// Total harvest yields recorded for this corpse type.
+    #[specta(type = u32)]
     pub total_extracts: i64,
     pub harvests: Vec<EnemyHarvestStat>,
 }
@@ -3316,5 +3342,60 @@ mod tests {
             eprintln!("smoke plan: {detail}");
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `kill_tracking` IPC payload shapes derive `specta::Type` so
+// `src/types/killTracking.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test kill_tracking_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<EnemyLootDrop>()
+        .register::<EnemyKillStats>()
+        .register::<BossKillRow>()
+        .register::<ItemDropSource>()
+        .register::<EnemySearchResult>()
+        .register::<ItemSearchResult>()
+        .register::<HarvestSearchResult>()
+        .register::<ImportSummary>()
+        .register::<ImportedSource>()
+        .register::<ExtractDetail>()
+        .register::<EnemyHarvestStat>()
+        .register::<EnemyHarvestStats>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/killTracking.specta.ts` must equal
+    /// what `export_bindings` derives from the `kill_tracking` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test kill_tracking_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_kill_tracking_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/killTracking.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
     }
 }

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 // ── Parsed structs (app shape) ───────────────────────────────────────────────
 
 /// Typed PvE or PvP combat stats for an ability.
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Clone, Default, specta::Type)]
 pub struct CombatStats {
     pub damage: Option<f32>,
     /// Armor-bypassing "health-specific" up-front hit (e.g. Mindworm, Mamba Strike). Shares the
@@ -34,11 +34,12 @@ pub struct CombatStats {
     /// Labeled non-damage values (heals, restores, etc.) with their own mod arrays.
     pub special_values: Vec<SpecialValue>,
     /// Any fields not explicitly typed above.
+    #[specta(skip)]
     pub extra: Value,
 }
 
 /// A single damage-over-time component of an ability.
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Clone, Default, specta::Type)]
 pub struct DotEffect {
     pub damage_per_tick: f32,
     pub num_ticks: f32,
@@ -53,7 +54,7 @@ pub struct DotEffect {
 
 /// A labeled numeric effect of an ability (heal, restore, buff amount, etc.).
 /// Shares the same base-value + delta/mod-attribute shape as damage.
-#[derive(Debug, Serialize, Clone, Default)]
+#[derive(Debug, Serialize, Clone, Default, specta::Type)]
 pub struct SpecialValue {
     pub label: Option<String>,
     pub suffix: Option<String>,
@@ -70,7 +71,7 @@ pub struct SpecialValue {
 }
 
 /// A single ability definition.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct AbilityInfo {
     pub id: u32,
     pub name: String,
@@ -100,11 +101,12 @@ pub struct AbilityInfo {
     pub range: Option<f32>,
 
     // Full raw JSON
+    #[specta(skip)]
     pub raw_json: Value,
 }
 
 /// A group of ability tiers that represent the same base ability at different power levels.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, specta::Type)]
 pub struct AbilityFamily {
     /// InternalName of the base (tier 1) ability, used as the family key.
     pub base_internal_name: String,

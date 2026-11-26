@@ -7,7 +7,7 @@ use serde_json::Value as JsonValue;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct AppSettings {
     /// Path to Player.log file (legacy, may deprecate)
     #[serde(default = "get_default_player_log_path")]
@@ -115,6 +115,7 @@ pub struct AppSettings {
 
     /// Opaque per-screen UI preferences (persisted as JSON, frontend-managed)
     #[serde(default)]
+    #[specta(skip)]
     pub view_preferences: Option<JsonValue>,
 
     /// Last app version that was run (used for logging version transitions)
@@ -274,7 +275,7 @@ pub fn resolve_item_value(mode: &str, vendor_value: f64, market_value: f64) -> f
 }
 
 /// How conditions within a rule are combined
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, specta::Type)]
 pub enum ConditionMatch {
     /// All conditions must match
     All,
@@ -284,8 +285,9 @@ pub enum ConditionMatch {
 }
 
 /// A single watch rule that fires when conditions match an incoming chat message
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct WatchRule {
+    #[specta(type = u32)]
     pub id: u64,
     pub name: String,
     pub enabled: bool,
@@ -303,7 +305,7 @@ pub struct WatchRule {
 }
 
 /// A single condition within a watch rule
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(tag = "type", content = "value")]
 pub enum WatchCondition {
     /// Case-insensitive substring match on message body AND item link names
@@ -315,7 +317,7 @@ pub enum WatchCondition {
 }
 
 /// How to notify the user when a watch rule fires
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 pub struct WatchNotifyConfig {
     pub sound: bool,
     pub toast: bool,
@@ -682,5 +684,53 @@ mod tests {
         assert_eq!(s.player_log_archive_retention_days, 14);
         assert_eq!(s.player_log_archive_max_files, 20);
         assert_eq!(s.player_log_archive_max_mb, 512);
+    }
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `settings` IPC payload shapes derive `specta::Type` so
+// `src/types/settings.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test settings_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<AppSettings>()
+        .register::<ConditionMatch>()
+        .register::<WatchRule>()
+        .register::<WatchCondition>()
+        .register::<WatchNotifyConfig>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/settings.specta.ts` must equal
+    /// what `export_bindings` derives from the `settings` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test settings_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_settings_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/settings.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
     }
 }

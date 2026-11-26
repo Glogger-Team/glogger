@@ -5,44 +5,48 @@ use tauri::State;
 
 // ── Input types ─────────────────────────────────────────────────────────────
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct FarmingSkillInput {
+    #[specta(type = u32)]
     pub skill_id: i64,
     pub skill_name: String,
+    #[specta(type = u32)]
     pub xp_gained: i64,
     pub levels_gained: i32,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct FarmingItemInput {
     pub item_name: String,
     pub net_quantity: i32,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct FarmingFavorInput {
     pub npc_key: String,
     pub npc_name: String,
     pub delta: f64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct FarmingKillInput {
     pub enemy_name: String,
     pub kill_count: i32,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, specta::Type)]
 pub struct SaveFarmingSessionInput {
     /// When set, update this existing session row (and replace its child rows)
     /// instead of inserting a new one. Used by the periodic auto-save so an
     /// in-progress session keeps a single row that is refreshed in place.
     #[serde(default)]
+    #[specta(type = Option<u32>)]
     pub session_id: Option<i64>,
     pub name: String,
     pub notes: String,
     pub start_time: String,
     pub end_time: Option<String>,
+    #[specta(type = u32)]
     pub elapsed_seconds: i64,
     /// Attributing character. None = legacy unattributed row, visible under
     /// any character filter (NULL-legacy rule on the read side).
@@ -50,7 +54,9 @@ pub struct SaveFarmingSessionInput {
     pub character_name: Option<String>,
     #[serde(default)]
     pub server_name: Option<String>,
+    #[specta(type = u32)]
     pub total_paused_seconds: i64,
+    #[specta(type = u32)]
     pub vendor_gold: i64,
     pub skills: Vec<FarmingSkillInput>,
     pub items: Vec<FarmingItemInput>,
@@ -60,42 +66,48 @@ pub struct SaveFarmingSessionInput {
 
 // ── Output types ────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct FarmingSkillRecord {
+    #[specta(type = u32)]
     pub skill_id: i64,
     pub skill_name: String,
+    #[specta(type = u32)]
     pub xp_gained: i64,
     pub levels_gained: i32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct FarmingItemRecord {
     pub item_name: String,
     pub net_quantity: i32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct FarmingFavorRecord {
     pub npc_key: String,
     pub npc_name: String,
     pub delta: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct FarmingKillRecord {
     pub enemy_name: String,
     pub kill_count: i32,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct HistoricalFarmingSession {
+    #[specta(type = u32)]
     pub id: i64,
     pub name: String,
     pub notes: String,
     pub start_time: String,
     pub end_time: Option<String>,
+    #[specta(type = u32)]
     pub elapsed_seconds: i64,
+    #[specta(type = u32)]
     pub total_paused_seconds: i64,
+    #[specta(type = u32)]
     pub vendor_gold: i64,
     pub created_at: String,
     pub character_name: Option<String>,
@@ -592,5 +604,58 @@ mod tests {
         let bob =
             get_farming_sessions_impl(&conn, 50, Some("Bob"), Some("TestServer")).unwrap();
         assert_eq!(bob.len(), 2, "own rows plus legacy NULL rows");
+    }
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `farming` IPC payload shapes derive `specta::Type` so
+// `src/types/farming.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test farming_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<FarmingSkillInput>()
+        .register::<FarmingItemInput>()
+        .register::<FarmingFavorInput>()
+        .register::<FarmingKillInput>()
+        .register::<SaveFarmingSessionInput>()
+        .register::<FarmingSkillRecord>()
+        .register::<FarmingItemRecord>()
+        .register::<FarmingFavorRecord>()
+        .register::<FarmingKillRecord>()
+        .register::<HistoricalFarmingSession>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/farming.specta.ts` must equal
+    /// what `export_bindings` derives from the `farming` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test farming_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_farming_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/farming.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
     }
 }
