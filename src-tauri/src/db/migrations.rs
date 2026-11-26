@@ -532,6 +532,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 100)?;
     }
 
+    if current_version < 101 {
+        migration_v101_xp_award_ledger(conn)?;
+        super::record_migration(conn, 101)?;
+    }
+
     tx.commit()?;
     Ok(())
 }
@@ -1960,6 +1965,85 @@ fn migration_v100_drop_player_prev_loot_added(conn: &Connection) -> Result<()> {
               FROM player_prev_ingests;
         DROP TABLE player_prev_ingests;
         ALTER TABLE player_prev_ingests_new RENAME TO player_prev_ingests;",
+    )?;
+    Ok(())
+}
+
+/// Migration V101: per-award XP ledger + snapshot anchor on `game_state_skills`.
+///
+/// Chat XP awards are increments sharing one column with snapshot absolute XP,
+/// guarded only by a recency timestamp — so an out-of-order older award was
+/// indistinguishable from a replay and dropped, and two same-second same-level
+/// awards matched neither WHERE arm (only the first applied). A blind `>=`
+/// is not the fix: replayed awards would double-count.
+///
+/// This migration lands the schema half of the identity fix (writers in
+/// `apply_chat_xp_award`, seeder in `seed_game_state_from_snapshot`):
+/// - `chat_xp_awards`: the applied-award identity — one row per
+///   (character, server, skill, timestamp, xp, level). A replay or twin
+///   finds its row and skips; a same-second or out-of-order award with a
+///   distinct identity applies. Same-timestamp same-xp same-level pairs
+///   stay one row: second-granularity logs give no key separating a
+///   genuine duplicate from its own replay (accepted limit, documented at
+///   the writer; English non-level XP lines carry no writer, so the only
+///   same-content same-second pairs observable are twin-or-replay).
+/// - `game_state_skills.xp_snapshot_at`: the snapshot anchor — the export
+///   timestamp (space-normalized, same shape as the currency anchor) that
+///   last seeded the row's absolute `xp`. A same-level award at or before
+///   the anchor is already inside the absolute and drops; newer awards
+///   accumulate on top. Level-ups win regardless (chat stays authoritative
+///   that the level was reached).
+///
+/// The anchor backfills from `last_confirmed_at` (space-normalized): every
+/// pre-upgrade award at or before it is either already counted (replays
+/// collapse on the ledger or the anchor) or was dropped by the old recency
+/// guard (stays dropped — consistent), while newer awards flow through the
+/// ledger. The backfill only fills `NULL`s, so re-runs keep newer anchors.
+fn migration_v101_xp_award_ledger(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS chat_xp_awards (
+            character_name TEXT NOT NULL,
+            server_name TEXT NOT NULL,
+            skill_id INTEGER NOT NULL,
+            awarded_at TEXT NOT NULL,
+            xp INTEGER NOT NULL,
+            level INTEGER NOT NULL,
+            PRIMARY KEY (character_name, server_name, skill_id, awarded_at, xp, level)
+        );",
+    )?;
+    // Minimal-fixture guard (same as v96/v97/v100): skip the column when the
+    // skills table is absent. In the real chain v1/v33 always created it.
+    let has_skills: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'game_state_skills')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_skills {
+        return Ok(());
+    }
+    // Re-runs (and already-migrated DBs reaching this fn directly) are
+    // no-ops once the column exists.
+    let has_column: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('game_state_skills') WHERE name = 'xp_snapshot_at')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !has_column {
+        conn.execute(
+            "ALTER TABLE game_state_skills ADD COLUMN xp_snapshot_at TEXT",
+            [],
+        )?;
+    }
+    // Anchor every unanchored row at its latest confirmation: same
+    // normalization as the v98 contract (space-format, second-granularity).
+    conn.execute(
+        "UPDATE game_state_skills SET xp_snapshot_at = substr(replace(last_confirmed_at, 'T', ' '), 1, 19)
+         WHERE xp_snapshot_at IS NULL",
+        [],
     )?;
     Ok(())
 }
@@ -5218,13 +5302,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            100,
+            101,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 100);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 101);
     }
 
     #[test]
@@ -5347,13 +5431,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 100) plus the purge itself on the three aggregate source tables.
+        // 101) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 100, "migration chain head");
+        assert_eq!(head, 101, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -5399,8 +5483,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 100 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id + v97 favor source-line id + v98 timestamp space contract + v99 kill-loot link-table drop + v100 player-prev loot_added drop). Repair: a
+        // Chain wiring: full run_migrations head must be 101 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id + v97 favor source-line id + v98 timestamp space contract + v99 kill-loot link-table drop + v100 player-prev loot_added drop + v101 XP award ledger). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -5408,7 +5492,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 100, "migration chain head");
+        assert_eq!(head, 101, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -6547,6 +6631,126 @@ mod tests {
         // Absent table (minimal fixtures) stays a no-op.
         let bare = Connection::open_in_memory().unwrap();
         migration_v100_drop_player_prev_loot_added(&bare).unwrap();
+    }
+
+    #[test]
+    fn v101_creates_xp_award_ledger_and_backfills_anchor() {
+        // Pre-v101 shape: skills table without the anchor column, no ledger.
+        // One space-format row, one `T…Z` snapshot row (lexicographic trap:
+        // the T-row sorts after same-day space rows).
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE game_state_skills (
+                 character_name TEXT NOT NULL,
+                 server_name TEXT NOT NULL,
+                 skill_id INTEGER NOT NULL,
+                 skill_name TEXT NOT NULL,
+                 level INTEGER NOT NULL,
+                 xp INTEGER NOT NULL DEFAULT 0,
+                 last_confirmed_at TEXT NOT NULL,
+                 PRIMARY KEY (character_name, server_name, skill_id)
+             );
+             INSERT INTO game_state_skills
+                 (character_name, server_name, skill_id, skill_name, level, xp, last_confirmed_at)
+             VALUES ('Alice', 'Dreva', 7, 'Sword', 5, 600, '2026-11-17 12:00:00'),
+                    ('Alice', 'Dreva', 8, 'Endurance', 3, 900, '2026-11-17T11:00:00Z');",
+        )
+        .unwrap();
+        migration_v101_xp_award_ledger(&c).unwrap();
+        // Ledger lands with the six-column identity key ...
+        let key_cols: String = c
+            .query_row(
+                "SELECT GROUP_CONCAT(name, ',') FROM (SELECT name FROM pragma_table_info('chat_xp_awards') ORDER BY cid)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            key_cols,
+            "character_name,server_name,skill_id,awarded_at,xp,level",
+            "ledger identity must be the full award key"
+        );
+        let pk: String = c
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chat_xp_awards'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            pk.contains("PRIMARY KEY (character_name, server_name, skill_id, awarded_at, xp, level)"),
+            "identity key must be the primary key, got: {pk}"
+        );
+        // ... and the anchor column lands nullable TEXT with normalized backfill.
+        let (coltype, nullable): (String, bool) = c
+            .query_row(
+                "SELECT type, \"notnull\" = 0 FROM pragma_table_info('game_state_skills')
+                   WHERE name = 'xp_snapshot_at'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?))
+            )
+            .unwrap();
+        assert_eq!(coltype, "TEXT", "anchor must land TEXT (space-format stamp)");
+        assert!(nullable, "anchor must land nullable");
+        let anchors: Vec<(String, String)> = c
+            .prepare("SELECT skill_name, xp_snapshot_at FROM game_state_skills ORDER BY skill_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            anchors,
+            vec![
+                ("Sword".to_string(), "2026-11-17 12:00:00".to_string()),
+                ("Endurance".to_string(), "2026-11-17 11:00:00".to_string()),
+            ],
+            "anchor backfills space-normalized (T…Z collapses to the contract)"
+        );
+        // Identity dedups: a replayed award collapses, a distinct award inserts.
+        c.execute(
+            "INSERT INTO chat_xp_awards
+                 (character_name, server_name, skill_id, awarded_at, xp, level)
+             VALUES ('Alice', 'Dreva', 7, '2026-11-17 12:05:00', 50, 5)",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT OR IGNORE INTO chat_xp_awards
+                 (character_name, server_name, skill_id, awarded_at, xp, level)
+             VALUES ('Alice', 'Dreva', 7, '2026-11-17 12:05:00', 50, 5)",
+            [],
+        )
+        .unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM chat_xp_awards", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "replayed award identity collapses");
+        // Idempotent: a second run keeps rows and anchors.
+        migration_v101_xp_award_ledger(&c).unwrap();
+        let n: i64 = c
+            .query_row("SELECT COUNT(*) FROM chat_xp_awards", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "second run must keep the ledger row");
+        let kept: String = c
+            .query_row(
+                "SELECT xp_snapshot_at FROM game_state_skills WHERE skill_name = 'Sword'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, "2026-11-17 12:00:00", "second run must keep the anchor");
+        // Absent skills table (minimal fixtures) still creates the ledger.
+        let bare = Connection::open_in_memory().unwrap();
+        migration_v101_xp_award_ledger(&bare).unwrap();
+        let ledger: bool = bare
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chat_xp_awards')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(ledger, "ledger must land even without the skills table");
     }
 }
 

@@ -31,7 +31,11 @@
 ///   a re-scan's second write finds the row and skips it.
 /// - cow/player milk, poop: `ON CONFLICT … DO NOTHING` / MAX-newer upserts.
 /// - combat wisdom, roulette, arena: `INSERT OR IGNORE` unique indices.
-/// - level-up: newer-wins recency guard in `apply_chat_level_up`.
+/// - chat XP (level-up + within-level): v101 per-award ledger identity on
+///   (character, server, skill, timestamp, xp, level) — a replay or twin
+///   finds its row and skips; same-second / out-of-order awards with a
+///   distinct identity apply. Same-level awards at or before the snapshot
+///   anchor (`xp_snapshot_at`) drop as already-counted.
 /// - Words of Power: `DELETE` of an already-gone word removes 0 rows.
 /// - deaths: deduped against `character_deaths` on
 ///   `(character, server, died_at, killer)` before insert.
@@ -1083,20 +1087,18 @@ fn insert_json_receipt_guarded(
     wrote
 }
 
-/// Chat XP without a level-up: same row shape and recency rule as the
-/// level-up writer, minus the level gate (XP within a level carries no level
-/// signal). No writer for this existed — `[Status]` XP lines were parsed but
-/// never persisted, and `Player.log` skill snapshots are gone.
+/// Chat XP without a level-up: same row shape as the level-up writer, minus
+/// the level gate (XP within a level carries no level signal). No writer
+/// for this existed — `[Status]` XP lines were parsed but never persisted,
+/// and `Player.log` skill snapshots are gone.
 /// `xp` here is an AWARDED INCREMENT, not a total (proven by the live
 /// fixture: Riding 250 → 350 → 300 across three lines — totals cannot fall).
-/// Identical resends (same timestamp) are no-ops; newer lines accumulate —
-/// but only within a level. An award that raises the level stores just the
-/// award: the previous level's within-level progress must not carry forward
-/// (a snapshot-seeded balance plus a later award would otherwise sum into
-/// the new level). A second award in the same second is dropped, as is an
-/// older award arriving after a newer one — second-granularity logs give no
-/// key that separates either from its own replay. (Per-award reconciliation
-/// against snapshot anchors would need a per-award ledger; see TODO.)
+/// Identity comes from the v101 per-award ledger (`apply_chat_xp_award`,
+/// shared with the level-up writer): a replayed award finds its identity
+/// row and skips, while a same-second or out-of-order award with a distinct
+/// identity applies. Same-timestamp same-xp same-level pairs still
+/// collapse — second-granularity logs give no key separating a genuine
+/// duplicate from its own replay (accepted limit).
 #[allow(clippy::too_many_arguments)]
 fn upsert_chat_xp(
     conn: &rusqlite::Connection,
@@ -1108,22 +1110,18 @@ fn upsert_chat_xp(
     xp: i64,
     confirmed_at: &str,
 ) -> bool {
-    conn.execute(
-        "INSERT INTO game_state_skills
-            (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0, ?6, 0, 0, ?7, 'chat')
-         ON CONFLICT(character_name, server_name, skill_id) DO UPDATE SET
-            skill_name = excluded.skill_name,
-            level = excluded.level,
-            xp = CASE WHEN excluded.level > game_state_skills.level THEN excluded.xp
-                      ELSE game_state_skills.xp + excluded.xp END,
-            last_confirmed_at = CASE WHEN excluded.last_confirmed_at > game_state_skills.last_confirmed_at THEN excluded.last_confirmed_at ELSE game_state_skills.last_confirmed_at END,
-            source = excluded.source
-         WHERE (excluded.last_confirmed_at > game_state_skills.last_confirmed_at AND excluded.level >= game_state_skills.level)
-            OR excluded.level > game_state_skills.level",
-        rusqlite::params![character, server, skill_id, skill_name, level, xp, confirmed_at],
+    crate::db::game_state_commands::apply_chat_xp_award(
+        &crate::db::game_state_commands::ChatXpAward {
+            conn,
+            character,
+            server,
+            skill_id,
+            skill_name,
+            level,
+            xp,
+            confirmed_at,
+        },
     )
-    .map(|n| n > 0)
     .unwrap_or(false)
 }
 
@@ -3545,6 +3543,161 @@ mod tests {
             )
             .unwrap();
         assert_eq!(level, 5);
+    }
+
+    #[test]
+    fn xp_same_second_same_level_awards_both_apply() {
+        // v101 contract 1: two same-second same-level awards are distinct
+        // identities (different XP), so both accumulate — the old WHERE
+        // guard matched neither arm and dropped the second.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        seed_skill(&gd, "Riding", 4244);
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:44:08";
+        for amount in [250, 350] {
+            let json = json_msg(
+                "EarnedXP",
+                &format!("{{\"Skill\":\"Riding\", \"XP\": {amount}, \"OldLevel\": 102, \"NewLevel\": 102}}"),
+                ts,
+            );
+            let mut st = state(&mut arena, &mut dmg);
+            let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+            assert!(out.domains.iter().any(|d| d == "skills"));
+        }
+        let (xp, n): (i64, i64) = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT xp, (SELECT COUNT(*) FROM chat_xp_awards
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND skill_id = 4244)
+                 FROM game_state_skills
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND skill_name = 'Riding'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((xp, n), (600, 2));
+    }
+
+    #[test]
+    fn xp_out_of_order_older_award_accumulates() {
+        // v101 contract 2: an older award arriving after newer state is a
+        // distinct award, not a replay — it accumulates, and the clock
+        // stays monotonic.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        seed_skill(&gd, "Riding", 4244);
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let newer = json_msg(
+            "EarnedXP",
+            "{\"Skill\":\"Riding\", \"XP\": 50, \"OldLevel\": 102, \"NewLevel\": 102}",
+            "26-11-17 08:44:38",
+        );
+        let mut st = state(&mut arena, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &newer, "26-11-17 08:44:38", &mut st);
+        assert!(out.domains.iter().any(|d| d == "skills"));
+        let older = json_msg(
+            "EarnedXP",
+            "{\"Skill\":\"Riding\", \"XP\": 30, \"OldLevel\": 102, \"NewLevel\": 102}",
+            "26-11-17 08:44:08",
+        );
+        let mut st = state(&mut arena, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &older, "26-11-17 08:44:08", &mut st);
+        assert!(out.domains.iter().any(|d| d == "skills"));
+        let (xp, ts): (i64, String) = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT xp, last_confirmed_at FROM game_state_skills
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND skill_name = 'Riding'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((xp, ts.as_str()), (80, "2026-11-17 08:44:38"));
+    }
+
+    #[test]
+    fn xp_replayed_award_does_not_double_count() {
+        // v101 contract 3: a byte-identical resend finds its ledger row
+        // and stays silent — the total moves once.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        seed_skill(&gd, "Riding", 4244);
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-17 08:44:08";
+        let json = json_msg(
+            "EarnedXP",
+            "{\"Skill\":\"Riding\", \"XP\": 250, \"OldLevel\": 102, \"NewLevel\": 102}",
+            ts,
+        );
+        let mut st = state(&mut arena, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out.domains.iter().any(|d| d == "skills"));
+        let mut st = state(&mut arena, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &json, ts, &mut st);
+        assert!(out.domains.iter().all(|d| d != "skills"));
+        let (xp, n): (i64, i64) = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT xp, (SELECT COUNT(*) FROM chat_xp_awards
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND skill_id = 4244)
+                 FROM game_state_skills
+                 WHERE character_name = 'Alice' AND server_name = 'Dreva' AND skill_name = 'Riding'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((xp, n), (250, 1));
+    }
+
+    #[test]
+    fn xp_english_json_level_up_twin_applies_once_both_orders() {
+        // Twin convergence under the ledger: English `LevelUp` + JSON
+        // `EarnedXP` carry the same award identity, so the second — either
+        // order — finds the row and stays silent. The old same-second drop
+        // also converged twins, by accident; this pins it on identity.
+        for english_first in [true, false] {
+            let (_guard, pool) = test_pool();
+            let gd = game_data();
+            seed_skill(&gd, "Sword", 4243);
+            let mut arena = ArenaTracker::new();
+            let mut dmg = Vec::new();
+            let ts = "26-11-17 08:42:52";
+            let english = status_msg("You earned 62 XP and reached level 5 in Sword!", ts);
+            let json = json_msg(
+                "EarnedXP",
+                "{\"Skill\":\"Sword\", \"XP\": 62, \"OldLevel\": 4, \"NewLevel\": 5}",
+                ts,
+            );
+            let (first, second) = if english_first {
+                (&english, &json)
+            } else {
+                (&json, &english)
+            };
+            let mut st = state(&mut arena, &mut dmg);
+            let out = dispatch(&pool, &gd, Some(&id()), first, ts, &mut st);
+            assert!(out.domains.iter().any(|d| d == "skills"), "first twin applies (english_first={english_first})");
+            let mut st = state(&mut arena, &mut dmg);
+            let out = dispatch(&pool, &gd, Some(&id()), second, ts, &mut st);
+            assert!(out.domains.iter().all(|d| d != "skills"), "twin second skips (english_first={english_first})");
+            let (level, xp): (i64, i64) = pool
+                .get()
+                .unwrap()
+                .query_row(
+                    "SELECT level, xp FROM game_state_skills
+                     WHERE character_name = 'Alice' AND server_name = 'Dreva' AND skill_name = 'Sword'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!((level, xp), (5, 62), "twin awards once (english_first={english_first})");
+        }
     }
 
     #[test]
