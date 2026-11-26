@@ -23,6 +23,7 @@ import TimerWidget from "./widgets/TimerWidget.vue";
 import TripPlannerWidget from "./widgets/TripPlannerWidget.vue";
 import TripPlannerWidgetConfig from "./widgets/TripPlannerWidgetConfig.vue";
 import HarvestAlmanacWidget from "./widgets/HarvestAlmanacWidget.vue";
+import GardenAlmanacWidget from "./widgets/GardenAlmanacWidget.vue";
 import HoplologyWidget from "./widgets/HoplologyWidget.vue";
 import VendorCouncilWidget from "./widgets/VendorCouncilWidget.vue";
 import RouletteWidget from "./widgets/RouletteWidget.vue";
@@ -196,6 +197,12 @@ export const DASHBOARD_WIDGETS: DashboardWidget[] = [
     id: "harvest-almanac",
     name: "Almanac of Corruption",
     component: HarvestAlmanacWidget,
+    defaultSize: "small",
+  },
+  {
+    id: "garden-almanac",
+    name: "Gardening Almanac",
+    component: GardenAlmanacWidget,
     defaultSize: "small",
   },
   {
