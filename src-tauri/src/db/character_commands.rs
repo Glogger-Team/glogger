@@ -842,9 +842,9 @@ fn seed_game_state_from_snapshot(
     // (same shape as the currency anchor): the chat writer drops same-level
     // awards at or before it as already inside this absolute, while newer
     // awards accumulate on top. `last_confirmed_at` keeps the raw export
-    // stamp (existing cross-format comparator semantics, documented on the
-    // chat writer); only the anchor normalizes, so the award-vs-anchor
-    // compare stays same-format.
+    // stamp (cross-format comparator semantics — see the cross-format
+    // note on `apply_chat_xp_award`); only the anchor normalizes, so the
+    // award-vs-anchor compare stays same-format.
     let anchor_at = ts.trim_end_matches('Z').replace('T', " ");
     let mut skill_stmt = conn.prepare(
         "INSERT INTO game_state_skills (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, xp_snapshot_at, source)

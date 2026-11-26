@@ -551,9 +551,11 @@ pub fn get_currency_estimate(
 /// anchors, which sorted after same-day space stamps and dropped intraday
 /// deltas). The accrual guard (`accrue_currency_delta`,
 /// `event_ts > anchor_at`) therefore string-compares like with like;
-/// zero-padded fixed-width stamps sort chronologically. The one asymmetry is
-/// documented on `apply_chat_level_up`: snapshot `"…Z"` stamps sort *after*
-/// same-day space-format chat stamps, but that arm doesn't touch this table.
+/// zero-padded fixed-width stamps sort chronologically. The snapshot/chat
+/// stamp asymmetry now lives in the XP anchor: the seeder normalizes the
+/// export stamp to space-format (`xp_snapshot_at`), so the award-vs-anchor
+/// compare is same-format — see the cross-format note on
+/// `apply_chat_xp_award` (which doesn't touch this table).
 ///
 /// `fetchCurrencyEstimate` audit (2026-10-26): the frontend
 /// (`gameStateStore.ts`) reconciles its optimistic counter against this on
@@ -771,6 +773,10 @@ pub fn set_tracked_skills(
 /// is the genuine level-up (`excluded.level >` stored level always wins
 /// — chat is authoritative that the player *reached* that level, even
 /// under clock skew, and even at or before the anchor).
+/// Cross-format note: `last_confirmed_at` keeps the raw export stamp
+/// (space-format chat stamps and `…Z` snapshot stamps coexist), so its
+/// max() only orders same-format stamps; the award-vs-anchor compare
+/// stays same-format because the seeder normalizes the anchor.
 /// `tnl` from an older level can diverge from the new level; the widgets key
 /// persisted progress off columns they own, never this mixed pair.
 /// A level win never moves the clock backward or downward: `last_confirmed_at`
@@ -2940,8 +2946,8 @@ mod tests {
             apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 192, confirmed_at: "2026-04-16 14:23:16" })
                 .expect("first apply");
         assert!(first);
-        // Byte-identical resend (same timestamp): the recency guard drops it,
-        // so the increment is not double-counted.
+        // Byte-identical resend (same timestamp): the ledger identity drops
+        // it, so the increment is not double-counted.
         let replay =
             apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 192, confirmed_at: "2026-04-16 14:23:16" })
                 .expect("replay apply");
