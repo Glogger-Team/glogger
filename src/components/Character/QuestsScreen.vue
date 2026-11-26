@@ -75,7 +75,9 @@
                 class="text-[0.65rem] px-1.5 py-0.5 rounded border shrink-0 bg-green-400/20 border-green-400/40 text-green-300">
                 Done
               </span>
-              <span class="text-[0.65rem] px-1.5 py-0.5 rounded border shrink-0 bg-purple-400/15 border-purple-400/30 text-purple-300">
+              <span
+                v-if="formatReuseTime(q)"
+                class="text-[0.65rem] px-1.5 py-0.5 rounded border shrink-0 bg-purple-400/15 border-purple-400/30 text-purple-300">
                 {{ formatReuseTime(q) }}
               </span>
             </div>
@@ -295,6 +297,7 @@ const currentTabQuests = computed<QuestInfo[]>(() => {
     case 'active': return activeQuestList.value
     case 'work_orders': return workOrderList.value
     case 'completed': return completedQuestList.value
+    case 'uncompleted': return uncompletedList.value
     case 'repeatables': return repeatableList.value
     default: return []
   }
