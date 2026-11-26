@@ -43,7 +43,7 @@
     <div v-else class="flex flex-col gap-2 flex-1 min-h-0">
       <!-- Hint when completed-quest data is missing (old export) -->
       <div
-        v-if="(activeTab === 'completed' || activeTab === 'uncompleted') && completedKeys.length === 0"
+        v-if="(activeTab === 'completed' || activeTab === 'uncompleted' || activeTab === 'repeatables') && completedKeys.length === 0"
         class="text-[0.7rem] text-text-dim italic px-2 py-1 border border-surface-elevated rounded bg-surface-base">
         No completed-quest data in this export. Completed quests are only recorded by newer game
         clients — re-export this character in-game (<span class="text-text-secondary">Export Character as JSON in Settings → VIP</span>) to populate this.
@@ -53,6 +53,43 @@
       <WorkOrdersTodoPanel
         v-if="activeTab === 'work_orders_todo'"
         :orders="workOrderTodos" />
+      <!-- Repeatable-cooldown foundation (own layout: reuse durations, no timestamps) -->
+      <div v-else-if="activeTab === 'repeatables'" class="flex gap-3 flex-1 min-h-0">
+        <div class="w-80 shrink-0 flex flex-col min-h-0 gap-2">
+          <div class="text-[0.7rem] text-text-dim italic px-2 py-1 border border-surface-elevated rounded bg-surface-base">
+            Cooldown state unavailable — completion timestamps are gated on Character-export
+            records. Durations below are static CDN reuse times, not live cooldowns.
+          </div>
+          <div class="overflow-y-auto flex-1 border border-surface-elevated">
+            <div
+              v-for="q in repeatableList"
+              :key="q.internal_name"
+              class="flex items-center gap-2 px-2 py-1 cursor-pointer border-b border-surface-dark text-xs hover:bg-surface-row-hover"
+              :class="{
+                'bg-surface-card border-l-2 border-l-accent-gold': selectedQuestKey === q.internal_name,
+              }"
+              @click="selectQuest(q.internal_name)">
+              <span class="flex-1 text-text-primary/75 truncate">{{ getQuestDisplayName(q) }}</span>
+              <span
+                v-if="completedKeySet.has(q.internal_name)"
+                class="text-[0.65rem] px-1.5 py-0.5 rounded border shrink-0 bg-green-400/20 border-green-400/40 text-green-300">
+                Done
+              </span>
+              <span class="text-[0.65rem] px-1.5 py-0.5 rounded border shrink-0 bg-purple-400/15 border-purple-400/30 text-purple-300">
+                {{ formatReuseTime(q) }}
+              </span>
+            </div>
+            <div v-if="repeatableList.length === 0" class="text-text-dim text-xs italic p-4 text-center">
+              No repeatable quests found in game data.
+            </div>
+          </div>
+        </div>
+
+        <QuestDetailPanel
+          :quest="selectedQuest"
+          :skills-by-name="gameState.skillsByName"
+          :favor-by-npc="gameState.favorByNpc" />
+      </div>
 
       <!-- Quest list + detail (all other tabs) -->
       <div v-else class="flex gap-3 flex-1 min-h-0">
@@ -87,8 +124,9 @@ import EmptyState from '../Shared/EmptyState.vue'
 import QuestListPanel from './QuestListPanel.vue'
 import QuestDetailPanel from './QuestDetailPanel.vue'
 import WorkOrdersTodoPanel from './WorkOrdersTodoPanel.vue'
+import { getQuestDisplayName, formatReuseTime } from '../../utils/questDisplay'
 
-type TabKey = 'active' | 'work_orders' | 'work_orders_todo' | 'uncompleted' | 'completed'
+type TabKey = 'active' | 'work_orders' | 'work_orders_todo' | 'uncompleted' | 'repeatables' | 'completed'
 
 const characterStore = useCharacterStore()
 const gameData = useGameDataStore()
@@ -234,11 +272,21 @@ const uncompletedList = computed<QuestInfo[]>(() => {
   return out
 })
 
+// Repeatable-cooldown foundation: every non-work-order CDN quest with a reuse
+// timer. No completion timestamps exist (gated on Character-export records), so
+// this lists static reuse durations only — never a live cooldown.
+const repeatableList = computed<QuestInfo[]>(() => {
+  const out = gameData.allQuestsCache.filter(q => !q.raw?.WorkOrderSkill && isRepeatable(q))
+  out.sort((a, b) => getQuestDisplayName(a).localeCompare(getQuestDisplayName(b)))
+  return out
+})
+
 const tabs = computed(() => [
   { key: 'active' as const, label: 'Active', count: activeQuestList.value.length },
   { key: 'work_orders' as const, label: 'Work Orders', count: workOrderList.value.length },
   { key: 'work_orders_todo' as const, label: 'Uncompleted WOs', count: workOrderTodos.value.length },
   { key: 'uncompleted' as const, label: 'Uncompleted', count: uncompletedList.value.length },
+  { key: 'repeatables' as const, label: 'Repeatables', count: repeatableList.value.length },
   { key: 'completed' as const, label: 'Completed', count: completedQuestList.value.length },
 ])
 
@@ -247,7 +295,7 @@ const currentTabQuests = computed<QuestInfo[]>(() => {
     case 'active': return activeQuestList.value
     case 'work_orders': return workOrderList.value
     case 'completed': return completedQuestList.value
-    case 'uncompleted': return uncompletedList.value
+    case 'repeatables': return repeatableList.value
     default: return []
   }
 })
@@ -268,6 +316,9 @@ const currentTabCategories = computed(() => {
       for (const q of uncompletedList.value) {
         m.set(q.internal_name, isRepeatable(q) ? 'repeatable' : 'available')
       }
+      break
+    case 'repeatables':
+      for (const q of repeatableList.value) m.set(q.internal_name, 'repeatable')
       break
   }
   return m
