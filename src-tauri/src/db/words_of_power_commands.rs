@@ -108,6 +108,15 @@ pub fn get_words_of_power(
     Ok(words)
 }
 
+/// Current UTC time in the `words_of_power.discovered_at` contract format:
+/// space-separated naive UTC (`%Y-%m-%d %H:%M:%S`), matching the v98 backfill
+/// of legacy columns. RFC3339 (`T` separator / `Z` suffix) must NOT be
+/// written: `T` (0x54) sorts after ` ` (0x20), so an RFC3339 row misorders
+/// in `ORDER BY discovered_at` against space-format rows.
+fn utc_now_stamp() -> String {
+    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
 #[tauri::command]
 pub fn add_word_of_power(
     db: State<'_, DbPool>,
@@ -116,7 +125,7 @@ pub fn add_word_of_power(
     input: AddWordInput,
 ) -> Result<WordOfPower, String> {
     let conn = db.get_write().map_err(|e| e.to_string())?;
-    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let now = utc_now_stamp();
 
     conn.execute(
         "INSERT INTO words_of_power (character_name, server_name, word, power_name, description, discovered_at, source)
@@ -182,7 +191,7 @@ pub fn import_words_of_power_csv(
     let conn = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| format!("Failed to start transaction: {e}"))?;
-    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let now = utc_now_stamp();
 
     let mut imported = 0usize;
 
@@ -270,8 +279,10 @@ fn find_header_opt(headers: &csv::StringRecord, candidates: &[&str]) -> Option<u
     None
 }
 
-/// Best-effort parsing of common date+time formats into ISO 8601.
-/// Accepts "MM/DD/YYYY HH:MM:SS AM/PM", "YYYY-MM-DD HH:MM:SS", etc.
+/// Best-effort parsing of common date+time formats into space-format naive UTC
+/// (`YYYY-MM-DD HH:MM:SS`, the `discovered_at` contract — see [`utc_now_stamp`]).
+/// Accepts "MM/DD/YYYY HH:MM:SS AM/PM", "YYYY-MM-DD HH:MM:SS", RFC3339
+/// ("YYYY-MM-DDTHH:MM:SSZ", normalized), etc.
 fn parse_csv_datetime(s: &str) -> Option<String> {
     let s = s.trim();
 
@@ -287,13 +298,22 @@ fn parse_csv_datetime(s: &str) -> Option<String> {
 
     for fmt in formats {
         if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
-            return Some(dt.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+            return Some(dt.format("%Y-%m-%d %H:%M:%S").to_string());
         }
     }
 
-    // If it's already ISO-like, return as-is
-    if s.contains('T') && s.ends_with('Z') {
-        return Some(s.to_string());
+    // An RFC3339-ish stamp is normalized to the space contract rather than
+    // passed through: a stored `T` separator misorders ORDER BY (see
+    // `utc_now_stamp`). Unparseable input falls through to None so the
+    // caller stamps `now` instead of persisting garbage.
+    if s.contains('T') {
+        let normalized = s.replace('T', " ");
+        let normalized = normalized.trim_end_matches('Z').trim();
+        for fmt in &["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"] {
+            if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(normalized, fmt) {
+                return Some(dt.format("%Y-%m-%d %H:%M:%S").to_string());
+            }
+        }
     }
 
     None
@@ -482,9 +502,9 @@ mod tests {
     fn test_delete_words_by_word_removes_all_characters_copies() {
         let conn = setup();
         // Same word saved by two characters, plus an unrelated word.
-        seed_word(&conn, "Alt", "Dreva", "ABCWORD", "Haste", "2026-07-01T00:00:00Z");
-        seed_word(&conn, "Main", "Dreva", "ABCWORD", "Haste", "2026-07-01T00:00:00Z");
-        seed_word(&conn, "Main", "Dreva", "OTHERWORD", "Luck", "2026-07-02T00:00:00Z");
+        seed_word(&conn, "Alt", "Dreva", "ABCWORD", "Haste", "2026-07-01 00:00:00");
+        seed_word(&conn, "Main", "Dreva", "ABCWORD", "Haste", "2026-07-01 00:00:00");
+        seed_word(&conn, "Main", "Dreva", "OTHERWORD", "Luck", "2026-07-02 00:00:00");
 
         let n = delete_words_by_word(&conn, "ABCWORD").unwrap();
         assert_eq!(n, 2);
@@ -495,7 +515,7 @@ mod tests {
     fn test_delete_words_by_word_case_and_whitespace_insensitive() {
         let conn = setup();
         // Manual entries may be lowercased or carry stray whitespace.
-        seed_word(&conn, "Main", "Dreva", " abcword ", "Haste", "2026-07-01T00:00:00Z");
+        seed_word(&conn, "Main", "Dreva", " abcword ", "Haste", "2026-07-01 00:00:00");
 
         let n = delete_words_by_word(&conn, "ABCWORD").unwrap();
         assert_eq!(n, 1);
@@ -505,10 +525,97 @@ mod tests {
     #[test]
     fn test_delete_words_by_word_unknown_word_is_noop() {
         let conn = setup();
-        seed_word(&conn, "Main", "Dreva", "ABCWORD", "Haste", "2026-07-01T00:00:00Z");
+        seed_word(&conn, "Main", "Dreva", "ABCWORD", "Haste", "2026-07-01 00:00:00");
 
         let n = delete_words_by_word(&conn, "NEVERSPOKEN").unwrap();
         assert_eq!(n, 0);
         assert_eq!(count(&conn), 1);
+    }
+
+    /// Both writers must stamp space-format naive UTC (`YYYY-MM-DD HH:MM:SS`,
+    /// no `T` separator): the v98 backfill normalized legacy columns to that
+    /// shape, and an RFC3339 row misorders under `ORDER BY discovered_at`
+    /// (`T` 0x54 sorts after ` ` 0x20).
+    #[test]
+    fn test_utc_now_stamp_is_space_format_naive_utc() {
+        let stamp = utc_now_stamp();
+        assert_eq!(stamp.len(), 19, "expected YYYY-MM-DD HH:MM:SS, got {stamp}");
+        assert_eq!(&stamp[10..11], " ", "expected space separator, got {stamp}");
+        assert!(!stamp.contains('T'), "T separator in new stamp {stamp}");
+        assert!(!stamp.contains('Z'), "Z suffix in new stamp {stamp}");
+        assert!(
+            chrono::NaiveDateTime::parse_from_str(&stamp, "%Y-%m-%d %H:%M:%S").is_ok(),
+            "new stamp does not parse as naive UTC: {stamp}"
+        );
+    }
+
+    #[test]
+    fn test_parse_csv_datetime_emits_space_format() {
+        // Every accepted input shape — including RFC3339 — must come out in
+        // the space-format contract, never passed through with a `T`.
+        for input in [
+            "07/01/2026 02:30:00 PM",
+            "07/01/2026 02:30 PM",
+            "07/01/2026 14:30:00",
+            "07/01/2026 14:30",
+            "2026-07-01 14:30:00",
+            "2026-07-01 14:30",
+            "2026-07-01T14:30:00Z",
+        ] {
+            let out =
+                parse_csv_datetime(input).unwrap_or_else(|| panic!("unparsed input {input}"));
+            assert_eq!(out, "2026-07-01 14:30:00", "wrong normalization of {input}");
+        }
+        assert_eq!(parse_csv_datetime("not a date"), None);
+    }
+
+    /// Written-row pin: rows stamped as the writers bind them (manual `now`
+    /// plus a CSV cell in RFC3339, as `parse_csv_datetime` normalizes it)
+    /// persist in space format and order chronologically under the
+    /// `get_words_of_power` ORDER BY. Pre-fix this failed: the T-row
+    /// (`2026-07-01T14:30:00Z`) sorted ahead of the later space row
+    /// (`2026-07-01 15:00:00`) under DESC.
+    #[test]
+    fn test_written_rows_order_chronologically_in_space_format() {
+        let conn = setup();
+        // Legacy v98-shape row, later clock time.
+        seed_word(&conn, "Main", "Dreva", "LATEWORD", "Haste", "2026-07-01 15:00:00");
+        // CSV-shape row: an RFC3339 cell normalized exactly as the CSV
+        // writer binds it (parse, falling back to `now` on garbage).
+        let csv_cell = "2026-07-01T14:30:00Z";
+        let csv_stamped =
+            parse_csv_datetime(csv_cell).unwrap_or_else(utc_now_stamp);
+        seed_word(&conn, "Main", "Dreva", "EARLYWORD", "Luck", &csv_stamped);
+        // Manual-shape row: stamped exactly as `add_word_of_power` binds it.
+        seed_word(&conn, "Main", "Dreva", "NOWWORD", "Haste", &utc_now_stamp());
+
+        let rows: Vec<(String, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT word, discovered_at FROM words_of_power
+                     ORDER BY discovered_at DESC",
+                )
+                .unwrap();
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        assert_eq!(rows.len(), 3);
+        for (_, discovered_at) in &rows {
+            assert!(
+                !discovered_at.contains('T'),
+                "T separator persisted in row {discovered_at}"
+            );
+            assert!(
+                chrono::NaiveDateTime::parse_from_str(discovered_at, "%Y-%m-%d %H:%M:%S")
+                    .is_ok(),
+                "row does not parse as space-format naive UTC: {discovered_at}"
+            );
+        }
+        // Newest (now) first, then 15:00, then the normalized 14:30 CSV row.
+        assert_eq!(rows[0].0, "NOWWORD");
+        assert_eq!(rows[1].0, "LATEWORD");
+        assert_eq!(rows[2], ("EARLYWORD".to_string(), "2026-07-01 14:30:00".to_string()));
     }
 }
