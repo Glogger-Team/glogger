@@ -195,6 +195,10 @@ invoke('plan_trip', {
 }
 ```
 
+### `plan_work_order_trip`
+
+Plan a work-order craft/turn-in route from CDN quest data (one `Craft` + one `TurnIn` stop per order through the `plan_route` solver).
+
 ### `get_teleportation_binds`
 
 Query the player's known bind locations.
