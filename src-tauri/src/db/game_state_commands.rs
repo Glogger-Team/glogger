@@ -551,9 +551,11 @@ pub fn get_currency_estimate(
 /// anchors, which sorted after same-day space stamps and dropped intraday
 /// deltas). The accrual guard (`accrue_currency_delta`,
 /// `event_ts > anchor_at`) therefore string-compares like with like;
-/// zero-padded fixed-width stamps sort chronologically. The one asymmetry is
-/// documented on `apply_chat_level_up`: snapshot `"…Z"` stamps sort *after*
-/// same-day space-format chat stamps, but that arm doesn't touch this table.
+/// zero-padded fixed-width stamps sort chronologically. The snapshot/chat
+/// stamp asymmetry now lives in the XP anchor: the seeder normalizes the
+/// export stamp to space-format (`xp_snapshot_at`), so the award-vs-anchor
+/// compare is same-format — see the cross-format note on
+/// `apply_chat_xp_award` (which doesn't touch this table).
 ///
 /// `fetchCurrencyEstimate` audit (2026-10-26): the frontend
 /// (`gameStateStore.ts`) reconciles its optimistic counter against this on
@@ -745,25 +747,36 @@ pub fn set_tracked_skills(
 /// ("You earned N XP and reached level L in Skill!").
 /// Post-10/21/2026 this is the only live skill signal
 /// (`ProcessUpdateSkill` lines are gone from Player.log). The carried XP is
-/// an awarded increment, not a total — newer same-level lines accumulate
-/// onto the stored value (identical-timestamp resends are no-ops via the
-/// recency guard below). Basis rule: report snapshots seed `xp` as the
-/// absolute within-level figure (`xp_toward_next_level`); an award that
-/// raises the level stores just the award (the CASE below), so no
-/// snapshot-seeded balance carries forward into the new level.
-/// Chat carries only level + this-level XP, so the upsert preserves
-/// `base_level/bonus_levels/tnl/max_level` on conflict and always refreshes
-/// `skill_name` to the canonical display name (a fresh insert seeds
-/// `base_level = level`, `tnl/max = 0`). Same recency-gated shape as the
-/// snapshot seeder — except the comparator is lexicographic over two
-/// different formats: the coordinator UTC-converts chat stamps before parsing
-/// (`"YYYY-MM-DD HH:MM:SS"`), while snapshots carry `"…Z"` UTC. Space
-/// (`0x20`) sorts before `T` (`0x54`), so a same-day chat stamp is always
-/// lexicographically older than its snapshot — the timestamp guard only
-/// orders same-format stamps. The unconditional winner is the genuine
-/// level-up (`excluded.level >` stored level always wins — chat is
-/// authoritative that the player *reached* that level, even under clock
-/// skew); a same-level cross-format newer line is dropped.
+/// an awarded increment, not a total — same-level awards accumulate onto
+/// the stored value, and an award that raises the level stores just the
+/// award (no snapshot-seeded balance carries forward into the new level).
+/// Basis rule: report snapshots seed `xp` as the absolute within-level
+/// figure (`xp_toward_next_level`); chat carries only level + this-level XP,
+/// so the upsert preserves `base_level/bonus_levels/tnl/max_level` on
+/// conflict and always refreshes `skill_name` to the canonical display
+/// name (a fresh insert seeds `base_level = level`, `tnl/max = 0`).
+/// Identity rule (v101 `chat_xp_awards`): every applied award lands one
+/// ledger row keyed on (character, server, skill, timestamp, xp, level).
+/// A replay or twin finds its row and skips (no double-count); a
+/// same-second or out-of-order award with a distinct identity applies —
+/// the old recency guard dropped both (indistinguishable from replays
+/// under a timestamp-only key). Same-timestamp same-xp same-level pairs
+/// still collapse: second-granularity logs give no key separating a
+/// genuine duplicate from its own replay, and the only same-content
+/// same-second pairs observable are twin-or-replay (English non-level XP
+/// lines carry no writer).
+/// Anchor rule (`xp_snapshot_at`): a same-level award at or before the
+/// snapshot anchor is already inside the seeded absolute and drops; newer
+/// awards accumulate on top. A level-up clears the anchor (it described
+/// the previous level's absolute — the new level has no snapshot yet),
+/// so post-ding awards are ledger-gated only. The unconditional winner
+/// is the genuine level-up (`excluded.level >` stored level always wins
+/// — chat is authoritative that the player *reached* that level, even
+/// under clock skew, and even at or before the anchor).
+/// Cross-format note: `last_confirmed_at` keeps the raw export stamp
+/// (space-format chat stamps and `…Z` snapshot stamps coexist), so its
+/// max() only orders same-format stamps; the award-vs-anchor compare
+/// stays same-format because the seeder normalizes the anchor.
 /// `tnl` from an older level can diverge from the new level; the widgets key
 /// persisted progress off columns they own, never this mixed pair.
 /// A level win never moves the clock backward or downward: `last_confirmed_at`
@@ -785,33 +798,146 @@ pub(crate) struct ChatLevelUp<'a> {
 }
 
 pub(crate) fn apply_chat_level_up(l: &ChatLevelUp<'_>) -> Result<bool, String> {
-    let ChatLevelUp {
-        conn,
-        character,
-        server,
-        skill_id,
-        skill_name,
-        level,
-        xp,
-        confirmed_at,
-    } = *l;
-    let changed = conn.execute(
-        "INSERT INTO game_state_skills
-           (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0, ?6, 0, 0, ?7, 'chat')
-         ON CONFLICT(character_name, server_name, skill_id) DO UPDATE SET
-            skill_name = excluded.skill_name,
-            level = excluded.level,
-            xp = CASE WHEN excluded.level > game_state_skills.level THEN excluded.xp
-                      ELSE game_state_skills.xp + excluded.xp END,
-            last_confirmed_at = CASE WHEN excluded.last_confirmed_at > game_state_skills.last_confirmed_at THEN excluded.last_confirmed_at ELSE game_state_skills.last_confirmed_at END,
-            source = excluded.source
-         WHERE (excluded.last_confirmed_at > game_state_skills.last_confirmed_at AND excluded.level >= game_state_skills.level)
-            OR excluded.level > game_state_skills.level",
-        rusqlite::params![character, server, skill_id, skill_name, level, xp, confirmed_at],
+    apply_chat_xp_award(&ChatXpAward {
+        conn: l.conn,
+        character: l.character,
+        server: l.server,
+        skill_id: l.skill_id,
+        skill_name: l.skill_name,
+        level: l.level,
+        xp: l.xp,
+        confirmed_at: l.confirmed_at,
+    })
+}
+
+/// One chat-observed XP award (level-up or within-level): same shape as
+/// [`ChatLevelUp`]. Both writers (`apply_chat_level_up` for level-ups,
+/// `upsert_chat_xp` for within-level JSON awards) were byte-identical
+/// recency-gated upserts; both now delegate here so the ledger + anchor
+/// gates live in exactly one place.
+pub(crate) struct ChatXpAward<'a> {
+    pub conn: &'a rusqlite::Connection,
+    pub character: &'a str,
+    pub server: &'a str,
+    pub skill_id: i64,
+    pub skill_name: &'a str,
+    pub level: i64,
+    pub xp: i64,
+    pub confirmed_at: &'a str,
+}
+
+/// Apply one chat XP award with the v101 identity + anchor gates.
+/// Returns true when the skills row was inserted or updated.
+pub(crate) fn apply_chat_xp_award(a: &ChatXpAward<'_>) -> Result<bool, String> {
+    let stored: Option<(i64, i64, String, Option<String>)> = a
+        .conn
+        .query_row(
+            "SELECT level, xp, last_confirmed_at, xp_snapshot_at FROM game_state_skills
+             WHERE character_name = ?1 AND server_name = ?2 AND skill_id = ?3",
+            rusqlite::params![a.character, a.server, a.skill_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Failed to read chat XP row: {e}"))?;
+    if let Some((stored_level, _, _, anchor)) = &stored {
+        // Level gate (unchanged): a lower level never rewinds the row — a
+        // newer-stamped first-XP award arriving after the skill is known,
+        // or any older-level line, drops whole.
+        if a.level < *stored_level {
+            return Ok(false);
+        }
+        // Anchor gate: a same-level award at or before the snapshot anchor
+        // is already inside the seeded absolute and drops. Level-ups skip
+        // this gate (chat stays authoritative that the level was reached).
+        if a.level == *stored_level
+            && anchor.as_deref().is_some_and(|anc| a.confirmed_at <= anc)
+        {
+            return Ok(false);
+        }
+    }
+    // Single write transaction for the ledger + skills unit: a failure
+    // between them rolls back, so a later replay retries the whole award
+    // instead of skipping an unapplied one (same unchecked-transaction
+    // shape as the favor arm: the pool checkout is exclusive and no outer
+    // transaction is open here).
+    let tx = rusqlite::Transaction::new_unchecked(
+        a.conn,
+        rusqlite::TransactionBehavior::Immediate,
     )
-    .map_err(|e| format!("Failed to apply chat level-up: {e}"))?;
-    Ok(changed > 0)
+    .map_err(|e| format!("Failed to begin chat XP award txn: {e}"))?;
+    // Ledger: a replay or twin-second finds its identity row and skips
+    // before touching the total — this is the no-double-count gate the
+    // old recency WHERE clause used to be. Only applied awards land here:
+    // gate-dropped lines above leave no row and re-evaluate the same
+    // gates on replay.
+    let fresh = tx
+        .execute(
+            "INSERT OR IGNORE INTO chat_xp_awards
+                (character_name, server_name, skill_id, awarded_at, xp, level)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                a.character,
+                a.server,
+                a.skill_id,
+                a.confirmed_at,
+                a.xp,
+                a.level
+            ],
+        )
+        .map_err(|e| format!("Failed to ledger chat XP award: {e}"))?;
+    if fresh == 0 {
+        return Ok(false);
+    }
+    let Some((stored_level, stored_xp, _, _)) = stored else {
+        // Fresh skill: seed the row around the award (anchor stays NULL —
+        // no snapshot absolute exists yet to subsume anything).
+        tx.execute(
+            "INSERT INTO game_state_skills
+               (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0, ?6, 0, 0, ?7, 'chat')",
+            rusqlite::params![
+                a.character,
+                a.server,
+                a.skill_id,
+                a.skill_name,
+                a.level,
+                a.xp,
+                a.confirmed_at
+            ],
+        )
+        .map_err(|e| format!("Failed to apply chat XP award: {e}"))?;
+        tx.commit()
+            .map_err(|e| format!("Failed to commit chat XP award: {e}"))?;
+        return Ok(true);
+    };
+    // Level-up resets to the award (no prior-level progress carries
+    // forward); same-level accumulates. The clock stays monotonic —
+    // `last_confirmed_at` is the max of stored and incoming.
+    let new_xp = if a.level > stored_level {
+        a.xp
+    } else {
+        stored_xp + a.xp
+    };
+    tx.execute(
+        "UPDATE game_state_skills SET skill_name = ?4, level = ?5, xp = ?6,
+            last_confirmed_at = CASE WHEN ?7 > last_confirmed_at THEN ?7 ELSE last_confirmed_at END,
+            xp_snapshot_at = CASE WHEN ?5 > level THEN NULL ELSE xp_snapshot_at END,
+            source = 'chat'
+         WHERE character_name = ?1 AND server_name = ?2 AND skill_id = ?3",
+        rusqlite::params![
+            a.character,
+            a.server,
+            a.skill_id,
+            a.skill_name,
+            a.level,
+            new_xp,
+            a.confirmed_at
+        ],
+    )
+    .map_err(|e| format!("Failed to apply chat XP award: {e}"))?;
+    tx.commit()
+        .map_err(|e| format!("Failed to commit chat XP award: {e}"))?;
+    Ok(true)
 }
 
 #[derive(Serialize, specta::Type)]
@@ -2820,8 +2946,8 @@ mod tests {
             apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 192, confirmed_at: "2026-04-16 14:23:16" })
                 .expect("first apply");
         assert!(first);
-        // Byte-identical resend (same timestamp): the recency guard drops it,
-        // so the increment is not double-counted.
+        // Byte-identical resend (same timestamp): the ledger identity drops
+        // it, so the increment is not double-counted.
         let replay =
             apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 192, confirmed_at: "2026-04-16 14:23:16" })
                 .expect("replay apply");
@@ -2850,21 +2976,19 @@ mod tests {
     }
 
     #[test]
-    fn chat_level_up_stale_replay_is_dropped() {
+    fn chat_level_up_older_award_accumulates() {
+        // v101: the per-award ledger replaces the recency guard, so a
+        // same-level award with an older timestamp is a distinct award, not
+        // a replay — it accumulates instead of dropping. The clock still
+        // stays monotonic (`last_confirmed_at` is the max).
         let conn = setup();
 
         apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 192, confirmed_at: "2026-04-16 15:00:00" })
             .expect("first apply");
-        // A same-level line at an older timestamp replayed after newer state:
-        // the guard drops it, and the timestamp must not move backward.
-        // (Same-format stamps only: production chat stamps are UTC-converted
-        // space-format vs `T…Z` snapshot stamps, so a same-day live level-up
-        // always sorts older — only `excluded.level >` rescues it. This pins
-        // the guard logic, not the wire formats.)
         let changed =
             apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 100, confirmed_at: "2026-04-16 14:23:16" })
-                .expect("stale apply");
-        assert!(!changed);
+                .expect("older apply");
+        assert!(changed);
 
         let (level, xp, ts, source): (i64, i64, String, String) = conn
             .query_row(
@@ -2874,9 +2998,28 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .expect("row exists");
-        assert_eq!((level, xp), (87, 192));
+        assert_eq!((level, xp), (87, 292));
         assert_eq!(ts, "2026-04-16 15:00:00");
         assert_eq!(source, "chat");
+        // The ledger holds both award identities ...
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chat_xp_awards", [], |r| r.get(0))
+            .expect("ledger count");
+        assert_eq!(n, 2);
+        // ... so replaying the older award now skips instead of re-adding.
+        let replay =
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 100, confirmed_at: "2026-04-16 14:23:16" })
+                .expect("replay apply");
+        assert!(!replay);
+        let xp: i64 = conn
+            .query_row(
+                "SELECT xp FROM game_state_skills
+                 WHERE character_name = 'TestPlayer' AND server_name = 'Dreva' AND skill_id = 106",
+                [],
+                |r| r.get(0),
+            )
+            .expect("row exists");
+        assert_eq!(xp, 292);
     }
 
     #[test]
@@ -2910,6 +3053,131 @@ mod tests {
             apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 100, confirmed_at: "2026-04-16 14:59:30" })
                 .expect("stale apply");
         assert!(!stale);
+    }
+
+    #[test]
+    fn chat_xp_anchor_drops_subsumed_same_level_award() {
+        // Snapshot-shaped row: absolute xp seeded by an export, anchor at
+        // the export stamp. Same-level awards at or before the anchor are
+        // already inside the absolute and drop; newer ones accumulate.
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO game_state_skills
+                (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, xp_snapshot_at, source)
+             VALUES ('TestPlayer','Dreva',106,'Cartography',87,87,0,4900,0,0,'2026-04-16 12:00:00','2026-04-16 12:00:00','snapshot')",
+            [],
+        )
+        .unwrap();
+        // At the anchor second: subsumed, drops.
+        let subsumed =
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 100, confirmed_at: "2026-04-16 12:00:00" })
+                .expect("subsumed apply");
+        assert!(!subsumed);
+        // Before the anchor, never seen: still subsumed (the export
+        // absolute already includes it), drops.
+        let older =
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 100, confirmed_at: "2026-04-16 11:00:00" })
+                .expect("older apply");
+        assert!(!older);
+        // After the anchor: genuinely new, accumulates.
+        let newer =
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 100, confirmed_at: "2026-04-16 13:00:00" })
+                .expect("newer apply");
+        assert!(newer);
+        let (level, xp, ts, anchor): (i64, i64, String, String) = conn
+            .query_row(
+                "SELECT level, xp, last_confirmed_at, xp_snapshot_at FROM game_state_skills
+                 WHERE character_name = 'TestPlayer' AND server_name = 'Dreva' AND skill_id = 106",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .expect("row exists");
+        assert_eq!((level, xp), (87, 5000));
+        assert_eq!(ts, "2026-04-16 13:00:00");
+        assert_eq!(anchor, "2026-04-16 12:00:00");
+        // Dropped awards ledger nothing ... only the newer award applied.
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chat_xp_awards", [], |r| r.get(0))
+            .expect("ledger count");
+        assert_eq!(n, 1);
+        // ... so the newer award replays skip.
+        let replay =
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 87, xp: 100, confirmed_at: "2026-04-16 13:00:00" })
+                .expect("replay apply");
+        assert!(!replay);
+    }
+
+    #[test]
+    fn chat_xp_level_up_wins_despite_anchor() {
+        // A genuine level-up at or before the anchor still applies: chat
+        // stays authoritative that the level was reached (existing
+        // priority, unchanged by the anchor gate).
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO game_state_skills
+                (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, xp_snapshot_at, source)
+             VALUES ('TestPlayer','Dreva',106,'Cartography',87,87,0,4900,0,0,'2026-04-16 12:00:00','2026-04-16 12:00:00','snapshot')",
+            [],
+        )
+        .unwrap();
+        let changed =
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 88, xp: 10, confirmed_at: "2026-04-16 11:00:00" })
+                .expect("level-up apply");
+        assert!(changed);
+        let (level, xp, ts): (i64, i64, String) = conn
+            .query_row(
+                "SELECT level, xp, last_confirmed_at FROM game_state_skills
+                 WHERE character_name = 'TestPlayer' AND server_name = 'Dreva' AND skill_id = 106",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("row exists");
+        assert_eq!((level, xp), (88, 10));
+        assert_eq!(ts, "2026-04-16 12:00:00");
+    }
+
+    #[test]
+    fn chat_xp_level_up_clears_stale_anchor() {
+        // F1: the anchor describes the previous level's absolute — after a
+        // level-up resets xp it must clear, or genuine new-level awards
+        // stamped at or before the old anchor drop as already-counted.
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO game_state_skills
+                (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, xp_snapshot_at, source)
+             VALUES ('TestPlayer','Dreva',106,'Cartography',87,87,0,4900,0,0,'2026-04-16 12:00:00','2026-04-16 12:00:00','snapshot')",
+            [],
+        )
+        .unwrap();
+        let leveled =
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 88, xp: 10, confirmed_at: "2026-04-16 11:00:00" })
+                .expect("level-up apply");
+        assert!(leveled);
+        let anchor: Option<String> = conn
+            .query_row(
+                "SELECT xp_snapshot_at FROM game_state_skills
+                 WHERE character_name = 'TestPlayer' AND server_name = 'Dreva' AND skill_id = 106",
+                [],
+                |r| r.get(0),
+            )
+            .expect("row exists");
+        assert_eq!(anchor, None, "level-up must clear the previous level's anchor");
+        // Older same-level award at the NEW level (stamped before the old
+        // anchor): genuinely new progress, accumulates.
+        let older =
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 88, xp: 5, confirmed_at: "2026-04-16 10:00:00" })
+                .expect("older apply");
+        assert!(older);
+        let (level, xp, ts): (i64, i64, String) = conn
+            .query_row(
+                "SELECT level, xp, last_confirmed_at FROM game_state_skills
+                 WHERE character_name = 'TestPlayer' AND server_name = 'Dreva' AND skill_id = 106",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("row exists");
+        assert_eq!((level, xp), (88, 15));
+        assert_eq!(ts, "2026-04-16 12:00:00");
     }
 
     #[test]

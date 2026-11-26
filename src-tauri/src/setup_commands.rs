@@ -378,6 +378,7 @@ const SCOPED_TABLES: &[&str] = &[
     "tracked_skills",
     "user_timers",
     "words_of_power",
+    "chat_xp_awards",
 ];
 
 /// Delete a character and all their character-scoped data.
@@ -1360,6 +1361,11 @@ mod tests {
         )
         .unwrap();
         conn.execute(
+            "INSERT INTO chat_xp_awards (character_name,server_name,skill_id,awarded_at,xp,level) VALUES (?1,?2,7,'2026-01-01',50,5)",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
             "INSERT INTO garden_almanac VALUES (?1,?2,'Wheat','Serbule',NULL,NULL,0,'2026-01-01')",
             rusqlite::params![who, SERVER],
         )
@@ -1526,6 +1532,7 @@ mod tests {
         "tracked_skills",
         "user_timers",
         "words_of_power",
+        "chat_xp_awards",
         "character_snapshots",
         "user_characters",
     ];

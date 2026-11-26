@@ -837,10 +837,18 @@ fn seed_game_state_from_snapshot(
     )
     .map_err(|e| format!("Failed to upsert server: {e}"))?;
 
-    // Seed skills — resolve internal names to canonical IDs + display names
+    // Seed skills — resolve internal names to canonical IDs + display names.
+    // The anchor (`xp_snapshot_at`) is the export timestamp space-normalized
+    // (same shape as the currency anchor): the chat writer drops same-level
+    // awards at or before it as already inside this absolute, while newer
+    // awards accumulate on top. `last_confirmed_at` keeps the raw export
+    // stamp (cross-format comparator semantics — see the cross-format
+    // note on `apply_chat_xp_award`); only the anchor normalizes, so the
+    // award-vs-anchor compare stays same-format.
+    let anchor_at = ts.trim_end_matches('Z').replace('T', " ");
     let mut skill_stmt = conn.prepare(
-        "INSERT INTO game_state_skills (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, source)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, 'snapshot')
+        "INSERT INTO game_state_skills (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, xp_snapshot_at, source)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, 'snapshot')
          ON CONFLICT(character_name, server_name, skill_id) DO UPDATE SET
             skill_name = excluded.skill_name,
             level = excluded.level,
@@ -849,6 +857,7 @@ fn seed_game_state_from_snapshot(
             xp = excluded.xp,
             tnl = excluded.tnl,
             last_confirmed_at = excluded.last_confirmed_at,
+            xp_snapshot_at = excluded.xp_snapshot_at,
             source = excluded.source
          WHERE excluded.last_confirmed_at > game_state_skills.last_confirmed_at"
     ).map_err(|e| format!("Failed to prepare game state skill upsert: {e}"))?;
@@ -871,6 +880,7 @@ fn seed_game_state_from_snapshot(
                 skill_data.xp_toward_next_level,
                 skill_data.xp_needed_for_next_level,
                 ts,
+                anchor_at,
             ])
             .map_err(|e| format!("Failed to upsert skill: {e}"))?;
     }
