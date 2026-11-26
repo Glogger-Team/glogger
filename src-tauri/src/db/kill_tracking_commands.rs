@@ -138,15 +138,31 @@ fn drop_binds(
 ///
 /// A ledger row `ledger` belongs to kill `kill` iff all hold: same
 /// (character, server), `from_entity_id` equals the kill's entity id, the
-/// receipt timestamp falls in the kill's inclusive 30-minute loot window,
-/// and no newer same-entity kill also covers the receipt (newest-kill-wins;
+/// receipt falls in the kill's inclusive 30-minute loot window, and no
+/// newer same-entity kill also covers the receipt (newest-kill-wins;
 /// replicates the retired `latest_eligible_kill_id` resolution, including
 /// the CAST wart: non-numeric entity ids CAST to 0/NULL and never match).
 /// No context/source filter: replicates the retired kill-side heal
 /// predicate exactly (in practice only chat loot rows carry
-/// `from_entity_id`). Time-only legacy kills carry no date, so the
-/// lexicographic window never matches them — accepted, date
-/// unrecoverable (#363 premise).
+/// `from_entity_id`).
+///
+/// Family-aware, mirroring the `death_veto_window_on` disposition: the two
+/// window arms are independent disjuncts so neither family's shape leaks
+/// into the other's comparison. The full arm fires only when both stamps
+/// carry a date (`length > 8`) and is byte-identical to the old
+/// lexicographic window for space/space rows. The time arm fires only for
+/// time-only kills (`length = 8`, Player.log era, date unrecoverable) and
+/// compares the receipt's time-of-day — whatever family the receipt
+/// arrived in — against the kill's 30-minute time-of-day window, so legacy
+/// loot is visible to the readers and to the death-veto guard below (a
+/// looted time-only kill is never vetoed). The anti-join keeps its raw
+/// shape and gains one dated-wins disjunct: a dated same-entity kill whose
+/// full window contains the receipt claims it from a time-only kill, so an
+/// evening `2x:xx:xx` kill (which sorts after every dated stamp and could
+/// never lose the raw comparison) cannot double-attribute a dated kill's
+/// loot. Accepted limits (documented, not silent): midnight wraparound
+/// (kill 23:58, receipt 00:05) misses in the time arm while full-date rows
+/// order correctly in the full arm.
 ///
 /// `kill`/`ledger` are the SQL aliases at the call site. Every mine-scope
 /// reader and the death veto below build their match from this, so the
@@ -156,15 +172,22 @@ pub(crate) fn kill_receipt_join_on(kill: &str, ledger: &str) -> String {
         "{ledger}.character_name = {kill}.character_name \
          AND {ledger}.server_name = {kill}.server_name \
          AND {ledger}.from_entity_id = CAST({kill}.enemy_entity_id AS INTEGER) \
+         AND ((length({kill}.killed_at) > 8 AND length({ledger}.timestamp) > 8 \
          AND {ledger}.timestamp >= {kill}.killed_at \
-         AND {ledger}.timestamp <= datetime({kill}.killed_at, '+30 minutes') \
+         AND {ledger}.timestamp <= datetime({kill}.killed_at, '+30 minutes')) \
+         OR (length({kill}.killed_at) = 8 \
+         AND time({ledger}.timestamp) >= time({kill}.killed_at) \
+         AND time({ledger}.timestamp) <= time({kill}.killed_at, '+30 minutes'))) \
          AND NOT EXISTS ( \
            SELECT 1 FROM enemy_kills k2 \
             WHERE k2.character_name = {kill}.character_name \
               AND k2.server_name = {kill}.server_name \
               AND k2.enemy_entity_id = {kill}.enemy_entity_id \
-              AND k2.killed_at > {kill}.killed_at \
-              AND k2.killed_at <= {ledger}.timestamp \
+              AND ((k2.killed_at > {kill}.killed_at AND k2.killed_at <= {ledger}.timestamp) \
+               OR (length({kill}.killed_at) = 8 AND length(k2.killed_at) > 8 \
+               AND length({ledger}.timestamp) > 8 \
+               AND {ledger}.timestamp >= k2.killed_at \
+               AND {ledger}.timestamp <= datetime(k2.killed_at, '+30 minutes'))) \
          )"
     )
 }
@@ -2535,6 +2558,143 @@ mod tests {
         insert_test_receipt(&conn, "T", "Dreva", "45", "2026-11-17 12:01:00", "Salad");
         die(&conn, "2026-11-17 12:02:00");
         assert_eq!(total(&conn), 1, "looted kill is never vetoed");
+    }
+
+    /// Time-only kill loot visible to the death-veto guard (handoff from
+    /// #376): the veto's receipt guard keys on the shared join, whose old
+    /// lexicographic window never matched a time-only kill to a dated
+    /// receipt — a looted legacy kill with an in-window death was wrongly
+    /// vetoed. Each case is an isolated DB (one kill + one death + at most
+    /// one receipt), so the total is 0 when vetoed, 1 when the guard sees
+    /// the loot. The veto only ever removes denominator rows — never a
+    /// wrong attribution.
+    #[test]
+    fn time_only_kill_loot_visible_to_death_veto_guard() {
+        let kill = |conn: &Connection, entity: &str, killed_at: &str| {
+            record_test_kill(conn, "T", "Dreva", entity, killed_at).unwrap();
+        };
+        let receive = |conn: &Connection, entity: &str, ts: &str| {
+            insert_test_receipt(conn, "T", "Dreva", entity, ts, "Salad");
+        };
+        let die = |conn: &Connection, died_at: &str| {
+            conn.execute(
+                "INSERT INTO character_deaths (character_name, server_name, died_at, killer_name, killing_ability, health_damage)
+                 VALUES ('T', 'Dreva', ?1, 'Rat', 'Bite', 1)",
+                rusqlite::params![died_at],
+            )
+            .unwrap();
+        };
+        let total = |conn: &Connection| {
+            mine_total_kills(conn, "City Slime", &ZoneFilter::All, &LoadoutFilter::All).unwrap()
+        };
+
+        // Lootless baseline: the in-window death vetoes (pins #376, unchanged).
+        let conn = setup();
+        kill(&conn, "42", "19:29:10");
+        die(&conn, "2026-04-13 19:29:35");
+        assert_eq!(total(&conn), 0, "lootless time-only kill in window must veto");
+
+        // THE FIX, live order (kill first, English-first): a dated receipt in
+        // the time-of-day loot window proves the corpse was reached.
+        let conn = setup();
+        kill(&conn, "42", "19:29:10");
+        receive(&conn, "42", "2026-04-13 19:29:40");
+        die(&conn, "2026-04-13 19:29:35");
+        assert_eq!(total(&conn), 1, "dated loot must protect a time-only kill");
+
+        // Rescan order (receipt first, JSON-first): the read-time join is a
+        // pure function of the sets, so arrival order changes nothing.
+        let conn = setup();
+        receive(&conn, "42", "2026-04-13 19:29:40");
+        kill(&conn, "42", "19:29:10");
+        die(&conn, "2026-04-13 19:29:35");
+        assert_eq!(total(&conn), 1, "receipt-first order must protect too");
+
+        // T-family receipt (JSON-path stamp): `time()` normalizes it onto the
+        // same time-of-day window.
+        let conn = setup();
+        kill(&conn, "42", "19:29:10");
+        receive(&conn, "42", "2026-04-13T19:29:40+00:00");
+        die(&conn, "2026-04-13 19:29:35");
+        assert_eq!(total(&conn), 1, "T-family loot must protect a time-only kill");
+
+        // Time-only receipt (legacy pair): matched before via the shared
+        // lexicographic shape and still matches — preservation pin.
+        let conn = setup();
+        kill(&conn, "42", "19:29:10");
+        receive(&conn, "42", "19:29:40");
+        die(&conn, "2026-04-13 19:29:35");
+        assert_eq!(total(&conn), 1, "time-only loot still protects");
+
+        // Inclusive loot-window upper edge (+30:00): still the kill's loot.
+        let conn = setup();
+        kill(&conn, "42", "19:29:10");
+        receive(&conn, "42", "2026-04-13 19:59:10");
+        die(&conn, "2026-04-13 19:29:35");
+        assert_eq!(total(&conn), 1, "loot-window upper edge is inclusive");
+
+        // One second past the loot window: the guard stays blind, so the
+        // in-window death vetoes — the time arm must not over-match.
+        let conn = setup();
+        kill(&conn, "42", "19:29:10");
+        receive(&conn, "42", "2026-04-13 19:59:11");
+        die(&conn, "2026-04-13 19:29:35");
+        assert_eq!(total(&conn), 0, "loot past the window must not protect");
+
+        // Receipt before the kill: forward-only, the kill stays lootless.
+        let conn = setup();
+        kill(&conn, "42", "19:29:10");
+        receive(&conn, "42", "2026-04-13 19:29:09");
+        die(&conn, "2026-04-13 19:29:35");
+        assert_eq!(total(&conn), 0, "receipt before the kill must not protect");
+
+        // Evening hour (the #363 byte-1 shape): a `2x:xx:xx` kill with dated
+        // loot + death in the time-of-day windows.
+        let conn = setup();
+        kill(&conn, "43", "21:45:00");
+        receive(&conn, "43", "2026-04-13 21:47:00");
+        die(&conn, "2026-04-13 21:47:30");
+        assert_eq!(total(&conn), 1, "evening dated loot must protect");
+    }
+
+    /// Time-of-day attribution for time-only kills: a dated receipt in the
+    /// kill's 30-minute time-of-day window attributes to it; receipts
+    /// outside the window never do; and a dated same-entity kill whose full
+    /// window contains the receipt wins (dated-wins anti-join disjunct), so
+    /// loot is never double-attributed — not even for evening kills, which
+    /// sort after every dated stamp and could never lose the raw
+    /// comparison. Midnight wraparound (kill 23:58, receipt 00:05) misses —
+    /// accepted, the receipt stays unattributed.
+    #[test]
+    fn time_only_kill_attributes_dated_receipt_by_time_of_day() {
+        let conn = setup();
+        let morning = record_test_kill(&conn, "T", "Dreva", "42", "19:29:10").unwrap();
+        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-04-13 19:29:35", "Apple");
+        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-04-13 19:59:10", "Edge");
+        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-04-13 19:59:11", "Expired");
+        insert_test_receipt(&conn, "T", "Dreva", "42", "2026-04-13 19:29:09", "Before");
+        // Evening: a dated same-entity kill covers Bone, so the time-only
+        // kill must not claim it too.
+        let evening_dated =
+            record_test_kill(&conn, "T", "Dreva", "43", "2026-04-13 21:47:00").unwrap();
+        record_test_kill(&conn, "T", "Dreva", "43", "21:45:00").unwrap();
+        insert_test_receipt(&conn, "T", "Dreva", "43", "2026-04-13 21:48:00", "Bone");
+        // Midnight wraparound: accepted miss, stays unattributed.
+        record_test_kill(&conn, "T", "Dreva", "44", "23:58:00").unwrap();
+        insert_test_receipt(&conn, "T", "Dreva", "44", "2026-04-14 00:05:00", "NightOwl");
+        assert_eq!(
+            loot_rows(&conn),
+            vec![
+                ("Apple".to_string(), 2, 1),
+                ("Bone".to_string(), 2, 1),
+                ("Edge".to_string(), 2, 1),
+            ]
+        );
+        assert_eq!(
+            attributed_qty(&conn),
+            vec![(morning, 4), (evening_dated, 2)],
+            "Apple+Edge belong to the morning time-only kill, Bone to the dated kill"
+        );
     }
 
     /// After migration v53, removing an entry from the Imported Sources list
