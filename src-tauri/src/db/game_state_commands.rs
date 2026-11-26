@@ -765,10 +765,12 @@ pub fn set_tracked_skills(
 /// lines carry no writer).
 /// Anchor rule (`xp_snapshot_at`): a same-level award at or before the
 /// snapshot anchor is already inside the seeded absolute and drops; newer
-/// awards accumulate on top. The unconditional winner is the genuine
-/// level-up (`excluded.level >` stored level always wins — chat is
-/// authoritative that the player *reached* that level, even under clock
-/// skew, and even at or before the anchor).
+/// awards accumulate on top. A level-up clears the anchor (it described
+/// the previous level's absolute — the new level has no snapshot yet),
+/// so post-ding awards are ledger-gated only. The unconditional winner
+/// is the genuine level-up (`excluded.level >` stored level always wins
+/// — chat is authoritative that the player *reached* that level, even
+/// under clock skew, and even at or before the anchor).
 /// `tnl` from an older level can diverge from the new level; the widgets key
 /// persisted progress off columns they own, never this mixed pair.
 /// A level win never moves the clock backward or downward: `last_confirmed_at`
@@ -913,6 +915,7 @@ pub(crate) fn apply_chat_xp_award(a: &ChatXpAward<'_>) -> Result<bool, String> {
     tx.execute(
         "UPDATE game_state_skills SET skill_name = ?4, level = ?5, xp = ?6,
             last_confirmed_at = CASE WHEN ?7 > last_confirmed_at THEN ?7 ELSE last_confirmed_at END,
+            xp_snapshot_at = CASE WHEN ?5 > level THEN NULL ELSE xp_snapshot_at END,
             source = 'chat'
          WHERE character_name = ?1 AND server_name = ?2 AND skill_id = ?3",
         rusqlite::params![
@@ -3124,6 +3127,50 @@ mod tests {
             )
             .expect("row exists");
         assert_eq!((level, xp), (88, 10));
+        assert_eq!(ts, "2026-04-16 12:00:00");
+    }
+
+    #[test]
+    fn chat_xp_level_up_clears_stale_anchor() {
+        // F1: the anchor describes the previous level's absolute — after a
+        // level-up resets xp it must clear, or genuine new-level awards
+        // stamped at or before the old anchor drop as already-counted.
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO game_state_skills
+                (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, xp_snapshot_at, source)
+             VALUES ('TestPlayer','Dreva',106,'Cartography',87,87,0,4900,0,0,'2026-04-16 12:00:00','2026-04-16 12:00:00','snapshot')",
+            [],
+        )
+        .unwrap();
+        let leveled =
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 88, xp: 10, confirmed_at: "2026-04-16 11:00:00" })
+                .expect("level-up apply");
+        assert!(leveled);
+        let anchor: Option<String> = conn
+            .query_row(
+                "SELECT xp_snapshot_at FROM game_state_skills
+                 WHERE character_name = 'TestPlayer' AND server_name = 'Dreva' AND skill_id = 106",
+                [],
+                |r| r.get(0),
+            )
+            .expect("row exists");
+        assert_eq!(anchor, None, "level-up must clear the previous level's anchor");
+        // Older same-level award at the NEW level (stamped before the old
+        // anchor): genuinely new progress, accumulates.
+        let older =
+            apply_chat_level_up(&ChatLevelUp { conn: &conn, character: "TestPlayer", server: "Dreva", skill_id: 106, skill_name: "Cartography", level: 88, xp: 5, confirmed_at: "2026-04-16 10:00:00" })
+                .expect("older apply");
+        assert!(older);
+        let (level, xp, ts): (i64, i64, String) = conn
+            .query_row(
+                "SELECT level, xp, last_confirmed_at FROM game_state_skills
+                 WHERE character_name = 'TestPlayer' AND server_name = 'Dreva' AND skill_id = 106",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("row exists");
+        assert_eq!((level, xp), (88, 15));
         assert_eq!(ts, "2026-04-16 12:00:00");
     }
 
