@@ -13,7 +13,7 @@
 /// Stateless parser: each message maps to 0 or 1 events.
 use crate::chat_parser::ChatMessage;
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
 #[serde(tag = "kind")]
 pub enum ChatResuscitateEvent {
     /// Someone successfully resuscitated a player.

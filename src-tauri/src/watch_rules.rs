@@ -8,8 +8,9 @@ use crate::settings::{ConditionMatch, WatchCondition, WatchNotifyConfig, WatchRu
 use serde::Serialize;
 
 /// Payload emitted when a watch rule matches a message
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct WatchRuleTriggered {
+    #[specta(type = u32)]
     pub rule_id: u64,
     pub rule_name: String,
     pub notify: WatchNotifyConfig,

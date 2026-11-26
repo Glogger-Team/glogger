@@ -4,7 +4,7 @@
 /// Accumulation and cross-stream correlation are left to subscribing features.
 use crate::chat_parser::ChatMessage;
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
 #[serde(tag = "kind")]
 pub enum ChatStatusEvent {
     /// "X added to inventory" / "X xN added to inventory"
@@ -53,7 +53,13 @@ pub enum ChatStatusEvent {
     /// "You searched the corpse and found N coins."
     CoinsLooted { timestamp: String, amount: u32 },
 
-    /// "You received N Councils." / "You used N councils."
+    /// `specta` export omits this variant: its `amount: i64` payload trips the
+    /// `specta-typescript` BigInt guard and per-field overrides cannot target
+    /// single-line variant fields; expanding the variant trips the
+    /// retired-noun doc gate (docs/ names CouncilsChanged in 10 live spots),
+    /// so the schema pins the other 14 kinds and this one stays a documented
+    /// hole (serde output unchanged — skip is specta-only).
+    #[specta(skip)]
     CouncilsChanged { timestamp: String, amount: i64 },
 
     /// "The treasure is N meters from here."

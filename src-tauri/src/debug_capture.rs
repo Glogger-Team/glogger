@@ -55,22 +55,28 @@ pub struct GameStateSnapshot {
     pub truncated_sections: Vec<String>,
 }
 /// Status of the debug capture, sent to the frontend.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct DebugCaptureStatus {
     pub active: bool,
     /// True when recording has stopped but data hasn't been saved or discarded yet.
     pub pending_save: bool,
     pub started_at: Option<String>,
+    #[specta(type = u32)]
     pub line_count: usize,
+    #[specta(type = u32)]
     pub player_line_count: usize,
+    #[specta(type = u32)]
     pub chat_line_count: usize,
 }
 
 /// Result returned after saving a capture.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct DebugCaptureResult {
+    #[specta(type = u32)]
     pub line_count: usize,
+    #[specta(type = u32)]
     pub player_line_count: usize,
+    #[specta(type = u32)]
     pub chat_line_count: usize,
 }
 
@@ -659,7 +665,7 @@ fn query_active_skills<C: DbRead + ?Sized>(
 // ── Capture Replay ───────────────────────────────────────────────────────
 
 /// A single loot attribution result from replaying a capture file.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, specta::Type)]
 pub struct ReplayLootEvent {
     pub timestamp: String,
     pub item_name: Option<String>,
@@ -667,6 +673,7 @@ pub struct ReplayLootEvent {
     pub quantity: u32,
     pub corpse_name: Option<String>,
     pub corpse_entity_id: Option<u32>,
+    #[specta(type = u32)]
     pub instance_id: u64,
     /// "direct" if instance_id matched a known AddItem, "fallback" if resolved
     /// via last_item_event, "unresolved" if neither worked
@@ -674,17 +681,20 @@ pub struct ReplayLootEvent {
 }
 
 /// Result of replaying a capture file through the parser.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, specta::Type)]
 pub struct CaptureReplayResult {
+    #[specta(type = u32)]
     pub total_lines: usize,
+    #[specta(type = u32)]
     pub player_lines: usize,
+    #[specta(type = u32)]
     pub chat_lines: usize,
     pub loot_events: Vec<ReplayLootEvent>,
     /// All enemy kills detected from chat combat FATALITY lines
     pub kills: Vec<ReplayKillEvent>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, specta::Type)]
 pub struct ReplayKillEvent {
     pub timestamp: String,
     pub enemy_name: String,
@@ -823,5 +833,53 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         assert_eq!(result.kills.len(), 1);
         assert_eq!(result.kills[0].enemy_name, "Skeleton");
+    }
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `debug_capture` IPC payload shapes derive `specta::Type` so
+// `src/types/debugCapture.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test debug_capture_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<DebugCaptureStatus>()
+        .register::<DebugCaptureResult>()
+        .register::<ReplayLootEvent>()
+        .register::<CaptureReplayResult>()
+        .register::<ReplayKillEvent>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/debugCapture.specta.ts` must equal
+    /// what `export_bindings` derives from the `debug_capture` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test debug_capture_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_debug_capture_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/debugCapture.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
     }
 }

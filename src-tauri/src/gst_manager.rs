@@ -9,7 +9,7 @@ const GST_SUBFOLDER: &str = "gst";
 /// Metadata file stored alongside the exe to track installed version.
 const GST_VERSION_FILE: &str = "gst_version.txt";
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct GstStatus {
     /// Whether the exe exists on disk (always false on non-Windows).
     pub installed: bool,
@@ -237,4 +237,48 @@ pub async fn gst_launch(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| format!("Failed to launch GST: {e}"))?;
 
     Ok(())
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `gst` IPC payload shapes derive `specta::Type` so
+// `src/types/gst.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test gst_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<GstStatus>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/gst.specta.ts` must equal
+    /// what `export_bindings` derives from the `gst` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test gst_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_gst_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/gst.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
+    }
 }
