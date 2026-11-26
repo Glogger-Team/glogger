@@ -4,8 +4,9 @@ use tauri::State;
 
 // ── Output types ────────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct HoplologyStudy {
+    #[specta(type = u32)]
     pub id: i64,
     pub character_name: String,
     pub server_name: String,
@@ -14,7 +15,7 @@ pub struct HoplologyStudy {
     pub source: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct HoplologyStats {
     pub total_studied: u32,
     pub last_studied_at: Option<String>,
@@ -144,5 +145,50 @@ pub fn insert_hoplology_study_from_report(
         Ok(Some(conn.last_insert_rowid()))
     } else {
         Ok(None) // Already known
+    }
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `hoplology` IPC payload shapes derive `specta::Type` so
+// `src/types/hoplology.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test hoplology_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<HoplologyStudy>()
+        .register::<HoplologyStats>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/hoplology.specta.ts` must equal
+    /// what `export_bindings` derives from the `hoplology` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test hoplology_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_hoplology_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/hoplology.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
     }
 }

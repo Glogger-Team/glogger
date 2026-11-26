@@ -7,34 +7,36 @@ use tauri::State;
 
 // ── Response Types ──────────────────────────────────────────────────────────
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct AggregateInventoryItem {
     pub item_name: String,
+    #[specta(type = u32)]
     pub total_stack_size: i64,
     pub character_count: i32,
     pub characters: Vec<CharacterItemBreakdown>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct CharacterItemBreakdown {
     pub character_name: String,
+    #[specta(type = u32)]
     pub stack_size: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct AggregateCurrency {
     pub currency_name: String,
     pub total_amount: f64,
     pub characters: Vec<CharacterCurrencyBreakdown>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct CharacterCurrencyBreakdown {
     pub character_name: String,
     pub amount: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct AggregateWealth {
     pub total_currency: f64,
     pub total_market_value: f64,
@@ -43,36 +45,39 @@ pub struct AggregateWealth {
     pub per_character: Vec<CharacterWealth>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct CharacterWealth {
     pub character_name: String,
     pub currency_total: f64,
     pub market_value_total: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct AggregateSkillSummary {
     pub skill_name: String,
     pub characters: Vec<CharacterSkillEntry>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct CharacterSkillEntry {
     pub character_name: String,
     pub level: i32,
+    #[specta(type = u32)]
     pub xp: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct AggregateVendorEntry {
     pub npc_key: String,
     pub characters: Vec<CharacterVendorBreakdown>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct CharacterVendorBreakdown {
     pub character_name: String,
+    #[specta(type = Option<u32>)]
     pub vendor_gold_available: Option<i64>,
+    #[specta(type = Option<u32>)]
     pub vendor_gold_max: Option<i64>,
     pub vendor_gold_timer_start: Option<String>,
     /// Live row's `last_confirmed_at` for newest-wins comparison.
@@ -81,6 +86,7 @@ pub struct CharacterVendorBreakdown {
     /// Snapshot `councils_spent_at_vendor` for this character+NPC (latest
     /// snapshot). Lets the frontend derive available = cap − spent when
     /// live gold is stale or missing (newest-wins vs live).
+    #[specta(type = Option<u32>)]
     pub snapshot_spent: Option<i64>,
     /// Snapshot `vendor_reset_time` fallback when the live row has no timer.
     pub snapshot_vendor_reset: Option<String>,
@@ -454,4 +460,57 @@ pub fn get_aggregate_vendor(
             characters,
         })
         .collect())
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `aggregate` IPC payload shapes derive `specta::Type` so
+// `src/types/aggregate.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test aggregate_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<AggregateInventoryItem>()
+        .register::<CharacterItemBreakdown>()
+        .register::<AggregateCurrency>()
+        .register::<CharacterCurrencyBreakdown>()
+        .register::<AggregateWealth>()
+        .register::<CharacterWealth>()
+        .register::<AggregateSkillSummary>()
+        .register::<CharacterSkillEntry>()
+        .register::<AggregateVendorEntry>()
+        .register::<CharacterVendorBreakdown>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/aggregate.specta.ts` must equal
+    /// what `export_bindings` derives from the `aggregate` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test aggregate_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_aggregate_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/aggregate.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
+    }
 }

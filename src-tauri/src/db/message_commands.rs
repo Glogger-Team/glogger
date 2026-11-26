@@ -2,8 +2,9 @@ use super::DbPool;
 use serde::Serialize;
 use tauri::State;
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 pub struct PlayerMessageRow {
+    #[specta(type = u32)]
     pub id: i64,
     pub character_name: String,
     pub server_name: String,
@@ -59,4 +60,48 @@ pub fn get_player_messages(
         messages.push(row.map_err(|e| e.to_string())?);
     }
     Ok(messages)
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `message` IPC payload shapes derive `specta::Type` so
+// `src/types/message.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test message_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<PlayerMessageRow>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/message.specta.ts` must equal
+    /// what `export_bindings` derives from the `message` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test message_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_message_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/message.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
+    }
 }

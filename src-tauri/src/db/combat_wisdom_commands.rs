@@ -27,16 +27,19 @@ use crate::chat_status_parser::{parse_status_message, ChatStatusEvent};
 use crate::settings::SettingsManager;
 
 /// Per-monster aggregate for the Combat Wisdom widget's cooldown list.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct CombatWisdomMonster {
     pub name: String,
     pub verb: String,
     /// Epoch milliseconds of the most recent award (local time interpreted).
+    #[specta(type = f64)]
     pub last_earned_ms: i64,
     pub count: u32,
+    #[specta(type = u32)]
     pub total_amount: i64,
     /// Smallest gap (seconds, ≥ 60) ever observed between this monster's awards.
     /// `None` until at least two awards more than a minute apart exist.
+    #[specta(type = Option<u32>)]
     pub min_gap_secs: Option<i64>,
 }
 
@@ -382,5 +385,49 @@ mod tests {
         assert_eq!(monsters.len(), 1);
         assert_eq!(monsters[0].min_gap_secs, None);
         assert_eq!(monsters[0].total_amount, 73);
+    }
+}
+
+// ── Specta schema export (TODO.md:113 shared schema contract) ───────────────
+// `combat_wisdom` IPC payload shapes derive `specta::Type` so
+// `src/types/combatWisdom.specta.ts` can be generated from them. Test-only plumbing:
+// the exporters live in `[dev-dependencies]`, so no new runtime dependency
+// ships beyond `specta` itself, and this fn compiles out of non-test builds.
+// Regenerate with `OVERWRITE_BINDINGS=1 cargo test combat_wisdom_specta`.
+#[cfg(test)]
+pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
+    let types = specta::Types::default()
+        .register::<CombatWisdomMonster>()
+        ;
+    Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
+}
+
+#[cfg(test)]
+mod specta_bindings_tests {
+    use super::export_bindings;
+
+    /// Freshness pin: the checked-in `src/types/combatWisdom.specta.ts` must equal
+    /// what `export_bindings` derives from the `combat_wisdom` payload shapes. Any
+    /// shape change (field add/remove/rename, serde attribute) fails here until the
+    /// bindings are regenerated — that failure IS the drift signal. Regenerate with
+    /// `OVERWRITE_BINDINGS=1 cargo test combat_wisdom_specta`, inspect the diff, and
+    /// confirm it matches the hand-mirrored frontend types before committing.
+    #[test]
+    fn test_combat_wisdom_specta_bindings_are_fresh() {
+        let fresh = export_bindings().expect("specta export failed");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/types/combatWisdom.specta.ts",
+        );
+        if std::env::var("OVERWRITE_BINDINGS").is_ok() {
+            std::fs::write(path, &fresh).expect("bindings write failed");
+            return;
+        }
+        let checked_in =
+            std::fs::read_to_string(path).expect("checked-in specta bindings missing");
+        assert_eq!(
+            checked_in, fresh,
+            "specta bindings drift: regenerate with OVERWRITE_BINDINGS=1",
+        );
     }
 }
