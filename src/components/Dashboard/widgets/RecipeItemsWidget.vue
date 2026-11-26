@@ -11,7 +11,7 @@
     <template v-else>
       <!-- Known duplicates (safe to sell/trade) -->
       <div v-if="knownDuplicates.length > 0">
-        <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-1.5">
+        <h3 class="section-heading mb-1.5">
           Already Known ({{ knownDuplicates.length }})
         </h3>
         <div class="flex flex-col gap-0.5 overflow-y-auto max-h-40 pr-1">
@@ -30,7 +30,7 @@
 
       <!-- Ready to learn (meets requirements, not yet known) -->
       <div v-if="readyToLearn.length > 0">
-        <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-1.5">
+        <h3 class="section-heading mb-1.5">
           Ready to Learn ({{ readyToLearn.length }})
         </h3>
         <div class="flex flex-col gap-0.5 overflow-y-auto max-h-40 pr-1">
@@ -46,7 +46,7 @@
 
       <!-- Not yet learnable (missing skill requirements) -->
       <div v-if="notYetLearnable.length > 0">
-        <h3 class="text-xs font-semibold text-text-secondary uppercase tracking-wider mb-1.5">
+        <h3 class="section-heading mb-1.5">
           Missing Requirements ({{ notYetLearnable.length }})
         </h3>
         <div class="flex flex-col gap-0.5 overflow-y-auto max-h-40 pr-1">
