@@ -2,6 +2,8 @@
 
 > Addendum 2026-11-18: Gardening Almanac extraction shipped (Book row,
 > wanted signals). "Frozen" dates the observations, not the doc.
+>
+> Addendum 2026-11-27 (#421): blood-target, casino-edge tip, and warden-report EntityReport readers shipped — the `EntityReport` row ("One line observed — pattern TBD") and the `Book` row (no `warden_report` domain) below predate them.
 
 Source: live `Chat-26-11-1*.log` on this box, game with VIP + chat logs + non-combat logging on.
 Fixtures: `test_data/vip_json/chat-<type>.log` (names sanitized `TwinkleofToes` → `TestPlayer`),
