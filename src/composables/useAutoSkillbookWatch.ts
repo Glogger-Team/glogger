@@ -79,9 +79,11 @@ export function useAutoSkillbookWatch() {
       serverName: identity.serverName,
     });
     if (snapshots.length === 0) return [];
-    const latest = snapshots.reduce((a, b) => (b.id > a.id ? b : a));
+    // get_character_snapshots returns timestamp DESC, so index 0 is the
+    // latest — never max id (a never-before-seen older report can insert
+    // with a fresh id and outrank the true latest).
     const abilities = await invoke<SnapshotSkillAbility[]>("get_snapshot_skill_abilities", {
-      snapshotId: latest.id,
+      snapshotId: snapshots[0].id,
     });
     return abilities.map((a) => a.ability_key);
   }

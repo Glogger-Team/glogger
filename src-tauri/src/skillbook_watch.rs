@@ -159,6 +159,58 @@ mod tests {
         ]
     }
 
+    fn stub_data() -> GameData {
+        use crate::game_data::SkillInfo;
+        let mut data = GameData::empty();
+        data.skills.insert(
+            11,
+            SkillInfo {
+                id: 11,
+                name: "Sword".to_string(),
+                internal_name: "SwordInternal".to_string(),
+                description: None,
+                icon_id: None,
+                xp_table: None,
+                keywords: Vec::new(),
+                combat: None,
+                max_bonus_levels: None,
+                parents: Vec::new(),
+                advancement_table: None,
+                guest_level_cap: None,
+                hide_when_zero: None,
+                advancement_hints: None,
+                rewards: None,
+                reports: None,
+                raw_json: serde_json::Value::Null,
+            },
+        );
+        data.skill_name_index.insert("Sword".to_string(), 11);
+        data.skill_internal_name_index.insert("SwordInternal".to_string(), 11);
+        data.skillbooks_by_skill.insert(
+            "SwordInternal".to_string(),
+            vec![SkillbookInfo {
+                item_id: 1,
+                name: "Sword Basics".to_string(),
+                skill: "SwordInternal".to_string(),
+                ability: "ability_100".to_string(),
+            }],
+        );
+        data
+    }
+
+    #[test]
+    fn books_for_skill_resolves_display_internal_numeric_and_unknown() {
+        let data = stub_data();
+        // Display name, internal name, and numeric ID all reach the same index entry.
+        for reference in ["Sword", "SwordInternal", "11"] {
+            let books = books_for_skill(&data, reference);
+            assert_eq!(books.len(), 1, "reference {reference} should resolve");
+            assert_eq!(books[0].name, "Sword Basics");
+        }
+        // Unresolvable input falls back to the raw string, which has no entry.
+        assert!(books_for_skill(&data, "NoSuchSkill").is_empty());
+    }
+
     #[test]
     fn merge_dedupes_shared_book_and_sorts_by_item_id() {
         // Same item reachable under two skill keys yields one entry.

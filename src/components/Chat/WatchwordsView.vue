@@ -511,6 +511,7 @@ async function toggleFuturePicker() {
 }
 
 async function watchTrainedSkills() {
+  if (autoBusy.value) return
   autoBusy.value = true
   autoStatus.value = ''
   autoError.value = ''
@@ -535,6 +536,7 @@ async function watchTrainedSkills() {
 }
 
 async function watchFutureSkills() {
+  if (autoBusy.value) return
   autoBusy.value = true
   autoStatus.value = ''
   autoError.value = ''
@@ -554,6 +556,7 @@ async function watchFutureSkills() {
 }
 
 async function removeAutoRules() {
+  if (autoBusy.value) return
   autoBusy.value = true
   autoStatus.value = ''
   autoError.value = ''
