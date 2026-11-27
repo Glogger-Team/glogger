@@ -458,7 +458,10 @@ impl GameData {
     }
 
     /// Resolve any string reference to a RecipeInfo.
-    /// Tries: numeric ID → display name → internal name.
+    /// Tries: numeric ID → display name → internal name → CDN-key form
+    /// (`Recipe_<id>`, as built by the frontend completion map — e.g.
+    /// `game_state` keys and `knownRecipeKeys` — which is neither numeric
+    /// nor a display name, so without this arm every history lookup missed).
     pub fn resolve_recipe(&self, reference: &str) -> Option<&recipes::RecipeInfo> {
         if let Ok(id) = reference.parse::<u32>()
             && let Some(recipe) = self.recipes.get(&id) {
@@ -467,8 +470,18 @@ impl GameData {
         if let Some(recipe) = self.recipe_by_name(reference) {
             return Some(recipe);
         }
-        let id = self.recipe_internal_name_index.get(reference)?;
-        self.recipes.get(id)
+        if let Some(id) = self.recipe_internal_name_index.get(reference)
+            && let Some(recipe) = self.recipes.get(id) {
+                return Some(recipe);
+            }
+        // CDN-key form: "Recipe_123" (frontend) / "recipe_123" (CDN file).
+        // A display name never carries this shape, so stripping the prefix
+        // cannot mis-resolve a real name.
+        let suffix = reference
+            .strip_prefix("Recipe_")
+            .or_else(|| reference.strip_prefix("recipe_"))?;
+        let id = suffix.parse::<u32>().ok()?;
+        self.recipes.get(&id)
     }
 
     /// Resolve any string reference to a QuestInfo.

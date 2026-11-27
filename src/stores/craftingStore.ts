@@ -1165,25 +1165,30 @@ export const useCraftingStore = defineStore("crafting", () => {
   /**
    * Get all recipe completions merged with CDN recipe data.
    * Returns enriched list sorted by completions (descending).
+   * One batched `resolve_recipes_batch` IPC covers every key (was one
+   * `resolve_recipe` round trip per recipe).
    */
   async function getCraftingHistory(): Promise<CraftingHistoryRecipe[]> {
     const gameStateStore = useGameStateStore();
     const completionMap = gameStateStore.recipeCompletions;
-    if (Object.keys(completionMap).length === 0) return [];
+    const keys = Object.keys(completionMap);
+    if (keys.length === 0) return [];
 
-    // Enrich with CDN recipe data
-    const results: CraftingHistoryRecipe[] = [];
-    for (const [recipeKey, completions] of Object.entries(completionMap)) {
-      const recipe = await gameData.resolveRecipe(recipeKey);
-      results.push({
+    // Enrich with CDN recipe data — single round trip for all keys.
+    // Unknown keys are omitted from the batch map: fall back to the raw key
+    // (same contract as the per-item path returned None).
+    const resolved = await gameData.resolveRecipesBatch(keys);
+    const results: CraftingHistoryRecipe[] = keys.map((recipeKey) => {
+      const recipe = resolved[recipeKey] ?? null;
+      return {
         recipe_key: recipeKey,
         recipe_name: recipe?.name ?? recipeKey,
-        completions,
+        completions: completionMap[recipeKey] ?? 0,
         skill: recipe?.skill ?? null,
         reward_skill: recipe?.reward_skill ?? null,
         skill_level_req: recipe?.skill_level_req ?? null,
-      });
-    }
+      };
+    });
 
     return results.sort((a, b) => b.completions - a.completions);
   }
@@ -1191,6 +1196,9 @@ export const useCraftingStore = defineStore("crafting", () => {
   /**
    * Compute per-skill crafting stats: total recipes available (from CDN),
    * how many the player has crafted, completion percentages.
+   * One `get_recipes_for_skills` IPC covers every craft skill (was one
+   * `get_recipes_for_skill` round trip per skill); the reward-skill filter
+   * and completion grouping stay client-side with identical semantics.
    */
   async function getSkillCraftingStats(): Promise<SkillCraftingStats[]> {
     const gameStateStore = useGameStateStore();
@@ -1200,10 +1208,14 @@ export const useCraftingStore = defineStore("crafting", () => {
     // Get all skills with XP tables (crafting-capable skills)
     const allSkills = await gameData.getAllSkills();
     const craftSkills = allSkills.filter((s) => s.xp_table !== null);
+    if (craftSkills.length === 0) return [];
+
+    // Single batched fetch for every craft skill.
+    const bySkill = await gameData.getRecipesForSkills(craftSkills.map((s) => s.name));
 
     const stats: SkillCraftingStats[] = [];
     for (const skill of craftSkills) {
-      const recipes = await gameData.getRecipesForSkill(skill.name);
+      const recipes = bySkill[skill.name] ?? [];
       // Count recipes that reward XP in this skill
       const relevantRecipes = recipes.filter((r) => r.reward_skill === skill.name);
       if (relevantRecipes.length === 0) continue;
