@@ -170,13 +170,13 @@
           </div>
         </div>
       </div>
-      <!-- Gift Planner -->
-      <div class="border-t border-border pt-3 flex flex-col gap-2">
+      <!-- Gift Planner tab: the former bottom section, plus NPC-list filters -->
+      <div v-if="searchedStatuses.length > 0 && activeTab === 'planner'" class="flex flex-col gap-2">
         <div class="flex items-center justify-between flex-wrap gap-2">
           <h3 class="dialog-title">Gift Planner</h3>
           <button
             class="text-xs px-2 py-1 rounded bg-accent-gold/15 text-accent-gold hover:bg-accent-gold/25 disabled:opacity-40"
-            :disabled="planner.loading.value || giftableStatuses.length === 0"
+            :disabled="planner.loading.value || plannerCandidates.length === 0"
             @click="searchVaultGifts()">
             {{ planner.loading.value ? 'Searching vaults…' : 'Find vault gifts' }}
           </button>
@@ -184,13 +184,56 @@
         <p v-if="giftableStatuses.length === 0" class="text-xs text-text-dim">
           All gift-tracked NPCs are at their weekly gift cap — nothing left to plan.
         </p>
+        <p v-else-if="plannerCandidates.length === 0" class="text-xs text-text-dim">
+          The planner favor-tier filter hides every giftable NPC — loosen it to plan.
+        </p>
         <p v-else class="text-xs text-text-dim">
           Matches vault items against gift preferences (Love first, then Like) and assigns each
           stack to the highest-benefit NPC with weekly gifts remaining. Uncheck NPCs to exclude them.
         </p>
-        <div v-if="giftableStatuses.length > 0" class="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+        <!-- Planner-tab NPC filters: tier cutoff (affects the search keys),
+          has-gifts (display-only, needs matches), and the gear-quality floor
+          (disabled — the matcher output carries no rarity; see note below). -->
+        <div v-if="giftableStatuses.length > 0" class="flex items-center gap-4 flex-wrap text-xs">
+          <label class="flex items-center gap-1.5 text-text-secondary">
+            Hide at/above
+            <select
+              v-model="plannerHideTier"
+              class="bg-surface-elevated border border-border-default rounded px-1.5 py-0.5 text-xs text-text-primary cursor-pointer">
+              <option value="">Off</option>
+              <option v-for="tier in filterableTiers" :key="tier" :value="tier">
+                {{ tierDisplayName(tier) }}
+              </option>
+            </select>
+          </label>
           <label
-            v-for="s in giftableStatuses"
+            class="flex items-center gap-1 text-text-secondary cursor-pointer"
+            title="Hides NPCs with no matched vault gifts; applies once a search has run">
+            <input type="checkbox" v-model="plannerHideZeroMatch" class="accent-accent-gold" />
+            Only NPCs with vault matches
+          </label>
+          <label
+            class="flex items-center gap-1.5 text-text-secondary opacity-60"
+            title="Unavailable: matched gifts carry no per-item rarity">
+            Min gear quality
+            <select
+              disabled
+              class="bg-surface-elevated border border-border-default rounded px-1.5 py-0.5 text-xs text-text-primary cursor-not-allowed">
+              <option>Epic</option>
+            </select>
+          </label>
+        </div>
+        <p v-if="giftableStatuses.length > 0" class="text-xs text-text-dim">
+          Gear-quality filtering is unavailable: the planner matcher output carries no rarity —
+          vault rows have no rarity column and the CDN item record has none either (rarity is a
+          per-inventory-instance field). Wiring it needs a backend change.
+        </p>
+        <div v-if="plannerCandidates.length > 0 && plannerVisibleStatuses.length === 0" class="text-xs text-text-dim">
+          No listed NPC has matched vault gifts — uncheck “Only NPCs with vault matches” or run a new search.
+        </div>
+        <div v-if="plannerVisibleStatuses.length > 0" class="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+          <label
+            v-for="s in plannerVisibleStatuses"
             :key="s.npc.key"
             class="flex items-center gap-1 text-text-secondary cursor-pointer">
             <input
@@ -258,7 +301,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useStatehelmTracker } from '../../composables/useStatehelmTracker'
 import { useStatehelmPlanner, type VaultGiftGroup } from '../../composables/useStatehelmPlanner'
 import { useGameStateStore } from '../../stores/gameStateStore'
@@ -315,6 +358,60 @@ function togglePlannerNpc(npcKey: string) {
   planner.toggleExcluded(npcKey)
   plannerLoaded.value = false
 }
+
+// ── Planner tab filters ───────────────────────────────────────────────────
+// Favor-tier cutoff scoped to the planner tab (mirrors the top-level
+// hide-at/above filter but only affects planning): hiding at/above Soul Mates
+// drops capped NPCs from the checklist and the search keys. Default off —
+// planning behavior is unchanged until the user opts in.
+const plannerHideTier = ref('')
+// Hide checklist NPCs with zero matched vault gifts. Applies once matches
+// exist; before the first search nothing is hidden.
+const plannerHideZeroMatch = ref(false)
+
+// Checklist eligibility: giftable, under the weekly cap, and passing the
+// planner tier cutoff. Independent of the manual exclusion set so an
+// unchecked NPC stays visible and can be re-included.
+const plannerCandidates = computed(() =>
+  giftableStatuses.value.filter(s => {
+    if (plannerHideTier.value && s.favorTier && isTierAtOrAbove(s.favorTier, plannerHideTier.value)) return false
+    return true
+  }),
+)
+
+// NPC keys with at least one planner match row (post-search).
+const plannerMatchedNpcKeys = computed(() => new Set(planner.matches.value.map(m => m.npc_key)))
+
+const plannerVisibleStatuses = computed(() =>
+  plannerCandidates.value.filter(s => {
+    if (plannerHideZeroMatch.value && plannerLoaded.value && !plannerMatchedNpcKeys.value.has(s.npc.key)) return false
+    return true
+  }),
+)
+
+// Keys hidden by the tier cutoff, pushed into the composable so the search
+// keys (`needingGifts`) skip them. A change invalidates prior matches
+// exactly like a manual uncheck; an unchanged set (e.g. gift counts
+// ticking) keeps them.
+const plannerHiddenKeys = computed(() => {
+  const hidden = new Set<string>()
+  for (const s of giftableStatuses.value) {
+    if (!plannerCandidates.value.includes(s)) hidden.add(s.npc.key)
+  }
+  return hidden
+})
+function sameKeySet(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false
+  for (const k of a) if (!b.has(k)) return false
+  return true
+}
+watch(plannerHiddenKeys, (next) => {
+  if (sameKeySet(planner.planningHiddenNpcKeys.value, next)) return
+  planner.planningHiddenNpcKeys.value = next
+  planner.matches.value = []
+  planner.route.value = null
+  plannerLoaded.value = false
+})
 
 onMounted(() => {
   loadGiftLog()
@@ -394,13 +491,14 @@ const filteredStatuses = computed(() => {
 })
 
 // ── Tabs + search ───────────────────────────────────────────────────────────
-// All three tabs render from `searchedStatuses`: the tier/service filters
+// All tabs render from `searchedStatuses`: the tier/service filters
 // plus the text search over NPC and gift names.
 const activeTab = ref('npc')
 const tabs: Tab[] = [
   { id: 'npc', label: 'By NPC' },
   { id: 'gift', label: 'By Gift' },
   { id: 'list', label: 'Shopping List' },
+  { id: 'planner', label: 'Planner' },
 ]
 const searchQuery = ref('')
 
