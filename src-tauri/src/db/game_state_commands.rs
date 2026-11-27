@@ -1830,9 +1830,11 @@ fn relative_to(base: Option<chrono::NaiveDateTime>, rel: &str) -> Option<String>
     Some(dt.format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
-/// Replace a character's garden snapshot from an almanac body and append the
-/// rows to history. Returns the number of rows written: identical re-imports
-/// (rescans) and unparseable bodies are pure no-ops returning 0.
+/// Replace a character's garden snapshot from an almanac body. Returns the
+/// number of rows written: identical re-imports (rescans) and unparseable
+/// bodies are pure no-ops returning 0. There is no garden history table
+/// (v102 dropped the dead `garden_almanac_history` surface), so only the
+/// snapshot is replaced — mirroring the harvest path.
 pub fn import_garden_almanac(
     conn: &rusqlite::Connection,
     character: &str,
@@ -1892,7 +1894,7 @@ pub fn import_garden_almanac(
     // Recency: a rescan can redeliver an OLDER identical Book after a newer
     // import (newest-first scans). Its content differs (older seasons), so
     // the check above passes — but replacing the snapshot would move the
-    // garden clock backward and append stale history. Captures sort
+    // garden clock backward. Captures sort
     // lexicographically (naive-UTC stamps on both sides), so compare as
     // text. Equal captures stay eligible (a failed import of the current
     // observation can still be retried).
@@ -1929,15 +1931,6 @@ pub fn import_garden_almanac(
                 ],
             )
             .map_err(|e| format!("Failed to insert garden season: {e}"))?;
-            conn.execute(
-                "INSERT INTO garden_almanac_history
-                    (character_name, server_name, crop_name, zone_name, event_start, event_end, captured_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                rusqlite::params![
-                    character, server, s.crop, s.zone, s.event_start, s.event_end, captured_at
-                ],
-            )
-            .map_err(|e| format!("Failed to insert garden history: {e}"))?;
             n += 1;
         }
         Ok(n)
@@ -1995,48 +1988,6 @@ pub fn get_garden_almanac(
                 event_end: row.get(3)?,
                 is_current: row.get::<_, i32>(4)? != 0,
                 captured_at: row.get(5)?,
-            })
-        })
-        .map_err(|e| format!("Query error: {e}"))?;
-
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Row error: {e}"))
-}
-
-#[derive(Debug, Clone, Serialize, specta::Type)]
-pub struct GardenAlmanacHistoryEntry {
-    pub crop_name: String,
-    pub zone_name: String,
-    pub event_start: Option<String>,
-    pub event_end: Option<String>,
-    pub captured_at: String,
-}
-
-#[tauri::command]
-pub fn get_garden_almanac_history(
-    db: State<'_, DbPool>,
-    character_name: String,
-    server_name: String,
-) -> Result<Vec<GardenAlmanacHistoryEntry>, String> {
-    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT crop_name, zone_name, event_start, event_end, captured_at
-             FROM garden_almanac_history
-             WHERE character_name = ?1 AND server_name = ?2
-             ORDER BY captured_at DESC
-             LIMIT 100",
-        )
-        .map_err(|e| format!("Query error: {e}"))?;
-
-    let rows = stmt
-        .query_map(rusqlite::params![character_name, server_name], |row| {
-            Ok(GardenAlmanacHistoryEntry {
-                crop_name: row.get(0)?,
-                zone_name: row.get(1)?,
-                event_start: row.get(2)?,
-                event_end: row.get(3)?,
-                captured_at: row.get(4)?,
             })
         })
         .map_err(|e| format!("Query error: {e}"))?;
@@ -3243,7 +3194,7 @@ mod tests {
     }
 
     #[test]
-    fn garden_almanac_import_replaces_snapshot_and_appends_history() {
+    fn garden_almanac_import_replaces_snapshot_without_history() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::db::migrations::run_migrations(&conn, None).unwrap();
         let body = include_str!("../../../test_data/vip_json/chat-book.log")
@@ -3267,9 +3218,9 @@ mod tests {
             })
             .unwrap();
         assert_eq!(snap, 5);
-        // Re-import (rescan): pure no-op — returns 0, snapshot still 5, no
-        // duplicate history. Returning 0 (not the parsed count) is what keeps
-        // the coordinator from re-emitting the `gardening` domain.
+        // Re-import (rescan): pure no-op — returns 0, snapshot still 5.
+        // Returning 0 (not the parsed count) is what keeps the coordinator
+        // from re-emitting the `garden_almanac` domain.
         let n = import_garden_almanac(
             &conn,
             "T",
@@ -3284,14 +3235,7 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        let hist: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM garden_almanac_history WHERE character_name = 'T'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!((snap, hist), (5, 5));
+        assert_eq!(snap, 5);
     }
 
     #[test]
@@ -3345,8 +3289,7 @@ mod tests {
         crate::db::migrations::run_migrations(&conn, None).unwrap();
         // A rescan redelivering an OLDER Book after a newer import must not
         // move the snapshot backward: different content passes the identical
-        // check, so the captured_at guard is the only defense. History must
-        // not gain stale rows either.
+        // check, so the captured_at guard is the only defense.
         conn.execute(
             "INSERT INTO garden_almanac
                 (character_name, server_name, crop_name, zone_name, event_start, event_end, is_current, captured_at)
@@ -3363,10 +3306,6 @@ mod tests {
             })
             .unwrap();
         assert_eq!(kept, "NewCrop");
-        let history: i64 = conn
-            .query_row("SELECT COUNT(*) FROM garden_almanac_history", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(history, 0);
         // Equal capture stays eligible: a retry of the current observation
         // with different content still replaces (rescan heals failed imports).
         let n = import_garden_almanac(&conn, "T", "Dreva", body, "2026-11-17 16:47:31").unwrap();
@@ -3548,28 +3487,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, "2026-11-17 16:47:31");
-        let hist_stored: String = conn
-            .query_row(
-                "SELECT captured_at FROM garden_almanac_history WHERE character_name = 'T'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(hist_stored, "2026-11-17 16:47:31");
         // The space-format twin of the same observation is an identical
-        // re-import (rescan): no-op, no duplicate history — the families
-        // converge on one stored shape instead of churning the snapshot.
+        // re-import (rescan): no-op — the families converge on one stored
+        // shape instead of churning the snapshot.
         let n = import_garden_almanac(&conn, "T", "Dreva", body, "2026-11-17 16:47:31")
             .unwrap();
         assert_eq!(n, 0);
-        let hist: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM garden_almanac_history WHERE character_name = 'T'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(hist, 1);
     }
 }
 
@@ -3607,7 +3530,6 @@ pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
         .register::<PoopingStats>()
         .register::<HarvestAlmanacEntry>()
         .register::<GardenAlmanacEntry>()
-        .register::<GardenAlmanacHistoryEntry>()
         .register::<SkillCraftingBreakdown>()
         .register::<AttributeExtreme>()
         .register::<ComputedStats>()
