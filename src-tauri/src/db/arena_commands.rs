@@ -16,6 +16,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::sync::Arc;
 use tauri::State;
+use rusqlite::OptionalExtension;
 
 use super::{DbPool, DbRead};
 use crate::arena_parser::ArenaTracker;
@@ -87,28 +88,134 @@ pub struct ArenaStats {
 /// One arena tip for the current day, via the chat `EntityReport` twin
 /// (observed tipster: Eveline Rastin). Tips land in `player_messages`
 /// (message_type `entity_report`); the widget shows only today's.
+/// Additive parsed edge (`edge_kind`/`favored`/`opponent`/`edge_pct`):
+/// `None` when the body doesn't parse — the widget falls back to its
+/// client-side parse, so an unrecognized tip is never hidden. Existing
+/// shape untouched otherwise.
 #[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct ArenaTip {
     pub received_at: String,
     pub tipster: String,
     pub body: String,
+    /// `"edge"` (matchup) or `"solo"` (single fighter), if parsed.
+    pub edge_kind: Option<String>,
+    /// Canonical fighter the edge favors, if parsed.
+    pub favored: Option<String>,
+    /// The other fighter (edge tips only), if parsed.
+    pub opponent: Option<String>,
+    /// Signed edge percent, if parsed.
+    pub edge_pct: Option<i32>,
 }
 
-/// Today's arena tips for one character+server, newest first. Tips are
-/// per-character rows (like pigeons), unlike the global fight history, so
-/// callers pass the active identity. The game day resets at midnight
-/// America/New_York, so "today" is the current Eastern calendar day: the
-/// UTC-converted stamps the dispatch writes (see `crate::chat_json_parser`)
-/// are compared against the Eastern-midnight UTC range as fixed-format
-/// strings (no schema change; `timestamp` stays `"%Y-%m-%d %H:%M:%S"`).
-pub fn get_today_tips<C: DbRead + ?Sized>(
-    conn: &C,
-    character_name: &str,
-    server_name: &str,
-) -> Result<Vec<ArenaTip>, String> {
-    // Eastern-midnight UTC range for the current Eastern day (precedent:
-    // `get_current_moon_phase` in cdn_commands.rs). String comparison is
-    // exact on the fixed-format stamps the dispatch writes.
+/// Canonical arena fighter for a raw tip name. Mirrors the gorgonzola
+/// monitor's `_FIGHTERS` alias map, canonicalized to the dashboard
+/// vocabulary (`SEED_ROSTER` in `arena_parser`: Vizlark, not Viz).
+fn canonical_tip_fighter(raw: &str) -> Option<&'static str> {
+    match raw.to_lowercase().as_str() {
+        "otis" | "otiz" => Some("Otis"),
+        "gloz" | "goz" => Some("Gloz"),
+        "dura" => Some("Dura"),
+        "ushug" | "ush" => Some("Ushug"),
+        "viz" | "vizlark" | "vozlark" => Some("Vizlark"),
+        "leo" => Some("Leo"),
+        "corrrak" | "corrak" | "crrrak" | "corr" | "cor" => Some("Corrrak"),
+        "na'a" | "naa" | "naaa" => Some("Na'a"),
+        "lamp" => Some("Lamp"),
+        _ => None,
+    }
+}
+
+/// A parsed casino tip edge: which shape, who is favored, and by how much.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedTipEdge {
+    pub kind: &'static str,
+    pub favored: String,
+    pub opponent: Option<String>,
+    pub edge_pct: i32,
+}
+
+/// Fighter alias alternation for the tip patterns. Mirrors the monitor's
+/// `_F` (built from the same alias map as `canonical_tip_fighter`):
+/// the groups match alias spellings only, so the first hit is the first
+/// fighter named — a free-word group would catch boilerplate ("Here's")
+/// ahead of the name and miss the tip entirely.
+static TIP_ALIASES: &str = "vizlark|vozlark|corrrak|corrak|crrrak|ushug|otis|otiz|gloz|goz|dura|viz|leo|corr|cor|ush|na'a|naa|naaa|lamp";
+
+static TIP_EDGE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(&format!(
+        r"(?is)\bIf\s+({A})\s+and\s+({A})\s+fight today\b.*?\bthat\s+({A})\s+will have the upper hand\b.*?\(([+-]?\d+)%\)",
+        A = TIP_ALIASES,
+    ))
+    .expect("tip edge pattern is static")
+});
+
+static TIP_SOLO_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(&format!(r"(?is)\b({A})\b.*?\(([+-]?\d+)%\)", A = TIP_ALIASES))
+        .expect("tip solo pattern is static")
+});
+
+/// Strip chat markup (`<i>…</i>`, `<indent=20>`) to a fixpoint so tag
+/// residue can't glue itself to a fighter name.
+fn strip_tip_tags(body: &str) -> String {
+    static TAG_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"<[^>]*>").expect("tag pattern is static"));
+    let mut out = body.to_string();
+    loop {
+        let next = TAG_RE.replace_all(&out, "").into_owned();
+        if next == out {
+            return out;
+        }
+        out = next;
+    }
+}
+
+/// Parse a casino tip body into fighter+edge records. Edge shape first
+/// (`If A and B fight today … that C will have the upper hand. (+N%)`),
+/// then solo (`NAME … (±N%)`) — mirroring the monitor's `_parse_hot_tip_key`
+/// ordering. An edge-shaped body that doesn't fully parse (`upper hand`
+/// present, regex missed) returns `None` rather than misfiring as solo.
+/// Unknown fighter names return `None` rather than misattributing.
+pub fn parse_tip_edge(body: &str) -> Option<ParsedTipEdge> {
+    let text = strip_tip_tags(body);
+    if let Some(caps) = TIP_EDGE_RE.captures(&text) {
+        let a = canonical_tip_fighter(caps.get(1)?.as_str())?;
+        let b = canonical_tip_fighter(caps.get(2)?.as_str())?;
+        let winner = canonical_tip_fighter(caps.get(3)?.as_str())?;
+        if winner != a && winner != b {
+            return None;
+        }
+        let loser = if winner == a { b } else { a };
+        if loser == winner {
+            return None;
+        }
+        let edge_pct: i32 = caps.get(4)?.as_str().parse().ok()?;
+        return Some(ParsedTipEdge {
+            kind: "edge",
+            favored: winner.to_string(),
+            opponent: Some(loser.to_string()),
+            edge_pct,
+        });
+    }
+    if text.to_lowercase().contains("upper hand") {
+        return None;
+    }
+    let caps = TIP_SOLO_RE.captures(&text)?;
+    let favored = canonical_tip_fighter(caps.get(1)?.as_str())?;
+    let edge_pct: i32 = caps.get(2)?.as_str().parse().ok()?;
+    Some(ParsedTipEdge {
+        kind: "solo",
+        favored: favored.to_string(),
+        opponent: None,
+        edge_pct,
+    })
+}
+
+/// Eastern-midnight UTC range for the current Eastern day (precedent:
+/// `get_current_moon_phase` in cdn_commands.rs). String comparison is exact
+/// on the fixed-format stamps the dispatch writes. Shared by the
+/// `entity_report` readers (tips, blood): both are day-scoped to the
+/// casino's day, midnight America/New_York.
+fn eastern_today_range() -> Result<(String, String), String> {
     let eastern = chrono_tz::US::Eastern;
     let eastern_today = chrono::Utc::now().with_timezone(&eastern).date_naive();
     let day_start = eastern_today
@@ -125,13 +232,32 @@ pub fn get_today_tips<C: DbRead + ?Sized>(
         .single()
         .map(|dt| dt.with_timezone(&chrono::Utc))
         .ok_or_else(|| "Eastern midnight did not resolve to a single UTC instant".to_string())?;
-    let start_s = start_utc.format("%Y-%m-%d %H:%M:%S").to_string();
-    let end_s = end_utc.format("%Y-%m-%d %H:%M:%S").to_string();
+    Ok((
+        start_utc.format("%Y-%m-%d %H:%M:%S").to_string(),
+        end_utc.format("%Y-%m-%d %H:%M:%S").to_string(),
+    ))
+}
+
+ /// Today's arena tips for one character+server, newest first. Tips are
+ /// per-character rows (like pigeons), unlike the global fight history, so
+ /// callers pass the active identity. The game day resets at midnight
+ /// America/New_York, so "today" is the current Eastern calendar day: the
+ /// UTC-converted stamps the dispatch writes (see `crate::chat_json_parser`)
+ /// are compared against the Eastern-midnight UTC range as fixed-format
+ /// strings (no schema change; `timestamp` stays `"%Y-%m-%d %H:%M:%S"`).
+ pub fn get_today_tips<C: DbRead + ?Sized>(
+     conn: &C,
+     character_name: &str,
+     server_name: &str,
+ ) -> Result<Vec<ArenaTip>, String> {
+    let (start_s, end_s) = eastern_today_range()?;
     let mut stmt = conn
         .prepare(
             "SELECT timestamp, other_player, body FROM player_messages
              WHERE character_name = ?1 AND server_name = ?2
                AND message_type = 'entity_report'
+               AND other_player <> 'Grasuul'
+               AND body NOT LIKE '%Current Blood Season:%'
                AND timestamp >= ?3 AND timestamp < ?4
              ORDER BY timestamp DESC",
         )
@@ -140,10 +266,16 @@ pub fn get_today_tips<C: DbRead + ?Sized>(
         .query_map(
             rusqlite::params![character_name, server_name, start_s, end_s],
             |row| {
+                let body: String = row.get(2)?;
+                let edge = parse_tip_edge(&body);
                 Ok(ArenaTip {
                     received_at: row.get(0)?,
                     tipster: row.get(1)?,
-                    body: row.get(2)?,
+                    body,
+                    edge_kind: edge.as_ref().map(|e| e.kind.to_string()),
+                    favored: edge.as_ref().map(|e| e.favored.clone()),
+                    opponent: edge.as_ref().and_then(|e| e.opponent.clone()),
+                    edge_pct: edge.as_ref().map(|e| e.edge_pct),
                 })
             },
         )
@@ -151,6 +283,214 @@ pub fn get_today_tips<C: DbRead + ?Sized>(
     rows
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Tips row error: {e}"))
+}
+
+/// Grasuul's daily blood target, read off the stored EntityReport rows —
+/// no new ingestion. The chat log carries his report window as an
+/// `EntityReport` with title `Grasuul` and a body shaped
+/// `<h1>Current Blood Season:</h1>...<h2>X Blood</h2>` (same pattern the
+/// gorgonzola monitor matches). Day-scoped to the casino's Eastern day,
+/// like the tips reader.
+#[derive(Debug, Serialize, Clone, specta::Type)]
+pub struct BloodTarget {
+    pub target: String,
+    pub received_at: String,
+}
+
+static BLOOD_SEASON_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    // (?is): case-insensitive + dot-matches-newline — live bodies carry a
+    // real newline between the header and the indented target (monitor:
+    // re.IGNORECASE | re.DOTALL).
+    regex::Regex::new(r"(?is)Current Blood Season:.*?<h2>\s*([^<]+?)\s+Blood\s*</h2>")
+        .expect("blood season pattern is static")
+});
+
+/// Extract the day's blood target from a Grasuul EntityReport body.
+/// Multi-word targets ("Big Cat", "Fish and Snail") match — the group is
+/// everything ahead of the trailing ` Blood`. Case-insensitive, mirroring
+/// the gorgonzola monitor's `BLOOD_SEASON_RE`.
+pub fn parse_blood_target(body: &str) -> Option<String> {
+    BLOOD_SEASON_RE
+        .captures(body)
+        .and_then(|caps| caps.get(1))
+        .map(|m| m.as_str().trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+/// Today's blood target for one character+server, if Grasuul has announced
+/// it. Newest `entity_report` row from Grasuul whose body parses wins;
+/// `None` when no announcement is on today's rows yet. Read-only.
+pub fn get_blood_target<C: DbRead + ?Sized>(
+    conn: &C,
+    character_name: &str,
+    server_name: &str,
+) -> Result<Option<BloodTarget>, String> {
+    let (start_s, end_s) = eastern_today_range()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT timestamp, body FROM player_messages
+             WHERE character_name = ?1 AND server_name = ?2
+               AND message_type = 'entity_report'
+               AND other_player = 'Grasuul'
+               AND timestamp >= ?3 AND timestamp < ?4
+             ORDER BY timestamp DESC",
+        )
+        .map_err(|e| format!("Blood target query prepare error: {e}"))?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![character_name, server_name, start_s, end_s],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .map_err(|e| format!("Blood target query error: {e}"))?;
+    for row in rows {
+        let (received_at, body) = row.map_err(|e| format!("Blood target row error: {e}"))?;
+        if let Some(target) = parse_blood_target(&body) {
+            return Ok(Some(BloodTarget { target, received_at }));
+        }
+    }
+    Ok(None)
+}
+
+/// Today's blood target for the dashboard Status widget (active identity).
+#[tauri::command(rename_all = "camelCase")]
+pub fn get_blood_target_cmd(
+    db: State<'_, DbPool>,
+    character_name: String,
+    server_name: String,
+) -> Result<Option<BloodTarget>, String> {
+    let conn = db
+        .get()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    get_blood_target(&conn, &character_name, &server_name)
+}
+
+/// One active warden alert, parsed from the "Active Warden Alerts" book.
+#[derive(Debug, Serialize, Clone, PartialEq, specta::Type)]
+pub struct WardenAlert {
+    pub npc: String,
+    pub zone: String,
+    pub threat: String,
+    pub ends: String,
+}
+
+/// The newest warden-alerts book read, with its alerts. `None` when no
+/// warden book has landed yet — the widget shows an honest empty state.
+#[derive(Debug, Serialize, Clone, specta::Type)]
+pub struct WardenReport {
+    pub captured_at: Option<String>,
+    pub alerts: Vec<WardenAlert>,
+}
+
+static WARDEN_H2_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    // No look-ahead (unsupported): split on the literal `<h2>` (monitor is
+    // case-sensitive here too) and match the header at each chunk start.
+    // Inner threat/ends patterns take their FIRST hit, which always
+    // belongs to the current alert even though the tail holds later ones.
+    regex::Regex::new(r"(?is)\s*Aid Request from (.+?) in (.+?)</h2>(.*)")
+        .expect("warden header pattern is static")
+});
+
+static WARDEN_THREAT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?is)assistance with (.+?)\.?\s*</indent>")
+        .expect("warden threat pattern is static")
+});
+
+static WARDEN_INDENT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?is)<indent=\d+>(.+?)</indent>")
+        .expect("warden indent pattern is static")
+});
+
+static WARDEN_ENDS_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?is)Ends in ([^<]+?)\s*</i>").expect("warden ends pattern is static")
+});
+
+/// Parse an ActiveWardenAlerts book body into alerts, mirroring the
+/// gorgonzola monitor's `_parse_warden_alerts` (alert per `<h2>Aid Request
+/// from NPC in Zone</h2>`, threat after "assistance with", `Ends in …`
+/// line). The monitor's absolute `ends_at` is deliberately not computed:
+/// it bakes `now()` into stored rows, which would unpin tests — the widget
+/// shows the raw relative `ends` text.
+pub fn parse_warden_alerts(content: &str) -> Vec<WardenAlert> {
+    content
+        .split("<h2>")
+        .filter_map(|chunk| WARDEN_H2_RE.captures(chunk))
+        .map(|caps| {
+            let npc = caps.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
+            let zone = caps.get(2).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
+            let rest = caps.get(3).map(|m| m.as_str()).unwrap_or("");
+            let threat = WARDEN_THREAT_RE
+                .captures(rest)
+                .and_then(|t| t.get(1))
+                .map(|m| m.as_str().trim().to_string())
+                .or_else(|| {
+                    WARDEN_INDENT_RE
+                        .captures(rest)
+                        .and_then(|t| t.get(1))
+                        .map(|m| m.as_str().trim().to_string())
+                })
+                .unwrap_or_default();
+            let ends = WARDEN_ENDS_RE
+                .captures(rest)
+                .and_then(|t| t.get(1))
+                .map(|m| m.as_str().trim().to_string())
+                .unwrap_or_default();
+            WardenAlert { npc, zone, threat, ends }
+        })
+        .collect()
+}
+
+/// The newest "Active Warden Alerts" book for one character+server, with
+/// its parsed alerts. The book lands in `game_state_books` through two
+/// title-agnostic arms — the `[JSON:Book]` dispatch arm (book_type `JSON`,
+/// title as-is) and the Books-dir watcher (book_type `ActiveWardenAlerts`,
+/// title = export stem) — so the match is on the title, not the
+/// book_type. No day gate: the book carries no Eastern-day notion and
+/// alerts stay live across midnights (`Ends in …` is relative). Read-only.
+pub fn get_warden_alerts<C: DbRead + ?Sized>(
+    conn: &C,
+    character_name: &str,
+    server_name: &str,
+) -> Result<Option<WardenReport>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT content, captured_at FROM game_state_books
+             WHERE character_name = ?1 AND server_name = ?2
+               AND title LIKE '%warden%alert%'
+             ORDER BY captured_at DESC LIMIT 1",
+        )
+        .map_err(|e| format!("Warden alerts query prepare error: {e}"))?;
+    let row: Option<(String, Option<String>)> = stmt
+        .query_row(rusqlite::params![character_name, server_name], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .optional()
+        .map_err(|e| format!("Warden alerts query error: {e}"))?;
+    Ok(row.map(|(content, captured_at)| WardenReport {
+        alerts: parse_warden_alerts(&content),
+        captured_at,
+    }))
+}
+
+/// The newest warden-alerts book for the dashboard Status widget (active identity).
+#[tauri::command(rename_all = "camelCase")]
+pub fn get_warden_alerts_cmd(
+    db: State<'_, DbPool>,
+    character_name: String,
+    server_name: String,
+) -> Result<Option<WardenReport>, String> {
+    let conn = db
+        .get()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    get_warden_alerts(&conn, &character_name, &server_name)
+}
+
+/// Title gate for "Active Warden Alerts" books across both landing shapes:
+/// the `[JSON:Book]` row (title as-is) and the Books-dir export row
+/// (title = export stem). Shared by the live-refresh emits so the gate
+/// can't drift from the reader.
+pub fn is_warden_alerts_title(title: &str) -> bool {
+    let lower = title.to_lowercase();
+    lower.contains("warden") && lower.contains("alert")
 }
 
 /// Persist a single resolved match. Idempotent via `idx_arena_dedup`.
@@ -491,6 +831,308 @@ mod tests {
         assert_eq!(n, 1, "same match re-recorded must dedup via unique index");
     }
 
+    fn setup_messages(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE player_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_name TEXT NOT NULL,
+                server_name TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                message_type TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                other_player TEXT NOT NULL,
+                body TEXT NOT NULL DEFAULT '',
+                item_name TEXT
+            );",
+        )
+        .unwrap();
+    }
+
+    fn blood_body(target: &str) -> String {
+        format!(
+            "<h1>Current Blood Season:</h1>\n<indent=20><h2>{target} Blood</h2></indent>..."
+        )
+    }
+
+    #[test]
+    fn blood_parse_covers_single_and_multiword_targets() {
+        assert_eq!(
+            parse_blood_target(&blood_body("Elf")).as_deref(),
+            Some("Elf")
+        );
+        // Multi-word targets must survive the capture (monitor precedent:
+        // "Big Cat", "Fish and Snail").
+        assert_eq!(
+            parse_blood_target(&blood_body("Big Cat")).as_deref(),
+            Some("Big Cat")
+        );
+        assert_eq!(
+            parse_blood_target(&blood_body("Fish and Snail")).as_deref(),
+            Some("Fish and Snail")
+        );
+        assert_eq!(parse_blood_target("Here's a hot tip: Ushug (+10%)"), None);
+        assert_eq!(parse_blood_target(""), None);
+    }
+
+    #[test]
+    fn blood_target_reads_todays_grasuul_row() {
+        let conn = setup();
+        setup_messages(&conn);
+        conn.execute(
+            "INSERT INTO player_messages
+                (character_name, server_name, timestamp, message_type, direction, other_player, body) VALUES
+                ('Aka', 'Dreva', datetime('now'), 'entity_report', 'in', 'Grasuul', ?1)",
+            rusqlite::params![blood_body("Big Cat")],
+        )
+        .unwrap();
+        let got = get_blood_target(&conn, "Aka", "Dreva").unwrap();
+        let got = got.expect("today's Grasuul row must parse");
+        assert_eq!(got.target, "Big Cat");
+    }
+
+    #[test]
+    fn blood_target_ignores_stale_and_other_identities() {
+        let conn = setup();
+        setup_messages(&conn);
+        conn.execute_batch(
+            "INSERT INTO player_messages
+                (character_name, server_name, timestamp, message_type, direction, other_player, body) VALUES
+                ('Aka', 'Dreva', datetime('now', '-2 days'), 'entity_report', 'in', 'Grasuul', '<h1>Current Blood Season:</h1><h2>Elf Blood</h2>'),
+                ('Other', 'Dreva', datetime('now'), 'entity_report', 'in', 'Grasuul', '<h1>Current Blood Season:</h1><h2>Elf Blood</h2>');",
+        )
+        .unwrap();
+        assert!(
+            get_blood_target(&conn, "Aka", "Dreva").unwrap().is_none(),
+            "a two-day-old row and another character's row must not serve"
+        );
+    }
+
+    #[test]
+    fn blood_target_newest_row_wins() {
+        let conn = setup();
+        setup_messages(&conn);
+        // Two announcements today: the later stamp is the day's target.
+        conn.execute(
+            "INSERT INTO player_messages
+                (character_name, server_name, timestamp, message_type, direction, other_player, body) VALUES
+                ('Aka', 'Dreva', datetime('now', '-2 hours'), 'entity_report', 'in', 'Grasuul', ?1),
+                ('Aka', 'Dreva', datetime('now'), 'entity_report', 'in', 'Grasuul', ?2)",
+            rusqlite::params![blood_body("Elf"), blood_body("Fish and Snail")],
+        )
+        .unwrap();
+        let got = get_blood_target(&conn, "Aka", "Dreva").unwrap().expect("row expected");
+        assert_eq!(got.target, "Fish and Snail");
+    }
+
+    #[test]
+    fn today_tips_excludes_blood_but_keeps_casino_tips() {
+        let conn = setup();
+        setup_messages(&conn);
+        // One casino day: a Grasuul blood announcement plus two real tips
+        // (Eveline + a casino NPC). Blood leaves, both tips stay.
+        conn.execute(
+            "INSERT INTO player_messages
+                (character_name, server_name, timestamp, message_type, direction, other_player, body) VALUES
+                ('Aka', 'Dreva', datetime('now'), 'entity_report', 'in', 'Grasuul', ?1),
+                ('Aka', 'Dreva', datetime('now'), 'entity_report', 'in', 'Eveline Rastin', 'Ushug has the upper hand.'),
+                ('Aka', 'Dreva', datetime('now'), 'entity_report', 'in', 'Mandibles', 'Gloz is feeling great! (+5%)')",
+            rusqlite::params![blood_body("Elf")],
+        )
+        .unwrap();
+        let tips = get_today_tips(&conn, "Aka", "Dreva").unwrap();
+        assert_eq!(tips.len(), 2, "blood row must leave, both tips stay");
+        let tipsters: Vec<&str> = tips.iter().map(|t| t.tipster.as_str()).collect();
+        assert!(tipsters.contains(&"Eveline Rastin"));
+        assert!(tipsters.contains(&"Mandibles"));
+        assert!(!tipsters.contains(&"Grasuul"));
+    }
+
+    #[test]
+    fn tip_edge_parses_edge_shape() {
+        // Verbatim body from test_data/vip_json/chat-entityreport.log.
+        let edge = parse_tip_edge(
+            "Here's a hot tip:\n\n<i>If Ushug and Leo fight today, I'm pretty sure that Ushug will have the upper hand. (+10%)</i>",
+        )
+        .expect("live exemplar must parse");
+        assert_eq!(edge.kind, "edge");
+        assert_eq!(edge.favored, "Ushug");
+        assert_eq!(edge.opponent.as_deref(), Some("Leo"));
+        assert_eq!(edge.edge_pct, 10);
+    }
+
+    #[test]
+    fn tip_edge_winner_may_be_second_named() {
+        let edge = parse_tip_edge(
+            "If Dura and Corrrak fight today, that Corrrak will have the upper hand. (+10%)",
+        )
+        .expect("edge must parse");
+        assert_eq!(edge.favored, "Corrrak");
+        assert_eq!(edge.opponent.as_deref(), Some("Dura"));
+    }
+
+    #[test]
+    fn tip_edge_shaped_but_unparsed_never_solo_misfires() {
+        // "upper hand" present but no full matchup: None, not a solo tip.
+        assert_eq!(
+            parse_tip_edge("Ushug will have the upper hand today, trust me!"),
+            None
+        );
+        assert_eq!(parse_tip_edge("No numbers here, just vibes."), None);
+        assert_eq!(
+            parse_tip_edge("If Zog and Blarg fight today, Zog wins. (+10%)"),
+            None,
+            "unknown fighters must not misattribute"
+        );
+    }
+
+    #[test]
+    fn tip_edge_parses_solo_shapes_signed() {
+        let plus = parse_tip_edge("Gloz was training. She's feeling great! (+5%)")
+            .expect("solo plus must parse");
+        assert_eq!(plus.kind, "solo");
+        assert_eq!(plus.favored, "Gloz");
+        assert_eq!(plus.opponent, None);
+        assert_eq!(plus.edge_pct, 5);
+        // The widget's client parse only covers (+N%); the backend covers (-N%) too.
+        let minus = parse_tip_edge("Leo is in terrible form today. (-5%)")
+            .expect("solo minus must parse");
+        assert_eq!(minus.favored, "Leo");
+        assert_eq!(minus.edge_pct, -5);
+    }
+
+    #[test]
+    fn tip_edge_solo_skips_boilerplate_to_first_fighter() {
+        // Free-word name groups catch boilerplate ("Here's") ahead of the
+        // fighter and miss; the alias alternation must skip straight to it.
+        let plus = parse_tip_edge("Here's a hot tip:\n\nGloz is feeling great! (+5%)")
+            .expect("prefixed solo plus must parse");
+        assert_eq!(plus.kind, "solo");
+        assert_eq!(plus.favored, "Gloz");
+        assert_eq!(plus.edge_pct, 5);
+        let minus = parse_tip_edge("Gotta hot tip for ya: Leo is in terrible form. (-5%)")
+            .expect("prefixed solo minus must parse");
+        assert_eq!(minus.favored, "Leo");
+        assert_eq!(minus.edge_pct, -5);
+    }
+
+    #[test]
+    fn tip_edge_canonicalizes_aliases_to_dashboard_names() {
+        // Monitor aliases (Otiz, Viz) resolve to the dashboard vocabulary
+        // (SEED_ROSTER: Otis, Vizlark).
+        let edge = parse_tip_edge("If Otiz and Viz fight today, that Viz will have the upper hand. (+10%)")
+            .expect("aliased edge must parse");
+        assert_eq!(edge.favored, "Vizlark");
+        assert_eq!(edge.opponent.as_deref(), Some("Otis"));
+    }
+
+    #[test]
+    fn today_tips_carry_parsed_edge_fields() {
+        let conn = setup();
+        setup_messages(&conn);
+        conn.execute(
+            "INSERT INTO player_messages
+                (character_name, server_name, timestamp, message_type, direction, other_player, body) VALUES
+                ('Aka', 'Dreva', datetime('now'), 'entity_report', 'in', 'Eveline Rastin', ?1)",
+            rusqlite::params![
+                "If Ushug and Leo fight today, I'm pretty sure that Ushug will have the upper hand. (+10%)"
+            ],
+        )
+        .unwrap();
+        let tips = get_today_tips(&conn, "Aka", "Dreva").unwrap();
+        assert_eq!(tips.len(), 1);
+        assert_eq!(tips[0].edge_kind.as_deref(), Some("edge"));
+        assert_eq!(tips[0].favored.as_deref(), Some("Ushug"));
+        assert_eq!(tips[0].opponent.as_deref(), Some("Leo"));
+        assert_eq!(tips[0].edge_pct, Some(10));
+    }
+
+    fn setup_books(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE game_state_books (
+                character_name TEXT NOT NULL,
+                server_name TEXT NOT NULL,
+                book_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                captured_at TEXT,
+                UNIQUE(character_name, server_name, book_type, title)
+            );",
+        )
+        .unwrap();
+    }
+
+    fn warden_body() -> String {
+        "<h1>Active Warden Alerts</h1>\n\
+         <h2>Aid Request from Yusuf in Serbule</h2>\
+         <indent=20>Yusuf requests assistance with culling undead rats.</indent>\
+         <i>Ends in 23 hours 48 minutes</i>\n\
+         <h2>Aid Request from Marna in Eltibule</h2>\
+         <indent=20>Marna requests assistance with giant bats.</indent>\
+         <i>Ends in 5 hours 10 minutes</i>"
+            .to_string()
+    }
+
+    #[test]
+    fn warden_parse_covers_alert_fields() {
+        let alerts = parse_warden_alerts(&warden_body());
+        assert_eq!(alerts.len(), 2);
+        assert_eq!(alerts[0].npc, "Yusuf");
+        assert_eq!(alerts[0].zone, "Serbule");
+        assert_eq!(alerts[0].threat, "culling undead rats");
+        assert_eq!(alerts[0].ends, "23 hours 48 minutes");
+        assert_eq!(alerts[1].npc, "Marna");
+        assert_eq!(alerts[1].ends, "5 hours 10 minutes");
+        // No "assistance with": falls back to the first indent block.
+        let fallback = parse_warden_alerts(
+            "<h2>Aid Request from Joe in Kur</h2><indent=20>Something is wrong.</indent>",
+        );
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0].threat, "Something is wrong.");
+        assert_eq!(parse_warden_alerts("no alerts here"), vec![]);
+    }
+
+    #[test]
+    fn warden_reader_serves_newest_row_either_title_shape() {
+        let conn = setup();
+        setup_books(&conn);
+        // Both landing arms: the JSON dispatch row (title as-is) and the
+        // Books-dir export row (title = export stem). Newest wins.
+        conn.execute(
+            "INSERT INTO game_state_books
+                (character_name, server_name, book_type, title, content, captured_at) VALUES
+                ('Aka', 'Dreva', 'JSON', 'Active Warden Alerts', ?1, '2026-01-01T00:00:00+00:00'),
+                ('Aka', 'Dreva', 'ActiveWardenAlerts', 'ActiveWardenAlerts_260907_210009', ?2, '2026-06-01T00:00:00+00:00')",
+            rusqlite::params![
+                "<h2>Aid Request from Old in Zone</h2><indent=20>Old requests assistance with stale.</indent>",
+                warden_body()
+            ],
+        )
+        .unwrap();
+        let report = get_warden_alerts(&conn, "Aka", "Dreva").unwrap().expect("row expected");
+        assert_eq!(report.alerts.len(), 2);
+        assert_eq!(report.alerts[0].npc, "Yusuf");
+        assert_eq!(report.captured_at.as_deref(), Some("2026-06-01T00:00:00+00:00"));
+    }
+
+    #[test]
+    fn warden_reader_empty_and_scoped() {
+        let conn = setup();
+        setup_books(&conn);
+        assert!(get_warden_alerts(&conn, "Aka", "Dreva").unwrap().is_none());
+        conn.execute(
+            "INSERT INTO game_state_books
+                (character_name, server_name, book_type, title, content, captured_at) VALUES
+                ('Aka', 'Dreva', 'JSON', 'Gardening Almanac', 'garden', '2026-06-01T00:00:00+00:00'),
+                ('Other', 'Dreva', 'JSON', 'Active Warden Alerts', ?1, '2026-06-01T00:00:00+00:00')",
+            rusqlite::params![warden_body()],
+        )
+        .unwrap();
+        assert!(
+            get_warden_alerts(&conn, "Aka", "Dreva").unwrap().is_none(),
+            "garden books and other characters' warden books must not serve"
+        );
+    }
+
     #[test]
     fn aggregates_records_and_h2h() {
         let conn = setup();
@@ -575,13 +1217,13 @@ mod tests {
             );",
         )
         .unwrap();
-        // One tip today (kept), one yesterday (stale), one pigeon today
+        // One tip today (kept), one two days ago (stale), one pigeon today
         // (wrong type), one tip today for another character (wrong identity).
         conn.execute_batch(
             "INSERT INTO player_messages
                 (character_name, server_name, timestamp, message_type, direction, other_player, body) VALUES
                 ('Aka', 'Dreva', datetime('now'), 'entity_report', 'in', 'Eveline Rastin', 'Ushug has the upper hand.'),
-                ('Aka', 'Dreva', datetime('now', '-1 day'), 'entity_report', 'in', 'Eveline Rastin', 'stale tip'),
+                ('Aka', 'Dreva', datetime('now', '-2 days'), 'entity_report', 'in', 'Eveline Rastin', 'stale tip'),
                 ('Aka', 'Dreva', datetime('now'), 'pigeon', 'in', 'Friend', 'hello'),
                 ('Other', 'Dreva', datetime('now'), 'entity_report', 'in', 'Eveline Rastin', 'not mine');",
         )
@@ -644,6 +1286,9 @@ pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
         .register::<ArenaBettingSummary>()
         .register::<ArenaStats>()
         .register::<ArenaTip>()
+        .register::<BloodTarget>()
+        .register::<WardenAlert>()
+        .register::<WardenReport>()
         ;
     Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
 }

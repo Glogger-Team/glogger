@@ -195,18 +195,33 @@ const tipColumns = [
   { key: 'edge', label: '+/-', numeric: true },
 ]
 
-/** Compact tip text + edge for a body (time + boilerplate dropped; the full
+/** Compact tip text + edge for a tip row (time + boilerplate dropped; the full
  *  stripped body stays in the row tooltip). The edge lives in its own column,
  *  so the Tip text carries the matchup without the embedded percentage.
- *  Unparseable tips get first-sentence text with a blank edge. */
-function tipText(body: string): { tip: string; edge: string } {
-  const parsed = parseTip(body)
+ *  The backend parse wins (it covers (-N%) shapes the client regexes miss);
+ *  unparseable rows fall back to the client parse, then first-sentence text
+ *  with a blank edge so a tip is never hidden. */
+function formatEdge(pct: number): string {
+  return `${pct >= 0 ? '+' : ''}${pct}%`
+}
+function tipText(tip: {
+  body: string
+  edge_kind: string | null
+  favored: string | null
+  opponent: string | null
+  edge_pct: number | null
+}): { tip: string; edge: string } {
+  if (tip.edge_kind === 'edge' && tip.favored && tip.opponent && tip.edge_pct !== null)
+    return { tip: `${tip.favored} over ${tip.opponent}`, edge: formatEdge(tip.edge_pct) }
+  if (tip.edge_kind === 'solo' && tip.favored && tip.edge_pct !== null)
+    return { tip: `${tip.favored} all fights`, edge: formatEdge(tip.edge_pct) }
+  const parsed = parseTip(tip.body)
   if (parsed && parsed.other)
     return { tip: `${parsed.favored} over ${parsed.other}`, edge: `+${parsed.edge}%` }
   if (parsed) return { tip: parsed.favored, edge: `+${parsed.edge}%` }
-  const single = parseSingleTip(body)
+  const single = parseSingleTip(tip.body)
   if (single) return { tip: `${single.favored} all fights`, edge: `+${single.edge}%` }
-  return { tip: fallbackTip(body), edge: '' }
+  return { tip: fallbackTip(tip.body), edge: '' }
 }
 
 /** One row per roster tipster: today's tip, or a muted placeholder naming
@@ -219,7 +234,7 @@ const tipsTableRows = computed(() =>
       const first = tipster.split(' ')[0]
       return { tipster, tip: `No tip yet — talk to ${first}`, edge: '', fullBody: '', placeholder: true }
     }
-    const { tip: text, edge } = tipText(tip.body)
+    const { tip: text, edge } = tipText(tip)
     return { tipster, tip: text, edge, fullBody: stripTags(tip.body), placeholder: false }
   }),
 )

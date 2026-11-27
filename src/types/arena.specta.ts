@@ -57,9 +57,51 @@ export type ArenaStats = {
  *  One arena tip for the current day, via the chat `EntityReport` twin
  *  (observed tipster: Eveline Rastin). Tips land in `player_messages`
  *  (message_type `entity_report`); the widget shows only today's.
+ *  Additive parsed edge (`edge_kind`/`favored`/`opponent`/`edge_pct`):
+ *  `None` when the body doesn't parse — the widget falls back to its
+ *  client-side parse, so an unrecognized tip is never hidden. Existing
+ *  shape untouched otherwise.
  */
 export type ArenaTip = {
 	received_at: string,
 	tipster: string,
 	body: string,
+	/**  `"edge"` (matchup) or `"solo"` (single fighter), if parsed. */
+	edge_kind: string | null,
+	/**  Canonical fighter the edge favors, if parsed. */
+	favored: string | null,
+	/**  The other fighter (edge tips only), if parsed. */
+	opponent: string | null,
+	/**  Signed edge percent, if parsed. */
+	edge_pct: number | null,
+};
+
+/**
+ *  Grasuul's daily blood target, read off the stored EntityReport rows —
+ *  no new ingestion. The chat log carries his report window as an
+ *  `EntityReport` with title `Grasuul` and a body shaped
+ *  `<h1>Current Blood Season:</h1>...<h2>X Blood</h2>` (same pattern the
+ *  gorgonzola monitor matches). Day-scoped to the casino's Eastern day,
+ *  like the tips reader.
+ */
+export type BloodTarget = {
+	target: string,
+	received_at: string,
+};
+
+/**  One active warden alert, parsed from the "Active Warden Alerts" book. */
+export type WardenAlert = {
+	npc: string,
+	zone: string,
+	threat: string,
+	ends: string,
+};
+
+/**
+ *  The newest warden-alerts book read, with its alerts. `None` when no
+ *  warden book has landed yet — the widget shows an honest empty state.
+ */
+export type WardenReport = {
+	captured_at: string | null,
+	alerts: WardenAlert[],
 };

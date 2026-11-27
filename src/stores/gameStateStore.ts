@@ -176,6 +176,31 @@ export interface ArenaTip {
   received_at: string
   tipster: string
   body: string
+  /** Backend-parsed edge ("edge" | "solo"); null when unparseable. */
+  edge_kind: string | null
+  /** Canonical favored fighter; null when unparseable. */
+  favored: string | null
+  /** The other fighter (edge tips only). */
+  opponent: string | null
+  /** Signed edge percent; null when unparseable. */
+  edge_pct: number | null
+}
+
+export interface BloodTarget {
+  target: string
+  received_at: string
+}
+
+export interface WardenAlert {
+  npc: string
+  zone: string
+  threat: string
+  ends: string
+}
+
+export interface WardenReport {
+  captured_at: string | null
+  alerts: WardenAlert[]
 }
 
 export interface CombatWisdomMonster {
@@ -325,6 +350,13 @@ export const useGameStateStore = defineStore('gameState', () => {
   /** Today's casino arena tips (chat EntityReport rows for the active
    *  character+server). Per-character, unlike the global fight history. */
   const arenaTips = ref<ArenaTip[]>([])
+
+  /** Grasuul's blood target for today (chat EntityReport, active identity). */
+  const bloodTarget = ref<BloodTarget | null>(null)
+  /** Newest warden-alerts book read (game_state_books, active identity). */
+  const wardenReport = ref<WardenReport | null>(null)
+  /** True once a blood+warden load has settled (drives honest empty states). */
+  const dailyWorldLoaded = ref(false)
 
   // ── Council-wallet estimate (anchored on last export + live deltas) ───
   const currencyEstimate = ref<CurrencyEstimate | null>(null)
@@ -736,6 +768,44 @@ export const useGameStateStore = defineStore('gameState', () => {
     } catch (e) {
       console.error('[gameStateStore] Failed to load arena tips:', e)
     }
+  }
+
+  /** Fetch Grasuul's blood target for today (active character+server). */
+  async function fetchBloodTarget() {
+    const characterName = getCharacterName()
+    const serverName = getServerName()
+    if (!characterName || !serverName) return
+    try {
+      const target = await invoke<BloodTarget | null>('get_blood_target_cmd', { characterName, serverName })
+      // Same stale-switch guard as fetchArenaTips: refuse to plant the
+      // previous character's target.
+      if (getCharacterName() !== characterName || getServerName() !== serverName) return
+      bloodTarget.value = target
+    } catch (e) {
+      console.error('[gameStateStore] Failed to load blood target:', e)
+    }
+  }
+
+  /** Fetch the newest warden-alerts book read (active character+server). */
+  async function fetchWardenReport() {
+    const characterName = getCharacterName()
+    const serverName = getServerName()
+    if (!characterName || !serverName) return
+    try {
+      const report = await invoke<WardenReport | null>('get_warden_alerts_cmd', { characterName, serverName })
+      // Same stale-switch guard as fetchArenaTips: refuse to plant the
+      // previous character's report.
+      if (getCharacterName() !== characterName || getServerName() !== serverName) return
+      wardenReport.value = report
+    } catch (e) {
+      console.error('[gameStateStore] Failed to load warden report:', e)
+    }
+  }
+
+  /** Settle the daily-world loaded flag once a blood+warden load completes. */
+  async function fetchDailyWorld() {
+    await Promise.all([fetchBloodTarget(), fetchWardenReport()])
+    dailyWorldLoaded.value = true
   }
 
   /** Reconcile the council-wallet estimate from the DB (anchor + delta_since).
@@ -1193,6 +1263,8 @@ export const useGameStateStore = defineStore('gameState', () => {
       fetchCurrencyEstimate()
       // Load today's arena tips for the new identity (non-blocking)
       fetchArenaTips()
+      // Load today's world state (blood target + warden report) (non-blocking)
+      fetchDailyWorld()
       // Flush domains stashed while identity was missing — the full load just
       // covered the store-owned set, so re-emit the rest (widget-owned
       // domains heal via their own listeners on mount).
@@ -1293,7 +1365,12 @@ export const useGameStateStore = defineStore('gameState', () => {
           break
         }
         case 'player_messages':
+          // Tips and the blood target ride the same entity_report rows.
           await fetchArenaTips()
+          await fetchBloodTarget()
+          break
+        case 'warden_report':
+          await fetchWardenReport()
           break
         case 'currency_estimate':
           await fetchCurrencyEstimate()
@@ -1481,6 +1558,14 @@ export const useGameStateStore = defineStore('gameState', () => {
     fetchArenaStats,
     arenaTips,
     fetchArenaTips,
+
+    // Daily world state (blood target + warden report)
+    bloodTarget,
+    wardenReport,
+    dailyWorldLoaded,
+    fetchBloodTarget,
+    fetchWardenReport,
+    fetchDailyWorld,
 
     // Council-wallet estimate
     currencyEstimate,

@@ -721,6 +721,8 @@ pub fn run() {
             db::roulette_commands::backfill_roulette_from_chat_logs,
             db::arena_commands::get_arena_stats,
             db::arena_commands::get_arena_tips,
+            db::arena_commands::get_blood_target_cmd,
+            db::arena_commands::get_warden_alerts_cmd,
             db::arena_commands::backfill_arena_from_chat_logs,
             // CDN management
             get_cache_status,
