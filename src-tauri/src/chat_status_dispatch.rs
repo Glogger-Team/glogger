@@ -1610,7 +1610,7 @@ fn dispatch_json_event(
                 // Single statement, single table: atomic without a txn (the
                 // BEGIN IMMEDIATE rule covers multi-table arms only).
                 let source_line_id = ctx.source_line_id.as_deref();
-                let seen: bool = conn
+                let seen: bool = match conn
                     .query_row(
                         "SELECT EXISTS(SELECT 1 FROM quest_accepts
                          WHERE character_name = ?1 AND server_name = ?2
@@ -1618,22 +1618,34 @@ fn dispatch_json_event(
                            AND (?5 IS NULL OR source_line_id IS NULL OR source_line_id IS ?5))",
                         rusqlite::params![id.character, id.server, timestamp, *quest_id as i64, source_line_id],
                         |r| r.get(0),
-                    )
-                    .unwrap_or(false);
+                    ) {
+                    Ok(seen) => seen,
+                    Err(e) => {
+                        // Guard unreadable (e.g. v104 not applied): fail
+                        // closed and loud, not a silent skip — a later
+                        // replay retries the whole accept.
+                        eprintln!("[chat_status_dispatch] quest accept replay-guard failed, skipping: {e}");
+                        return;
+                    }
+                };
                 if seen {
                     return;
                 }
-                if conn
+                match conn
                     .execute(
                         "INSERT OR IGNORE INTO quest_accepts
                             (character_name, server_name, accepted_at, quest_id, quest_name, source_line_id)
                          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                         rusqlite::params![id.character, id.server, timestamp, *quest_id as i64, quest_name, source_line_id],
-                    )
-                    .map(|n| n > 0)
-                    .unwrap_or(false)
-                {
-                    out.domain("quests");
+                    ) {
+                    Ok(n) => {
+                        if n > 0 {
+                            out.domain("quests");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[chat_status_dispatch] quest accept insert failed, domain withheld: {e}");
+                    }
                 }
             }
         }
