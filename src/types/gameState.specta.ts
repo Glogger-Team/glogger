@@ -33,6 +33,37 @@ export type ComputedStats = {
 };
 
 /**
+ *  Anchor-pinned council history over a window: the ledger deltas from
+ *  `council_events` reconciled against the `currency_estimate` anchor.
+ *  `opening_balance` is the pinned level at `start_ts` (anchor plus all
+ *  post-anchor deltas strictly before the window); `points` carry the running
+ *  level through the window; `window_net` is their summed delta. Unanchored
+ *  characters get `has_anchor: false` with empty points — without an anchor
+ *  there is no level to pin.
+ */
+export type CouncilHistory = {
+	has_anchor: boolean,
+	anchor_amount: number,
+	anchor_at: string | null,
+	opening_balance: number,
+	window_net: number,
+	points: CouncilHistoryPoint[],
+};
+
+/**
+ *  One council ledger event with its anchor-pinned running balance
+ *  (migration v103 `council_events`). `balance` is the wallet level just
+ *  after this event: `anchor_amount` plus every post-anchor delta up to and
+ *  including it.
+ */
+export type CouncilHistoryPoint = {
+	event_ts: string,
+	delta: number,
+	kind: string,
+	balance: number,
+};
+
+/**
  *  Running council-wallet (`GOLD`) estimate (migration v56): the last export's
  *  balance (`anchor_amount` at `anchor_at`) plus live deltas (`delta_since`)
  *  parsed from chat. `estimated = anchor_amount + delta_since`. `has_anchor` is

@@ -192,7 +192,7 @@ use db::farming_commands::{
 };
 use db::game_state_commands::{
     add_manual_gift, get_attribute_extremes, get_character_report_stats, get_computed_stats,
-    get_currency_estimate, get_game_state_active_skills, get_game_state_attributes,
+    get_council_history, get_currency_estimate, get_game_state_active_skills, get_game_state_attributes,
     get_game_state_currencies, get_game_state_effects,
     get_game_state_equipment, get_game_state_favor, get_game_state_inventory,
     get_game_state_recipes, get_game_state_skills, get_game_state_storage, get_game_state_vendor,
@@ -1028,6 +1028,7 @@ pub fn run() {
             remove_last_gift,
             get_game_state_currencies,
             get_currency_estimate,
+            get_council_history,
             get_game_state_effects,
             get_game_state_storage,
             get_game_state_vendor,

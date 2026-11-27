@@ -137,6 +137,40 @@ pub struct CurrencyEstimate {
     pub has_anchor: bool,
 }
 
+/// One council ledger event with its anchor-pinned running balance
+/// (migration v103 `council_events`). `balance` is the wallet level just
+/// after this event: `anchor_amount` plus every post-anchor delta up to and
+/// including it.
+#[derive(Debug, Clone, Serialize, specta::Type)]
+pub struct CouncilHistoryPoint {
+    pub event_ts: String,
+    #[specta(type = i32)]
+    pub delta: i64,
+    pub kind: String,
+    #[specta(type = i32)]
+    pub balance: i64,
+}
+
+/// Anchor-pinned council history over a window: the ledger deltas from
+/// `council_events` reconciled against the `currency_estimate` anchor.
+/// `opening_balance` is the pinned level at `start_ts` (anchor plus all
+/// post-anchor deltas strictly before the window); `points` carry the running
+/// level through the window; `window_net` is their summed delta. Unanchored
+/// characters get `has_anchor: false` with empty points — without an anchor
+/// there is no level to pin.
+#[derive(Debug, Clone, Serialize, specta::Type)]
+pub struct CouncilHistory {
+    pub has_anchor: bool,
+    #[specta(type = u32)]
+    pub anchor_amount: i64,
+    pub anchor_at: Option<String>,
+    #[specta(type = i32)]
+    pub opening_balance: i64,
+    #[specta(type = i32)]
+    pub window_net: i64,
+    pub points: Vec<CouncilHistoryPoint>,
+}
+
 #[derive(Serialize, specta::Type)]
 pub struct GameStateEffect {
     #[specta(type = u32)]
@@ -594,6 +628,131 @@ pub fn get_currency_estimate_for<C: crate::db::DbRead + ?Sized>(
     )
     .optional()
     .map_err(|e| format!("Query error: {e}"))
+}
+
+/// Council-wallet history over `[start_ts, end_ts]` for one character+server:
+/// the v103 `council_events` ledger reconciled against the `currency_estimate`
+/// anchor (migration v56). Matches the accumulator contract exactly —
+/// `delta_since == SUM(delta WHERE event_ts > anchor_at)` — so the pinned
+/// levels here agree with `get_currency_estimate` whenever the window covers
+/// every post-anchor event.
+///
+/// Identity rule mirrors the timeboxed readers: exact character+server match
+/// (no NULL-legacy fallback — every ledger row carries its accrual identity).
+/// Empty bounds are a caller error; an inverted window returns the anchor with
+/// empty points, never an error (the selector emits one transiently while
+/// typing a custom range).
+#[tauri::command]
+pub fn get_council_history(
+    db: State<'_, DbPool>,
+    character_name: String,
+    server_name: String,
+    start_ts: String,
+    end_ts: String,
+) -> Result<CouncilHistory, String> {
+    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    get_council_history_for(&conn, &character_name, &server_name, &start_ts, &end_ts)
+}
+
+/// Split out from the command so tests can exercise it without Tauri state.
+/// Generic over `DbRead` (same convention as `get_currency_estimate_for`).
+pub fn get_council_history_for<C: crate::db::DbRead + ?Sized>(
+    conn: &C,
+    character_name: &str,
+    server_name: &str,
+    start_ts: &str,
+    end_ts: &str,
+) -> Result<CouncilHistory, String> {
+    if start_ts.is_empty() || end_ts.is_empty() {
+        return Err("start_ts and end_ts are required (space-format naive UTC)".to_string());
+    }
+    use rusqlite::OptionalExtension;
+    let anchor: Option<(i64, String)> = conn
+        .query_row(
+            "SELECT anchor_amount, anchor_at FROM currency_estimate
+             WHERE character_name = ?1 AND server_name = ?2 AND currency_name = 'GOLD'
+               AND anchor_at IS NOT NULL",
+            rusqlite::params![character_name, server_name],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|e| format!("Query error: {e}"))?;
+    let Some((anchor_amount, anchor_at)) = anchor else {
+        return Ok(CouncilHistory {
+            has_anchor: false,
+            anchor_amount: 0,
+            anchor_at: None,
+            opening_balance: 0,
+            window_net: 0,
+            points: Vec::new(),
+        });
+    };
+    if start_ts > end_ts {
+        return Ok(CouncilHistory {
+            has_anchor: true,
+            anchor_amount,
+            anchor_at: Some(anchor_at),
+            opening_balance: anchor_amount,
+            window_net: 0,
+            points: Vec::new(),
+        });
+    }
+    // Pinned level at the window start: anchor plus every post-anchor delta
+    // strictly before the window. The `event_ts > anchor_at` arm keeps the
+    // read-time filter identical to the accrual guard, so pre-anchor ledger
+    // rows (kept ungated by the writer) never move the pinned level.
+    let pre_window: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(delta), 0) FROM council_events
+             WHERE character_name = ?1 AND server_name = ?2
+               AND event_ts > ?3 AND event_ts < ?4",
+            rusqlite::params![character_name, server_name, anchor_at, start_ts],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("Query error: {e}"))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT event_ts, delta, kind FROM council_events
+             WHERE character_name = ?1 AND server_name = ?2
+               AND event_ts > ?3 AND event_ts >= ?4 AND event_ts <= ?5
+             ORDER BY event_ts, rowid",
+        )
+        .map_err(|e| format!("Query error: {e}"))?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![character_name, server_name, anchor_at, start_ts, end_ts],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .map_err(|e| format!("Query error: {e}"))?;
+    let mut balance = anchor_amount + pre_window;
+    let opening_balance = balance;
+    let mut points = Vec::new();
+    for row in rows {
+        let (event_ts, delta, kind) =
+            row.map_err(|e| format!("Row error: {e}"))?;
+        balance += delta;
+        points.push(CouncilHistoryPoint {
+            event_ts,
+            delta,
+            kind,
+            balance,
+        });
+    }
+    let window_net = balance - opening_balance;
+    Ok(CouncilHistory {
+        has_anchor: true,
+        anchor_amount,
+        anchor_at: Some(anchor_at),
+        opening_balance,
+        window_net,
+        points,
+    })
 }
 
 #[tauri::command]
@@ -3227,6 +3386,82 @@ mod tests {
     }
 
     #[test]
+    fn council_history_pins_level_to_anchor_and_sums_window() {
+        // Wealth-view contract: opening level = anchor + pre-window
+        // post-anchor deltas, points carry the running level, window_net is
+        // the in-window sum. Pre-anchor ledger rows never move the level.
+        let conn = setup();
+        conn.execute(
+            "INSERT INTO currency_estimate (character_name, server_name, currency_name, anchor_amount, anchor_at, delta_since)
+             VALUES ('Zen','Dreva','GOLD',5000,'2026-10-26 12:00:00',70)",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO council_events (character_name, server_name, event_ts, delta, kind) VALUES
+                ('Zen','Dreva','2026-10-26 11:00:00',999,'councils_changed'),
+                ('Zen','Dreva','2026-10-26 12:00:00',100,'councils_changed'),
+                ('Zen','Dreva','2026-10-26 13:00:00',50,'councils_changed'),
+                ('Zen','Dreva','2026-10-26 14:00:00',-30,'coins_looted'),
+                ('Zen','Dreva','2026-10-26 15:00:00',50,'councils_changed'),
+                ('Alt','Dreva','2026-10-26 13:30:00',1000,'councils_changed');",
+        )
+        .unwrap();
+        let h = get_council_history_for(&conn, "Zen", "Dreva", "2026-10-26 13:00:00", "2026-10-26 14:30:00").unwrap();
+        assert!(h.has_anchor);
+        assert_eq!(h.anchor_amount, 5000);
+        assert_eq!(h.anchor_at.as_deref(), Some("2026-10-26 12:00:00"));
+        // Pre-anchor +999 and at-anchor +100 excluded; pre-window post-anchor
+        // none here (window starts at the first post-anchor event), so the
+        // opening level is the anchor itself.
+        assert_eq!(h.opening_balance, 5000, "pre-anchor rows never move the level");
+        assert_eq!(h.window_net, 20, "50 + (-30) in the window");
+        let balances: Vec<i64> = h.points.iter().map(|p| p.balance).collect();
+        assert_eq!(balances, vec![5050, 5020], "running level through the window");
+        assert_eq!(h.points[0].kind, "councils_changed");
+        assert_eq!(h.points[1].delta, -30);
+        // The 15:00 event is outside the window; the Alt row never leaks in.
+        assert_eq!(h.points.len(), 2);
+        // Full-window reconciliation: opening + net == anchor + delta_since.
+        assert_eq!(h.opening_balance + h.window_net, 5020);
+        let full = get_council_history_for(&conn, "Zen", "Dreva", "2026-10-26 12:00:01", "2026-10-26 16:00:00").unwrap();
+        assert_eq!(full.opening_balance + full.window_net, 5000 + 70, "covers every post-anchor event");
+    }
+
+    #[test]
+    fn council_history_unanchored_inverted_and_empty_bounds() {
+        let conn = setup();
+        // No wallet row at all: no anchor, no points.
+        let h = get_council_history_for(&conn, "Nobody", "Dreva", "2026-10-26 13:00:00", "2026-10-26 14:00:00").unwrap();
+        assert!(!h.has_anchor);
+        assert!(h.points.is_empty());
+        // Anchor-less row (backfill shape): still no level to pin, even with
+        // ledger rows present.
+        conn.execute_batch(
+            "INSERT INTO currency_estimate (character_name, server_name, currency_name, anchor_amount, anchor_at, delta_since)
+             VALUES ('Zen','Dreva','GOLD',0,NULL,0);
+             INSERT INTO council_events (character_name, server_name, event_ts, delta, kind)
+             VALUES ('Zen','Dreva','2026-10-26 13:00:00',50,'councils_changed');",
+        )
+        .unwrap();
+        let h = get_council_history_for(&conn, "Zen", "Dreva", "2026-10-26 13:00:00", "2026-10-26 14:00:00").unwrap();
+        assert!(!h.has_anchor);
+        assert!(h.points.is_empty());
+        // Anchored, inverted window: anchor rides along, points empty.
+        conn.execute(
+            "UPDATE currency_estimate SET anchor_amount = 5000, anchor_at = '2026-10-26 12:00:00'
+             WHERE character_name = 'Zen' AND server_name = 'Dreva'",
+            [],
+        )
+        .unwrap();
+        let h = get_council_history_for(&conn, "Zen", "Dreva", "2026-10-26 14:00:00", "2026-10-26 13:00:00").unwrap();
+        assert!(h.has_anchor);
+        assert!(h.points.is_empty());
+        // Empty bounds are a caller error (timeboxed precedent).
+        assert!(get_council_history_for(&conn, "Zen", "Dreva", "", "2026-10-26 14:00:00").is_err());
+    }
+
+    #[test]
     fn garden_almanac_body_parses_seasons() {
         let body = include_str!("../../../test_data/vip_json/chat-book.log")
             .lines()
@@ -3692,6 +3927,8 @@ pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
         .register::<TeleportationBinds>()
         .register::<ItemOwnershipLocation>()
         .register::<ItemOwnershipInfo>()
+        .register::<CouncilHistoryPoint>()
+        .register::<CouncilHistory>()
         ;
     Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
 }

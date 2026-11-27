@@ -20,6 +20,11 @@
       <template v-else-if="activeTab === 'stall-tracker'">
         <StallTrackerView />
       </template>
+
+      <!-- Council Wealth -->
+      <template v-else-if="activeTab === 'wealth'">
+        <CouncilWealthView />
+      </template>
     </div>
   </PaneLayout>
 </template>
@@ -30,6 +35,7 @@ import MarketView from '../Market/MarketView.vue'
 import FarmingView from './EconomicsFarmingView.vue'
 import SurveyView from './EconomicsSurveyView.vue'
 import StallTrackerView from '../StallTracker/StallTrackerView.vue'
+import CouncilWealthView from './CouncilWealthView.vue'
 
 defineProps<{
   activeTab: string;

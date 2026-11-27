@@ -542,6 +542,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 102)?;
     }
 
+    if current_version < 103 {
+        migration_v103_council_event_ledger(conn)?;
+        super::record_migration(conn, 103)?;
+    }
+
     tx.commit()?;
     Ok(())
 }
@@ -2067,6 +2072,43 @@ fn migration_v101_xp_award_ledger(conn: &Connection) -> Result<()> {
 /// failing.
 fn migration_v102_drop_garden_almanac_history(conn: &Connection) -> Result<()> {
     conn.execute_batch("DROP TABLE IF EXISTS garden_almanac_history;")?;
+    Ok(())
+}
+
+/// Migration V103: per-event council ledger (`council_events`).
+///
+/// The council wealth history view (plan `docs/plans/timeseries-history-plan.md`
+/// section 2, triggered 2026-11-27) needs per-event wallet deltas:
+/// `currency_estimate` (v56) keeps only a running anchor + `delta_since`, so no
+/// range query over existing rows could answer "councils in window W". This
+/// table is that ledger — one row per observed accrual event.
+///
+/// Key shape follows the v97 `favor_events` precedent: no PRIMARY KEY, a plain
+/// UNIQUE index would treat NULLs as distinct and rescans would reduplicate,
+/// so the `COALESCE(source_line_id, '')` expression key keeps legacy NULL
+/// rows collapsing among themselves. `event_ts` is space-format naive UTC (the
+/// v98 contract); writers normalize at the edge via `normalize_contract_ts`
+/// (`game_state_commands.rs`) so ordering never mixes `T` and space families.
+/// No backfill: pre-existing rows are unrecoverable line identities, same
+/// accepted limit as v96/v97. Lifecycle: `SCOPED_TABLES` (delete + rename
+/// coverage), never `PURGE_TABLES` (time-series are not age-purged, same as
+/// `favor_events` / `chat_xp_awards`).
+fn migration_v103_council_event_ledger(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS council_events (
+            character_name TEXT NOT NULL,
+            server_name TEXT NOT NULL,
+            event_ts TEXT NOT NULL,
+            delta INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            source_line_id TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_council_events_line ON council_events(
+            character_name, server_name, event_ts, delta, kind,
+            COALESCE(source_line_id, ''));
+        CREATE INDEX IF NOT EXISTS idx_council_events_char_ts
+            ON council_events(character_name, server_name, event_ts);",
+    )?;
     Ok(())
 }
 
@@ -5323,13 +5365,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            102,
+            103,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 102);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 103);
     }
 
     #[test]
@@ -5452,13 +5494,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 102) plus the purge itself on the three aggregate source tables.
+        // 103) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 102, "migration chain head");
+        assert_eq!(head, 103, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -5504,8 +5546,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 102 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id + v97 favor source-line id + v98 timestamp space contract + v99 kill-loot link-table drop + v100 player-prev loot_added drop + v101 XP award ledger + v102 garden history drop). Repair: a
+        // Chain wiring: full run_migrations head must be 103 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id + v97 favor source-line id + v98 timestamp space contract + v99 kill-loot link-table drop + v100 player-prev loot_added drop + v101 XP award ledger + v102 garden history drop + v103 council event ledger). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -5513,7 +5555,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 102, "migration chain head");
+        assert_eq!(head, 103, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[

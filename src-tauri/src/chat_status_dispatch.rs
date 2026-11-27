@@ -646,13 +646,13 @@ fn dispatch_status_event(
             if state.count_currency {
                 if ctx.is_scan {
                     if let Some(id) = ctx.identity {
-                        accrue_currency_delta(ctx.db, &id.character, &id.server, *amount as i64, timestamp)
+                        accrue_currency_delta(ctx.db, &id.character, &id.server, *amount as i64, timestamp, "coins_looted", ctx.source_line_id.as_deref())
                     } else {
                         false
                     }
                 } else {
                     if let Some(id) = ctx.identity {
-                        accrue_currency_delta(ctx.db, &id.character, &id.server, *amount as i64, timestamp);
+                        accrue_currency_delta(ctx.db, &id.character, &id.server, *amount as i64, timestamp, "coins_looted", ctx.source_line_id.as_deref());
                     }
                     true
                 }
@@ -664,13 +664,13 @@ fn dispatch_status_event(
             if state.count_currency {
                 if ctx.is_scan {
                     if let Some(id) = ctx.identity {
-                        accrue_currency_delta(ctx.db, &id.character, &id.server, *amount, timestamp)
+                        accrue_currency_delta(ctx.db, &id.character, &id.server, *amount, timestamp, "councils_changed", ctx.source_line_id.as_deref())
                     } else {
                         false
                     }
                 } else {
                     if let Some(id) = ctx.identity {
-                        accrue_currency_delta(ctx.db, &id.character, &id.server, *amount, timestamp);
+                        accrue_currency_delta(ctx.db, &id.character, &id.server, *amount, timestamp, "councils_changed", ctx.source_line_id.as_deref());
                     }
                     true
                 }
@@ -1600,27 +1600,86 @@ fn dispatch_json_event(
 
 /// Signed wallet delta with the same guards as the coordinator: no-op
 /// without an export anchor, and only events newer than the anchor count.
-/// Returns true only when a row actually accrued.
-fn accrue_currency_delta(db: &DbPool, character: &str, server: &str, amount: i64, event_ts: &str) -> bool {
+/// The per-event ledger row (`council_events`, v103) lands regardless of the
+/// anchor — pre-anchor and anchor-less events still happened, and the anchor
+/// filter applies at read time — but only on accumulating paths:
+/// `count_currency = false` scan paths record neither accrual nor ledger
+/// (live owns accumulation, as today). Returns true only when a row actually
+/// accrued.
+#[allow(clippy::too_many_arguments)]
+fn accrue_currency_delta(db: &DbPool, character: &str, server: &str, amount: i64, event_ts: &str, kind: &str, source_line_id: Option<&str>) -> bool {
     if amount == 0 {
         return false;
     }
-    if let Ok(conn) = db.get_write() {
-        matches!(
-            conn.execute(
-                "UPDATE currency_estimate
-                SET delta_since = delta_since + ?1, updated_at = datetime('now')
-              WHERE character_name = ?2 AND server_name = ?3
-                AND currency_name = 'GOLD'
-                AND anchor_at IS NOT NULL
-                AND ?4 > anchor_at",
-                rusqlite::params![amount, character, server, event_ts],
-            ),
-            Ok(1)
+    let Ok(conn) = db.get_write() else {
+        return false;
+    };
+    // Single write transaction for accrual + ledger (favor-arm precedent, same
+    // file): a ledger failure rolls back the delta, so a later replay retries
+    // the whole unit instead of leaving an unledgered delta behind (INSERT OR
+    // IGNORE keeps successful replays no-ops). Same unchecked-transaction
+    // shape as the survey aggregator: the pool checkout is exclusive and no
+    // outer transaction is open here.
+    let tx = match rusqlite::Transaction::new_unchecked(
+        &conn,
+        rusqlite::TransactionBehavior::Immediate,
+    ) {
+        Ok(tx) => tx,
+        Err(e) => {
+            eprintln!("[chat_status_dispatch] council txn begin failed: {e}");
+            return false;
+        }
+    };
+    let event_ts = crate::db::game_state_commands::normalize_contract_ts(event_ts);
+    // Upgrade-boundary replay guard (favor-ledger shape): a stamped line
+    // matching a pre-identity (`NULL`) row is a rescan replay, not a genuine
+    // second receipt — the COALESCE index would see key+id vs key+'' as
+    // distinct and duplicate it. `None` (failed raw store) keeps legacy
+    // match-any collapse; `Some` collapses only onto its own line's row or a
+    // pre-identity row, never onto another line's stamped row.
+    // Same-transaction SELECT on the pool's exclusive write checkout: no
+    // race, and the accrual + ledger unit stays atomic.
+    let seen: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM council_events
+             WHERE character_name = ?1 AND server_name = ?2
+               AND event_ts = ?3 AND delta = ?4 AND kind = ?5
+               AND (?6 IS NULL OR source_line_id IS NULL OR source_line_id IS ?6))",
+            rusqlite::params![character, server, event_ts, amount, kind, source_line_id],
+            |r| r.get(0),
         )
-    } else {
-        false
+        .unwrap_or(false);
+    if !seen
+        && let Err(e) = tx.execute(
+            "INSERT OR IGNORE INTO council_events
+                (character_name, server_name, event_ts, delta, kind, source_line_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![character, server, event_ts, amount, kind, source_line_id],
+        )
+    {
+        eprintln!("[chat_status_dispatch] council ledger insert failed, rolled back: {e}");
+        return false;
     }
+    let updated = match tx.execute(
+        "UPDATE currency_estimate
+        SET delta_since = delta_since + ?1, updated_at = datetime('now')
+      WHERE character_name = ?2 AND server_name = ?3
+        AND currency_name = 'GOLD'
+        AND anchor_at IS NOT NULL
+        AND ?4 > anchor_at",
+        rusqlite::params![amount, character, server, event_ts],
+    ) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("[chat_status_dispatch] currency accrual failed, rolled back: {e}");
+            return false;
+        }
+    };
+    if let Err(e) = tx.commit() {
+        eprintln!("[chat_status_dispatch] council txn commit failed: {e}");
+        return false;
+    }
+    updated == 1
 }
 
 /// Naive UTC (`%Y-%m-%d %H:%M:%S`) → RFC3339 for `*_at` columns shared with
@@ -2203,6 +2262,116 @@ mod tests {
         assert_eq!(spins2, 1);
         let milks2: i64 = conn.query_row("SELECT COUNT(*) FROM player_milking_log", [], |r| r.get(0)).unwrap();
         assert_eq!(milks2, 1);
+    }
+
+    #[test]
+    fn council_ledger_rows_land_per_event_and_replays_converge() {
+        // Plan reconciliation pins (timeseries-history-plan section 2): ledger
+        // rows land per event with timestamp + delta + kind + identity, and a
+        // rescan/replay converges to one row per line.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        seed_skill(&gd, "Sword", 7);
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        pool.get_write()
+            .unwrap()
+            .execute(
+                "INSERT INTO currency_estimate (character_name, server_name, currency_name, anchor_amount, anchor_at, delta_since)
+                 VALUES ('Alice','Dreva','GOLD',1000,'2026-04-01 05:00:00',0)",
+                [],
+            )
+            .unwrap();
+        let councils = status_msg("You received 10 Councils.", "26-04-01 05:30:53");
+        let loot = status_msg("You searched the corpse and found 5 coins.", "26-04-01 05:31:53");
+        let mut st = state(&mut arena, &mut dmg);
+        dispatch_with_line(&pool, &gd, Some(&id()), &councils, "26-04-01 05:30:53", &mut st, Some("chat.log:100"));
+        let mut st = state(&mut arena, &mut dmg);
+        dispatch_with_line(&pool, &gd, Some(&id()), &loot, "26-04-01 05:31:53", &mut st, Some("chat.log:200"));
+        let conn = pool.get_write().unwrap();
+        let rows: Vec<(String, i64, String, Option<String>)> = conn
+            .prepare("SELECT event_ts, delta, kind, source_line_id FROM council_events ORDER BY event_ts")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("2026-04-01 05:30:53".to_string(), 10, "councils_changed".to_string(), Some("chat.log:100".to_string())),
+                ("2026-04-01 05:31:53".to_string(), 5, "coins_looted".to_string(), Some("chat.log:200".to_string())),
+            ],
+            "one ledger row per event, timestamp + delta + kind + identity"
+        );
+        // Anchor-reconciliation contract: delta_since equals the post-anchor
+        // ledger sum while every post-anchor event accrued exactly once.
+        let delta: i64 = conn
+            .query_row("SELECT delta_since FROM currency_estimate WHERE character_name = 'Alice'", [], |r| r.get(0))
+            .unwrap();
+        let ledger_sum: i64 = conn
+            .query_row("SELECT COALESCE(SUM(delta), 0) FROM council_events WHERE event_ts > '2026-04-01 05:00:00'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!((delta, ledger_sum), (15, 15), "accumulator reconciles with the ledger");
+        drop(conn);
+        // Same lines replayed with the same ids: ledger converges to one row
+        // per line. The accumulator has no per-line memory, so it accrues
+        // again (documented double-accrue limit — live owns accumulation).
+        let mut st = state(&mut arena, &mut dmg);
+        dispatch_with_line(&pool, &gd, Some(&id()), &councils, "26-04-01 05:30:53", &mut st, Some("chat.log:100"));
+        let mut st = state(&mut arena, &mut dmg);
+        dispatch_with_line(&pool, &gd, Some(&id()), &loot, "26-04-01 05:31:53", &mut st, Some("chat.log:200"));
+        let conn = pool.get_write().unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM council_events", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2, "replay converges to one row per line");
+        // A genuinely distinct second receipt (different offset, same second
+        // and content) inserts its own row.
+        drop(conn);
+        let mut st = state(&mut arena, &mut dmg);
+        dispatch_with_line(&pool, &gd, Some(&id()), &loot, "26-04-01 05:31:53", &mut st, Some("chat.log:300"));
+        let conn = pool.get_write().unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM council_events", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 3, "distinct line id inserts a genuine second receipt");
+    }
+
+    #[test]
+    fn council_ledger_legacy_null_ids_collapse_and_scan_records_nothing() {
+        // Legacy match-any path (`None` id): two same-second same-content
+        // lines collapse onto one row, and scan paths (`count_currency =
+        // false`) record neither accrual nor ledger.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        seed_skill(&gd, "Sword", 7);
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        pool.get_write()
+            .unwrap()
+            .execute(
+                "INSERT INTO currency_estimate (character_name, server_name, currency_name, anchor_amount, anchor_at, delta_since)
+                 VALUES ('Alice','Dreva','GOLD',1000,'2026-04-01 05:00:00',0)",
+                [],
+            )
+            .unwrap();
+        let councils = status_msg("You received 10 Councils.", "26-04-01 05:30:53");
+        let mut st = state(&mut arena, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &councils, "26-04-01 05:30:53", &mut st);
+        let mut st = state(&mut arena, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &councils, "26-04-01 05:30:53", &mut st);
+        let conn = pool.get_write().unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM council_events", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "legacy NULL ids collapse match-any");
+        drop(conn);
+        // Scan path records nothing (live owns accumulation, as today).
+        let mut st = state_scan(&mut arena, &mut dmg);
+        dispatch(&pool, &gd, Some(&id()), &councils, "26-04-01 05:30:53", &mut st);
+        let conn = pool.get_write().unwrap();
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM council_events", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "scan records no ledger row");
+        let delta: i64 = conn
+            .query_row("SELECT delta_since FROM currency_estimate WHERE character_name = 'Alice'", [], |r| r.get(0))
+            .unwrap();
+        // Two live accrues (10 + 10); the scan added nothing.
+        assert_eq!(delta, 20, "scan accrues nothing");
     }
 
     #[test]
