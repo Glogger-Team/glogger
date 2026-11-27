@@ -5,6 +5,7 @@ Real-time garden plot tracking with inventory integration, complementary to the 
 ## Data Source
 
 `EntityDescriptionUpdated` events from [player_event_parser.rs](../../src-tauri/src/player_event_parser.rs) provide per-plot state:
+
 - **entity_id**: persistent per plot, enables lifecycle tracking
 - **name**: state prefix + crop (e.g., "Ripe Onion", "Thirsty Barley")
 - **description**: human-readable state ("This barley needs water!")
@@ -28,6 +29,7 @@ Query `game_state_inventory` for gardening items (seeds, fertilizer, water) filt
 ## UI: Dashboard Widget
 
 Medium-size widget with:
+
 - Summary bar: "3 need water | 1 needs fertilizer | 2 growing | 4 ready"
 - Plot list grouped by area, state-colored badges
 - Inventory sidebar showing relevant supply counts
@@ -43,32 +45,38 @@ Medium-size widget with:
 ## Phases
 
 ### Phase 0: Almanac widget + history (DONE)
+
+- `get_garden_almanac` Tauri command (history command removed with the dead history table in v102)
 - Migration v41: `garden_almanac` + `garden_almanac_history` tables
-- Coordinator saves history on each almanac ingest (deduped by crop+zone+timing)
-- `get_garden_almanac` + `get_garden_almanac_history` Tauri commands
+- Coordinator replaces the snapshot on each almanac ingest (rescan-safe no-op; history writes removed in v102)
 - `GardenAlmanacWidget.vue` registered as "Gardening" in dashboardWidgets.ts
 - Shows active bonuses with countdown timers, upcoming events, and empty-state prompt
 
 ### Phase 1: Backend event handling + persistence
+
 - EntityDescriptionUpdated handler in game_state.rs
 - Garden state classification function
 - Migration for garden_plots table
 - `get_garden_plots` Tauri command
 
 ### Phase 2: Basic widget
+
 - Add garden plots tab/section to Gardening widget
 - Plot list grouped by area, state-colored badges
 
 ### Phase 3: Inventory integration
+
 - `get_garden_inventory` command
 - Supply count display, cross-reference with plot states
 
 ### Phase 4: Almanac cross-reference
+
 - Query garden_almanac for active bonuses, show badges on matching plots
 
 ### Phase 5: History + analytics (future)
+
 - garden_plot_history table, average grow times, yield tracking
-- Use garden_almanac_history to show season rotation patterns
+- Season rotation patterns (needs a new history design — v102 dropped the unconsumed `garden_almanac_history` log)
 
 ## Key Files
 

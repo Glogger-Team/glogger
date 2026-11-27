@@ -537,6 +537,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 101)?;
     }
 
+    if current_version < 102 {
+        migration_v102_drop_garden_almanac_history(conn)?;
+        super::record_migration(conn, 102)?;
+    }
+
     tx.commit()?;
     Ok(())
 }
@@ -2045,6 +2050,23 @@ fn migration_v101_xp_award_ledger(conn: &Connection) -> Result<()> {
          WHERE xp_snapshot_at IS NULL",
         [],
     )?;
+    Ok(())
+}
+
+/// Migration V102: drop the `garden_almanac_history` append-only log.
+///
+/// Disposition: dead surface. Every import appended one row per season and
+/// nothing ever read them back — no reader, no widget, no FE caller (only
+/// the v41 CREATE, the import INSERT, and the delete-path seed listed it).
+/// The table, grown forever with zero consumers, dies here; both
+/// `idx_garden_almanac_history_*` indexes die with it. Fresh DBs CREATE
+/// (v41) then DROP the table — accepted, same as the v95/v99 drop
+/// precedents; v41 stays in the chain untouched. The snapshot table is
+/// untouched, and the v82 placeholder sweep keeps working: its per-table
+/// deletes are sqlite_master-guarded, so the absent table skips instead of
+/// failing.
+fn migration_v102_drop_garden_almanac_history(conn: &Connection) -> Result<()> {
+    conn.execute_batch("DROP TABLE IF EXISTS garden_almanac_history;")?;
     Ok(())
 }
 
@@ -4921,8 +4943,9 @@ mod tests {
 
     /// Recreate the original `milking_timers` schema (zone as a PK part) so we
     /// can prove v63 collapses the per-zone duplicate rows into one per cow.
-    /// The widget reads via `get_harvest_almanac`, whose SELECT must line up with
-    /// the columns v66 creates — a mismatch only shows up at runtime otherwise.
+    /// Exercises `get_harvest_almanac_for` itself (frozen now) instead of a
+    /// hand-mirrored SELECT — the mirror drifted when the reader gained
+    /// effective-current ordering, and a mismatch only shows up at runtime.
     #[test]
     fn v66_harvest_almanac_round_trips() {
         let c = Connection::open_in_memory().unwrap();
@@ -4938,21 +4961,19 @@ mod tests {
         )
         .unwrap();
 
-        // Mirrors get_harvest_almanac's query exactly.
-        let mut stmt = c
-            .prepare(
-                "SELECT monster_name, description, event_start, event_end, is_current, captured_at
-                 FROM harvest_almanac
-                 WHERE character_name = ?1 AND server_name = ?2
-                 ORDER BY is_current DESC, event_start ASC",
-            )
-            .unwrap();
-        let rows: Vec<(String, Option<String>, bool)> = stmt
-            .query_map(rusqlite::params!["oddio", "Arisetsu"], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get::<_, i32>(4)? != 0))
-            })
-            .unwrap()
-            .map(|r| r.unwrap())
+        // Frozen now sits between capture (07-28 05:57) and the Skeleton end
+        // (07-29): every fixture row is live, so stored order decides.
+        // Exercises get_harvest_almanac_for itself instead of a hand-mirror.
+        let rows = crate::db::game_state_commands::get_harvest_almanac_for(
+            &c,
+            "oddio",
+            "Arisetsu",
+            "2026-07-28 06:00:00",
+        )
+        .unwrap();
+        let rows: Vec<(String, Option<String>, bool)> = rows
+            .into_iter()
+            .map(|r| (r.monster_name, r.description, r.is_current))
             .collect();
 
         // Scoped to the character, current focus first.
@@ -5302,13 +5323,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            101,
+            102,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 101);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 102);
     }
 
     #[test]
@@ -5431,13 +5452,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 101) plus the purge itself on the three aggregate source tables.
+        // 102) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 101, "migration chain head");
+        assert_eq!(head, 102, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -5483,8 +5504,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 101 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id + v97 favor source-line id + v98 timestamp space contract + v99 kill-loot link-table drop + v100 player-prev loot_added drop + v101 XP award ledger). Repair: a
+        // Chain wiring: full run_migrations head must be 102 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id + v97 favor source-line id + v98 timestamp space contract + v99 kill-loot link-table drop + v100 player-prev loot_added drop + v101 XP award ledger + v102 garden history drop). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -5492,7 +5513,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 101, "migration chain head");
+        assert_eq!(head, 102, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[
@@ -6751,6 +6772,74 @@ mod tests {
             )
             .unwrap();
         assert!(ledger, "ledger must land even without the skills table");
+    }
+
+    #[test]
+    fn v102_drops_garden_history_keeping_snapshot() {
+        // Pre-v102 shape: v41 garden tables with rows in both.
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE garden_almanac (
+                character_name TEXT NOT NULL,
+                server_name TEXT NOT NULL,
+                crop_name TEXT NOT NULL,
+                zone_name TEXT NOT NULL,
+                event_start TEXT,
+                event_end TEXT,
+                is_current INTEGER NOT NULL DEFAULT 0,
+                captured_at TEXT NOT NULL
+            );
+            CREATE TABLE garden_almanac_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_name TEXT NOT NULL,
+                server_name TEXT NOT NULL,
+                crop_name TEXT NOT NULL,
+                zone_name TEXT NOT NULL,
+                event_start TEXT,
+                event_end TEXT,
+                captured_at TEXT NOT NULL
+            );
+            CREATE INDEX idx_garden_almanac_history_char_server
+                ON garden_almanac_history(character_name, server_name);
+            CREATE INDEX idx_garden_almanac_history_crop
+                ON garden_almanac_history(crop_name, zone_name);
+            INSERT INTO garden_almanac
+                (character_name, server_name, crop_name, zone_name, is_current, captured_at)
+            VALUES ('T', 'Dreva', 'Barley', 'Gazluk', 1, '2026-11-17 16:47:31');
+            INSERT INTO garden_almanac_history
+                (character_name, server_name, crop_name, zone_name, captured_at)
+            VALUES ('T', 'Dreva', 'Barley', 'Gazluk', '2026-11-17 16:47:31');",
+        )
+        .unwrap();
+        migration_v102_drop_garden_almanac_history(&c).unwrap();
+        let gone = |kind: &str, name: &str| -> bool {
+            c.query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type = ?1 AND name = ?2)",
+                [kind, name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert!(gone("table", "garden_almanac_history"), "history table must go");
+        assert!(
+            gone("index", "idx_garden_almanac_history_char_server"),
+            "char index dies with the table"
+        );
+        assert!(
+            gone("index", "idx_garden_almanac_history_crop"),
+            "crop index dies with the table"
+        );
+        assert!(!gone("table", "garden_almanac"), "snapshot table must stay");
+        let kept: String = c
+            .query_row("SELECT crop_name FROM garden_almanac", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, "Barley", "snapshot rows must survive the drop");
+        // Idempotent: a second run is a no-op.
+        migration_v102_drop_garden_almanac_history(&c).unwrap();
+        assert!(gone("table", "garden_almanac_history"), "second run must stay dropped");
+        // Absent table (minimal fixtures) stays a no-op.
+        let bare = Connection::open_in_memory().unwrap();
+        migration_v102_drop_garden_almanac_history(&bare).unwrap();
     }
 }
 

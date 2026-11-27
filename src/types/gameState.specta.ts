@@ -181,14 +181,6 @@ export type GardenAlmanacEntry = {
 	captured_at: string,
 };
 
-export type GardenAlmanacHistoryEntry = {
-	crop_name: string,
-	zone_name: string,
-	event_start: string | null,
-	event_end: string | null,
-	captured_at: string,
-};
-
 export type GiftLogEntry = {
 	npc_key: string,
 	npc_name: string,

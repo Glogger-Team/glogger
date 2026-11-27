@@ -1473,6 +1473,12 @@ pub struct HarvestAlmanacEntry {
 
 /// The day's harvesting foci as of the last time this character read the
 /// Emotion-Harvesting Almanac in Statehelm.
+///
+/// Effective-current ordering: a stored-current row whose absolute
+/// `event_end` passed sorts after live rows (a stale focus never re-read
+/// must not headline "Today's Focus" — the widget filters those and the
+/// empty state names the re-read). `event_end IS NULL` never expires.
+/// Snapshot rows are never deleted here (history + reconcile need them).
 #[tauri::command]
 pub fn get_harvest_almanac(
     db: State<'_, DbPool>,
@@ -1480,26 +1486,42 @@ pub fn get_harvest_almanac(
     server_name: String,
 ) -> Result<Vec<HarvestAlmanacEntry>, String> {
     let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    get_harvest_almanac_for(&conn, &character_name, &server_name, &now)
+}
+
+/// Split out from the command so tests can pin the effective-current
+/// ordering with frozen timestamps (same `&impl DbRead` convention as the
+/// other read helpers here).
+pub fn get_harvest_almanac_for(
+    conn: &impl DbRead,
+    character_name: &str,
+    server_name: &str,
+    now: &str,
+) -> Result<Vec<HarvestAlmanacEntry>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT monster_name, description, event_start, event_end, is_current, captured_at
              FROM harvest_almanac
              WHERE character_name = ?1 AND server_name = ?2
-             ORDER BY is_current DESC, event_start ASC",
+             ORDER BY (is_current AND (event_end IS NULL OR event_end >= ?3)) DESC, event_start ASC",
         )
         .map_err(|e| format!("Query error: {e}"))?;
 
     let rows = stmt
-        .query_map(rusqlite::params![character_name, server_name], |row| {
-            Ok(HarvestAlmanacEntry {
-                monster_name: row.get(0)?,
-                description: row.get(1)?,
-                event_start: row.get(2)?,
-                event_end: row.get(3)?,
-                is_current: row.get::<_, i32>(4)? != 0,
-                captured_at: row.get(5)?,
-            })
-        })
+        .query_map(
+            rusqlite::params![character_name, server_name, now],
+            |row| {
+                Ok(HarvestAlmanacEntry {
+                    monster_name: row.get(0)?,
+                    description: row.get(1)?,
+                    event_start: row.get(2)?,
+                    event_end: row.get(3)?,
+                    is_current: row.get::<_, i32>(4)? != 0,
+                    captured_at: row.get(5)?,
+                })
+            },
+        )
         .map_err(|e| format!("Query error: {e}"))?;
 
     rows.collect::<Result<Vec<_>, _>>()
@@ -1830,9 +1852,11 @@ fn relative_to(base: Option<chrono::NaiveDateTime>, rel: &str) -> Option<String>
     Some(dt.format("%Y-%m-%d %H:%M:%S").to_string())
 }
 
-/// Replace a character's garden snapshot from an almanac body and append the
-/// rows to history. Returns the number of rows written: identical re-imports
-/// (rescans) and unparseable bodies are pure no-ops returning 0.
+/// Replace a character's garden snapshot from an almanac body. Returns the
+/// number of rows written: identical re-imports (rescans) and unparseable
+/// bodies are pure no-ops returning 0. There is no garden history table
+/// (v102 dropped the dead `garden_almanac_history` surface), so only the
+/// snapshot is replaced — mirroring the harvest path.
 pub fn import_garden_almanac(
     conn: &rusqlite::Connection,
     character: &str,
@@ -1892,7 +1916,7 @@ pub fn import_garden_almanac(
     // Recency: a rescan can redeliver an OLDER identical Book after a newer
     // import (newest-first scans). Its content differs (older seasons), so
     // the check above passes — but replacing the snapshot would move the
-    // garden clock backward and append stale history. Captures sort
+    // garden clock backward. Captures sort
     // lexicographically (naive-UTC stamps on both sides), so compare as
     // text. Equal captures stay eligible (a failed import of the current
     // observation can still be retried).
@@ -1929,15 +1953,6 @@ pub fn import_garden_almanac(
                 ],
             )
             .map_err(|e| format!("Failed to insert garden season: {e}"))?;
-            conn.execute(
-                "INSERT INTO garden_almanac_history
-                    (character_name, server_name, crop_name, zone_name, event_start, event_end, captured_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                rusqlite::params![
-                    character, server, s.crop, s.zone, s.event_start, s.event_end, captured_at
-                ],
-            )
-            .map_err(|e| format!("Failed to insert garden history: {e}"))?;
             n += 1;
         }
         Ok(n)
@@ -1970,6 +1985,14 @@ pub struct GardenAlmanacEntry {
     pub captured_at: String,
 }
 
+/// The season bonuses as of the last time this character read the Gardening
+/// Almanac in game.
+///
+/// Effective-current ordering: a stored-current row whose absolute
+/// `event_end` passed sorts after live rows (a stale season never re-read
+/// must not headline the current display — the widget filters those and the
+/// empty state names the re-read). `event_end IS NULL` never expires.
+/// Snapshot rows are never deleted here (history + reconcile need them).
 #[tauri::command]
 pub fn get_garden_almanac(
     db: State<'_, DbPool>,
@@ -1977,68 +2000,42 @@ pub fn get_garden_almanac(
     server_name: String,
 ) -> Result<Vec<GardenAlmanacEntry>, String> {
     let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    get_garden_almanac_for(&conn, &character_name, &server_name, &now)
+}
+
+/// Split out from the command so tests can pin the effective-current
+/// ordering with frozen timestamps (same `&impl DbRead` convention as the
+/// other read helpers here).
+pub fn get_garden_almanac_for(
+    conn: &impl DbRead,
+    character_name: &str,
+    server_name: &str,
+    now: &str,
+) -> Result<Vec<GardenAlmanacEntry>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT crop_name, zone_name, event_start, event_end, is_current, captured_at
              FROM garden_almanac
              WHERE character_name = ?1 AND server_name = ?2
-             ORDER BY is_current DESC, event_start ASC",
+             ORDER BY (is_current AND (event_end IS NULL OR event_end >= ?3)) DESC, event_start ASC",
         )
         .map_err(|e| format!("Query error: {e}"))?;
 
     let rows = stmt
-        .query_map(rusqlite::params![character_name, server_name], |row| {
-            Ok(GardenAlmanacEntry {
-                crop_name: row.get(0)?,
-                zone_name: row.get(1)?,
-                event_start: row.get(2)?,
-                event_end: row.get(3)?,
-                is_current: row.get::<_, i32>(4)? != 0,
-                captured_at: row.get(5)?,
-            })
-        })
-        .map_err(|e| format!("Query error: {e}"))?;
-
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| format!("Row error: {e}"))
-}
-
-#[derive(Debug, Clone, Serialize, specta::Type)]
-pub struct GardenAlmanacHistoryEntry {
-    pub crop_name: String,
-    pub zone_name: String,
-    pub event_start: Option<String>,
-    pub event_end: Option<String>,
-    pub captured_at: String,
-}
-
-#[tauri::command]
-pub fn get_garden_almanac_history(
-    db: State<'_, DbPool>,
-    character_name: String,
-    server_name: String,
-) -> Result<Vec<GardenAlmanacHistoryEntry>, String> {
-    let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT crop_name, zone_name, event_start, event_end, captured_at
-             FROM garden_almanac_history
-             WHERE character_name = ?1 AND server_name = ?2
-             ORDER BY captured_at DESC
-             LIMIT 100",
+        .query_map(
+            rusqlite::params![character_name, server_name, now],
+            |row| {
+                Ok(GardenAlmanacEntry {
+                    crop_name: row.get(0)?,
+                    zone_name: row.get(1)?,
+                    event_start: row.get(2)?,
+                    event_end: row.get(3)?,
+                    is_current: row.get::<_, i32>(4)? != 0,
+                    captured_at: row.get(5)?,
+                })
+            },
         )
-        .map_err(|e| format!("Query error: {e}"))?;
-
-    let rows = stmt
-        .query_map(rusqlite::params![character_name, server_name], |row| {
-            Ok(GardenAlmanacHistoryEntry {
-                crop_name: row.get(0)?,
-                zone_name: row.get(1)?,
-                event_start: row.get(2)?,
-                event_end: row.get(3)?,
-                captured_at: row.get(4)?,
-            })
-        })
         .map_err(|e| format!("Query error: {e}"))?;
 
     rows.collect::<Result<Vec<_>, _>>()
@@ -3243,7 +3240,7 @@ mod tests {
     }
 
     #[test]
-    fn garden_almanac_import_replaces_snapshot_and_appends_history() {
+    fn garden_almanac_import_replaces_snapshot_without_history() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::db::migrations::run_migrations(&conn, None).unwrap();
         let body = include_str!("../../../test_data/vip_json/chat-book.log")
@@ -3267,9 +3264,9 @@ mod tests {
             })
             .unwrap();
         assert_eq!(snap, 5);
-        // Re-import (rescan): pure no-op — returns 0, snapshot still 5, no
-        // duplicate history. Returning 0 (not the parsed count) is what keeps
-        // the coordinator from re-emitting the `gardening` domain.
+        // Re-import (rescan): pure no-op — returns 0, snapshot still 5.
+        // Returning 0 (not the parsed count) is what keeps the coordinator
+        // from re-emitting the `garden_almanac` domain.
         let n = import_garden_almanac(
             &conn,
             "T",
@@ -3284,14 +3281,7 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        let hist: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM garden_almanac_history WHERE character_name = 'T'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!((snap, hist), (5, 5));
+        assert_eq!(snap, 5);
     }
 
     #[test]
@@ -3345,8 +3335,7 @@ mod tests {
         crate::db::migrations::run_migrations(&conn, None).unwrap();
         // A rescan redelivering an OLDER Book after a newer import must not
         // move the snapshot backward: different content passes the identical
-        // check, so the captured_at guard is the only defense. History must
-        // not gain stale rows either.
+        // check, so the captured_at guard is the only defense.
         conn.execute(
             "INSERT INTO garden_almanac
                 (character_name, server_name, crop_name, zone_name, event_start, event_end, is_current, captured_at)
@@ -3363,10 +3352,6 @@ mod tests {
             })
             .unwrap();
         assert_eq!(kept, "NewCrop");
-        let history: i64 = conn
-            .query_row("SELECT COUNT(*) FROM garden_almanac_history", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(history, 0);
         // Equal capture stays eligible: a retry of the current observation
         // with different content still replaces (rescan heals failed imports).
         let n = import_garden_almanac(&conn, "T", "Dreva", body, "2026-11-17 16:47:31").unwrap();
@@ -3548,28 +3533,71 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, "2026-11-17 16:47:31");
-        let hist_stored: String = conn
-            .query_row(
-                "SELECT captured_at FROM garden_almanac_history WHERE character_name = 'T'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(hist_stored, "2026-11-17 16:47:31");
         // The space-format twin of the same observation is an identical
-        // re-import (rescan): no-op, no duplicate history — the families
-        // converge on one stored shape instead of churning the snapshot.
+        // re-import (rescan): no-op — the families converge on one stored
+        // shape instead of churning the snapshot.
         let n = import_garden_almanac(&conn, "T", "Dreva", body, "2026-11-17 16:47:31")
             .unwrap();
         assert_eq!(n, 0);
-        let hist: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM garden_almanac_history WHERE character_name = 'T'",
-                [],
-                |r| r.get(0),
-            )
+    }
+
+    #[test]
+    fn harvest_almanac_reader_orders_live_rows_first() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO harvest_almanac
+                 (character_name, server_name, monster_name, event_start, event_end, is_current, captured_at)
+             VALUES
+                 ('T','Dreva','Ghouls',NULL,'2026-11-24 22:59:37',1,'2026-11-24 21:17:37'),
+                 ('T','Dreva','Wolves',NULL,NULL,1,'2026-11-24 21:17:37'),
+                 ('T','Dreva','Corporeal Non-Skeleton Undead','2026-11-24 22:59:37',NULL,0,'2026-11-24 21:17:37'),
+                 ('Alt','Dreva','Ghouls',NULL,'2026-11-24 22:59:37',1,'2026-11-24 21:17:37');",
+        )
+        .unwrap();
+        // Frozen now: Ghouls' end (11-24) passed, so the stored-current row
+        // is stale — Wolves (NULL end, never expires) headlines instead.
+        let rows = get_harvest_almanac_for(&conn, "T", "Dreva", "2026-11-25 00:00:00").unwrap();
+        assert_eq!(rows.len(), 3, "other characters never leak in");
+        assert_eq!(rows[0].monster_name, "Wolves");
+        assert!(rows[0].is_current);
+        // Stored semantics preserved: the stale row still reports is_current
+        // (the widget filters it via the countdown, not the flag).
+        let ghoul_pos = rows.iter().position(|r| r.monster_name == "Ghouls").unwrap();
+        assert!(rows[ghoul_pos].is_current);
+        assert!(ghoul_pos > 0, "stale-current must not sort as current");
+        // Upcoming rows with passed starts are NOT promoted without a
+        // re-read — still present, still not current.
+        let undead = rows
+            .iter()
+            .find(|r| r.monster_name == "Corporeal Non-Skeleton Undead")
             .unwrap();
-        assert_eq!(hist, 1);
+        assert!(!undead.is_current);
+    }
+
+    #[test]
+    fn garden_almanac_reader_orders_live_rows_first() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO garden_almanac
+                 (character_name, server_name, crop_name, zone_name, event_start, event_end, is_current, captured_at)
+             VALUES
+                 ('T','Dreva','Pumpkin','Serbule',NULL,'2026-11-17 22:59:31',1,'2026-11-17 16:47:31'),
+                 ('T','Dreva','Barley','Gazluk',NULL,NULL,1,'2026-11-17 16:47:31'),
+                 ('T','Dreva','Carrot','Elkshire','2026-11-17 22:59:31',NULL,0,'2026-11-17 16:47:31'),
+                 ('Alt','Dreva','Pumpkin','Serbule',NULL,'2026-11-17 22:59:31',1,'2026-11-17 16:47:31');",
+        )
+        .unwrap();
+        // Frozen now: Pumpkin's end (11-17) passed — Barley (NULL end, never
+        // expires) headlines, the stale row drops out of the lead.
+        let rows = get_garden_almanac_for(&conn, "T", "Dreva", "2026-11-18 00:00:00").unwrap();
+        assert_eq!(rows.len(), 3, "other characters never leak in");
+        assert_eq!(rows[0].crop_name, "Barley");
+        assert!(rows[0].is_current);
+        let pumpkin_pos = rows.iter().position(|r| r.crop_name == "Pumpkin").unwrap();
+        assert!(rows[pumpkin_pos].is_current, "stored flag preserved; the widget filters by countdown");
+        assert!(pumpkin_pos > 0, "stale-current must not sort as current");
+        let carrot = rows.iter().find(|r| r.crop_name == "Carrot").unwrap();
+        assert!(!carrot.is_current, "upcoming never promotes without a re-read");
     }
 }
 
@@ -3607,7 +3635,6 @@ pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
         .register::<PoopingStats>()
         .register::<HarvestAlmanacEntry>()
         .register::<GardenAlmanacEntry>()
-        .register::<GardenAlmanacHistoryEntry>()
         .register::<SkillCraftingBreakdown>()
         .register::<AttributeExtreme>()
         .register::<ComputedStats>()

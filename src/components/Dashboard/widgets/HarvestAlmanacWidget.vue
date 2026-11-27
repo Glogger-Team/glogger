@@ -7,36 +7,43 @@
     </div>
 
     <template v-else>
-      <!-- Today's focus monsters -->
-      <div v-for="entry in currentFoci" :key="'c-' + entry.monster_name"
-        class="rounded bg-surface-elevated px-2 py-1.5 border border-accent-gold/30">
-        <div class="flex items-center gap-1 text-xs text-accent-gold font-semibold mb-1">
-          <span>Today's Focus</span>
-        </div>
-        <div class="flex items-center gap-1 flex-wrap">
-          <EnemyInline :reference="entry.monster_name" />
-        </div>
-        <div v-if="entry.description" class="text-xs text-text-muted mt-0.5 italic">
-          {{ entry.description }}
-        </div>
+      <!-- Live foci: stale-current rows (ended, never re-read) are filtered
+           out of Today's Focus above — the empty state names the re-read. -->
+      <template v-if="currentFoci.length > 0">
+        <!-- Today's focus monsters -->
+        <div v-for="entry in currentFoci" :key="'c-' + entry.monster_name"
+          class="rounded bg-surface-elevated px-2 py-1.5 border border-accent-gold/30">
+          <div class="flex items-center gap-1 text-xs text-accent-gold font-semibold mb-1">
+            <span>Today's Focus</span>
+          </div>
+          <div class="flex items-center gap-1 flex-wrap">
+            <EnemyInline :reference="entry.monster_name" />
+          </div>
+          <div v-if="entry.description" class="text-xs text-text-muted mt-0.5 italic">
+            {{ entry.description }}
+          </div>
 
-        <!-- Zones resolved from your kill history — the almanac never says where. -->
-        <div v-if="zonesFor(entry.monster_name).length > 0" class="flex items-center gap-1 flex-wrap mt-1">
-          <span class="text-xs text-text-dim">Found in</span>
-          <template v-for="(z, i) in zonesFor(entry.monster_name)" :key="z.zone">
-            <span v-if="i > 0" class="text-text-dim text-xs">·</span>
-            <AreaInline :reference="z.zone" />
-            <span class="text-[10px] text-text-dim">({{ z.total_kills }})</span>
-          </template>
-        </div>
-        <div v-else-if="!zonesLoading" class="text-xs text-text-dim mt-1 italic">
-          No kill history yet — zone unknown.
-        </div>
+          <!-- Zones resolved from your kill history — the almanac never says where. -->
+          <div v-if="zonesFor(entry.monster_name).length > 0" class="flex items-center gap-1 flex-wrap mt-1">
+            <span class="text-xs text-text-dim">Found in</span>
+            <template v-for="(z, i) in zonesFor(entry.monster_name)" :key="z.zone">
+              <span v-if="i > 0" class="text-text-dim text-xs">·</span>
+              <AreaInline :reference="z.zone" />
+              <span class="text-[10px] text-text-dim">({{ z.total_kills }})</span>
+            </template>
+          </div>
+          <div v-else-if="!zonesLoading" class="text-xs text-text-dim mt-1 italic">
+            No kill history yet — zone unknown.
+          </div>
 
-        <div v-if="entry.remaining" class="text-xs font-mono mt-0.5"
-          :class="entry.remaining <= 3600 ? 'text-red-400' : 'text-text-secondary'">
-          {{ formatRemaining(entry.remaining) }} remaining
+          <div v-if="entry.remaining" class="text-xs font-mono mt-0.5"
+            :class="entry.remaining <= 3600 ? 'text-red-400' : 'text-text-secondary'">
+            {{ formatRemaining(entry.remaining) }} remaining
+          </div>
         </div>
+      </template>
+      <div v-else class="text-xs text-text-dim italic">
+        Yesterday's focus expired — re-read the Almanac of Corruption in Statehelm to capture today's foci.
       </div>
 
       <!-- Upcoming foci -->
@@ -62,6 +69,7 @@
 </template>
 
 <script setup lang="ts">
+import { parseUtc } from '../../../composables/useTimestamp'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -113,10 +121,14 @@ const currentFoci = computed<EntryWithTiming[]>(() =>
     .filter(e => e.is_current)
     .map(e => {
       const remaining = e.event_end
-        ? Math.max(0, Math.floor((new Date(e.event_end).getTime() - now.value) / 1000))
+        ? Math.max(0, Math.floor((parseUtc(e.event_end).getTime() - now.value) / 1000))
         : undefined
       return { ...e, remaining }
     })
+    // Stale-current rows (ended, never re-read) leave Today's Focus: the
+    // backend already sorts them after live rows, and the empty state below
+    // names the re-read. `event_end == null` never expires.
+    .filter(e => e.event_end == null || (e.remaining ?? 0) > 0)
 )
 
 const upcomingFoci = computed<EntryWithTiming[]>(() =>
@@ -124,7 +136,7 @@ const upcomingFoci = computed<EntryWithTiming[]>(() =>
     .filter(e => !e.is_current)
     .map(e => {
       const startsIn = e.event_start
-        ? Math.max(0, Math.floor((new Date(e.event_start).getTime() - now.value) / 1000))
+        ? Math.max(0, Math.floor((parseUtc(e.event_start).getTime() - now.value) / 1000))
         : undefined
       return { ...e, startsIn }
     })
@@ -200,7 +212,7 @@ async function resolveZones(monster: string): Promise<ZoneHit[]> {
 }
 
 async function loadZones() {
-  const monsters = entries.value.filter(e => e.is_current).map(e => e.monster_name)
+  const monsters = currentFoci.value.map(e => e.monster_name)
   if (monsters.length === 0) {
     zoneHits.value = {}
     return
@@ -262,7 +274,7 @@ async function loadAlmanac() {
 
 // Re-resolve zones whenever the focus list changes (new almanac reading).
 watch(
-  () => entries.value.filter(e => e.is_current).map(e => e.monster_name).join('|'),
+  () => currentFoci.value.map(e => e.monster_name).join('|'),
   () => { loadZones() },
 )
 
