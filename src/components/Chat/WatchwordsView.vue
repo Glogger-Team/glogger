@@ -72,16 +72,37 @@
         </div>
       </div>
 
-      <!-- Auto-watch skillbooks (TODO #17): two modes, both write -->
-      <!-- source:"auto_skillbook" rules via settingsStore -->
+      <!-- Auto-watch skillbooks (TODO #17): ephemeral session set, never
+           persisted — manual rules stay the only persisted rules. -->
       <div class="p-3 border-t border-border-default">
         <p class="m-0 mb-1 text-sm font-semibold text-text-secondary">Auto-watch skillbooks</p>
-        <p class="m-0 mb-2 text-xs text-text-muted">Watch chat item links for books you could learn but don't own or know.</p>
-        <button
-          class="w-full px-3 py-1.5 bg-surface-elevated border border-border-light rounded text-text-secondary text-sm cursor-pointer hover:bg-surface-base hover:text-text-primary transition-all disabled:opacity-50"
-          :disabled="autoBusy"
-          @click="watchTrainedSkills"
-        >{{ autoBusy ? 'Working…' : 'Watch books for trained skills' }}</button>
+        <p class="m-0 mb-2 text-xs text-text-muted">Session-only watches for books you could learn but don't own or know. Manual rules are unaffected.</p>
+        <label class="flex items-center gap-2 text-sm text-text-secondary cursor-pointer">
+          <input type="checkbox" :checked="autoWatchEnabled" :disabled="autoBusy" @change="onToggleEnabled" />
+          <span>Auto-watch on</span>
+        </label>
+        <div class="mt-2 flex items-center justify-between">
+          <span class="text-xs text-text-muted">Watching {{ ephemeralCount }} book{{ ephemeralCount === 1 ? '' : 's' }} this session</span>
+          <button
+            class="px-2 py-1 bg-surface-elevated border border-border-light rounded text-text-secondary text-xs cursor-pointer hover:bg-surface-base transition-all disabled:opacity-50"
+            :disabled="autoBusy"
+            @click="refreshNow"
+          >{{ autoBusy ? 'Working…' : 'Refresh' }}</button>
+        </div>
+        <div v-if="ephemeralRules.length > 0" class="mt-2 max-h-32 overflow-y-auto border border-border-default rounded p-1">
+          <div
+            v-for="rule in ephemeralRules"
+            :key="rule.id"
+            class="flex items-center justify-between gap-1 px-1.5 py-0.5 text-xs text-text-secondary"
+          >
+            <span class="truncate" :title="rule.name">{{ shortBookName(rule) }}</span>
+            <button
+              class="bg-transparent border border-transparent text-text-muted cursor-pointer text-xs px-1 rounded hover:bg-red-900/30 hover:text-red-400 transition-all"
+              title="Dismiss this suggestion"
+              @click="dismissRule(rule)"
+            >&#10005;</button>
+          </div>
+        </div>
         <button
           class="w-full mt-2 px-3 py-1.5 bg-transparent border border-border-light rounded text-text-muted text-sm cursor-pointer hover:bg-surface-base hover:text-text-primary transition-all"
           @click="toggleFuturePicker"
@@ -102,11 +123,39 @@
               <span class="truncate">{{ name }}</span>
             </label>
           </div>
-          <button
-            class="w-full mt-2 px-3 py-1.5 bg-surface-elevated border border-border-light rounded text-text-secondary text-sm cursor-pointer hover:bg-surface-base hover:text-text-primary transition-all disabled:opacity-50"
-            :disabled="autoBusy || selectedFutureSkills.length === 0"
-            @click="watchFutureSkills"
-          >{{ autoBusy ? 'Working…' : `Watch selected (${selectedFutureSkills.length})` }}</button>
+        </div>
+        <button
+          class="w-full mt-2 px-3 py-1.5 bg-transparent border border-border-light rounded text-text-muted text-sm cursor-pointer hover:bg-surface-base hover:text-text-primary transition-all"
+          @click="toggleBlockList"
+        >{{ showBlockList ? 'Hide skill block-list' : 'Block trained skills…' }}</button>
+        <div v-if="showBlockList" class="mt-2">
+          <div class="max-h-40 overflow-y-auto border border-border-default rounded p-1">
+            <label
+              v-for="name in filteredSkillNames"
+              :key="name"
+              class="flex items-center gap-2 px-1.5 py-1 text-sm text-text-secondary cursor-pointer hover:bg-surface-base rounded"
+            >
+              <input type="checkbox" :value="name" v-model="selectedBlockedSkills" />
+              <span class="truncate">{{ name }}</span>
+            </label>
+          </div>
+        </div>
+        <div v-if="dismissals.length > 0" class="mt-2">
+          <p class="m-0 mb-1 text-xs text-text-muted">Dismissed ({{ dismissals.length }}) — never suggested again:</p>
+          <div class="max-h-24 overflow-y-auto border border-border-default rounded p-1">
+            <div
+              v-for="name in dismissals"
+              :key="name"
+              class="flex items-center justify-between gap-1 px-1.5 py-0.5 text-xs text-text-muted"
+            >
+              <span class="truncate" :title="name">{{ name }}</span>
+              <button
+                class="bg-transparent border border-transparent text-text-muted cursor-pointer text-xs px-1 rounded hover:bg-surface-base hover:text-text-primary transition-all"
+                title="Watch this book again"
+                @click="undismiss(name)"
+              >Restore</button>
+            </div>
+          </div>
         </div>
         <p v-if="autoStatus" class="m-0 mt-2 text-xs text-green-400">{{ autoStatus }}</p>
         <p v-if="autoError" class="m-0 mt-2 text-xs text-red-400">{{ autoError }}</p>
@@ -463,17 +512,24 @@ function deleteRule(id: number) {
 }
 
 // ── Auto-watch skillbooks (TODO #17) ────────────────────────────────────
-// Both modes compose the landed pieces via useAutoSkillbookWatch and write
-// through the existing settings watchRules path; manual rules are untouched.
+// Ephemeral session set: generation runs via the composable (startup +
+// watchers); this panel only hosts the controls and mirrors the set.
 
 const autoWatch = useAutoSkillbookWatch()
 const autoBusy = ref(false)
 const autoStatus = ref('')
 const autoError = ref('')
 const showFuturePicker = ref(false)
+const showBlockList = ref(false)
 const allSkillNames = ref<string[]>([])
 const skillFilter = ref('')
 const selectedFutureSkills = ref<string[]>([...autoWatch.prefs.value.futureSkills])
+const selectedBlockedSkills = ref<string[]>([...autoWatch.blockedSkills.value])
+
+const ephemeralRules = computed(() => autoWatch.ephemeralRules.value)
+const ephemeralCount = computed(() => ephemeralRules.value.length)
+const dismissals = computed(() => autoWatch.dismissals.value)
+const autoWatchEnabled = computed(() => autoWatch.autoWatchEnabled.value)
 
 const filteredSkillNames = computed(() => {
   const q = skillFilter.value.trim().toLowerCase()
@@ -485,37 +541,63 @@ watch(selectedFutureSkills, (skills) => {
   autoWatch.setFutureSkills([...skills])
 })
 
+watch(selectedBlockedSkills, (skills) => {
+  void autoWatch.setBlockedSkills([...skills])
+})
+
+function shortBookName(rule: WatchRule): string {
+  return rule.name.replace(/^Skillbook: /, '')
+}
+
 async function toggleFuturePicker() {
   showFuturePicker.value = !showFuturePicker.value
-  if (showFuturePicker.value && allSkillNames.value.length === 0) {
-    autoBusy.value = true
-    autoError.value = ''
-    try {
-      allSkillNames.value = await autoWatch.loadAllSkillNames()
-    } catch (e) {
-      autoError.value = String(e)
-    } finally {
-      autoBusy.value = false
-    }
+  await ensureSkillNames()
+}
+
+async function toggleBlockList() {
+  showBlockList.value = !showBlockList.value
+  await ensureSkillNames()
+}
+
+async function ensureSkillNames() {
+  if (!showFuturePicker.value && !showBlockList.value) return
+  if (allSkillNames.value.length > 0) return
+  autoBusy.value = true
+  autoError.value = ''
+  try {
+    allSkillNames.value = await autoWatch.loadAllSkillNames()
+  } catch (e) {
+    autoError.value = String(e)
+  } finally {
+    autoBusy.value = false
   }
 }
 
-async function watchTrainedSkills() {
+async function onToggleEnabled(e: Event) {
+  const on = (e.target as HTMLInputElement).checked
+  autoBusy.value = true
+  autoError.value = ''
+  try {
+    await autoWatch.setAutoWatchEnabled(on)
+    autoStatus.value = on ? 'Auto-watch on — rebuilding session set.' : 'Auto-watch off — manual rules unaffected.'
+  } catch (err) {
+    autoError.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    autoBusy.value = false
+  }
+}
+
+async function refreshNow() {
   if (autoBusy.value) return
   autoBusy.value = true
   autoStatus.value = ''
   autoError.value = ''
   try {
-    const skills = await autoWatch.loadTrainedSkills()
-    if (skills.length === 0) {
-      autoStatus.value = 'No trained skills found for the active character.'
-      return
-    }
-    const created = await autoWatch.suggestFor(skills)
-    // C1 remove step: suggest-only — ephemeral session set lands in C2.
-    autoStatus.value = created.length === 0
-      ? 'Nothing new — all trained-skill books are known, owned, or already watched.'
-      : `Found ${created.length} learnable book${created.length === 1 ? '' : 's'} (session watch lands next).`
+    await autoWatch.rebuildAutoWatch()
+    const n = autoWatch.ephemeralRules.value.length
+    autoStatus.value = n === 0
+      ? 'Nothing to watch — books are known, owned, dismissed, blocked, or the toggle is off.'
+      : `Watching ${n} book${n === 1 ? '' : 's'} this session.`
   } catch (e) {
     autoError.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -523,21 +605,23 @@ async function watchTrainedSkills() {
   }
 }
 
-async function watchFutureSkills() {
-  if (autoBusy.value) return
-  autoBusy.value = true
-  autoStatus.value = ''
+async function dismissRule(rule: WatchRule) {
   autoError.value = ''
   try {
-    const created = await autoWatch.suggestFor(selectedFutureSkills.value)
-    // C1 remove step: suggest-only — ephemeral session set lands in C2.
-    autoStatus.value = created.length === 0
-      ? 'Nothing new — the selected skills\u2019 books are known, owned, or already watched.'
-      : `Found ${created.length} learnable book${created.length === 1 ? '' : 's'} (session watch lands next).`
+    // Persist the dismissal; the settings watcher rebuilds the session set.
+    await autoWatch.dismissBook(shortBookName(rule))
+    autoStatus.value = `Dismissed “${shortBookName(rule)}” — never suggested again (restore below).`
   } catch (e) {
     autoError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    autoBusy.value = false
+  }
+}
+
+async function undismiss(name: string) {
+  autoError.value = ''
+  try {
+    await autoWatch.undismissBook(name)
+  } catch (e) {
+    autoError.value = e instanceof Error ? e.message : String(e)
   }
 }
 

@@ -20,7 +20,12 @@ interface AutoWatchPrefs {
   [key: string]: unknown;
 }
 
-
+// Shared session state (module scope — every useAutoSkillbookWatch()
+// instance mirrors the same set; see the note at first use below).
+const ephemeralRules = ref<WatchRule[]>([]);
+const rebuilding = ref(false);
+let rebuildTimer: ReturnType<typeof setTimeout> | undefined = undefined;
+let watchersInstalled = false;
 
 /**
  * Auto-watch skillbooks (TODO #17) — composition over the landed pieces.
@@ -128,14 +133,9 @@ export function useAutoSkillbookWatch() {
   }
 
   // ── Ephemeral session set ─────────────────────────────────────────────
-  // Held backend-side in AutoWatchState (never persisted). Rebuilt at
-  // session load and on character switch via initAutoWatch(), plus on any
-  // control/input change below (debounced).
-
-  const ephemeralRules = ref<WatchRule[]>([]);
-  const rebuilding = ref(false);
-  let rebuildTimer: ReturnType<typeof setTimeout> | undefined = undefined;
-  let watchersInstalled = false;
+  // State lives at module scope above (shared across instances); these fns
+  // operate on it. Rebuilt at session load and on character switch via
+  // initAutoWatch(), plus on any control/input change (debounced).
 
   async function refreshEphemeral(): Promise<void> {
     try {

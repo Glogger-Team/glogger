@@ -232,6 +232,7 @@ pub fn manual_covers_book(manual_rules: &[WatchRule], book: &str) -> bool {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn suggest_auto_skillbook_rules(
     skills: Vec<String>,
     blocked_skills: Vec<String>,
@@ -427,22 +428,39 @@ mod tests {
         assert_eq!(rules[0].source.as_deref(), Some(AUTO_SKILLBOOK_SOURCE));
     }
 
-    fn suggest_args() -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>, Vec<String>, Vec<String>, bool, u64) {
-        // (skills, blocked, known, owned, dismissed, existing, enabled, next_id)
-        (
-            vec!["Sword".to_string()],
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            true,
-            7,
-        )
+    #[derive(Default)]
+    struct SuggestArgs {
+        skills: Vec<String>,
+        blocked: Vec<String>,
+        known: Vec<String>,
+        owned: Vec<String>,
+        dismissed: Vec<String>,
+        existing: Vec<String>,
+        enabled: bool,
+        next_id: u64,
     }
 
-    fn suggest_with(data: &GameData, args: &(Vec<String>, Vec<String>, Vec<String>, Vec<String>, Vec<String>, Vec<String>, bool, u64)) -> Vec<WatchRule> {
-        suggest_inner(&args.0, &args.1, &args.2, &args.3, &args.4, &args.5, args.6, args.7, data)
+    fn suggest_args() -> SuggestArgs {
+        SuggestArgs {
+            skills: vec!["Sword".to_string()],
+            enabled: true,
+            next_id: 7,
+            ..Default::default()
+        }
+    }
+
+    fn suggest_with(data: &GameData, args: &SuggestArgs) -> Vec<WatchRule> {
+        suggest_inner(
+            &args.skills,
+            &args.blocked,
+            &args.known,
+            &args.owned,
+            &args.dismissed,
+            &args.existing,
+            args.enabled,
+            args.next_id,
+            data,
+        )
     }
 
     #[test]
@@ -450,7 +468,7 @@ mod tests {
         let data = stub_data();
         let mut args = suggest_args();
         assert_eq!(suggest_with(&data, &args).len(), 1);
-        args.6 = false;
+        args.enabled = false;
         assert!(suggest_with(&data, &args).is_empty());
     }
 
@@ -459,13 +477,13 @@ mod tests {
         let data = stub_data();
         let mut args = suggest_args();
         // Display-name block.
-        args.1 = vec!["sword".to_string()];
+        args.blocked = vec!["sword".to_string()];
         assert!(suggest_with(&data, &args).is_empty());
         // Internal-name block catches the same skill.
-        args.1 = vec!["SWORDINTERNAL".to_string()];
+        args.blocked = vec!["SWORDINTERNAL".to_string()];
         assert!(suggest_with(&data, &args).is_empty());
         // Unrelated block leaves the skill alone.
-        args.1 = vec!["Unarmed".to_string()];
+        args.blocked = vec!["Unarmed".to_string()];
         assert_eq!(suggest_with(&data, &args).len(), 1);
     }
 
@@ -473,7 +491,7 @@ mod tests {
     fn dismissals_drop_books_case_insensitively() {
         let data = stub_data();
         let mut args = suggest_args();
-        args.4 = vec!["SWORD BASICS".to_string()];
+        args.dismissed = vec!["SWORD BASICS".to_string()];
         assert!(suggest_with(&data, &args).is_empty());
     }
 
@@ -488,9 +506,9 @@ mod tests {
         // twin; the manual list itself is only read, never mutated.
         let mut args = suggest_args();
         let manual_condition = "Sword Basics".to_string();
-        args.5 = vec![manual_condition.clone()];
+        args.existing = vec![manual_condition.clone()];
         assert!(suggest_with(&data, &args).is_empty());
-        assert_eq!(args.5, vec![manual_condition]);
+        assert_eq!(args.existing, vec![manual_condition]);
         // Every generated rule carries the session marker, never a manual shape.
         assert!(first.iter().all(|r| r.source.as_deref() == Some(AUTO_SKILLBOOK_SOURCE)));
     }
@@ -530,9 +548,9 @@ mod tests {
             source: None,
         };
         // Item/text coverage suppresses; sender scope never covers a book.
-        assert!(manual_covers_book(&[item_rule.clone()], "Sword Basics"));
-        assert!(manual_covers_book(&[text_rule.clone()], "Sword Basics"));
-        assert!(!manual_covers_book(&[sender_rule.clone()], "Sword Basics"));
+        assert!(manual_covers_book(std::slice::from_ref(&item_rule), "Sword Basics"));
+        assert!(manual_covers_book(std::slice::from_ref(&text_rule), "Sword Basics"));
+        assert!(!manual_covers_book(std::slice::from_ref(&sender_rule), "Sword Basics"));
         assert!(!manual_covers_book(&[item_rule, text_rule, sender_rule], "Unarmed Basics"));
     }
 }
