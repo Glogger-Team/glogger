@@ -60,6 +60,7 @@
 </template>
 
 <script setup lang="ts">
+import { parseUtc } from '../../../composables/useTimestamp'
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -94,7 +95,7 @@ const currentEvents = computed<EntryWithTiming[]>(() =>
     .filter(e => e.is_current)
     .map(e => {
       const remaining = e.event_end
-        ? Math.max(0, Math.floor((new Date(e.event_end).getTime() - now.value) / 1000))
+        ? Math.max(0, Math.floor((parseUtc(e.event_end).getTime() - now.value) / 1000))
         : undefined
       return { ...e, remaining }
     })
@@ -109,7 +110,7 @@ const upcomingEvents = computed<EntryWithTiming[]>(() =>
     .filter(e => !e.is_current)
     .map(e => {
       const startsIn = e.event_start
-        ? Math.max(0, Math.floor((new Date(e.event_start).getTime() - now.value) / 1000))
+        ? Math.max(0, Math.floor((parseUtc(e.event_start).getTime() - now.value) / 1000))
         : undefined
       return { ...e, startsIn }
     })

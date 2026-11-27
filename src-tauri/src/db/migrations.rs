@@ -4943,8 +4943,9 @@ mod tests {
 
     /// Recreate the original `milking_timers` schema (zone as a PK part) so we
     /// can prove v63 collapses the per-zone duplicate rows into one per cow.
-    /// The widget reads via `get_harvest_almanac`, whose SELECT must line up with
-    /// the columns v66 creates — a mismatch only shows up at runtime otherwise.
+    /// Exercises `get_harvest_almanac_for` itself (frozen now) instead of a
+    /// hand-mirrored SELECT — the mirror drifted when the reader gained
+    /// effective-current ordering, and a mismatch only shows up at runtime.
     #[test]
     fn v66_harvest_almanac_round_trips() {
         let c = Connection::open_in_memory().unwrap();
@@ -4960,21 +4961,19 @@ mod tests {
         )
         .unwrap();
 
-        // Mirrors get_harvest_almanac's query exactly.
-        let mut stmt = c
-            .prepare(
-                "SELECT monster_name, description, event_start, event_end, is_current, captured_at
-                 FROM harvest_almanac
-                 WHERE character_name = ?1 AND server_name = ?2
-                 ORDER BY is_current DESC, event_start ASC",
-            )
-            .unwrap();
-        let rows: Vec<(String, Option<String>, bool)> = stmt
-            .query_map(rusqlite::params!["oddio", "Arisetsu"], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get::<_, i32>(4)? != 0))
-            })
-            .unwrap()
-            .map(|r| r.unwrap())
+        // Frozen now sits between capture (07-28 05:57) and the Skeleton end
+        // (07-29): every fixture row is live, so stored order decides.
+        // Exercises get_harvest_almanac_for itself instead of a hand-mirror.
+        let rows = crate::db::game_state_commands::get_harvest_almanac_for(
+            &c,
+            "oddio",
+            "Arisetsu",
+            "2026-07-28 06:00:00",
+        )
+        .unwrap();
+        let rows: Vec<(String, Option<String>, bool)> = rows
+            .into_iter()
+            .map(|r| (r.monster_name, r.description, r.is_current))
             .collect();
 
         // Scoped to the character, current focus first.
