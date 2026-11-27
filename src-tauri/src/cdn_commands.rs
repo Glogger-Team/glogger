@@ -339,6 +339,36 @@ pub async fn resolve_recipe(
     Ok(state.read().await.resolve_recipe(&reference).cloned())
 }
 
+/// Resolve a batch of recipe references in one IPC round trip.
+/// Mirrors `resolve_items_batch`: each reference accepts every form
+/// `resolve_recipe` does (numeric ID, display name, internal name, CDN-key
+/// `Recipe_<id>` form). Unknown references are omitted from the map, so callers
+/// must fall back per-key (same contract as the items batch). Order is NOT
+/// preserved (HashMap) — callers iterate their own key list for ordering.
+#[tauri::command]
+pub async fn resolve_recipes_batch(
+    references: Vec<String>,
+    state: State<'_, GameDataState>,
+) -> Result<std::collections::HashMap<String, RecipeInfo>, String> {
+    let data = state.read().await;
+    Ok(resolve_recipes_batch_in(&data, &references))
+}
+
+/// Pure core of `resolve_recipes_batch`, kept free of Tauri state so unit
+/// tests can drive it directly.
+fn resolve_recipes_batch_in(
+    data: &GameData,
+    references: &[String],
+) -> std::collections::HashMap<String, RecipeInfo> {
+    let mut result = std::collections::HashMap::new();
+    for ref_str in references {
+        if let Some(recipe) = data.resolve_recipe(ref_str) {
+            result.insert(ref_str.clone(), recipe.clone());
+        }
+    }
+    result
+}
+
 /// Resolve any reference to a quest.
 #[tauri::command]
 pub async fn resolve_quest(
@@ -924,6 +954,44 @@ pub async fn get_recipes_for_skill(
 
     Ok(results)
 }
+
+/// Batch variant of `get_recipes_for_skill`: all recipes per requested skill
+/// in one IPC round trip. Lookup semantics are identical to the single-skill
+/// command (direct `recipes_by_skill` index hit; no fallback). Every requested
+/// skill key is present in the map — unknown skills map to an empty vec — so
+/// callers can index without a second miss check.
+#[tauri::command]
+pub async fn get_recipes_for_skills(
+    skills: Vec<String>,
+    state: State<'_, GameDataState>,
+) -> Result<std::collections::HashMap<String, Vec<RecipeInfo>>, String> {
+    let data = state.read().await;
+    Ok(recipes_for_skills_in(&data, &skills))
+}
+
+/// Pure core of `get_recipes_for_skills`, kept free of Tauri state so unit
+/// tests can drive it directly.
+fn recipes_for_skills_in(
+    data: &GameData,
+    skills: &[String],
+) -> std::collections::HashMap<String, Vec<RecipeInfo>> {
+    let mut result = std::collections::HashMap::new();
+    for skill in skills {
+        let recipes = data
+            .recipes_by_skill
+            .get(skill)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| data.recipes.get(id))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        result.insert(skill.clone(), recipes);
+    }
+    result
+}
+
 
 /// Get all recipes that produce any of the given item IDs.
 /// Used by Cook's Helper to find all food-producing recipes without hardcoding skill names.
@@ -6302,6 +6370,124 @@ mod resolve_batch_reference_tests {
         // so it must not resolve to equipment metadata.
         let data = game_data();
         assert!(resolve_batch_reference(&data, "Apple Kilt Powder").is_none());
+    }
+}
+
+#[cfg(test)]
+mod resolve_recipes_batch_tests {
+    use super::{recipes_for_skills_in, resolve_recipes_batch_in};
+    use crate::game_data::GameData;
+    use crate::game_data::RecipeInfo;
+    use std::collections::HashMap;
+
+    fn recipe(id: u32, name: &str, internal: &str, skill: &str) -> RecipeInfo {
+        RecipeInfo {
+            id,
+            name: name.to_string(),
+            description: None,
+            internal_name: Some(internal.to_string()),
+            icon_id: None,
+            skill: Some(skill.to_string()),
+            skill_level_req: None,
+            ingredients: Vec::new(),
+            costs: Vec::new(),
+            result_items: Vec::new(),
+            reward_skill: Some(skill.to_string()),
+            reward_skill_xp: None,
+            reward_skill_xp_first_time: None,
+            prereq_recipe: None,
+            keywords: Vec::new(),
+            ingredient_item_ids: Vec::new(),
+            result_item_ids: Vec::new(),
+            result_effects: Vec::new(),
+            usage_delay: None,
+            reward_skill_xp_drop_off_level: None,
+            sort_skill: None,
+            action_label: None,
+            shares_name_with_item_id: None,
+            raw_json: serde_json::Value::Null,
+        }
+    }
+
+    fn game_data() -> GameData {
+        let mut data = GameData::empty();
+        data.recipes = HashMap::from([
+            (101u32, recipe(101, "Orcish Flour", "OrcishFlour", "Cooking")),
+            (102u32, recipe(102, "Butter", "Butter", "Cheesemaking")),
+        ]);
+        data.recipe_name_index = HashMap::from([
+            ("Orcish Flour".to_string(), 101u32),
+            ("Butter".to_string(), 102u32),
+        ]);
+        data.recipe_internal_name_index = HashMap::from([
+            ("OrcishFlour".to_string(), 101u32),
+            ("Butter".to_string(), 102u32),
+        ]);
+        data.recipes_by_skill = HashMap::from([
+            ("Cooking".to_string(), vec![101u32]),
+            ("Cheesemaking".to_string(), vec![102u32]),
+        ]);
+        data
+    }
+
+    #[test]
+    fn empty_input_resolves_to_empty_map() {
+        let data = game_data();
+        assert!(resolve_recipes_batch_in(&data, &[]).is_empty());
+        assert!(recipes_for_skills_in(&data, &[]).is_empty());
+    }
+
+    #[test]
+    fn all_reference_forms_resolve() {
+        let data = game_data();
+        // Numeric ID, display name, internal name, and the frontend
+        // CDN-key (`Recipe_<id>`) form the history completion map uses.
+        let refs = vec![
+            "101".to_string(),
+            "Butter".to_string(),
+            "OrcishFlour".to_string(),
+            "Recipe_101".to_string(),
+        ];
+        let got = resolve_recipes_batch_in(&data, &refs);
+        assert_eq!(got.len(), 4);
+        assert_eq!(got["101"].name, "Orcish Flour");
+        assert_eq!(got["Butter"].name, "Butter");
+        assert_eq!(got["OrcishFlour"].name, "Orcish Flour");
+        assert_eq!(got["Recipe_101"].name, "Orcish Flour");
+    }
+
+    #[test]
+    fn unknown_references_are_omitted() {
+        let data = game_data();
+        let refs = vec!["No Such Recipe".to_string(), "Recipe_999999".to_string()];
+        assert!(resolve_recipes_batch_in(&data, &refs).is_empty());
+    }
+
+    #[test]
+    fn mixed_known_and_unknown_keeps_known() {
+        let data = game_data();
+        let refs = vec!["Butter".to_string(), "No Such Recipe".to_string()];
+        let got = resolve_recipes_batch_in(&data, &refs);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got["Butter"].id, 102);
+    }
+
+    #[test]
+    fn per_skill_batch_matches_single_lookups() {
+        let data = game_data();
+        let got = recipes_for_skills_in(&data, &["Cooking".to_string(), "Cheesemaking".to_string()]);
+        assert_eq!(got.len(), 2);
+        assert_eq!(got["Cooking"].iter().map(|r| r.id).collect::<Vec<_>>(), vec![101]);
+        assert_eq!(got["Cheesemaking"].iter().map(|r| r.id).collect::<Vec<_>>(), vec![102]);
+    }
+
+    #[test]
+    fn unknown_skill_maps_to_empty_vec() {
+        // Every requested key stays present so callers can index directly.
+        let data = game_data();
+        let got = recipes_for_skills_in(&data, &["Astrology".to_string()]);
+        assert_eq!(got.len(), 1);
+        assert!(got["Astrology"].is_empty());
     }
 }
 

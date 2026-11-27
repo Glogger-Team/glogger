@@ -220,6 +220,14 @@ export const useGameDataStore = defineStore("gameData", () => {
     return invoke<RecipeInfo | null>("resolve_recipe", { reference: String(reference) });
   }
 
+  /** Batch variant: resolve many recipe references in one IPC round trip. Unknown keys are omitted. */
+  async function resolveRecipesBatch(references: (string | number)[]): Promise<Record<string, RecipeInfo>> {
+    if (references.length === 0) return {};
+    return invoke<Record<string, RecipeInfo>>("resolve_recipes_batch", {
+      references: references.map(String),
+    });
+  }
+
   async function resolveQuest(reference: string): Promise<QuestInfo | null> {
     return invoke<QuestInfo | null>("resolve_quest", { reference });
   }
@@ -336,6 +344,12 @@ export const useGameDataStore = defineStore("gameData", () => {
 
   async function getRecipesForSkill(skill: string): Promise<RecipeInfo[]> {
     return invoke<RecipeInfo[]>("get_recipes_for_skill", { skill });
+  }
+
+  /** Batch variant: all recipes per requested skill in one IPC round trip. */
+  async function getRecipesForSkills(skills: string[]): Promise<Record<string, RecipeInfo[]>> {
+    if (skills.length === 0) return {};
+    return invoke<Record<string, RecipeInfo[]>>("get_recipes_for_skills", { skills });
   }
 
   // ── Gardening product chain ────────────────────────────────────────────────
@@ -558,6 +572,7 @@ export const useGameDataStore = defineStore("gameData", () => {
     resolveItemsBatch,
     resolveSkill,
     resolveRecipe,
+    resolveRecipesBatch,
     resolveQuest,
     resolveNpcSync,
     resolveNpc,
@@ -581,6 +596,7 @@ export const useGameDataStore = defineStore("gameData", () => {
     getRecipesUsingItem,
     searchRecipes,
     getRecipesForSkill,
+    getRecipesForSkills,
     getGardeningProductChain,
     getAllQuests,
     searchQuests,

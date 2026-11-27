@@ -91,8 +91,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import { useCraftingStore } from "../../stores/craftingStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import type { CraftingHistoryRecipe, SkillCraftingStats } from "../../types/crafting";
 import DataTable, { type ColumnDef } from "../Shared/DataTable.vue";
 import EmptyState from "../Shared/EmptyState.vue";
@@ -103,7 +104,7 @@ import RecipeInline from "../Shared/Recipe/RecipeInline.vue";
 import SkillInline from "../Shared/Skill/SkillInline.vue";
 
 const craftingStore = useCraftingStore();
-
+const settingsStore = useSettingsStore();
 const loading = ref(false);
 const history = ref<CraftingHistoryRecipe[]>([]);
 const skillStats = ref<SkillCraftingStats[]>([]);
@@ -164,19 +165,47 @@ const totalUncrafted = computed(() =>
 
 onMounted(() => refresh());
 
+// Character switch: clear synchronously under the new identity so the previous
+// character's rows never render, then reload. An in-flight refresh for the old
+// identity drops its result via the post-await check inside refresh().
+watch(
+  () => [settingsStore.settings.activeCharacterName, settingsStore.settings.activeServerName],
+  () => {
+    history.value = [];
+    skillStats.value = [];
+    void refresh();
+  },
+);
+
 async function refresh() {
+  const characterName = settingsStore.settings.activeCharacterName;
+  const serverName = settingsStore.settings.activeServerName;
   loading.value = true;
   try {
     const [h, s] = await Promise.all([
       craftingStore.getCraftingHistory(),
       craftingStore.getSkillCraftingStats(),
     ]);
+    // Rapid character switch: a newer load is in flight (or done). Drop the
+    // stale rows instead of flashing another character's history into this view.
+    if (
+      settingsStore.settings.activeCharacterName !== characterName ||
+      settingsStore.settings.activeServerName !== serverName
+    )
+      return;
     history.value = h;
     skillStats.value = s;
   } catch (e) {
     console.error("[crafting] Failed to load history:", e);
   } finally {
-    loading.value = false;
+    // A stale load must not clear the spinner owned by the newer refresh
+    // started for the current identity (avoids flashing the empty state
+    // mid-load on rapid switches).
+    if (
+      settingsStore.settings.activeCharacterName === characterName &&
+      settingsStore.settings.activeServerName === serverName
+    )
+      loading.value = false;
   }
 }
 </script>
