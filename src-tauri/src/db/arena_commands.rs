@@ -134,15 +134,23 @@ pub struct ParsedTipEdge {
     pub edge_pct: i32,
 }
 
+/// Fighter alias alternation for the tip patterns. Mirrors the monitor's
+/// `_F` (built from the same alias map as `canonical_tip_fighter`):
+/// the groups match alias spellings only, so the first hit is the first
+/// fighter named — a free-word group would catch boilerplate ("Here's")
+/// ahead of the name and miss the tip entirely.
+static TIP_ALIASES: &str = "vizlark|vozlark|corrrak|corrak|crrrak|ushug|otis|otiz|gloz|goz|dura|viz|leo|corr|cor|ush|na'a|naa|naaa|lamp";
+
 static TIP_EDGE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(
-        r"(?is)\bIf\s+([A-Za-z']+)\s+and\s+([A-Za-z']+)\s+fight today\b.*?\bthat\s+([A-Za-z']+)\s+will have the upper hand\b.*?\(([+-]?\d+)%\)",
-    )
+    regex::Regex::new(&format!(
+        r"(?is)\bIf\s+({A})\s+and\s+({A})\s+fight today\b.*?\bthat\s+({A})\s+will have the upper hand\b.*?\(([+-]?\d+)%\)",
+        A = TIP_ALIASES,
+    ))
     .expect("tip edge pattern is static")
 });
 
 static TIP_SOLO_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-    regex::Regex::new(r"(?is)\b([A-Za-z']+)\b.*?\(([+-]?\d+)%\)")
+    regex::Regex::new(&format!(r"(?is)\b({A})\b.*?\(([+-]?\d+)%\)", A = TIP_ALIASES))
         .expect("tip solo pattern is static")
 });
 
@@ -979,6 +987,21 @@ mod tests {
         // The widget's client parse only covers (+N%); the backend covers (-N%) too.
         let minus = parse_tip_edge("Leo is in terrible form today. (-5%)")
             .expect("solo minus must parse");
+        assert_eq!(minus.favored, "Leo");
+        assert_eq!(minus.edge_pct, -5);
+    }
+
+    #[test]
+    fn tip_edge_solo_skips_boilerplate_to_first_fighter() {
+        // Free-word name groups catch boilerplate ("Here's") ahead of the
+        // fighter and miss; the alias alternation must skip straight to it.
+        let plus = parse_tip_edge("Here's a hot tip:\n\nGloz is feeling great! (+5%)")
+            .expect("prefixed solo plus must parse");
+        assert_eq!(plus.kind, "solo");
+        assert_eq!(plus.favored, "Gloz");
+        assert_eq!(plus.edge_pct, 5);
+        let minus = parse_tip_edge("Gotta hot tip for ya: Leo is in terrible form. (-5%)")
+            .expect("prefixed solo minus must parse");
         assert_eq!(minus.favored, "Leo");
         assert_eq!(minus.edge_pct, -5);
     }

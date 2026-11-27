@@ -115,7 +115,7 @@
 
     <!-- Divider -->
     <div
-      v-if="prefs.showWeather && displayedCurrencies.length > 0"
+      v-if="(prefs.showWeather || showWorldToday) && displayedCurrencies.length > 0"
       class="border-t border-border-default" />
 
     <!-- Currencies -->
