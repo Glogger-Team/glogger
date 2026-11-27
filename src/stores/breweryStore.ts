@@ -1,4 +1,4 @@
-import { defineStore } from "pinia";
+import { defineStore, acceptHMRUpdate } from "pinia";
 import { ref, computed } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "./settingsStore";
@@ -298,10 +298,15 @@ export const useBreweryStore = defineStore("brewery", () => {
 
   async function loadDiscoveries(character: string) {
     try {
-      discoveries.value = await invoke<BrewingDiscovery[]>(
+      const rows = await invoke<BrewingDiscovery[]>(
         "get_brewing_discoveries",
         { character }
       );
+      // Rapid character switch: a newer load is in flight (or done). Drop the
+      // stale rows instead of flashing another character's discoveries.
+      const settingsStore = useSettingsStore();
+      if (settingsStore.settings.activeCharacterName !== character) return;
+      discoveries.value = rows;
       // Bulk-fetch TSys info for all discovered powers
       await fetchAllPowerInfo();
     } catch (e) {
@@ -509,3 +514,9 @@ export const useBreweryStore = defineStore("brewery", () => {
     onInventoryImported,
   };
 });
+
+// Enable proper Pinia hot-module replacement: without this, editing a store action
+// during `tauri dev` leaves the already-instantiated singleton running the old code.
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useBreweryStore, import.meta.hot));
+}

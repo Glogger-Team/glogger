@@ -189,7 +189,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, computed, ref } from "vue";
+import { onMounted, computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import PaneLayout from "../Shared/PaneLayout.vue";
 import SkeletonLoader from "../Shared/SkeletonLoader.vue";
@@ -317,4 +317,24 @@ onMounted(async () => {
     store.loadDiscoveries(characterName.value);
   }
 });
+
+// Character switch: clear synchronously under the new identity so the previous
+// character's discoveries never render, then reload. Brewing data itself is
+// global (CDN) and loads once; only discoveries are per-character.
+watch(
+  () => [settingsStore.settings.activeCharacterName, settingsStore.settings.activeServerName],
+  async () => {
+    store.discoveries = [];
+    const character = settingsStore.settings.activeCharacterName;
+    if (!character) return;
+    await store.loadDiscoveries(character);
+    // Rapid switch: this load may have resolved stale while a newer load for
+    // another identity is in flight or done. Re-anchor on the current
+    // identity so the last writer always carries current-character rows.
+    if (settingsStore.settings.activeCharacterName !== character) {
+      const current = settingsStore.settings.activeCharacterName;
+      if (current) await store.loadDiscoveries(current);
+    }
+  },
+);
 </script>
