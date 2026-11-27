@@ -102,6 +102,9 @@
 
       <!-- By Gift: one row per gift, listing the NPCs that want it -->
       <div v-if="searchedStatuses.length > 0 && activeTab === 'gift'" class="flex flex-col gap-2">
+        <p v-if="!plannerLoaded" class="text-xs text-text-dim">
+          Run “Find vault gifts” in the Gift Planner to sort by vault stock.
+        </p>
         <EmptyState
           v-if="giftGroups.length === 0"
           primary="No gift preferences found."
@@ -118,6 +121,7 @@
             </span>
             <span class="text-sm font-medium text-text-primary truncate">{{ g.label }}</span>
             <span class="text-xs text-text-dim shrink-0">({{ g.entries.length }} NPC{{ g.entries.length === 1 ? '' : 's' }})</span>
+            <span v-if="plannerLoaded" class="text-xs text-accent-gold shrink-0">×{{ giftStockCounts.get(g.key) ?? 0 }} in vaults</span>
           </div>
           <div class="flex flex-wrap gap-1">
             <button
@@ -166,13 +170,13 @@
           </div>
         </div>
       </div>
-      <!-- Gift Planner -->
-      <div class="border-t border-border pt-3 flex flex-col gap-2">
+      <!-- Gift Planner tab: the former bottom section, plus NPC-list filters -->
+      <div v-if="searchedStatuses.length > 0 && activeTab === 'planner'" class="flex flex-col gap-2">
         <div class="flex items-center justify-between flex-wrap gap-2">
           <h3 class="dialog-title">Gift Planner</h3>
           <button
             class="text-xs px-2 py-1 rounded bg-accent-gold/15 text-accent-gold hover:bg-accent-gold/25 disabled:opacity-40"
-            :disabled="planner.loading.value || giftableStatuses.length === 0"
+            :disabled="planner.loading.value || plannerCandidates.length === 0"
             @click="searchVaultGifts()">
             {{ planner.loading.value ? 'Searching vaults…' : 'Find vault gifts' }}
           </button>
@@ -180,13 +184,56 @@
         <p v-if="giftableStatuses.length === 0" class="text-xs text-text-dim">
           All gift-tracked NPCs are at their weekly gift cap — nothing left to plan.
         </p>
+        <p v-else-if="plannerCandidates.length === 0" class="text-xs text-text-dim">
+          The planner favor-tier filter hides every giftable NPC — loosen it to plan.
+        </p>
         <p v-else class="text-xs text-text-dim">
           Matches vault items against gift preferences (Love first, then Like) and assigns each
           stack to the highest-benefit NPC with weekly gifts remaining. Uncheck NPCs to exclude them.
         </p>
-        <div v-if="giftableStatuses.length > 0" class="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+        <!-- Planner-tab NPC filters: tier cutoff (affects the search keys),
+          has-gifts (display-only, needs matches), and the gear-quality floor
+          (disabled — the matcher output carries no rarity; see note below). -->
+        <div v-if="giftableStatuses.length > 0" class="flex items-center gap-4 flex-wrap text-xs">
+          <label class="flex items-center gap-1.5 text-text-secondary">
+            Hide at/above
+            <select
+              v-model="plannerHideTier"
+              class="bg-surface-elevated border border-border-default rounded px-1.5 py-0.5 text-xs text-text-primary cursor-pointer">
+              <option value="">Off</option>
+              <option v-for="tier in filterableTiers" :key="tier" :value="tier">
+                {{ tierDisplayName(tier) }}
+              </option>
+            </select>
+          </label>
           <label
-            v-for="s in giftableStatuses"
+            class="flex items-center gap-1 text-text-secondary cursor-pointer"
+            title="Hides NPCs with no matched vault gifts; applies once a search has run">
+            <input type="checkbox" v-model="plannerHideZeroMatch" class="accent-accent-gold" />
+            Only NPCs with vault matches
+          </label>
+          <label
+            class="flex items-center gap-1.5 text-text-secondary opacity-60"
+            title="Unavailable: matched gifts carry no per-item rarity">
+            Min gear quality
+            <select
+              disabled
+              class="bg-surface-elevated border border-border-default rounded px-1.5 py-0.5 text-xs text-text-primary cursor-not-allowed">
+              <option>Epic</option>
+            </select>
+          </label>
+        </div>
+        <p v-if="giftableStatuses.length > 0" class="text-xs text-text-dim">
+          Gear-quality filtering is unavailable: the planner matcher output carries no rarity —
+          vault rows have no rarity column and the CDN item record has none either (rarity is a
+          per-inventory-instance field). Wiring it needs a backend change.
+        </p>
+        <div v-if="plannerCandidates.length > 0 && plannerVisibleStatuses.length === 0" class="text-xs text-text-dim">
+          No listed NPC has matched vault gifts — uncheck “Only NPCs with vault matches” or run a new search.
+        </div>
+        <div v-if="plannerVisibleStatuses.length > 0" class="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+          <label
+            v-for="s in plannerVisibleStatuses"
             :key="s.npc.key"
             class="flex items-center gap-1 text-text-secondary cursor-pointer">
             <input
@@ -254,7 +301,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useStatehelmTracker } from '../../composables/useStatehelmTracker'
 import { useStatehelmPlanner, type VaultGiftGroup } from '../../composables/useStatehelmPlanner'
 import { useGameStateStore } from '../../stores/gameStateStore'
@@ -311,6 +358,60 @@ function togglePlannerNpc(npcKey: string) {
   planner.toggleExcluded(npcKey)
   plannerLoaded.value = false
 }
+
+// ── Planner tab filters ───────────────────────────────────────────────────
+// Favor-tier cutoff scoped to the planner tab (mirrors the top-level
+// hide-at/above filter but only affects planning): hiding at/above Soul Mates
+// drops capped NPCs from the checklist and the search keys. Default off —
+// planning behavior is unchanged until the user opts in.
+const plannerHideTier = ref('')
+// Hide checklist NPCs with zero matched vault gifts. Applies once matches
+// exist; before the first search nothing is hidden.
+const plannerHideZeroMatch = ref(false)
+
+// Checklist eligibility: giftable, under the weekly cap, and passing the
+// planner tier cutoff. Independent of the manual exclusion set so an
+// unchecked NPC stays visible and can be re-included.
+const plannerCandidates = computed(() =>
+  giftableStatuses.value.filter(s => {
+    if (plannerHideTier.value && s.favorTier && isTierAtOrAbove(s.favorTier, plannerHideTier.value)) return false
+    return true
+  }),
+)
+
+// NPC keys with at least one planner match row (post-search).
+const plannerMatchedNpcKeys = computed(() => new Set(planner.matches.value.map(m => m.npc_key)))
+
+const plannerVisibleStatuses = computed(() =>
+  plannerCandidates.value.filter(s => {
+    if (plannerHideZeroMatch.value && plannerLoaded.value && !plannerMatchedNpcKeys.value.has(s.npc.key)) return false
+    return true
+  }),
+)
+
+// Keys hidden by the tier cutoff, pushed into the composable so the search
+// keys (`needingGifts`) skip them. A change invalidates prior matches
+// exactly like a manual uncheck; an unchanged set (e.g. gift counts
+// ticking) keeps them.
+const plannerHiddenKeys = computed(() => {
+  const hidden = new Set<string>()
+  for (const s of giftableStatuses.value) {
+    if (!plannerCandidates.value.includes(s)) hidden.add(s.npc.key)
+  }
+  return hidden
+})
+function sameKeySet(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false
+  for (const k of a) if (!b.has(k)) return false
+  return true
+}
+watch(plannerHiddenKeys, (next) => {
+  if (sameKeySet(planner.planningHiddenNpcKeys.value, next)) return
+  planner.planningHiddenNpcKeys.value = next
+  planner.matches.value = []
+  planner.route.value = null
+  plannerLoaded.value = false
+})
 
 onMounted(() => {
   loadGiftLog()
@@ -390,13 +491,14 @@ const filteredStatuses = computed(() => {
 })
 
 // ── Tabs + search ───────────────────────────────────────────────────────────
-// All three tabs render from `searchedStatuses`: the tier/service filters
+// All tabs render from `searchedStatuses`: the tier/service filters
 // plus the text search over NPC and gift names.
 const activeTab = ref('npc')
 const tabs: Tab[] = [
   { id: 'npc', label: 'By NPC' },
   { id: 'gift', label: 'By Gift' },
   { id: 'list', label: 'Shopping List' },
+  { id: 'planner', label: 'Planner' },
 ]
 const searchQuery = ref('')
 
@@ -448,6 +550,8 @@ interface GiftWantEntry {
   npcName: string
   remaining: number
   desire: string
+  prefName: string | null
+  prefKeywords: string[]
 }
 interface GiftGroup {
   key: string
@@ -456,8 +560,68 @@ interface GiftGroup {
   entries: GiftWantEntry[]
 }
 
+// Desire rank mirroring the backend matcher (`desire_rank` in
+// `src-tauri/src/cdn_commands.rs`): Love outranks Like, anything else is
+// unmatchable and never reaches the frontend groups.
+function giftDesireRank(desire: string): number {
+  const d = desire.toLowerCase()
+  if (d === 'love') return 1
+  if (d === 'like') return 0
+  return -1
+}
+
+// Vault stock per gift-group key, routed from the planner matcher output
+// (`planner.matches`, the `plan_statehelm_gifts` rows) — there is no second
+// matcher. A "name" row lands on the group whose preference name equals the
+// item name (the backend's `npc_favor_by_item_name` key); a "keyword:K" row
+// lands on the group of that NPC's winning preference containing K (highest
+// desire rank, then pref — the backend's `best` dedup order). The count is
+// distinct physical stock: rows for the same (vault, item) pair share one
+// stack_size (SQL GROUP BY), so the pair contributes once per group no matter
+// how many NPCs of that group want it. A stack wanted under two different
+// gifts still counts toward both groups — it is available for either.
+// Empty until the planner runs (see `plannerLoaded`): unknown groups keep
+// alphabetical position.
+const giftStockCounts = computed<Map<string, number>>(() => {
+  const out = new Map<string, number>()
+  // Physical stock already attributed: `${groupKey} ${vault_key} ${item}`.
+  // One backend row exists per (vault, item, NPC), so a stack wanted by N
+  // NPCs of the same group counts once, not N times.
+  const seen = new Set<string>()
+  if (!plannerLoaded.value) return out
+  for (const m of planner.matches.value) {
+    const status = searchedStatuses.value.find(s => s.npc.key === m.npc_key)
+    if (!status) continue
+    let groupKey: string | null = null
+    if (m.match_type === 'name') {
+      groupKey = m.item_name.toLowerCase()
+    } else if (m.match_type.startsWith('keyword:')) {
+      const kw = m.match_type.slice('keyword:'.length)
+      let best: { key: string; rank: number; pref: number } | null = null
+      for (const p of status.npc.preferences ?? []) {
+        if (giftDesireRank(p.desire) < 0) continue
+        if (!p.keywords.includes(kw) && !p.keywords.some(k => k.toLowerCase() === kw.toLowerCase())) continue
+        const key = (p.name ?? p.keywords.join(', ')).toLowerCase()
+        const rank = giftDesireRank(p.desire)
+        if (!best || rank > best.rank || (rank === best.rank && p.pref > best.pref)) {
+          best = { key, rank, pref: p.pref }
+        }
+      }
+      groupKey = best?.key ?? null
+    }
+    if (!groupKey) continue
+    const pair = `${groupKey} ${m.vault_key} ${m.item_name.toLowerCase()}`
+    if (seen.has(pair)) continue
+    seen.add(pair)
+    out.set(groupKey, (out.get(groupKey) ?? 0) + Math.max(0, m.stack_size))
+  }
+  return out
+})
+
 // One group per distinct gift label across the searched statuses; the group's
-// want is Love if any wanting NPC loves it. Sorted Love-first, then A–Z.
+// want is Love if any wanting NPC loves it. Sorted Love-first, then by vault
+// stock descending once the planner has run (zero-count groups sink to the
+// bottom of their tier but stay listed); alphabetical otherwise.
 const giftGroups = computed<GiftGroup[]>(() => {
   const byKey = new Map<string, GiftGroup>()
   for (const status of searchedStatuses.value) {
@@ -483,13 +647,20 @@ const giftGroups = computed<GiftGroup[]>(() => {
         npcName: status.npc.name,
         remaining,
         desire: pref.desire,
+        prefName: pref.name ?? null,
+        prefKeywords: [...pref.keywords],
       })
     }
   }
   const groups = [...byKey.values()]
   for (const g of groups) g.entries.sort((a, b) => a.npcName.localeCompare(b.npcName))
+  const stocked = plannerLoaded.value
   groups.sort((a, b) => {
     if (a.want !== b.want) return a.want === 'Love' ? -1 : 1
+    if (stocked) {
+      const diff = (giftStockCounts.value.get(b.key) ?? 0) - (giftStockCounts.value.get(a.key) ?? 0)
+      if (diff !== 0) return diff
+    }
     return a.label.localeCompare(b.label)
   })
   // Narrow groups to the search: keep a group when the gift label matches or
@@ -515,7 +686,13 @@ interface ShoppingRow {
   qty: number
 }
 const shoppingRows = computed<ShoppingRow[]>(() =>
-  giftGroups.value
+  [...giftGroups.value]
+    // Shopping List keeps the historical order (Love-first, then A–Z) even
+    // once the By Gift tab re-sorts by vault stock.
+    .sort((a, b) => {
+      if (a.want !== b.want) return a.want === 'Love' ? -1 : 1
+      return a.label.localeCompare(b.label)
+    })
     .map((g) => {
       const actionable = g.entries.filter(e => e.remaining > 0)
       return {

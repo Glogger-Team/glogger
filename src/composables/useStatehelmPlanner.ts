@@ -104,6 +104,10 @@ export function useStatehelmPlanner() {
   const tracker = useStatehelmTracker()
 
   const excludedNpcKeys = ref<Set<string>>(new Set())
+  /** NPC keys hidden by view-side planner filters (e.g. the planner tab's
+   *  favor-tier cutoff). View-managed; behaves like manual exclusions for
+   *  the search keys but never renders as an unchecked box. */
+  const planningHiddenNpcKeys = ref<Set<string>>(new Set())
   const matches = ref<StatehelmGiftMatch[]>([])
   const loading = ref(false)
   const error = ref('')
@@ -124,7 +128,7 @@ export function useStatehelmPlanner() {
   /** NPCs that still want gifts this week and aren't excluded. */
   const needingGifts = computed(() =>
     tracker.npcStatuses.value.filter(
-      (s) => s.giftTracking && s.giftsThisWeek < s.maxGifts && !excludedNpcKeys.value.has(s.npc.key),
+      (s) => s.giftTracking && s.giftsThisWeek < s.maxGifts && !excludedNpcKeys.value.has(s.npc.key) && !planningHiddenNpcKeys.value.has(s.npc.key),
     ),
   )
 
@@ -255,6 +259,7 @@ export function useStatehelmPlanner() {
 
   return {
     excludedNpcKeys,
+    planningHiddenNpcKeys,
     toggleExcluded,
     needingGifts,
     remainingByNpc,
