@@ -201,14 +201,21 @@ const config = computed<VueUiXyConfig>(() => {
   }
 })
 
+// Monotonic reload sequence: a character/range switch mid-fetch must not let
+// the older response plant (cross-character stale flash) or clear `loading`
+// while the newer fetch is still in flight. Only the latest sequence may
+// plant history, report errors, or leave the loading state.
+let reloadSeq = 0
+
 async function reload() {
   const id = identityOf()
   const range = loadedRange.value
+  const seq = ++reloadSeq
   if (!id || !range || !range.start || !range.end) {
     history.value = null
+    loading.value = false
     return
   }
-  loadedIdentity.value = id
   loading.value = true
   error.value = null
   try {
@@ -218,16 +225,19 @@ async function reload() {
       startTs: range.start,
       endTs: range.end,
     })
+    if (seq !== reloadSeq) return
     // Rapid range/character switches: drop a stale response that no longer
     // matches (same guard shape as the arena tips fetch).
     const now = identityOf()
     if (loadedRange.value !== range) return
     if (!now || now.character !== id.character || now.server !== id.server) return
+    loadedIdentity.value = id
     history.value = h
   } catch (e: unknown) {
+    if (seq !== reloadSeq) return
     error.value = String(e)
   } finally {
-    if (loadedRange.value === range) loading.value = false
+    if (seq === reloadSeq) loading.value = false
   }
 }
 
@@ -244,7 +254,12 @@ watch(
     const id = identityOf()
     return id ? `${id.character}@${id.server}` : ''
   },
-  () => void reload(),
+  () => {
+    // Clear synchronously: the previous character's line must not render
+    // under the new identity while the fresh fetch is in flight.
+    history.value = null
+    void reload()
+  },
 )
 
 onMounted(async () => {
