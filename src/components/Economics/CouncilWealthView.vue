@@ -55,6 +55,7 @@ import type { VueUiXyConfig, VueUiXyDatasetItem } from 'vue-data-ui'
 import TimeRangeSelector, { type TimeRange } from '../Shared/TimeRangeSelector.vue'
 import EmptyState from '../Shared/EmptyState.vue'
 import { useSettingsStore } from '../../stores/settingsStore'
+import { isReplayChatStatusEvent, type ChatStatusEvent, type ReplayChatStatusEnvelope } from '../../stores/gameStateStore'
 import { chartPalette as PALETTE, themeText, themeTooltipBg, themeTooltipBorder } from '../../composables/useChartTheme'
 import type { CouncilHistory } from '../../types/gameState.specta'
 
@@ -248,6 +249,7 @@ function onRangeChange(range: TimeRange) {
 }
 
 let unlisten: UnlistenFn | null = null
+let unlistenStatus: UnlistenFn | null = null
 
 watch(
   () => {
@@ -266,9 +268,17 @@ onMounted(async () => {
   unlisten = await listen<string[]>('game-state-updated', (e) => {
     if (e.payload.includes('currency_estimate')) void reload()
   })
+  unlistenStatus = await listen<ChatStatusEvent | ReplayChatStatusEnvelope>('chat-status-event', (e) => {
+    // Replay preview re-emits on the live channel tagged `is_replay` — never
+    // reload from a replay (HoplologyWidget precedent: the envelope carries
+    // no top-level `kind`, so the filter below would fall through anyway).
+    if (isReplayChatStatusEvent(e.payload)) return
+    if (e.payload.kind === 'CouncilsChanged' || e.payload.kind === 'CoinsLooted') void reload()
+  })
 })
 
 onBeforeUnmount(() => {
   unlisten?.()
+  unlistenStatus?.()
 })
 </script>
