@@ -1,7 +1,7 @@
 <template>
   <div v-if="selectedMeal || selectedSnack" class="bg-surface-card border border-border-default rounded p-3">
     <div class="flex items-center gap-3 mb-2">
-      <h3 class="text-accent-gold font-bold uppercase tracking-wide text-xs">Food Buff</h3>
+      <h3 class="display-title">Food Buff</h3>
       <div class="flex items-center gap-2 text-xs text-text-muted">
         <span v-if="selectedMeal" class="text-accent-green">{{ selectedMeal.name }}</span>
         <span v-if="selectedMeal && selectedSnack">+</span>
