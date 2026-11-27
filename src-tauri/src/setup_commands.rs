@@ -361,6 +361,7 @@ const SCOPED_TABLES: &[&str] = &[
     "character_report_stats",
     "character_resuscitations",
     "corpse_extracts",
+    "council_events",
     "currency_estimate",
     "enemy_kills",
     "favor_events",
@@ -1343,6 +1344,11 @@ mod tests {
         )
         .unwrap();
         conn.execute(
+            "INSERT INTO council_events (character_name,server_name,event_ts,delta,kind) VALUES (?1,?2,'2026-01-01',10,'councils_changed')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
             "INSERT INTO currency_estimate (character_name,server_name) VALUES (?1,?2)",
             rusqlite::params![who, SERVER],
         )
@@ -1508,6 +1514,7 @@ mod tests {
         "character_report_stats",
         "character_resuscitations",
         "corpse_extracts",
+        "council_events",
         "currency_estimate",
         "enemy_kills",
         "favor_events",
