@@ -140,6 +140,8 @@ fn eastern_today_range() -> Result<(String, String), String> {
             "SELECT timestamp, other_player, body FROM player_messages
              WHERE character_name = ?1 AND server_name = ?2
                AND message_type = 'entity_report'
+               AND other_player <> 'Grasuul'
+               AND body NOT LIKE '%Current Blood Season:%'
                AND timestamp >= ?3 AND timestamp < ?4
              ORDER BY timestamp DESC",
         )
@@ -669,6 +671,29 @@ mod tests {
         .unwrap();
         let got = get_blood_target(&conn, "Aka", "Dreva").unwrap().expect("row expected");
         assert_eq!(got.target, "Fish and Snail");
+    }
+
+    #[test]
+    fn today_tips_excludes_blood_but_keeps_casino_tips() {
+        let conn = setup();
+        setup_messages(&conn);
+        // One casino day: a Grasuul blood announcement plus two real tips
+        // (Eveline + a casino NPC). Blood leaves, both tips stay.
+        conn.execute(
+            "INSERT INTO player_messages
+                (character_name, server_name, timestamp, message_type, direction, other_player, body) VALUES
+                ('Aka', 'Dreva', datetime('now'), 'entity_report', 'in', 'Grasuul', ?1),
+                ('Aka', 'Dreva', datetime('now'), 'entity_report', 'in', 'Eveline Rastin', 'Ushug has the upper hand.'),
+                ('Aka', 'Dreva', datetime('now'), 'entity_report', 'in', 'Mandibles', 'Gloz is feeling great! (+5%)')",
+            rusqlite::params![blood_body("Elf")],
+        )
+        .unwrap();
+        let tips = get_today_tips(&conn, "Aka", "Dreva").unwrap();
+        assert_eq!(tips.len(), 2, "blood row must leave, both tips stay");
+        let tipsters: Vec<&str> = tips.iter().map(|t| t.tipster.as_str()).collect();
+        assert!(tipsters.contains(&"Eveline Rastin"));
+        assert!(tipsters.contains(&"Mandibles"));
+        assert!(!tipsters.contains(&"Grasuul"));
     }
 
     #[test]
