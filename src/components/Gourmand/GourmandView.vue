@@ -9,7 +9,7 @@
       <div class="p-3 space-y-3 overflow-y-auto h-full">
         <!-- Progress Summary -->
         <div class="space-y-1.5">
-          <h3 class="text-accent-gold font-bold uppercase tracking-wide text-xs mb-1.5">Progress</h3>
+          <h3 class="display-title mb-1.5">Progress</h3>
           <GourmandProgressBar label="Overall" :eaten="store.totalEaten" :total="store.progressFoods.length" />
           <GourmandProgressBar label="Meals" :eaten="store.mealsEaten" :total="store.progressMeals.length" />
           <GourmandProgressBar label="Snacks" :eaten="store.snacksEaten" :total="store.progressSnacks.length" />
@@ -25,7 +25,7 @@
 
         <!-- Favorites -->
         <div v-if="store.reportLoaded && hasFavorites">
-          <h3 class="text-accent-gold font-bold uppercase tracking-wide text-xs mb-1.5">Favorites</h3>
+          <h3 class="display-title mb-1.5">Favorites</h3>
           <div class="space-y-2">
             <div v-if="store.favoriteMeals.length > 0">
               <div class="text-text-muted text-xs uppercase tracking-wide mb-0.5">Meals</div>
@@ -69,7 +69,7 @@
       <!-- Header Bar -->
       <div class="flex items-center justify-between bg-surface-card border border-border-default rounded px-4 py-2 shrink-0">
         <div class="flex items-center gap-4">
-          <h2 class="text-accent-gold font-bold text-lg">Gourmand Tracker</h2>
+          <h2 class="display-title">Gourmand Tracker</h2>
           <button
             class="px-3 py-1.5 text-sm bg-surface-elevated border border-border-default rounded text-text-secondary hover:text-text-primary hover:border-border-hover transition-all"
             @click="store.importReport()"

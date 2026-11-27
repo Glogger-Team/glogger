@@ -3,7 +3,7 @@
     <!-- Import bar -->
     <div class="flex items-center justify-between bg-surface-card border border-border-default rounded px-4 py-2">
       <div class="flex items-center gap-4">
-        <h3 class="text-accent-gold font-bold text-sm m-0">Cook's Helper</h3>
+        <h3 class="display-title">Cook's Helper</h3>
         <button
           class="px-3 py-1.5 text-sm bg-surface-elevated border border-border-default rounded text-text-secondary hover:text-text-primary hover:border-border-hover transition-all"
           :disabled="store.loading"

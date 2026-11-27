@@ -3,7 +3,7 @@
     <!-- Header -->
     <div class="flex items-center justify-between">
       <div>
-        <h2 class="text-sm font-bold text-accent-gold m-0">
+        <h2 class="display-title">
           {{ effectInfo?.effectLabel ?? store.selectedEffect }}
         </h2>
         <div v-if="resolvedInfo" class="flex flex-col gap-0.5 mt-1">
