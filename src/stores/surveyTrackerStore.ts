@@ -426,6 +426,7 @@ export const useSurveyTrackerStore = defineStore("surveyTracker", () => {
   const sessionError = ref<string | null>(null);
 
   async function startSession(): Promise<number | null> {
+    if (isBusy.value) return null;
     isBusy.value = true;
     sessionError.value = null;
     try {
@@ -442,6 +443,7 @@ export const useSurveyTrackerStore = defineStore("surveyTracker", () => {
   }
 
   async function endSession(): Promise<number | null> {
+    if (isBusy.value) return null;
     isBusy.value = true;
     sessionError.value = null;
     try {
