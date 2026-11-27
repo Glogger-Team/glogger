@@ -1,6 +1,6 @@
 <template>
   <div class="flex flex-col h-full">
-    <h3 class="text-xs font-bold text-text-secondary uppercase tracking-wide mb-2">Recent Transactions</h3>
+    <h3 class="section-heading mb-2">Recent Transactions</h3>
 
     <EmptyState
       v-if="store.liveEventLog.length === 0"

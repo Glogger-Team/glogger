@@ -1,6 +1,6 @@
 <template>
   <div class="p-3 flex flex-col gap-3">
-    <h3 class="text-xs font-bold text-text-secondary uppercase tracking-wide">Widgets</h3>
+    <h3 class="section-heading">Widgets</h3>
 
     <div class="flex flex-col gap-1">
       <label
