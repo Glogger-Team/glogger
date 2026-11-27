@@ -35,7 +35,7 @@
 
       <!-- Per-Character Wealth Breakdown -->
       <div v-if="aggregateStore.wealth.per_character.length > 1" class="card p-4">
-        <h3 class="text-text-secondary text-sm font-bold uppercase tracking-wide mb-3 mt-0">Wealth by Character</h3>
+        <h3 class="section-heading mb-3 mt-0">Wealth by Character</h3>
         <DataTable
           :columns="wealthColumns"
           :rows="(aggregateStore.wealth.per_character as unknown as Record<string, unknown>[])"
@@ -61,7 +61,7 @@
       <!-- Aggregate Inventory -->
       <div class="card p-4">
         <div class="flex items-center justify-between mb-3">
-          <h3 class="text-text-secondary text-sm font-bold uppercase tracking-wide m-0">Combined Inventory</h3>
+          <h3 class="section-heading">Combined Inventory</h3>
           <input
             v-model="invSearch"
             placeholder="Search items..."
@@ -105,7 +105,7 @@
         <button
           class="flex items-center gap-2 w-full text-left bg-transparent border-none cursor-pointer p-0"
           @click="showSkills = !showSkills">
-          <span class="text-text-secondary text-sm font-bold uppercase tracking-wide">Skills Across Characters</span>
+          <span class="section-heading">Skills Across Characters</span>
           <span class="text-text-muted text-xs">{{ showSkills ? '\u25BC' : '\u25B6' }}</span>
         </button>
 

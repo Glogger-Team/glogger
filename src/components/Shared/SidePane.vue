@@ -47,7 +47,7 @@
     <div v-show="!collapsed || isFixed" class="flex-1 flex flex-col overflow-hidden min-w-0">
       <!-- Header -->
       <div class="flex items-center justify-between px-2 py-1.5 shrink-0">
-        <span class="text-text-primary text-sm font-semibold">{{ title }}</span>
+        <span class="dialog-title">{{ title }}</span>
         <button
           v-if="!isFixed"
           class="text-text-muted text-xs cursor-pointer bg-transparent border-none hover:text-text-primary px-1"

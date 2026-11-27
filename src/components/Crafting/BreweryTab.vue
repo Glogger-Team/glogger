@@ -120,7 +120,7 @@
         <div v-if="showCsvHelp" class="absolute inset-0 z-20 flex items-center justify-center bg-black/50" @click.self="showCsvHelp = false">
           <div class="bg-surface-card border border-border-default rounded-lg p-4 max-w-lg shadow-lg">
             <div class="flex items-center justify-between mb-3">
-              <h3 class="text-sm font-bold text-text-primary m-0">CSV Import Format</h3>
+              <h3 class="dialog-title">CSV Import Format</h3>
               <button class="text-text-dim hover:text-text-secondary cursor-pointer bg-transparent border-none" @click="showCsvHelp = false">✕</button>
             </div>
             <div class="text-xs text-text-secondary flex flex-col gap-2">
@@ -153,7 +153,7 @@
     <div class="h-full overflow-y-auto">
       <!-- Experimental banner -->
       <div class="bg-accent-warning/10 border-b border-accent-warning/20 px-4 py-1.5 text-xs text-accent-warning flex items-center gap-2">
-        <span class="font-bold">Experimental</span>
+        <span class="font-bold text-status-warning">Experimental</span>
         <span class="text-accent-warning/70">This feature is prone to bugs, and the layout/interface is likely to change significantly between versions.</span>
       </div>
 

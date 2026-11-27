@@ -5,7 +5,7 @@
     :style="effectiveSpan ? { gridColumn: `span ${effectiveSpan}` } : undefined">
     <!-- Title bar — drag handle -->
     <div class="dashboard-card-handle flex items-center gap-2 px-3 py-1 border-b border-border-default cursor-grab active:cursor-grabbing bg-surface-base/30 select-none">
-      <span class="text-xs font-bold text-text-secondary uppercase tracking-wide truncate">{{ title }}</span>
+      <span class="section-heading truncate">{{ title }}</span>
       <div v-if="hasConfig" class="ml-auto relative">
         <button
           class="p-0.5 text-text-dim hover:text-text-secondary transition-colors"

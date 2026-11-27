@@ -3,7 +3,7 @@
     <!-- Header -->
     <div class="flex items-center justify-between">
       <div>
-        <h2 class="text-sm font-bold text-text-primary m-0">{{ recipe.name }}</h2>
+        <h2 class="dialog-title">{{ recipe.name }}</h2>
         <div class="text-xs text-text-muted mt-0.5">
           <span>Level {{ recipe.skill_level_req }}</span>
           <span class="mx-1.5 opacity-30">·</span>
@@ -392,7 +392,7 @@
       @keydown.escape="showProjectDialog = false">
       <div class="bg-surface-card border border-border-default rounded-lg p-4 w-96 max-w-full max-h-[85vh] overflow-y-auto shadow-lg flex flex-col gap-3">
         <div class="flex items-center justify-between">
-          <h3 class="text-sm font-bold text-text-primary m-0">Create crafting project</h3>
+          <h3 class="dialog-title">Create crafting project</h3>
           <button class="text-text-dim hover:text-text-secondary cursor-pointer bg-transparent border-none" @click="showProjectDialog = false">✕</button>
         </div>
         <p class="text-xs text-text-muted m-0">

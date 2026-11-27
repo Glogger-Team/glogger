@@ -2,7 +2,7 @@
   <div class="h-screen flex flex-col bg-surface-base text-text-primary overflow-hidden">
     <!-- Header -->
     <div class="shrink-0 flex items-center justify-between px-4 py-2 border-b border-border-default">
-      <h1 class="text-accent-gold font-bold text-base m-0">Dev Panel</h1>
+      <h1 class="h1-brand">Dev Panel</h1>
       <span class="text-text-muted text-xs">glogger dev tools</span>
     </div>
 
