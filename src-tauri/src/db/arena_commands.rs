@@ -16,6 +16,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::sync::Arc;
 use tauri::State;
+use rusqlite::OptionalExtension;
 
 use super::{DbPool, DbRead};
 use crate::arena_parser::ArenaTracker;
@@ -353,6 +354,126 @@ pub fn get_blood_target_cmd(
         .get()
         .map_err(|e| format!("Database connection error: {e}"))?;
     get_blood_target(&conn, &character_name, &server_name)
+}
+
+/// One active warden alert, parsed from the "Active Warden Alerts" book.
+#[derive(Debug, Serialize, Clone, PartialEq, specta::Type)]
+pub struct WardenAlert {
+    pub npc: String,
+    pub zone: String,
+    pub threat: String,
+    pub ends: String,
+}
+
+/// The newest warden-alerts book read, with its alerts. `None` when no
+/// warden book has landed yet — the widget shows an honest empty state.
+#[derive(Debug, Serialize, Clone, specta::Type)]
+pub struct WardenReport {
+    pub captured_at: Option<String>,
+    pub alerts: Vec<WardenAlert>,
+}
+
+static WARDEN_H2_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    // No look-ahead (unsupported): split on the literal `<h2>` (monitor is
+    // case-sensitive here too) and match the header at each chunk start.
+    // Inner threat/ends patterns take their FIRST hit, which always
+    // belongs to the current alert even though the tail holds later ones.
+    regex::Regex::new(r"(?is)\s*Aid Request from (.+?) in (.+?)</h2>(.*)")
+        .expect("warden header pattern is static")
+});
+
+static WARDEN_THREAT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?is)assistance with (.+?)\.?\s*</indent>")
+        .expect("warden threat pattern is static")
+});
+
+static WARDEN_INDENT_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?is)<indent=\d+>(.+?)</indent>")
+        .expect("warden indent pattern is static")
+});
+
+static WARDEN_ENDS_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?is)Ends in ([^<]+?)\s*</i>").expect("warden ends pattern is static")
+});
+
+/// Parse an ActiveWardenAlerts book body into alerts, mirroring the
+/// gorgonzola monitor's `_parse_warden_alerts` (alert per `<h2>Aid Request
+/// from NPC in Zone</h2>`, threat after "assistance with", `Ends in …`
+/// line). The monitor's absolute `ends_at` is deliberately not computed:
+/// it bakes `now()` into stored rows, which would unpin tests — the widget
+/// shows the raw relative `ends` text.
+pub fn parse_warden_alerts(content: &str) -> Vec<WardenAlert> {
+    content
+        .split("<h2>")
+        .filter_map(|chunk| WARDEN_H2_RE.captures(chunk))
+        .map(|caps| {
+            let npc = caps.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
+            let zone = caps.get(2).map(|m| m.as_str().trim().to_string()).unwrap_or_default();
+            let rest = caps.get(3).map(|m| m.as_str()).unwrap_or("");
+            let threat = WARDEN_THREAT_RE
+                .captures(rest)
+                .and_then(|t| t.get(1))
+                .map(|m| m.as_str().trim().to_string())
+                .or_else(|| {
+                    WARDEN_INDENT_RE
+                        .captures(rest)
+                        .and_then(|t| t.get(1))
+                        .map(|m| m.as_str().trim().to_string())
+                })
+                .unwrap_or_default();
+            let ends = WARDEN_ENDS_RE
+                .captures(rest)
+                .and_then(|t| t.get(1))
+                .map(|m| m.as_str().trim().to_string())
+                .unwrap_or_default();
+            WardenAlert { npc, zone, threat, ends }
+        })
+        .collect()
+}
+
+/// The newest "Active Warden Alerts" book for one character+server, with
+/// its parsed alerts. The book lands in `game_state_books` through two
+/// title-agnostic arms — the `[JSON:Book]` dispatch arm (book_type `JSON`,
+/// title as-is) and the Books-dir watcher (book_type `ActiveWardenAlerts`,
+/// title = export stem) — so the match is on the title, not the
+/// book_type. No day gate: the book carries no Eastern-day notion and
+/// alerts stay live across midnights (`Ends in …` is relative). Read-only.
+pub fn get_warden_alerts<C: DbRead + ?Sized>(
+    conn: &C,
+    character_name: &str,
+    server_name: &str,
+) -> Result<Option<WardenReport>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT content, captured_at FROM game_state_books
+             WHERE character_name = ?1 AND server_name = ?2
+               AND title LIKE '%warden%alert%'
+             ORDER BY captured_at DESC LIMIT 1",
+        )
+        .map_err(|e| format!("Warden alerts query prepare error: {e}"))?;
+    let row: Option<(String, Option<String>)> = stmt
+        .query_row(rusqlite::params![character_name, server_name], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .optional()
+        .map_err(|e| format!("Warden alerts query error: {e}"))?;
+    Ok(row.map(|(content, captured_at)| WardenReport {
+        alerts: parse_warden_alerts(&content),
+        captured_at,
+    }))
+}
+
+/// The newest warden-alerts book for the dashboard Status widget (active identity).
+#[tauri::command(rename_all = "camelCase")]
+pub fn get_warden_alerts_cmd(
+    db: State<'_, DbPool>,
+    character_name: String,
+    server_name: String,
+) -> Result<Option<WardenReport>, String> {
+    let conn = db
+        .get()
+        .map_err(|e| format!("Database connection error: {e}"))?;
+    get_warden_alerts(&conn, &character_name, &server_name)
 }
 
 /// Persist a single resolved match. Idempotent via `idx_arena_dedup`.
@@ -893,6 +1014,93 @@ mod tests {
         assert_eq!(tips[0].edge_pct, Some(10));
     }
 
+    fn setup_books(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE game_state_books (
+                character_name TEXT NOT NULL,
+                server_name TEXT NOT NULL,
+                book_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                captured_at TEXT,
+                UNIQUE(character_name, server_name, book_type, title)
+            );",
+        )
+        .unwrap();
+    }
+
+    fn warden_body() -> String {
+        "<h1>Active Warden Alerts</h1>\n\
+         <h2>Aid Request from Yusuf in Serbule</h2>\
+         <indent=20>Yusuf requests assistance with culling undead rats.</indent>\
+         <i>Ends in 23 hours 48 minutes</i>\n\
+         <h2>Aid Request from Marna in Eltibule</h2>\
+         <indent=20>Marna requests assistance with giant bats.</indent>\
+         <i>Ends in 5 hours 10 minutes</i>"
+            .to_string()
+    }
+
+    #[test]
+    fn warden_parse_covers_alert_fields() {
+        let alerts = parse_warden_alerts(&warden_body());
+        assert_eq!(alerts.len(), 2);
+        assert_eq!(alerts[0].npc, "Yusuf");
+        assert_eq!(alerts[0].zone, "Serbule");
+        assert_eq!(alerts[0].threat, "culling undead rats");
+        assert_eq!(alerts[0].ends, "23 hours 48 minutes");
+        assert_eq!(alerts[1].npc, "Marna");
+        assert_eq!(alerts[1].ends, "5 hours 10 minutes");
+        // No "assistance with": falls back to the first indent block.
+        let fallback = parse_warden_alerts(
+            "<h2>Aid Request from Joe in Kur</h2><indent=20>Something is wrong.</indent>",
+        );
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0].threat, "Something is wrong.");
+        assert_eq!(parse_warden_alerts("no alerts here"), vec![]);
+    }
+
+    #[test]
+    fn warden_reader_serves_newest_row_either_title_shape() {
+        let conn = setup();
+        setup_books(&conn);
+        // Both landing arms: the JSON dispatch row (title as-is) and the
+        // Books-dir export row (title = export stem). Newest wins.
+        conn.execute(
+            "INSERT INTO game_state_books
+                (character_name, server_name, book_type, title, content, captured_at) VALUES
+                ('Aka', 'Dreva', 'JSON', 'Active Warden Alerts', ?1, '2026-01-01T00:00:00+00:00'),
+                ('Aka', 'Dreva', 'ActiveWardenAlerts', 'ActiveWardenAlerts_260907_210009', ?2, '2026-06-01T00:00:00+00:00')",
+            rusqlite::params![
+                "<h2>Aid Request from Old in Zone</h2><indent=20>Old requests assistance with stale.</indent>",
+                warden_body()
+            ],
+        )
+        .unwrap();
+        let report = get_warden_alerts(&conn, "Aka", "Dreva").unwrap().expect("row expected");
+        assert_eq!(report.alerts.len(), 2);
+        assert_eq!(report.alerts[0].npc, "Yusuf");
+        assert_eq!(report.captured_at.as_deref(), Some("2026-06-01T00:00:00+00:00"));
+    }
+
+    #[test]
+    fn warden_reader_empty_and_scoped() {
+        let conn = setup();
+        setup_books(&conn);
+        assert!(get_warden_alerts(&conn, "Aka", "Dreva").unwrap().is_none());
+        conn.execute(
+            "INSERT INTO game_state_books
+                (character_name, server_name, book_type, title, content, captured_at) VALUES
+                ('Aka', 'Dreva', 'JSON', 'Gardening Almanac', 'garden', '2026-06-01T00:00:00+00:00'),
+                ('Other', 'Dreva', 'JSON', 'Active Warden Alerts', ?1, '2026-06-01T00:00:00+00:00')",
+            rusqlite::params![warden_body()],
+        )
+        .unwrap();
+        assert!(
+            get_warden_alerts(&conn, "Aka", "Dreva").unwrap().is_none(),
+            "garden books and other characters' warden books must not serve"
+        );
+    }
+
     #[test]
     fn aggregates_records_and_h2h() {
         let conn = setup();
@@ -1047,6 +1255,8 @@ pub fn export_bindings() -> Result<String, Box<dyn std::error::Error>> {
         .register::<ArenaStats>()
         .register::<ArenaTip>()
         .register::<BloodTarget>()
+        .register::<WardenAlert>()
+        .register::<WardenReport>()
         ;
     Ok(specta_typescript::Typescript::default().export(&types, specta_serde::Format)?)
 }

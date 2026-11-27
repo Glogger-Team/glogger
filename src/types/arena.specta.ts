@@ -88,3 +88,20 @@ export type BloodTarget = {
 	target: string,
 	received_at: string,
 };
+
+/**  One active warden alert, parsed from the "Active Warden Alerts" book. */
+export type WardenAlert = {
+	npc: string,
+	zone: string,
+	threat: string,
+	ends: string,
+};
+
+/**
+ *  The newest warden-alerts book read, with its alerts. `None` when no
+ *  warden book has landed yet — the widget shows an honest empty state.
+ */
+export type WardenReport = {
+	captured_at: string | null,
+	alerts: WardenAlert[],
+};
