@@ -17,11 +17,10 @@
 /// inverted window (`start_ts > end_ts`) returns an empty vec, never an
 /// error — the selector can emit one transiently while typing a custom range.
 ///
-/// Councils are deliberately absent: `currency_estimate` keeps only a running
-/// anchor + delta per character (no per-event timestamped ledger), so no
-/// range query over existing rows can answer "councils in window W" without
-/// a new ledger table (= a migration, out of scope). That ledger is the
-/// backlog follow-up, not this slice.
+/// Councils are read elsewhere: the v103 `council_events` ledger keeps the
+/// per-event timestamped deltas `currency_estimate` never had, and
+/// `get_council_history` answers "councils in window W" off it (see the
+/// Council Wealth tab). These timeboxed queries stay kills/loot/XP only.
 use super::farming_commands::{FarmingItemRecord, FarmingKillRecord, FarmingSkillRecord};
 use super::{DbPool, DbRead};
 use tauri::State;
