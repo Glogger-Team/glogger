@@ -108,14 +108,6 @@
             @click="watchFutureSkills"
           >{{ autoBusy ? 'Working…' : `Watch selected (${selectedFutureSkills.length})` }}</button>
         </div>
-        <div v-if="autoRulesCount > 0" class="mt-2 flex items-center justify-between">
-          <span class="text-xs text-text-muted">{{ autoRulesCount }} auto rule{{ autoRulesCount === 1 ? '' : 's' }}</span>
-          <button
-            class="px-2 py-1 bg-transparent border border-border-light rounded text-text-muted text-xs cursor-pointer hover:bg-red-900/30 hover:border-red-800 hover:text-red-400 transition-all disabled:opacity-50"
-            :disabled="autoBusy"
-            @click="removeAutoRules"
-          >Remove auto rules</button>
-        </div>
         <p v-if="autoStatus" class="m-0 mt-2 text-xs text-green-400">{{ autoStatus }}</p>
         <p v-if="autoError" class="m-0 mt-2 text-xs text-red-400">{{ autoError }}</p>
       </div>
@@ -483,8 +475,6 @@ const allSkillNames = ref<string[]>([])
 const skillFilter = ref('')
 const selectedFutureSkills = ref<string[]>([...autoWatch.prefs.value.futureSkills])
 
-const autoRulesCount = computed(() => autoWatch.autoRules.value.length)
-
 const filteredSkillNames = computed(() => {
   const q = skillFilter.value.trim().toLowerCase()
   if (!q) return allSkillNames.value
@@ -522,12 +512,10 @@ async function watchTrainedSkills() {
       return
     }
     const created = await autoWatch.suggestFor(skills)
-    if (created.length === 0) {
-      autoStatus.value = 'Nothing new — all trained-skill books are known, owned, or already watched.'
-      return
-    }
-    await autoWatch.applyAutoRules(created)
-    autoStatus.value = `Added ${created.length} auto rule${created.length === 1 ? '' : 's'} for trained skills.`
+    // C1 remove step: suggest-only — ephemeral session set lands in C2.
+    autoStatus.value = created.length === 0
+      ? 'Nothing new — all trained-skill books are known, owned, or already watched.'
+      : `Found ${created.length} learnable book${created.length === 1 ? '' : 's'} (session watch lands next).`
   } catch (e) {
     autoError.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -542,27 +530,10 @@ async function watchFutureSkills() {
   autoError.value = ''
   try {
     const created = await autoWatch.suggestFor(selectedFutureSkills.value)
-    if (created.length === 0) {
-      autoStatus.value = 'Nothing new — the selected skills\u2019 books are known, owned, or already watched.'
-      return
-    }
-    await autoWatch.applyAutoRules(created)
-    autoStatus.value = `Added ${created.length} auto rule${created.length === 1 ? '' : 's'} for the selected skills.`
-  } catch (e) {
-    autoError.value = e instanceof Error ? e.message : String(e)
-  } finally {
-    autoBusy.value = false
-  }
-}
-
-async function removeAutoRules() {
-  if (autoBusy.value) return
-  autoBusy.value = true
-  autoStatus.value = ''
-  autoError.value = ''
-  try {
-    await autoWatch.clearAutoRules()
-    autoStatus.value = 'Removed all auto-generated skillbook rules. Manual rules kept.'
+    // C1 remove step: suggest-only — ephemeral session set lands in C2.
+    autoStatus.value = created.length === 0
+      ? 'Nothing new — the selected skills\u2019 books are known, owned, or already watched.'
+      : `Found ${created.length} learnable book${created.length === 1 ? '' : 's'} (session watch lands next).`
   } catch (e) {
     autoError.value = e instanceof Error ? e.message : String(e)
   } finally {
