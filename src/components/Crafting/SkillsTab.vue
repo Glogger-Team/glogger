@@ -207,10 +207,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import { useCraftingStore } from "../../stores/craftingStore";
 import { useGameDataStore } from "../../stores/gameDataStore";
 import { useGameStateStore } from "../../stores/gameStateStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import type { SkillCraftingStats } from "../../types/crafting";
 import type { RecipeInfo } from "../../types/gameData/recipes";
 import EmptyState from "../Shared/EmptyState.vue";
@@ -227,6 +228,7 @@ import { chartPalette, themeText, themeTooltipBg, themeTooltipBorder } from "../
 
 const craftingStore = useCraftingStore();
 const gameData = useGameDataStore();
+const settingsStore = useSettingsStore();
 const gameState = useGameStateStore();
 const marketStore = useMarketStore();
 
@@ -512,15 +514,35 @@ function recipeRowClass(row: Record<string, unknown>): string {
   return (row.completions as number) === 0 ? "opacity-40" : "";
 }
 
-onMounted(() => loadSkills());
+onMounted(() => {
+  void loadSkills();
+});
+
+// Character switch: clear synchronously under the new identity so the previous
+// character's rows never render, then reload. An in-flight load for the old
+// identity drops its result via the post-await check inside loadSkills().
+watch(
+  () => [settingsStore.settings.activeCharacterName, settingsStore.settings.activeServerName],
+  () => {
+    allStats.value = [];
+    skillList.value = [];
+    detail.value = null;
+    skillRecipes.value = [];
+    materialSummary.value = null;
+    selectedSkill.value = null;
+    void loadSkills();
+  },
+);
 
 async function loadSkills() {
+  const characterName = settingsStore.settings.activeCharacterName;
+  const serverName = settingsStore.settings.activeServerName;
   loading.value = true;
   try {
-    allStats.value = await craftingStore.getSkillCraftingStats();
+    const stats = await craftingStore.getSkillCraftingStats();
 
     const entries: SkillListEntry[] = [];
-    for (const stat of allStats.value) {
+    for (const stat of stats) {
       const levelInfo = await craftingStore.getSkillLevel(stat.skill_name);
       entries.push({
         skill_name: stat.skill_name,
@@ -529,6 +551,14 @@ async function loadSkills() {
         total_completions: stat.total_completions,
       });
     }
+    // Rapid character switch: a newer load is in flight (or done). Drop the
+    // stale rows instead of flashing another character's skills into this view.
+    if (
+      settingsStore.settings.activeCharacterName !== characterName ||
+      settingsStore.settings.activeServerName !== serverName
+    )
+      return;
+    allStats.value = stats;
     skillList.value = entries;
 
     if (entries.length > 0 && !selectedSkill.value) {
@@ -537,7 +567,13 @@ async function loadSkills() {
   } catch (e) {
     console.error("[crafting-skills] Failed to load skills:", e);
   } finally {
-    loading.value = false;
+    // A stale load must not clear the spinner owned by the newer load
+    // started for the current identity.
+    if (
+      settingsStore.settings.activeCharacterName === characterName &&
+      settingsStore.settings.activeServerName === serverName
+    )
+      loading.value = false;
   }
 }
 
@@ -549,10 +585,12 @@ function getItemPrice(itemId: number, vendorValue: number | null | undefined): n
 }
 
 async function selectSkill(skillName: string) {
+  const characterName = settingsStore.settings.activeCharacterName;
+  const serverName = settingsStore.settings.activeServerName;
   selectedSkill.value = skillName;
   materialSummary.value = null;
 
-  detail.value = await craftingStore.getSkillLevel(skillName);
+  const levelDetail = await craftingStore.getSkillLevel(skillName);
 
   const recipes = await gameData.getRecipesForSkill(skillName);
   const completionMap = gameState.recipeCompletions;
@@ -563,6 +601,14 @@ async function selectSkill(skillName: string) {
       ...r,
       completions: completionMap[`Recipe_${r.id}`] ?? 0,
     }));
+  // Drop a selection that resolved after a character switch: the watch above
+  // already cleared the view and started the new character's load.
+  if (
+    settingsStore.settings.activeCharacterName !== characterName ||
+    settingsStore.settings.activeServerName !== serverName
+  )
+    return;
+  detail.value = levelDetail;
   skillRecipes.value = enriched;
 
   computeMaterialSummary(enriched);
@@ -572,6 +618,8 @@ async function computeMaterialSummary(recipes: (RecipeInfo & { completions: numb
   const craftedRecipes = recipes.filter((r) => r.completions > 0);
   if (craftedRecipes.length === 0) return;
 
+  const characterName = settingsStore.settings.activeCharacterName;
+  const serverName = settingsStore.settings.activeServerName;
   materialsLoading.value = true;
   try {
     const allItemIds = new Set<number>();
@@ -688,6 +736,12 @@ async function computeMaterialSummary(recipes: (RecipeInfo & { completions: numb
       totalOutputItems += d.quantity;
     }
 
+    // Drop a summary that resolved after a character switch.
+    if (
+      settingsStore.settings.activeCharacterName !== characterName ||
+      settingsStore.settings.activeServerName !== serverName
+    )
+      return;
     materialSummary.value = {
       totalInputCost: Math.round(totalInputCost),
       totalInputItems,
@@ -702,7 +756,11 @@ async function computeMaterialSummary(recipes: (RecipeInfo & { completions: numb
   } catch (e) {
     console.error("[crafting-skills] Failed to compute material summary:", e);
   } finally {
-    materialsLoading.value = false;
+    if (
+      settingsStore.settings.activeCharacterName === characterName &&
+      settingsStore.settings.activeServerName === serverName
+    )
+      materialsLoading.value = false;
   }
 }
 </script>
