@@ -30,6 +30,26 @@ export type AppSettings = {
 	auto_update_game_data?: boolean,
 	/**  Watch rules for chat notifications (watchwords, item watches, sender alerts) */
 	watch_rules?: WatchRule[],
+	/**
+	 *  Master toggle for ephemeral auto-watch skillbook rules (default ON).
+	 *  OFF means zero session generation; persisted manual rules are unaffected.
+	 */
+	auto_skillbook_watch_enabled?: boolean,
+	/**
+	 *  Mode-1 per-skill block-list (skill display names, case-insensitive).
+	 *  Blocked skills are skipped before CDN lookup during session generation.
+	 */
+	auto_skillbook_blocked_skills?: string[],
+	/**
+	 *  Persisted dismissal list for suggested skillbooks (skillbook display
+	 *  names, case-insensitive). Dismissed books are filtered during session
+	 *  generation; the WatchwordsView manager UI un-dismisses. Global across
+	 *  characters by design: a dismissal is an explicit "never suggest this
+	 *  book", and per-character known/owned filtering already handles
+	 *  per-character state — re-surfacing a dismissed book on an alt would
+	 *  defeat the dismissal.
+	 */
+	auto_skillbook_dismissals?: string[],
 	/**  Whether first-time setup has been completed */
 	setup_completed?: boolean,
 	/**  Currently active character name */

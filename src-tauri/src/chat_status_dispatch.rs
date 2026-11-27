@@ -249,6 +249,10 @@ pub struct DispatchCtx<'a> {
     pub msg: &'a ChatMessage,
     pub local_ts: &'a str,
     pub watch_rules: &'a [WatchRule],
+    /// Ephemeral session set (in-memory auto-watch skillbook rules, never
+    /// persisted). Evaluated by the same matcher right after `watch_rules`;
+    /// per-hit backstop below drops auto hits a manual rule also covers.
+    pub auto_watch_rules: &'a [WatchRule],
     /// True on scan/tail paths (rescan-safe skips apply); false on the live
     /// drain, where every line is fresh and provisional rows are wanted.
     pub is_scan: bool,
@@ -351,6 +355,20 @@ pub fn dispatch_chat_message(
     if !ctx.watch_rules.is_empty() {
         for hit in crate::watch_rules::evaluate_rules(ctx.msg, ctx.watch_rules) {
             out.watch_triggered.push(hit);
+        }
+    }
+    // Ephemeral session set: same matcher, evaluated after manual rules.
+    // Backstop dedupe: an auto hit is dropped when a manual rule covers the
+    // same book, so the same book never double-fires even if a manual rule
+    // was added after the last session-set rebuild.
+    if !ctx.auto_watch_rules.is_empty() {
+        for hit in crate::watch_rules::evaluate_rules(ctx.msg, ctx.auto_watch_rules) {
+            let dominated = crate::skillbook_watch::auto_hit_book_name(&hit.rule_name)
+                .map(|book| crate::skillbook_watch::manual_covers_book(ctx.watch_rules, book))
+                .unwrap_or(false);
+            if !dominated {
+                out.watch_triggered.push(hit);
+            }
         }
     }
 
@@ -2020,6 +2038,7 @@ mod tests {
                 msg,
                 local_ts,
                 watch_rules: &[],
+                auto_watch_rules: &[],
                 source_line_id: source_line_id.map(str::to_string),
                 // Live path: old pinned timestamps must still write.
                 is_scan: false,
@@ -2045,6 +2064,7 @@ mod tests {
                 msg,
                 local_ts,
                 watch_rules: &[],
+                auto_watch_rules: &[],
                 source_line_id: None,
                 is_scan: true,
                 is_live: false,
@@ -4557,5 +4577,120 @@ mod tests {
         // Unparseable input falls back to now() — never blocks the write.
         let fallback = utc_naive_to_rfc3339("not-a-timestamp");
         assert!(fallback.ends_with("+00:00"), "unexpected stamp {fallback}");
+    }
+
+    // B finding (redirect re-review): the merge block must dedupe an auto
+    // twin against a covering manual rule without dropping legit auto hits.
+    #[test]
+    fn ephemeral_auto_twin_dedupes_against_manual_cover() {
+        use crate::chat_parser::ItemLink;
+        use crate::settings::{ConditionMatch, WatchCondition, WatchNotifyConfig};
+        use chrono::NaiveDateTime;
+
+        fn notify() -> WatchNotifyConfig {
+            WatchNotifyConfig { sound: false, toast: true, highlight: true }
+        }
+        fn auto_rule(id: u64, book: &str) -> WatchRule {
+            WatchRule {
+                id,
+                name: format!("Skillbook: {}", book),
+                enabled: true,
+                channels: None,
+                match_mode: ConditionMatch::Any,
+                conditions: vec![WatchCondition::ContainsItemLink(book.to_string())],
+                notify: notify(),
+                source: Some("auto_skillbook".to_string()),
+            }
+        }
+        fn manual_link_rule(id: u64, book: &str) -> WatchRule {
+            WatchRule {
+                id,
+                name: "Manual".to_string(),
+                enabled: true,
+                channels: None,
+                match_mode: ConditionMatch::Any,
+                conditions: vec![WatchCondition::ContainsItemLink(book.to_string())],
+                notify: notify(),
+                source: None,
+            }
+        }
+        fn link_msg(books: &[&str]) -> ChatMessage {
+            ChatMessage {
+                timestamp: NaiveDateTime::parse_from_str("2026-03-11 12:00:00", "%Y-%m-%d %H:%M:%S")
+                    .unwrap(),
+                channel: Some("Trade".to_string()),
+                sender: Some("Seller".to_string()),
+                message: books
+                    .iter()
+                    .map(|b| format!("[Item: {}]", b))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                is_system: false,
+                from_player: None,
+                item_links: books
+                    .iter()
+                    .map(|b| ItemLink {
+                        raw_text: format!("[Item: {}]", b),
+                        item_name: b.to_string(),
+                    })
+                    .collect(),
+                json_type: None,
+                json_body: None,
+            }
+        }
+        fn run(
+            pool: &DbPool,
+            gd: &GameDataState,
+            msg: &ChatMessage,
+            manual: &[WatchRule],
+            auto: &[WatchRule],
+        ) -> DispatchOutcome {
+            let mut arena = ArenaTracker::new();
+            let mut dmg = Vec::new();
+            let mut st = state(&mut arena, &mut dmg);
+            let ident = id();
+            dispatch_chat_message(
+                DispatchCtx {
+                    db: pool,
+                    game_data: gd,
+                    identity: Some(&ident),
+                    msg,
+                    local_ts: "2026-03-11 12:00:00",
+                    watch_rules: manual,
+                    auto_watch_rules: auto,
+                    source_line_id: None,
+                    is_scan: false,
+                    is_live: true,
+                },
+                None,
+                &mut st,
+            )
+        }
+
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        // Manual covers the same book: exactly one hit (the manual one).
+        let out = run(
+            &pool,
+            &gd,
+            &link_msg(&["Sword Basics"]),
+            &[manual_link_rule(1, "Sword Basics")],
+            &[auto_rule(2, "Sword Basics")],
+        );
+        assert_eq!(out.watch_triggered.len(), 1);
+        assert_eq!(out.watch_triggered[0].rule_id, 1);
+        // Manual absent: the auto twin still fires (merge path is live).
+        let out = run(&pool, &gd, &link_msg(&["Sword Basics"]), &[], &[auto_rule(2, "Sword Basics")]);
+        assert_eq!(out.watch_triggered.len(), 1);
+        assert_eq!(out.watch_triggered[0].rule_id, 2);
+        // Two uncovered books: both twins fire (no over-suppression).
+        let out = run(
+            &pool,
+            &gd,
+            &link_msg(&["Sword Basics", "Unarmed Basics"]),
+            &[],
+            &[auto_rule(2, "Sword Basics"), auto_rule(3, "Unarmed Basics")],
+        );
+        assert_eq!(out.watch_triggered.len(), 2);
     }
 }

@@ -3991,11 +3991,7 @@ pub async fn get_skillbooks_for_skill(
     state: State<'_, GameDataState>,
 ) -> Result<Vec<SkillbookInfo>, String> {
     let data = state.read().await;
-    let key = data
-        .resolve_skill(&skill_name)
-        .map(|s| s.internal_name.clone())
-        .unwrap_or(skill_name);
-    Ok(data.skillbooks_by_skill.get(&key).cloned().unwrap_or_default())
+    Ok(crate::skillbook_watch::books_for_skill(&data, &skill_name))
 }
 
 /// Get all NPCs that train a given skill.

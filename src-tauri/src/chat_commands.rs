@@ -11,7 +11,7 @@ use crate::parsers::chat_local_to_utc;
 use crate::settings::SettingsManager;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Clone, serde::Serialize, specta::Type)]
 struct ScanProgress {
@@ -576,6 +576,12 @@ fn run_scan_dispatch(
             // would double-count (see flag docs on `DispatchState`).
             count_currency: false,
         };
+        // Ephemeral session set: scans evaluate it too (same merge as live).
+        // `app` is `None` in unit tests, which degrades to an empty set.
+        let auto_watch_snapshot: std::sync::Arc<Vec<crate::settings::WatchRule>> = app
+            .and_then(|a| a.try_state::<crate::skillbook_watch::AutoWatchState>())
+            .map(|s| s.snapshot())
+            .unwrap_or_default();
         let mut outcome = chat_status_dispatch::dispatch_chat_message(
             chat_status_dispatch::DispatchCtx {
                 db: db_pool,
@@ -584,8 +590,9 @@ fn run_scan_dispatch(
                 msg: utc_msg,
                 local_ts: &local_ts,
                 watch_rules,
-                source_line_id,
+                auto_watch_rules: &auto_watch_snapshot,
                 is_scan: true,
+                source_line_id,
                 is_live: false,
             },
             None,

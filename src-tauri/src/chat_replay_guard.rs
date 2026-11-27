@@ -149,6 +149,7 @@ mod tests {
                     msg: &line.msg,
                     local_ts: &line.local_ts,
                     watch_rules: &[],
+                    auto_watch_rules: &[],
                     // Session-scale convergence pins legacy collapse:
                     // distinct ids would turn its same-second resends into
                     // genuine duplicates. `None` keeps both passes stable.

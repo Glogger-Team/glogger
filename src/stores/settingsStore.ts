@@ -16,6 +16,9 @@ export interface AppSettings {
   autoCheckGameData: boolean;
   autoUpdateGameData: boolean;
   watchRules: WatchRule[];
+  autoSkillbookWatchEnabled: boolean;
+  autoSkillbookBlockedSkills: string[];
+  autoSkillbookDismissals: string[];
   setupCompleted: boolean;
   activeCharacterName: string | null;
   activeServerName: string | null;
@@ -60,6 +63,9 @@ interface BackendSettings {
   auto_check_game_data: boolean;
   auto_update_game_data: boolean;
   watch_rules: WatchRule[];
+  auto_skillbook_watch_enabled: boolean;
+  auto_skillbook_blocked_skills: string[];
+  auto_skillbook_dismissals: string[];
   setup_completed: boolean;
   active_character_name: string | null;
   active_server_name: string | null;
@@ -105,6 +111,9 @@ function toBackendSettings(settings: AppSettings): BackendSettings {
     auto_check_game_data: settings.autoCheckGameData,
     auto_update_game_data: settings.autoUpdateGameData,
     watch_rules: settings.watchRules,
+    auto_skillbook_watch_enabled: settings.autoSkillbookWatchEnabled,
+    auto_skillbook_blocked_skills: settings.autoSkillbookBlockedSkills,
+    auto_skillbook_dismissals: settings.autoSkillbookDismissals,
     setup_completed: settings.setupCompleted,
     active_character_name: settings.activeCharacterName,
     active_server_name: settings.activeServerName,
@@ -221,6 +230,9 @@ function fromBackendSettings(settings: BackendSettings): AppSettings {
     autoCheckGameData: settings.auto_check_game_data ?? true,
     autoUpdateGameData: settings.auto_update_game_data ?? true,
     watchRules: settings.watch_rules ?? [],
+    autoSkillbookWatchEnabled: settings.auto_skillbook_watch_enabled ?? true,
+    autoSkillbookBlockedSkills: settings.auto_skillbook_blocked_skills ?? [],
+    autoSkillbookDismissals: settings.auto_skillbook_dismissals ?? [],
     setupCompleted: settings.setup_completed ?? false,
     activeCharacterName: settings.active_character_name ?? null,
     activeServerName: settings.active_server_name ?? null,
@@ -267,6 +279,9 @@ function getDefaultSettings(): AppSettings {
     autoCheckGameData: true,
     autoUpdateGameData: true,
     watchRules: [],
+    autoSkillbookWatchEnabled: true,
+    autoSkillbookBlockedSkills: [],
+    autoSkillbookDismissals: [],
     setupCompleted: false,
     activeCharacterName: null,
     activeServerName: null,
