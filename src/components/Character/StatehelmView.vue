@@ -576,12 +576,18 @@ function giftDesireRank(desire: string): number {
 // item name (the backend's `npc_favor_by_item_name` key); a "keyword:K" row
 // lands on the group of that NPC's winning preference containing K (highest
 // desire rank, then pref — the backend's `best` dedup order). The count is
-// the sum of attributed row stacks, exactly what the planner tables show
-// per row — a stack wanted by two NPCs counts toward both groups, same as
-// the planner's per-row display. Empty until the planner runs (see
-// `plannerLoaded`): unknown groups keep alphabetical position.
+// distinct physical stock: rows for the same (vault, item) pair share one
+// stack_size (SQL GROUP BY), so the pair contributes once per group no matter
+// how many NPCs of that group want it. A stack wanted under two different
+// gifts still counts toward both groups — it is available for either.
+// Empty until the planner runs (see `plannerLoaded`): unknown groups keep
+// alphabetical position.
 const giftStockCounts = computed<Map<string, number>>(() => {
   const out = new Map<string, number>()
+  // Physical stock already attributed: `${groupKey} ${vault_key} ${item}`.
+  // One backend row exists per (vault, item, NPC), so a stack wanted by N
+  // NPCs of the same group counts once, not N times.
+  const seen = new Set<string>()
   if (!plannerLoaded.value) return out
   for (const m of planner.matches.value) {
     const status = searchedStatuses.value.find(s => s.npc.key === m.npc_key)
@@ -604,6 +610,9 @@ const giftStockCounts = computed<Map<string, number>>(() => {
       groupKey = best?.key ?? null
     }
     if (!groupKey) continue
+    const pair = `${groupKey} ${m.vault_key} ${m.item_name.toLowerCase()}`
+    if (seen.has(pair)) continue
+    seen.add(pair)
     out.set(groupKey, (out.get(groupKey) ?? 0) + Math.max(0, m.stack_size))
   }
   return out
