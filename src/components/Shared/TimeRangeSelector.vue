@@ -55,6 +55,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useViewPrefs } from '../../composables/useViewPrefs'
 import { formatAnyTimestamp } from '../../composables/useTimestamp'
+import { easternOffsetMinutes } from '../../composables/useStatehelmTracker'
 
 export interface TimeRange {
   start: string
@@ -74,6 +75,20 @@ const emit = defineEmits<{
 /** Backend UTC contract: space-format naive UTC ("YYYY-MM-DD HH:MM:SS"). */
 function toSpaceUTC(d: Date): string {
   return d.toISOString().slice(0, 19).replace('T', ' ')
+}
+/** Eastern-midnight-as-UTC start of the current game day, machine-tz
+ *  independent. The game day resets at midnight America/New_York (server
+ *  time — gameStateStore server-time anchor; mirrors the arena
+ *  `get_today_tips` Eastern-midnight UTC range and ArenaWidget's
+ *  machine-tz-independent Eastern day). Offset is re-resolved at the
+ *  midnight itself so a DST switch inside today doesn't shift the start. */
+function easternDayStartUtc(now: Date): Date {
+  const offsetNow = easternOffsetMinutes(now)
+  const easternNow = new Date(now.getTime() + offsetNow * 60000)
+  const wallMidnight = Date.UTC(
+    easternNow.getUTCFullYear(), easternNow.getUTCMonth(), easternNow.getUTCDate(), 0, 0, 0, 0)
+  const offsetMidnight = easternOffsetMinutes(new Date(wallMidnight - offsetNow * 60000))
+  return new Date(wallMidnight - offsetMidnight * 60000)
 }
 
 type PresetId = 'tonight' | 'h1' | 'h3' | 'h6' | 'h12' | 'h24' | 'custom' | 'saved'
@@ -97,7 +112,7 @@ const { prefs, update } = useViewPrefs('timeboxed', { savedWindows: [] as SavedW
 const savedWindows = computed(() => (prefs.value.savedWindows ?? []) as SavedWindow[])
 
 const rangeLabel = computed(() => {
-  if (activePreset.value === 'tonight') return 'since local midnight'
+  if (activePreset.value === 'tonight') return 'since Eastern midnight (game day)'
   const opt = presetOptions.find((o) => o.id === activePreset.value)
   if (opt?.hours) return `last ${opt.hours}h`
   const saved = savedWindows.value.find((w) => w.start_ts === range.value.start && w.end_ts === range.value.end)
@@ -114,9 +129,7 @@ function applyPreset(id: PresetId) {
   activePreset.value = id
   const now = new Date()
   if (id === 'tonight') {
-    const midnight = new Date()
-    midnight.setHours(0, 0, 0, 0)
-    setRange(toSpaceUTC(midnight), toSpaceUTC(now))
+    setRange(toSpaceUTC(easternDayStartUtc(now)), toSpaceUTC(now))
     return
   }
   const opt = presetOptions.find((o) => o.id === id)
