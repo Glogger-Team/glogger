@@ -1433,10 +1433,11 @@ pub fn get_pooping_stats_for<C: crate::db::DbRead + ?Sized>(
 /// Player.log era). `normalize_contract_ts` maps the T-family onto the
 /// contract (fraction + offset truncated — the contract is
 /// second-granularity and every RFC3339 writer is chrono-`Utc`, so the
-/// offset is always `+00:00`/`Z`); anything else passes through
-/// byte-identical rather than being dropped or invented — a time-only stamp
-/// has no recoverable date, and inventing one would silently corrupt
-/// ordering. Migration v98 backfills the stored T-family rows; time-only
+/// offset is always `+00:00`/`Z`); anything else falls back to the legacy
+/// seeder string ops (`trim_end_matches('Z')` + `T`→space) rather than being
+/// dropped or invented — a time-only stamp has no recoverable date, and
+/// inventing one would silently corrupt ordering. Migration v98 backfills the
+/// stored T-family rows; time-only
 /// rows stay until a date source exists, and the window predicates that
 /// must match them are family-aware (`kill_tracking_commands.rs`).
 ///
@@ -1452,10 +1453,23 @@ pub(crate) fn parse_contract_ts(s: &str) -> Option<chrono::NaiveDateTime> {
     chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").ok()
 }
 
+/// Forward path for every new writer: chrono re-parse → `"%Y-%m-%d %H:%M:%S"`
+/// UTC space format. Byte-identical to the legacy
+/// `trim_end_matches('Z').replace('T', " ")` string ops on every evidenced
+/// export shape (second-granularity Zulu, bare-`T`, already-space); fractional
+/// seconds truncate and `+00:00` offsets collapse, matching the migration
+/// v101 backfill (`substr(replace(last_confirmed_at, 'T', ' '), 1, 19)`),
+/// verified equivalent on those inputs — exports are second-granularity, so
+/// the truncation never fires on real data. Unparseable input falls back to
+/// the legacy string ops (never a new error or a different anchor than the
+/// inline twins stored); the character-report seeders call this directly.
 pub(crate) fn normalize_contract_ts(s: &str) -> String {
     match parse_contract_ts(s) {
         Some(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
-        None => s.to_string(),
+        // Fallback, never fail: the legacy seeder string ops. A malformed
+        // stamp stores exactly what the inline twins stored — never a new
+        // error, never a different anchor than today.
+        None => s.trim_end_matches('Z').replace('T', " "),
     }
 }
 
@@ -3497,6 +3511,42 @@ mod tests {
         // Unparseable input passes through rather than becoming NULL/empty —
         // writers must never silently destroy a stamp they don't understand.
         assert_eq!(normalize_contract_ts("Fri Apr 24 04:46"), "Fri Apr 24 04:46");
+        assert_eq!(normalize_contract_ts(""), "");
+    }
+    #[test]
+    fn contract_ts_matches_legacy_seeder_op_on_evidenced_shapes() {
+        // The inline twin the character-report seeders used before unification.
+        fn legacy(s: &str) -> String {
+            s.trim_end_matches('Z').replace('T', " ")
+        }
+        // Evidenced export shapes — second-granularity Zulu, bare-T,
+        // already-space: byte-identical to the legacy op.
+        for s in [
+            "2026-10-21T12:00:00Z",
+            "2026-05-02T03:59:25",
+            "2026-04-13 22:01:42",
+        ] {
+            assert_eq!(normalize_contract_ts(s), legacy(s), "shape: {s}");
+        }
+        // Fractional seconds truncate to the second (contract granularity),
+        // matching the v101 backfill `substr(replace(..., 'T', ' '), 1, 19)` —
+        // the legacy op kept the sub-second noise instead. Exports are
+        // second-granularity, so this never fires on real data.
+        assert_eq!(
+            normalize_contract_ts("2026-10-21T12:00:00.123Z"),
+            "2026-10-21 12:00:00"
+        );
+        // `+00:00` offsets collapse to the same contract seconds (the legacy
+        // op kept the offset suffix); every RFC3339 writer is chrono-`Utc`.
+        assert_eq!(
+            normalize_contract_ts("2026-10-21T12:00:00+00:00"),
+            "2026-10-21 12:00:00"
+        );
+        // Fallback, never fail: unparseable input returns the legacy string-op
+        // result — a malformed stamp stores exactly what the twins stored. The
+        // `T` inside proves the legacy op ran (passthrough would keep it).
+        assert_eq!(normalize_contract_ts("not-a-Timestamp"), legacy("not-a-Timestamp"));
+        assert_eq!(normalize_contract_ts("not-a-Timestamp"), "not-a- imestamp");
         assert_eq!(normalize_contract_ts(""), "");
     }
 
