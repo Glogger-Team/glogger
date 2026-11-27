@@ -63,3 +63,16 @@ export type ArenaTip = {
 	tipster: string,
 	body: string,
 };
+
+/**
+ *  Grasuul's daily blood target, read off the stored EntityReport rows —
+ *  no new ingestion. The chat log carries his report window as an
+ *  `EntityReport` with title `Grasuul` and a body shaped
+ *  `<h1>Current Blood Season:</h1>...<h2>X Blood</h2>` (same pattern the
+ *  gorgonzola monitor matches). Day-scoped to the casino's Eastern day,
+ *  like the tips reader.
+ */
+export type BloodTarget = {
+	target: string,
+	received_at: string,
+};
