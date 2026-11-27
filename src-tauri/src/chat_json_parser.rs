@@ -80,6 +80,14 @@ pub enum ChatJsonEvent {
         power_name: String,
         description: String,
     },
+    /// `StartQuest`: quest accept (sole record — since the 2026-11-16 game
+    /// update the giver screen no longer names the quest in Player.log).
+    /// `quest_id` resolves via CDN `quest_<id>` → `Name`, else the daily
+    /// fallback maps, else id-only at read time.
+    QuestAccepted {
+        timestamp: String,
+        quest_id: u32,
+    },
     /// Any `Type` with no frozen schema yet — structured ingest skips it,
     /// the raw chat row stays searchable.
     Unknown { json_type: String },
@@ -121,6 +129,11 @@ struct RecipeUsageJson {
     recipe_name: String,
     recipe_id: u32,
     completions: u32,
+}
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct StartQuestJson {
+    quest_id: u32,
 }
 
 /// Slice of `hay` strictly between the first `start` and the next `end`.
@@ -216,6 +229,16 @@ pub fn parse_json_message(msg: &ChatMessage) -> Option<ChatJsonEvent> {
                 timestamp,
                 recipe_id: v.recipe_id,
                 completions: v.completions,
+            })
+        }
+        "StartQuest" => {
+            let v: StartQuestJson = serde_json::from_str(body).ok()?;
+            if v.quest_id == 0 {
+                return None;
+            }
+            Some(ChatJsonEvent::QuestAccepted {
+                timestamp,
+                quest_id: v.quest_id,
             })
         }
         "Pigeon" => {
@@ -414,6 +437,38 @@ mod tests {
         match parse_json_message(&msgs[0]) {
             Some(ChatJsonEvent::RecipeUsed { completions, .. }) => assert_eq!(completions, 0),
             other => panic!("expected RecipeUsed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn start_quest_parses_to_quest_accepted() {
+        // Verbatim monitor line 26-11-18 10:22:45 (gorgon_monitor.py:622):
+        // single-field PascalCase body, no other keys observed.
+        let msgs = parse_chat_lines("26-11-18 10:22:45\t[JSON:StartQuest] {\"QuestId\":25542}\n");
+        assert_eq!(msgs.len(), 1);
+        match parse_json_message(&msgs[0]) {
+            Some(ChatJsonEvent::QuestAccepted { timestamp, quest_id }) => {
+                assert_eq!(timestamp, "2026-11-18 10:22:45");
+                assert_eq!(quest_id, 25542);
+            }
+            other => panic!("expected QuestAccepted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn start_quest_malformed_yields_none() {
+        // Missing QuestId, zero id, wrong-type id, and empty body are all
+        // malformed (caller counts-and-skips), never Unknown.
+        for body in [
+            "{}",
+            "{\"QuestId\":0}",
+            "{\"QuestId\":\"25542\"}",
+            "{\"QuestID\":25542}",
+        ] {
+            let line = format!("26-11-18 10:22:45\t[JSON:StartQuest] {body}\n");
+            let msgs = parse_chat_lines(&line);
+            assert_eq!(msgs.len(), 1, "body {body}");
+            assert!(parse_json_message(&msgs[0]).is_none(), "body {body}");
         }
     }
 
