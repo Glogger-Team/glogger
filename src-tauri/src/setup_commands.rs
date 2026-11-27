@@ -373,6 +373,7 @@ const SCOPED_TABLES: &[&str] = &[
     "player_messages",
     "player_milking_log",
     "player_pooping_log",
+    "quest_accepts",
     "survey_uses",
     "survey_sessions",
     "tracked_skills",
@@ -1411,6 +1412,11 @@ mod tests {
         )
         .unwrap();
         conn.execute(
+            "INSERT INTO quest_accepts (character_name,server_name,accepted_at,quest_id,quest_name) VALUES (?1,?2,'2026-01-01',25542,'Mope Test')",
+            rusqlite::params![who, SERVER],
+        )
+        .unwrap();
+        conn.execute(
             "INSERT INTO survey_sessions (character_name,server_name,started_at,start_trigger) VALUES (?1,?2,'2026-01-01','manual')",
             rusqlite::params![who, SERVER],
         )
@@ -1527,6 +1533,7 @@ mod tests {
         "player_messages",
         "player_milking_log",
         "player_pooping_log",
+        "quest_accepts",
         "survey_sessions",
         "survey_uses",
         "tracked_skills",
