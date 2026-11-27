@@ -1,6 +1,6 @@
 <template>
   <div class="flex flex-col gap-2">
-    <div class="text-xs font-bold text-text-secondary uppercase tracking-wide mb-1">Show Sections</div>
+    <div class="section-heading mb-1">Show Sections</div>
     <label v-for="opt in sectionOptions" :key="opt.key" class="flex items-center gap-2 cursor-pointer">
       <input
         type="checkbox"
@@ -12,7 +12,7 @@
     </label>
 
     <!-- Currency toggles -->
-    <div class="text-xs font-bold text-text-secondary uppercase tracking-wide mt-2 mb-1">Currencies</div>
+    <div class="section-heading mt-2 mb-1">Currencies</div>
     <label v-for="cur in currencyOptions" :key="cur.key" class="flex items-center gap-2 cursor-pointer">
       <input
         type="checkbox"

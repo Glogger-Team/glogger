@@ -1,7 +1,7 @@
 <template>
   <div class="space-y-4">
     <div class="flex items-center justify-between">
-      <h2 class="text-accent-gold text-lg m-0">
+      <h2 class="display-title">
         Server Overview — {{ serverName }}
       </h2>
       <button class="btn btn-secondary text-xs" @click="aggregateStore.loadAll()">
