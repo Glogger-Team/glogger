@@ -71,6 +71,54 @@
           >Cancel</button>
         </div>
       </div>
+
+      <!-- Auto-watch skillbooks (TODO #17): two modes, both write -->
+      <!-- source:"auto_skillbook" rules via settingsStore -->
+      <div class="p-3 border-t border-border-default">
+        <p class="m-0 mb-1 text-sm font-semibold text-text-secondary">Auto-watch skillbooks</p>
+        <p class="m-0 mb-2 text-xs text-text-muted">Watch chat item links for books you could learn but don't own or know.</p>
+        <button
+          class="w-full px-3 py-1.5 bg-surface-elevated border border-border-light rounded text-text-secondary text-sm cursor-pointer hover:bg-surface-base hover:text-text-primary transition-all disabled:opacity-50"
+          :disabled="autoBusy"
+          @click="watchTrainedSkills"
+        >{{ autoBusy ? 'Working…' : 'Watch books for trained skills' }}</button>
+        <button
+          class="w-full mt-2 px-3 py-1.5 bg-transparent border border-border-light rounded text-text-muted text-sm cursor-pointer hover:bg-surface-base hover:text-text-primary transition-all"
+          @click="toggleFuturePicker"
+        >{{ showFuturePicker ? 'Hide future-skill picker' : 'Pick future skills…' }}</button>
+        <div v-if="showFuturePicker" class="mt-2">
+          <input
+            v-model="skillFilter"
+            placeholder="Filter skills…"
+            class="w-full px-2 py-1 mb-2 bg-surface-base border border-border-light rounded text-text-primary text-sm"
+          />
+          <div class="max-h-40 overflow-y-auto border border-border-default rounded p-1">
+            <label
+              v-for="name in filteredSkillNames"
+              :key="name"
+              class="flex items-center gap-2 px-1.5 py-1 text-sm text-text-secondary cursor-pointer hover:bg-surface-base rounded"
+            >
+              <input type="checkbox" :value="name" v-model="selectedFutureSkills" />
+              <span class="truncate">{{ name }}</span>
+            </label>
+          </div>
+          <button
+            class="w-full mt-2 px-3 py-1.5 bg-surface-elevated border border-border-light rounded text-text-secondary text-sm cursor-pointer hover:bg-surface-base hover:text-text-primary transition-all disabled:opacity-50"
+            :disabled="autoBusy || selectedFutureSkills.length === 0"
+            @click="watchFutureSkills"
+          >{{ autoBusy ? 'Working…' : `Watch selected (${selectedFutureSkills.length})` }}</button>
+        </div>
+        <div v-if="autoRulesCount > 0" class="mt-2 flex items-center justify-between">
+          <span class="text-xs text-text-muted">{{ autoRulesCount }} auto rule{{ autoRulesCount === 1 ? '' : 's' }}</span>
+          <button
+            class="px-2 py-1 bg-transparent border border-border-light rounded text-text-muted text-xs cursor-pointer hover:bg-red-900/30 hover:border-red-800 hover:text-red-400 transition-all disabled:opacity-50"
+            :disabled="autoBusy"
+            @click="removeAutoRules"
+          >Remove auto rules</button>
+        </div>
+        <p v-if="autoStatus" class="m-0 mt-2 text-xs text-green-400">{{ autoStatus }}</p>
+        <p v-if="autoError" class="m-0 mt-2 text-xs text-red-400">{{ autoError }}</p>
+      </div>
     </div>
 
     <!-- Right Content: Messages or Rule Editor -->
@@ -226,6 +274,7 @@ import { pendingWatchwordRuleId } from '../../composables/useViewNavigation'
 import type { WatchRule, WatchCondition, ConditionMatch, ChatMessage } from '../../types/database'
 import ChatMessageList from './ChatMessageList.vue'
 import { useChatRequestGuard } from '../../composables/useChatRequestGuard'
+import { useAutoSkillbookWatch } from '../../composables/useAutoSkillbookWatch'
 
 const settingsStore = useSettingsStore()
 const reqGuard = useChatRequestGuard()
@@ -418,6 +467,103 @@ function deleteRule(id: number) {
   if (selectedRuleId.value === id) {
     selectedRuleId.value = null
     messages.value = []
+  }
+}
+
+// ── Auto-watch skillbooks (TODO #17) ────────────────────────────────────
+// Both modes compose the landed pieces via useAutoSkillbookWatch and write
+// through the existing settings watchRules path; manual rules are untouched.
+
+const autoWatch = useAutoSkillbookWatch()
+const autoBusy = ref(false)
+const autoStatus = ref('')
+const autoError = ref('')
+const showFuturePicker = ref(false)
+const allSkillNames = ref<string[]>([])
+const skillFilter = ref('')
+const selectedFutureSkills = ref<string[]>([...autoWatch.prefs.value.futureSkills])
+
+const autoRulesCount = computed(() => autoWatch.autoRules.value.length)
+
+const filteredSkillNames = computed(() => {
+  const q = skillFilter.value.trim().toLowerCase()
+  if (!q) return allSkillNames.value
+  return allSkillNames.value.filter((n) => n.toLowerCase().includes(q))
+})
+
+watch(selectedFutureSkills, (skills) => {
+  autoWatch.setFutureSkills([...skills])
+})
+
+async function toggleFuturePicker() {
+  showFuturePicker.value = !showFuturePicker.value
+  if (showFuturePicker.value && allSkillNames.value.length === 0) {
+    autoBusy.value = true
+    autoError.value = ''
+    try {
+      allSkillNames.value = await autoWatch.loadAllSkillNames()
+    } catch (e) {
+      autoError.value = String(e)
+    } finally {
+      autoBusy.value = false
+    }
+  }
+}
+
+async function watchTrainedSkills() {
+  autoBusy.value = true
+  autoStatus.value = ''
+  autoError.value = ''
+  try {
+    const skills = await autoWatch.loadTrainedSkills()
+    if (skills.length === 0) {
+      autoStatus.value = 'No trained skills found for the active character.'
+      return
+    }
+    const created = await autoWatch.suggestFor(skills)
+    if (created.length === 0) {
+      autoStatus.value = 'Nothing new — all trained-skill books are known, owned, or already watched.'
+      return
+    }
+    await autoWatch.applyAutoRules(created)
+    autoStatus.value = `Added ${created.length} auto rule${created.length === 1 ? '' : 's'} for trained skills.`
+  } catch (e) {
+    autoError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    autoBusy.value = false
+  }
+}
+
+async function watchFutureSkills() {
+  autoBusy.value = true
+  autoStatus.value = ''
+  autoError.value = ''
+  try {
+    const created = await autoWatch.suggestFor(selectedFutureSkills.value)
+    if (created.length === 0) {
+      autoStatus.value = 'Nothing new — the selected skills\u2019 books are known, owned, or already watched.'
+      return
+    }
+    await autoWatch.applyAutoRules(created)
+    autoStatus.value = `Added ${created.length} auto rule${created.length === 1 ? '' : 's'} for the selected skills.`
+  } catch (e) {
+    autoError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    autoBusy.value = false
+  }
+}
+
+async function removeAutoRules() {
+  autoBusy.value = true
+  autoStatus.value = ''
+  autoError.value = ''
+  try {
+    await autoWatch.clearAutoRules()
+    autoStatus.value = 'Removed all auto-generated skillbook rules. Manual rules kept.'
+  } catch (e) {
+    autoError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    autoBusy.value = false
   }
 }
 
