@@ -484,6 +484,15 @@ pub fn get_warden_alerts_cmd(
     get_warden_alerts(&conn, &character_name, &server_name)
 }
 
+/// Title gate for "Active Warden Alerts" books across both landing shapes:
+/// the `[JSON:Book]` row (title as-is) and the Books-dir export row
+/// (title = export stem). Shared by the live-refresh emits so the gate
+/// can't drift from the reader.
+pub fn is_warden_alerts_title(title: &str) -> bool {
+    let lower = title.to_lowercase();
+    lower.contains("warden") && lower.contains("alert")
+}
+
 /// Persist a single resolved match. Idempotent via `idx_arena_dedup`.
 pub fn record_arena_match(
     conn: &rusqlite::Connection,
@@ -888,13 +897,13 @@ mod tests {
         conn.execute_batch(
             "INSERT INTO player_messages
                 (character_name, server_name, timestamp, message_type, direction, other_player, body) VALUES
-                ('Aka', 'Dreva', datetime('now', '-1 day'), 'entity_report', 'in', 'Grasuul', '<h1>Current Blood Season:</h1><h2>Elf Blood</h2>'),
+                ('Aka', 'Dreva', datetime('now', '-2 days'), 'entity_report', 'in', 'Grasuul', '<h1>Current Blood Season:</h1><h2>Elf Blood</h2>'),
                 ('Other', 'Dreva', datetime('now'), 'entity_report', 'in', 'Grasuul', '<h1>Current Blood Season:</h1><h2>Elf Blood</h2>');",
         )
         .unwrap();
         assert!(
             get_blood_target(&conn, "Aka", "Dreva").unwrap().is_none(),
-            "yesterday's row and another character's row must not serve"
+            "a two-day-old row and another character's row must not serve"
         );
     }
 
@@ -1208,13 +1217,13 @@ mod tests {
             );",
         )
         .unwrap();
-        // One tip today (kept), one yesterday (stale), one pigeon today
+        // One tip today (kept), one two days ago (stale), one pigeon today
         // (wrong type), one tip today for another character (wrong identity).
         conn.execute_batch(
             "INSERT INTO player_messages
                 (character_name, server_name, timestamp, message_type, direction, other_player, body) VALUES
                 ('Aka', 'Dreva', datetime('now'), 'entity_report', 'in', 'Eveline Rastin', 'Ushug has the upper hand.'),
-                ('Aka', 'Dreva', datetime('now', '-1 day'), 'entity_report', 'in', 'Eveline Rastin', 'stale tip'),
+                ('Aka', 'Dreva', datetime('now', '-2 days'), 'entity_report', 'in', 'Eveline Rastin', 'stale tip'),
                 ('Aka', 'Dreva', datetime('now'), 'pigeon', 'in', 'Friend', 'hello'),
                 ('Other', 'Dreva', datetime('now'), 'entity_report', 'in', 'Eveline Rastin', 'not mine');",
         )

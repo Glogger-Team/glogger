@@ -1365,10 +1365,12 @@ export const useGameStateStore = defineStore('gameState', () => {
           break
         }
         case 'player_messages':
-          // Tips and the blood target ride the same entity_report rows;
-          // the warden book emits no domain (its read settles on loadAll).
+          // Tips and the blood target ride the same entity_report rows.
           await fetchArenaTips()
           await fetchBloodTarget()
+          break
+        case 'warden_report':
+          await fetchWardenReport()
           break
         case 'currency_estimate':
           await fetchCurrencyEstimate()

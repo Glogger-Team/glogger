@@ -1278,6 +1278,9 @@ fn dispatch_json_event(
                 // imports never derive content tables from a row that
                 // never landed.
                 let mut current = false;
+                // True only when this dispatch freshly wrote the row (never
+                // on the identical re-read path) — drives the warden domain.
+                let mut wrote = false;
                 if let Ok(conn) = ctx.db.get_write() {
                     // Same upsert as `persist_book_content` (no emit here —
                     // the caller owns emits). No `books` domain: nothing in
@@ -1320,7 +1323,7 @@ fn dispatch_json_event(
                             return;
                         }
                     }
-                    if !same
+                    wrote = !same
                         && conn
                             .execute(
                                 "INSERT INTO game_state_books (character_name, server_name, book_type, title, content, captured_at)
@@ -1332,8 +1335,8 @@ fn dispatch_json_event(
                                 rusqlite::params![id.character, id.server, book_type, title, body, observed],
                             )
                             .map(|n| n > 0)
-                            .unwrap_or(false)
-                    {
+                            .unwrap_or(false);
+                    if wrote {
                         current = true;
                     }
                 }
@@ -1343,6 +1346,13 @@ fn dispatch_json_event(
                 // no `normalize_book_content` step.
                 if current {
                     out.json_book = Some((book_type.to_string(), title.clone(), body.clone(), timestamp.clone()));
+                }
+                // Fresh warden write (not a rescan — `wrote` stays false on
+                // the identical re-read path): the Status widget's Warden
+                // section refreshes off this domain. Placed here rather than
+                // the coordinator `json_book` block so rescans stay silent.
+                if wrote && crate::db::arena_commands::is_warden_alerts_title(title) {
+                    out.domain("warden_report");
                 }
             }
         }

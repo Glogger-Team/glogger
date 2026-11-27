@@ -744,6 +744,13 @@ pub(crate) fn process_book_file(
             // book's observation time; untimestamped ones fill empty only.
             let captured_at = book_stem_capture_at(&title);
             persist_book_content(db, app, character, server, &book_type, &title, &content, captured_at)?;
+            // Warden live-refresh: the Status section listens on this
+            // domain (same gate as the reader + JSON dispatch arm). Scan
+            // files are mtime-gated upstream, so this fires at most once
+            // per changed export.
+            if crate::db::arena_commands::is_warden_alerts_title(&title) {
+                app.emit("game-state-updated", vec!["warden_report"]).ok();
+            }
             Ok("book upserted".to_string())
         }
     }
