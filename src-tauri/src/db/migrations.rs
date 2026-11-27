@@ -547,6 +547,11 @@ pub fn run_migrations(conn: &Connection, tz_offset_seconds: Option<i32>) -> Resu
         super::record_migration(conn, 103)?;
     }
 
+    if current_version < 104 {
+        migration_v104_quest_accept_ledger(conn)?;
+        super::record_migration(conn, 104)?;
+    }
+
     tx.commit()?;
     Ok(())
 }
@@ -2108,6 +2113,43 @@ fn migration_v103_council_event_ledger(conn: &Connection) -> Result<()> {
             COALESCE(source_line_id, ''));
         CREATE INDEX IF NOT EXISTS idx_council_events_char_ts
             ON council_events(character_name, server_name, event_ts);",
+    )?;
+    Ok(())
+}
+
+/// Migration V104: per-accept quest ledger (`quest_accepts`).
+///
+/// Since the 2026-11-16 game update, accepting a quest writes one chat-log
+/// line naming it (`[JSON:StartQuest] {"QuestId":N}`) — the giver screen no
+/// longer names the quest in Player.log. This table is that ledger: one row
+/// per observed accept.
+///
+/// Key shape follows the v97/v103 precedent: no PRIMARY KEY, a plain UNIQUE
+/// index whose `COALESCE(source_line_id, '')` keeps legacy NULL rows
+/// collapsing among themselves. `accepted_at` is space-format naive UTC
+/// (the v98 contract). `quest_name` is best-effort at write time (CDN
+/// `quest_<id>` → `Name`, else the daily fallback maps in
+/// `quest_names.rs`); NULL means unresolved-at-write and stays id-only,
+/// honestly, never dropped. No backfill: pre-existing accepts are
+/// unrecoverable line identities, same accepted limit as v96/v97/v103.
+/// Lifecycle: `SCOPED_TABLES` (delete + rename coverage), never
+/// `PURGE_TABLES` (time-series are not age-purged, same as `favor_events` /
+/// `council_events` / `chat_xp_awards`).
+fn migration_v104_quest_accept_ledger(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS quest_accepts (
+            character_name TEXT NOT NULL,
+            server_name TEXT NOT NULL,
+            accepted_at TEXT NOT NULL,
+            quest_id INTEGER NOT NULL,
+            quest_name TEXT,
+            source_line_id TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_quest_accepts_line ON quest_accepts(
+            character_name, server_name, accepted_at, quest_id,
+            COALESCE(source_line_id, ''));
+        CREATE INDEX IF NOT EXISTS idx_quest_accepts_char_ts
+            ON quest_accepts(character_name, server_name, accepted_at);",
     )?;
     Ok(())
 }
@@ -5365,13 +5407,13 @@ mod tests {
         run_migrations(&conn, None).unwrap();
         assert_eq!(
             crate::db::get_schema_version(&conn).unwrap(),
-            103,
+            104,
             "fresh DB migrates to the head version"
         );
         // run had left the version table unadvanced (or partially advanced),
         // the non-idempotent ALTER/CREATE blocks would re-run and error here.
         run_migrations(&conn, None).unwrap();
-        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 103);
+        assert_eq!(crate::db::get_schema_version(&conn).unwrap(), 104);
     }
 
     #[test]
@@ -5494,13 +5536,13 @@ mod tests {
     #[test]
     fn migration_v82_purges_placeholder_rows() {
         // Proves the v82 chain wiring (full run_migrations, head must be
-        // 103) plus the purge itself on the three aggregate source tables.
+        // 104) plus the purge itself on the three aggregate source tables.
         let c = Connection::open_in_memory().unwrap();
         run_migrations(&c, None).unwrap();
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 103, "migration chain head");
+        assert_eq!(head, 104, "migration chain head");
         c.execute_batch(
             "INSERT INTO game_state_currencies (character_name, server_name, currency_name, amount, last_confirmed_at) VALUES
                 ('???', 'Dreva', 'Councils', 100, '2026-10-22'),
@@ -5546,8 +5588,8 @@ mod tests {
 
     #[test]
     fn migration_v83_chain_head_and_divergent_clear() {
-        // Chain wiring: full run_migrations head must be 103 (full chain
-        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id + v97 favor source-line id + v98 timestamp space contract + v99 kill-loot link-table drop + v100 player-prev loot_added drop + v101 XP award ledger + v102 garden history drop + v103 council event ledger). Repair: a
+        // Chain wiring: full run_migrations head must be 104 (full chain
+        // through the v85/v86 drops + v87 hire reclassification + v88 hire-owner stamp + v89 stall dupe collapse + v90 same-batch collapse + v91 VIP JSON logging + v92 farming-session character + v93 chat NULL-sender dedup + v94 kill-loot receipt identity + v95 dead-schema drop + v96 ledger source-line id + v97 favor source-line id + v98 timestamp space contract + v99 kill-loot link-table drop + v100 player-prev loot_added drop + v101 XP award ledger + v102 garden history drop + v103 council event ledger + v104 quest accept ledger). Repair: a
         // divergent group (file 2 vs stored 1) gets its details NULLed
         // while an aligned group keeps its values.
         let c = Connection::open_in_memory().unwrap();
@@ -5555,7 +5597,7 @@ mod tests {
         let head: i64 = c
             .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(head, 103, "migration chain head");
+        assert_eq!(head, 104, "migration chain head");
         c.execute_batch(
             "INSERT INTO character_item_snapshots (character_name, server_name, snapshot_timestamp, raw_json)
             VALUES ('T','Dreva','2026-01-01 00:00:00','{\"Items\":[

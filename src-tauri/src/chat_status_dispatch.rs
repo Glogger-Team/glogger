@@ -1592,6 +1592,63 @@ fn dispatch_json_event(
                 }
             }
         }
+        E::QuestAccepted { timestamp, quest_id } => {
+            if let Some(id) = ctx.identity
+                && let Ok(conn) = ctx.db.get_write()
+            {
+                // Name best-effort at write time: CDN `quest_<id>` → `Name`,
+                // else the daily fallback maps; NULL stays id-only.
+                let quest_name: Option<String> = ctx
+                    .game_data
+                    .try_read()
+                    .ok()
+                    .and_then(|gd| crate::quest_names::quest_display_name(&gd, *quest_id));
+                // Ledger-guard shape (favor/council precedent): a stamped
+                // line replayed collapses onto its own row; a `None` line id
+                // keeps legacy match-any collapse; a genuinely distinct
+                // same-second accept carries a different line id and inserts.
+                // Single statement, single table: atomic without a txn (the
+                // BEGIN IMMEDIATE rule covers multi-table arms only).
+                let source_line_id = ctx.source_line_id.as_deref();
+                let seen: bool = match conn
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM quest_accepts
+                         WHERE character_name = ?1 AND server_name = ?2
+                           AND accepted_at = ?3 AND quest_id = ?4
+                           AND (?5 IS NULL OR source_line_id IS NULL OR source_line_id IS ?5))",
+                        rusqlite::params![id.character, id.server, timestamp, *quest_id as i64, source_line_id],
+                        |r| r.get(0),
+                    ) {
+                    Ok(seen) => seen,
+                    Err(e) => {
+                        // Guard unreadable (e.g. v104 not applied): fail
+                        // closed and loud, not a silent skip — a later
+                        // replay retries the whole accept.
+                        eprintln!("[chat_status_dispatch] quest accept replay-guard failed, skipping: {e}");
+                        return;
+                    }
+                };
+                if seen {
+                    return;
+                }
+                match conn
+                    .execute(
+                        "INSERT OR IGNORE INTO quest_accepts
+                            (character_name, server_name, accepted_at, quest_id, quest_name, source_line_id)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        rusqlite::params![id.character, id.server, timestamp, *quest_id as i64, quest_name, source_line_id],
+                    ) {
+                    Ok(n) => {
+                        if n > 0 {
+                            out.domain("quests");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[chat_status_dispatch] quest accept insert failed, domain withheld: {e}");
+                    }
+                }
+            }
+        }
         E::Unknown { json_type } => {
             out.unknown_json.push(json_type.clone());
         }
@@ -2546,6 +2603,153 @@ mod tests {
     fn json_msg(json_type: &str, body: &str, ts: &str) -> ChatMessage {
         let line = format!("{ts}\t[JSON:{json_type}] {body}");
         crate::chat_parser::parse_chat_line(&line).unwrap()
+    }
+
+    fn seed_quest(gd: &GameDataState, key: &str, name: &str) {
+        gd.blocking_write().quests.insert(
+            key.to_string(),
+            crate::game_data::QuestInfo {
+                internal_name: name.to_string(),
+                raw: serde_json::json!({ "Name": name }),
+            },
+        );
+    }
+
+    /// One `quest_accepts` row as read back by tests.
+    #[allow(clippy::type_complexity)]
+    fn quest_rows(conn: &rusqlite::Connection) -> Vec<(String, String, String, i64, Option<String>, Option<String>)> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT character_name, server_name, accepted_at, quest_id, quest_name, source_line_id
+                 FROM quest_accepts ORDER BY accepted_at, quest_id",
+            )
+            .unwrap();
+        stmt.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    }
+
+    #[test]
+    fn start_quest_accept_persists_with_identity_and_cdn_name() {
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        seed_quest(&gd, "quest_25521", "Aurest Mission: Labyrinth Chests");
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-18 10:22:45";
+        let m = json_msg("StartQuest", r#"{"QuestId":25521}"#, ts);
+        let mut st = state(&mut arena, &mut dmg);
+        let out = dispatch_with_line(&pool, &gd, Some(&id()), &m, ts, &mut st, Some("chat.log:42"));
+        assert!(out.domains.contains(&"quests".to_string()));
+        let conn = pool.get_write().unwrap();
+        let rows = quest_rows(&conn);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, "Alice");
+        assert_eq!(rows[0].1, "Dreva");
+        assert_eq!(rows[0].2, "2026-11-18 10:22:45");
+        assert_eq!(rows[0].3, 25521);
+        assert_eq!(rows[0].4.as_deref(), Some("Aurest Mission: Labyrinth Chests"));
+        assert_eq!(rows[0].5.as_deref(), Some("chat.log:42"));
+    }
+
+    #[test]
+    fn start_quest_dailies_resolve_by_name_without_cdn() {
+        // Empty GameData (offline/stale CDN): the Agrashab + Queen's dailies
+        // resolve through the monitor fallback maps; Queen's 25541-44 are
+        // absent from the checked-in CDN snapshot, so this is the live path.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-18 10:22:45";
+        for (qid, name) in [
+            (25521u32, "Aurest Mission: Labyrinth Chests"),
+            (25104u32, "Agrashab's Bounty: Phoenices"),
+            (25542u32, "Queen's Request: Mope's Mantis Infestation"),
+        ] {
+            let m = json_msg("StartQuest", &format!("{{\"QuestId\":{qid}}}"), ts);
+            let mut st = state(&mut arena, &mut dmg);
+            let out = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
+            assert!(out.domains.contains(&"quests".to_string()), "quest {qid}");
+            let conn = pool.get_write().unwrap();
+            let stored: Option<String> = conn
+                .query_row(
+                    "SELECT quest_name FROM quest_accepts WHERE quest_id = ?1",
+                    rusqlite::params![qid as i64],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(stored.as_deref(), Some(name), "quest {qid}");
+        }
+    }
+
+    #[test]
+    fn start_quest_unknown_id_stores_id_only() {
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-18 10:22:45";
+        let m = json_msg("StartQuest", r#"{"QuestId":999999}"#, ts);
+        let mut st = state(&mut arena, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
+        assert!(out.domains.contains(&"quests".to_string()));
+        let conn = pool.get_write().unwrap();
+        let rows = quest_rows(&conn);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].3, 999999);
+        assert_eq!(rows[0].4, None);
+    }
+
+    #[test]
+    fn start_quest_malformed_stays_malformed_never_unknown() {
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-18 10:22:45";
+        let m = json_msg("StartQuest", r#"{"Nope":1}"#, ts);
+        let mut st = state(&mut arena, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
+        assert_eq!(out.malformed_json, vec!["StartQuest".to_string()]);
+        assert!(out.unknown_json.is_empty());
+        assert!(!out.domains.contains(&"quests".to_string()));
+    }
+
+    #[test]
+    fn start_quest_replay_converges_on_line_identity() {
+        // Dedupe key: (character, server, accepted_at, quest_id, line id) —
+        // same favor/council ledger discipline: a stamped replay collapses,
+        // an unstamped rescan collapses, a distinct line inserts.
+        let (_guard, pool) = test_pool();
+        let gd = game_data();
+        let mut arena = ArenaTracker::new();
+        let mut dmg = Vec::new();
+        let ts = "26-11-18 10:22:45";
+        let m = json_msg("StartQuest", r#"{"QuestId":25542}"#, ts);
+        let mut st = state(&mut arena, &mut dmg);
+        let out = dispatch_with_line(&pool, &gd, Some(&id()), &m, ts, &mut st, Some("chat.log:42"));
+        assert!(out.domains.contains(&"quests".to_string()));
+        // Same line re-scanned: silent no-op.
+        let mut st = state(&mut arena, &mut dmg);
+        let out = dispatch_with_line(&pool, &gd, Some(&id()), &m, ts, &mut st, Some("chat.log:42"));
+        assert!(!out.domains.contains(&"quests".to_string()));
+        // Legacy unstamped rescan collapses too.
+        let mut st = state(&mut arena, &mut dmg);
+        let out = dispatch(&pool, &gd, Some(&id()), &m, ts, &mut st);
+        assert!(!out.domains.contains(&"quests".to_string()));
+        let conn = pool.get_write().unwrap();
+        assert_eq!(quest_rows(&conn).len(), 1);
+        drop(conn);
+        // Genuinely distinct same-second line: its own row.
+        let mut st = state(&mut arena, &mut dmg);
+        let out = dispatch_with_line(&pool, &gd, Some(&id()), &m, ts, &mut st, Some("chat.log:97"));
+        assert!(out.domains.contains(&"quests".to_string()));
+        let conn = pool.get_write().unwrap();
+        assert_eq!(quest_rows(&conn).len(), 2);
     }
 
     #[test]

@@ -20,6 +20,7 @@ mod game_state;
 mod gst_manager;
 mod log_watchers;
 mod parsers;
+mod quest_names;
 mod replay;
 mod report_stats;
 mod settings;
