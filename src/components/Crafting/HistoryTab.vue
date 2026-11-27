@@ -198,7 +198,14 @@ async function refresh() {
   } catch (e) {
     console.error("[crafting] Failed to load history:", e);
   } finally {
-    loading.value = false;
+    // A stale load must not clear the spinner owned by the newer refresh
+    // started for the current identity (avoids flashing the empty state
+    // mid-load on rapid switches).
+    if (
+      settingsStore.settings.activeCharacterName === characterName &&
+      settingsStore.settings.activeServerName === serverName
+    )
+      loading.value = false;
   }
 }
 </script>
