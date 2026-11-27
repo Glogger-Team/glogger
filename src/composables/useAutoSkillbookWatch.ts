@@ -1,4 +1,4 @@
-import { computed } from "vue";
+import { computed, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useSettingsStore } from "../stores/settingsStore";
 import { useGameDataStore } from "../stores/gameDataStore";
@@ -108,17 +108,128 @@ export function useAutoSkillbookWatch() {
       throw new Error("Select a character and server first.");
     }
     if (skills.length === 0) return [];
+    const s = settingsStore.settings;
     const [knownAbilities, ownedNames] = await Promise.all([
       loadKnownAbilities(),
       loadOwnedNames(),
     ]);
-    const existingNames = settingsStore.settings.watchRules.flatMap((r) => r.conditions.map((c) => c.value));
+    // Dedupe against ALL persisted (manual) rules: same book never double-fires.
+    const existingNames = s.watchRules.flatMap((r) => r.conditions.map((c) => c.value));
     return invoke<WatchRule[]>("suggest_auto_skillbook_rules", {
       skills,
+      blockedSkills: s.autoSkillbookBlockedSkills,
       knownAbilities,
       ownedNames,
+      dismissedNames: s.autoSkillbookDismissals,
       existingNames,
+      enabled: s.autoSkillbookWatchEnabled,
       nextId: Date.now(),
+    });
+  }
+
+  // ── Ephemeral session set ─────────────────────────────────────────────
+  // Held backend-side in AutoWatchState (never persisted). Rebuilt at
+  // session load and on character switch via initAutoWatch(), plus on any
+  // control/input change below (debounced).
+
+  const ephemeralRules = ref<WatchRule[]>([]);
+  const rebuilding = ref(false);
+  let rebuildTimer: ReturnType<typeof setTimeout> | undefined = undefined;
+  let watchersInstalled = false;
+
+  async function refreshEphemeral(): Promise<void> {
+    try {
+      ephemeralRules.value = await invoke<WatchRule[]>("get_ephemeral_auto_rules");
+    } catch (e) {
+      console.error("[auto-watch] Failed to read session set:", e);
+    }
+  }
+
+  async function setSessionRules(rules: WatchRule[]): Promise<void> {
+    await invoke("set_ephemeral_auto_rules", { rules });
+    ephemeralRules.value = [...rules];
+  }
+
+  async function rebuildAutoWatch(): Promise<void> {
+    // Re-entrancy guard (B P2 carries over to the generation path).
+    if (rebuilding.value) return;
+    rebuilding.value = true;
+    try {
+      const s = settingsStore.settings;
+      if (!s.autoSkillbookWatchEnabled || !requireIdentity()) {
+        // Toggle OFF (or no character): zero generation, manual unaffected.
+        await setSessionRules([]);
+        return;
+      }
+      const trained = await loadTrainedSkills();
+      const selected: string[] = [...prefs.value.futureSkills];
+      const rules = await suggestFor([...trained, ...selected]);
+      await setSessionRules(rules);
+    } catch (e) {
+      console.error("[auto-watch] Rebuild failed:", e);
+    } finally {
+      rebuilding.value = false;
+    }
+  }
+
+  function scheduleRebuild(): void {
+    clearTimeout(rebuildTimer);
+    rebuildTimer = setTimeout(() => {
+      void rebuildAutoWatch();
+    }, 750);
+  }
+
+  /** Install once (called from startup after game state is ready): initial
+   * rebuild plus watchers for character/server, toggle, block-list,
+   * dismissals, future-skill picks, and manual-rule edits (dedupe). */
+  function initAutoWatch(): void {
+    if (watchersInstalled) return;
+    watchersInstalled = true;
+    void rebuildAutoWatch();
+    watch(
+      () => [
+        settingsStore.settings.activeCharacterName,
+        settingsStore.settings.activeServerName,
+        settingsStore.settings.autoSkillbookWatchEnabled,
+        settingsStore.settings.autoSkillbookBlockedSkills,
+        settingsStore.settings.autoSkillbookDismissals,
+        settingsStore.settings.watchRules,
+        prefs.value.futureSkills,
+      ],
+      () => scheduleRebuild(),
+      { deep: true },
+    );
+  }
+
+  // ── Persisted controls (the only persisted pieces besides manual rules)
+
+  const autoWatchEnabled = computed(() => settingsStore.settings.autoSkillbookWatchEnabled);
+
+  async function setAutoWatchEnabled(on: boolean): Promise<void> {
+    await settingsStore.updateSettings({ autoSkillbookWatchEnabled: on });
+  }
+
+  const blockedSkills = computed(() => settingsStore.settings.autoSkillbookBlockedSkills);
+
+  async function setBlockedSkills(skills: string[]): Promise<void> {
+    await settingsStore.updateSettings({ autoSkillbookBlockedSkills: skills });
+  }
+
+  const dismissals = computed(() => settingsStore.settings.autoSkillbookDismissals);
+
+  async function dismissBook(name: string): Promise<void> {
+    const needle = name.toLowerCase();
+    const cur = settingsStore.settings.autoSkillbookDismissals;
+    if (cur.some((n) => n.toLowerCase() === needle)) return;
+    await settingsStore.updateSettings({ autoSkillbookDismissals: [...cur, name] });
+  }
+
+  async function undismissBook(name: string): Promise<void> {
+    const needle = name.toLowerCase();
+    await settingsStore.updateSettings({
+      autoSkillbookDismissals: settingsStore.settings.autoSkillbookDismissals.filter(
+        (n) => n.toLowerCase() !== needle,
+      ),
     });
   }
 
@@ -129,10 +240,20 @@ export function useAutoSkillbookWatch() {
   return {
     prefs,
     loadTrainedSkills,
-    loadKnownAbilities,
-    loadOwnedNames,
     loadAllSkillNames,
     suggestFor,
     setFutureSkills,
+    ephemeralRules,
+    rebuilding,
+    refreshEphemeral,
+    rebuildAutoWatch,
+    initAutoWatch,
+    autoWatchEnabled,
+    setAutoWatchEnabled,
+    blockedSkills,
+    setBlockedSkills,
+    dismissals,
+    dismissBook,
+    undismissBook,
   };
 }

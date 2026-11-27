@@ -63,6 +63,22 @@ pub struct AppSettings {
     #[serde(default)]
     pub watch_rules: Vec<WatchRule>,
 
+    /// Master toggle for ephemeral auto-watch skillbook rules (default ON).
+    /// OFF means zero session generation; persisted manual rules are unaffected.
+    #[serde(default = "default_true")]
+    pub auto_skillbook_watch_enabled: bool,
+
+    /// Mode-1 per-skill block-list (skill display names, case-insensitive).
+    /// Blocked skills are skipped before CDN lookup during session generation.
+    #[serde(default)]
+    pub auto_skillbook_blocked_skills: Vec<String>,
+
+    /// Persisted dismissal list for suggested skillbooks (skillbook display
+    /// names, case-insensitive). Dismissed books are filtered during session
+    /// generation; the WatchwordsView manager UI un-dismisses.
+    #[serde(default)]
+    pub auto_skillbook_dismissals: Vec<String>,
+
     /// Whether first-time setup has been completed
     #[serde(default)]
     pub setup_completed: bool,
@@ -367,6 +383,9 @@ impl Default for AppSettings {
             auto_check_game_data: true,
             auto_update_game_data: true,
             watch_rules: Vec::new(),
+            auto_skillbook_watch_enabled: true,
+            auto_skillbook_blocked_skills: Vec::new(),
+            auto_skillbook_dismissals: Vec::new(),
             setup_completed: false,
             active_character_name: None,
             active_server_name: None,

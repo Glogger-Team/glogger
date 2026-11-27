@@ -1373,6 +1373,14 @@ impl<R: Runtime> DataIngestCoordinator<R> {
                         // hook, and attribution runs here per staged gain
                         // after the dispatch returns (same timestamps the
                         // dispatch just wrote).
+                        // Ephemeral session-set snapshot: one Arc clone per
+                        // message (same cost class as the settings snapshot
+                        // below). Absent state (e.g. tests) degrades to empty.
+                        let auto_watch_snapshot: std::sync::Arc<Vec<crate::settings::WatchRule>> =
+                            self.app_handle
+                                .try_state::<crate::skillbook_watch::AutoWatchState>()
+                                .map(|s| s.snapshot())
+                                .unwrap_or_default();
                         chat_status_dispatch::dispatch_chat_message(
                             chat_status_dispatch::DispatchCtx {
                                 db: &self.db_pool,
@@ -1381,6 +1389,7 @@ impl<R: Runtime> DataIngestCoordinator<R> {
                                 msg: &msg,
                                 local_ts: &local_ts,
                                 watch_rules: &self.settings.get().watch_rules,
+                                auto_watch_rules: &auto_watch_snapshot,
                                 // Per-occurrence `file:offset` identity from
                                 // above: genuine same-second duplicates
                                 // insert, replays collapse.

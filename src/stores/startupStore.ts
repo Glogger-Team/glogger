@@ -16,6 +16,7 @@ import { useCombatStore } from "./combatStore";
 import { useFarmingStore } from "./farmingStore";
 import { useResuscitateStore } from "./resuscitateStore";
 import { useWatchwordAlertStore } from "./watchwordAlertStore";
+import { useAutoSkillbookWatch } from "../composables/useAutoSkillbookWatch";
 import type { WatchRuleTriggered } from "../types/database";
 
 export type StartupPhase =
@@ -394,6 +395,12 @@ export const useStartupStore = defineStore("startup", () => {
     // ── All critical tasks complete — app is ready ──────────────────────
     // Enable live character-login handling now that startup is finished.
     gameState.startupComplete = true;
+
+    // Build the ephemeral auto-watch session set now that game state (skills,
+    // inventory) is loaded; initAutoWatch also arms rebuild-on-change
+    // triggers (character switch, controls, manual-rule edits). Never blocks
+    // readiness — failures log inside the composable.
+    useAutoSkillbookWatch().initAutoWatch();
 
 
     log("App is interactive");

@@ -249,6 +249,10 @@ pub struct DispatchCtx<'a> {
     pub msg: &'a ChatMessage,
     pub local_ts: &'a str,
     pub watch_rules: &'a [WatchRule],
+    /// Ephemeral session set (in-memory auto-watch skillbook rules, never
+    /// persisted). Evaluated by the same matcher right after `watch_rules`;
+    /// per-hit backstop below drops auto hits a manual rule also covers.
+    pub auto_watch_rules: &'a [WatchRule],
     /// True on scan/tail paths (rescan-safe skips apply); false on the live
     /// drain, where every line is fresh and provisional rows are wanted.
     pub is_scan: bool,
@@ -351,6 +355,20 @@ pub fn dispatch_chat_message(
     if !ctx.watch_rules.is_empty() {
         for hit in crate::watch_rules::evaluate_rules(ctx.msg, ctx.watch_rules) {
             out.watch_triggered.push(hit);
+        }
+    }
+    // Ephemeral session set: same matcher, evaluated after manual rules.
+    // Backstop dedupe: an auto hit is dropped when a manual rule covers the
+    // same book, so the same book never double-fires even if a manual rule
+    // was added after the last session-set rebuild.
+    if !ctx.auto_watch_rules.is_empty() {
+        for hit in crate::watch_rules::evaluate_rules(ctx.msg, ctx.auto_watch_rules) {
+            let dominated = crate::skillbook_watch::auto_hit_book_name(&hit.rule_name)
+                .map(|book| crate::skillbook_watch::manual_covers_book(ctx.watch_rules, book))
+                .unwrap_or(false);
+            if !dominated {
+                out.watch_triggered.push(hit);
+            }
         }
     }
 
@@ -2020,6 +2038,7 @@ mod tests {
                 msg,
                 local_ts,
                 watch_rules: &[],
+                auto_watch_rules: &[],
                 source_line_id: source_line_id.map(str::to_string),
                 // Live path: old pinned timestamps must still write.
                 is_scan: false,
@@ -2045,6 +2064,7 @@ mod tests {
                 msg,
                 local_ts,
                 watch_rules: &[],
+                auto_watch_rules: &[],
                 source_line_id: None,
                 is_scan: true,
                 is_live: false,

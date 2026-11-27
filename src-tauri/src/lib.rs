@@ -241,7 +241,7 @@ use setup_commands::{
     import_reports_for_server, rename_character, save_user_character, scan_reports_for_characters,
     set_active_character, validate_game_data_path,
 };
-use skillbook_watch::suggest_auto_skillbook_rules;
+use skillbook_watch::{get_ephemeral_auto_rules, set_ephemeral_auto_rules, suggest_auto_skillbook_rules};
 use trip_router::{plan_trip, plan_work_order_trip};
 use unified_search::unified_search;
 
@@ -413,6 +413,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(game_data_state.clone())
+        .manage(skillbook_watch::AutoWatchState::default())
         .setup(move |app| {
             let app_handle = app.handle().clone();
             let state = game_data_state.clone();
@@ -831,6 +832,8 @@ pub fn run() {
             get_quests_for_skill,
             get_skillbooks_for_skill,
             suggest_auto_skillbook_rules,
+            set_ephemeral_auto_rules,
+            get_ephemeral_auto_rules,
             get_quests_by_moon_phase,
             get_current_moon_phase,
             get_recipes_for_keyword,
