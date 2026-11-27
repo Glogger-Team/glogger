@@ -75,7 +75,11 @@ pub struct AppSettings {
 
     /// Persisted dismissal list for suggested skillbooks (skillbook display
     /// names, case-insensitive). Dismissed books are filtered during session
-    /// generation; the WatchwordsView manager UI un-dismisses.
+    /// generation; the WatchwordsView manager UI un-dismisses. Global across
+    /// characters by design: a dismissal is an explicit "never suggest this
+    /// book", and per-character known/owned filtering already handles
+    /// per-character state — re-surfacing a dismissed book on an alt would
+    /// defeat the dismissal.
     #[serde(default)]
     pub auto_skillbook_dismissals: Vec<String>,
 

@@ -26,6 +26,7 @@ const ephemeralRules = ref<WatchRule[]>([]);
 const rebuilding = ref(false);
 let rebuildTimer: ReturnType<typeof setTimeout> | undefined = undefined;
 let watchersInstalled = false;
+let needsRebuild = false;
 
 /**
  * Auto-watch skillbooks (TODO #17) — composition over the landed pieces.
@@ -151,8 +152,13 @@ export function useAutoSkillbookWatch() {
   }
 
   async function rebuildAutoWatch(): Promise<void> {
-    // Re-entrancy guard (B P2 carries over to the generation path).
-    if (rebuilding.value) return;
+    if (rebuilding.value) {
+      // A control/identity edit landed mid-rebuild: re-run once after this
+      // pass so the edit is never silently dropped (a dropped toggle-OFF
+      // would leave the matcher active while the UI says off).
+      needsRebuild = true;
+      return;
+    }
     rebuilding.value = true;
     try {
       const s = settingsStore.settings;
@@ -169,6 +175,10 @@ export function useAutoSkillbookWatch() {
       console.error("[auto-watch] Rebuild failed:", e);
     } finally {
       rebuilding.value = false;
+      if (needsRebuild) {
+        needsRebuild = false;
+        await rebuildAutoWatch();
+      }
     }
   }
 

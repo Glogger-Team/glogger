@@ -141,7 +141,7 @@
           </div>
         </div>
         <div v-if="dismissals.length > 0" class="mt-2">
-          <p class="m-0 mb-1 text-xs text-text-muted">Dismissed ({{ dismissals.length }}) — never suggested again:</p>
+          <p class="m-0 mb-1 text-xs text-text-muted">Dismissed ({{ dismissals.length }}) — hidden on all characters:</p>
           <div class="max-h-24 overflow-y-auto border border-border-default rounded p-1">
             <div
               v-for="name in dismissals"
