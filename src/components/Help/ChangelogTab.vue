@@ -5,7 +5,7 @@
       v-if="updateStore.updateAvailable"
       class="bg-accent-blue/10 border border-accent-blue/30 rounded-lg p-4 flex items-center justify-between gap-4">
       <div>
-        <div class="text-sm font-semibold text-text-primary">
+        <div class="dialog-title">
           Glogger v{{ updateStore.latestVersion }} is available
         </div>
         <div class="text-xs text-text-secondary mt-0.5">

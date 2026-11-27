@@ -40,7 +40,7 @@
               @click="toggleCollapse(category.name)"
             >
               <span class="text-xs transition-transform" :class="collapsed.has(category.name) ? '' : 'rotate-90'">&#x25B6;</span>
-              <span class="text-xs font-semibold text-text-secondary uppercase tracking-wider flex-1">{{ category.name }}</span>
+              <span class="panel-label flex-1">{{ category.name }}</span>
               <span class="text-xs text-text-muted">{{ category.results.length }}</span>
             </button>
 

@@ -153,7 +153,7 @@
     <div class="h-full overflow-y-auto">
       <!-- Experimental banner -->
       <div class="bg-accent-warning/10 border-b border-accent-warning/20 px-4 py-1.5 text-xs text-accent-warning flex items-center gap-2">
-        <span class="font-bold">Experimental</span>
+        <span class="font-bold text-status-warning">Experimental</span>
         <span class="text-accent-warning/70">This feature is prone to bugs, and the layout/interface is likely to change significantly between versions.</span>
       </div>
 
