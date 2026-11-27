@@ -152,6 +152,11 @@
         </div>
       </div>
     </template>
+    <!-- Time-boxed analytics over recorded rows (kills, loot, XP) -->
+    <div class="flex flex-col gap-1 border-t border-border-default pt-3">
+      <h3 class="section-heading">Time-boxed</h3>
+      <TimeboxedPanel />
+    </div>
   </div>
 </template>
 
@@ -167,6 +172,7 @@ import EmptyState from '../Shared/EmptyState.vue'
 import EnemyInline from '../Shared/Enemy/EnemyInline.vue'
 import AbilityInline from '../Shared/Ability/AbilityInline.vue'
 import SkillInline from '../Shared/Skill/SkillInline.vue'
+import TimeboxedPanel from '../Shared/TimeboxedPanel.vue'
 
 const killColumns: ColumnDef[] = [
   { key: 'name', label: 'Enemy' },

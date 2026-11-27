@@ -70,7 +70,7 @@ async function ensureSkillMeta() {
 /** UTC offset of America/New_York at `instant`, in minutes (`-240` EDT,
  *  `-300` EST), read from the platform's own tz database via `Intl` so the
  *  DST rules are never re-implemented here. */
-function easternOffsetMinutes(instant: Date): number {
+export function easternOffsetMinutes(instant: Date): number {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/New_York',
     year: 'numeric', month: '2-digit', day: '2-digit',
