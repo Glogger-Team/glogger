@@ -26,6 +26,7 @@ mod settings;
 mod setup_commands;
 mod shop_log_parser;
 mod single_instance;
+mod skillbook_watch;
 mod stall_aggregations;
 mod stall_year_resolver;
 mod survey;
@@ -240,6 +241,7 @@ use setup_commands::{
     import_reports_for_server, rename_character, save_user_character, scan_reports_for_characters,
     set_active_character, validate_game_data_path,
 };
+use skillbook_watch::suggest_auto_skillbook_rules;
 use trip_router::{plan_trip, plan_work_order_trip};
 use unified_search::unified_search;
 
@@ -828,6 +830,7 @@ pub fn run() {
             get_quests_for_npc,
             get_quests_for_skill,
             get_skillbooks_for_skill,
+            suggest_auto_skillbook_rules,
             get_quests_by_moon_phase,
             get_current_moon_phase,
             get_recipes_for_keyword,
