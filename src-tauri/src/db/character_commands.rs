@@ -1,4 +1,5 @@
 use super::DbPool;
+use super::game_state_commands::normalize_contract_ts;
 use crate::cdn_commands::GameDataState;
 use crate::game_data::GameData;
 use serde::{Deserialize, Serialize};
@@ -845,7 +846,7 @@ fn seed_game_state_from_snapshot(
     // stamp (cross-format comparator semantics — see the cross-format
     // note on `apply_chat_xp_award`); only the anchor normalizes, so the
     // award-vs-anchor compare stays same-format.
-    let anchor_at = ts.trim_end_matches('Z').replace('T', " ");
+    let anchor_at = normalize_contract_ts(ts);
     let mut skill_stmt = conn.prepare(
         "INSERT INTO game_state_skills (character_name, server_name, skill_id, skill_name, level, base_level, bonus_levels, xp, tnl, max_level, last_confirmed_at, xp_snapshot_at, source)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10, ?11, 'snapshot')
@@ -1007,7 +1008,7 @@ fn seed_game_state_from_snapshot(
     // the `"%Y-%m-%d %H:%M:%S"` chat stamps — a raw `T` sorts after same-day
     // space stamps and would drop intraday post-export deltas.
     if let Some(gold) = report.currencies.get("GOLD") {
-        let anchor_at = ts.trim_end_matches('Z').replace('T', " ");
+        let anchor_at = normalize_contract_ts(ts);
         conn.execute(
             "INSERT INTO currency_estimate
                 (character_name, server_name, currency_name, anchor_amount, anchor_at, delta_since, updated_at)
