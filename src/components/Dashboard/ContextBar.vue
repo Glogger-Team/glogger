@@ -92,6 +92,29 @@
 
     <!-- Divider -->
     <div
+      v-if="(showTimesOrMoon || prefs.showWeather) && showWorldToday"
+      class="border-t border-border-default" />
+
+    <!-- Daily world: blood target + warden alerts -->
+    <div v-if="showWorldToday" class="flex flex-col gap-0.5">
+      <div v-if="prefs.showBloodTarget" class="flex items-center gap-2">
+        <span class="text-text-muted text-xs uppercase tracking-wide w-14">Blood</span>
+        <span v-if="bloodTarget" class="text-text-primary text-xs">{{ bloodTarget.target }}</span>
+        <span v-else-if="!dailyWorldLoaded" class="text-text-dim italic text-xs">Loading…</span>
+        <span v-else class="text-text-dim italic text-xs">No report yet — speak with Grasuul</span>
+      </div>
+      <div v-if="prefs.showWardenAlerts" class="flex items-start gap-2">
+        <span class="text-text-muted text-xs uppercase tracking-wide w-14">Warden</span>
+        <div v-if="wardenAlerts.length > 0" class="flex flex-col gap-0.5">
+          <div v-for="a in wardenAlerts" :key="a.npc" class="text-text-primary text-xs">{{ a.npc }} in {{ a.zone }}<span v-if="a.threat"> — {{ a.threat }}</span><span v-if="a.ends" class="text-text-dim"> ({{ a.ends }})</span></div>
+        </div>
+        <span v-else-if="!dailyWorldLoaded" class="text-text-dim italic text-xs">Loading…</span>
+        <span v-else class="text-text-dim italic text-xs">No alerts — open Active Warden Alerts in-game</span>
+      </div>
+    </div>
+
+    <!-- Divider -->
+    <div
       v-if="prefs.showWeather && displayedCurrencies.length > 0"
       class="border-t border-border-default" />
 
@@ -110,7 +133,7 @@
 
     <!-- Empty state -->
     <div
-      v-if="!showIdentityRow && !showTimesOrMoon && !prefs.showWeather && displayedCurrencies.length === 0"
+      v-if="!showIdentityRow && !showTimesOrMoon && !prefs.showWeather && !showWorldToday && displayedCurrencies.length === 0"
       class="text-text-dim text-xs italic">
       All sections hidden — use the gear icon to configure.
     </div>
@@ -238,6 +261,17 @@ const weather = computed(() => {
   const w = store.world.weather
   if (!w || !w.is_active) return null
   return w.weather_name
+})
+
+// --- Daily world (blood target + warden alerts) ---
+const showWorldToday = computed(() => prefs.value.showBloodTarget || prefs.value.showWardenAlerts)
+const bloodTarget = computed(() => store.bloodTarget)
+const dailyWorldLoaded = computed(() => store.dailyWorldLoaded)
+const wardenAlerts = computed(() => store.wardenReport?.alerts ?? [])
+
+onMounted(() => {
+  // Backstop: loadAll already fires this, but the bar can mount first.
+  store.fetchDailyWorld()
 })
 
 // --- Currencies ---
