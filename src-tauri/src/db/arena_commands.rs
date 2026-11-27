@@ -87,11 +87,118 @@ pub struct ArenaStats {
 /// One arena tip for the current day, via the chat `EntityReport` twin
 /// (observed tipster: Eveline Rastin). Tips land in `player_messages`
 /// (message_type `entity_report`); the widget shows only today's.
+/// Additive parsed edge (`edge_kind`/`favored`/`opponent`/`edge_pct`):
+/// `None` when the body doesn't parse — the widget falls back to its
+/// client-side parse, so an unrecognized tip is never hidden. Existing
+/// shape untouched otherwise.
 #[derive(Debug, Serialize, Clone, specta::Type)]
 pub struct ArenaTip {
     pub received_at: String,
     pub tipster: String,
     pub body: String,
+    /// `"edge"` (matchup) or `"solo"` (single fighter), if parsed.
+    pub edge_kind: Option<String>,
+    /// Canonical fighter the edge favors, if parsed.
+    pub favored: Option<String>,
+    /// The other fighter (edge tips only), if parsed.
+    pub opponent: Option<String>,
+    /// Signed edge percent, if parsed.
+    pub edge_pct: Option<i32>,
+}
+
+/// Canonical arena fighter for a raw tip name. Mirrors the gorgonzola
+/// monitor's `_FIGHTERS` alias map, canonicalized to the dashboard
+/// vocabulary (`SEED_ROSTER` in `arena_parser`: Vizlark, not Viz).
+fn canonical_tip_fighter(raw: &str) -> Option<&'static str> {
+    match raw.to_lowercase().as_str() {
+        "otis" | "otiz" => Some("Otis"),
+        "gloz" | "goz" => Some("Gloz"),
+        "dura" => Some("Dura"),
+        "ushug" | "ush" => Some("Ushug"),
+        "viz" | "vizlark" | "vozlark" => Some("Vizlark"),
+        "leo" => Some("Leo"),
+        "corrrak" | "corrak" | "crrrak" | "corr" | "cor" => Some("Corrrak"),
+        "na'a" | "naa" | "naaa" => Some("Na'a"),
+        "lamp" => Some("Lamp"),
+        _ => None,
+    }
+}
+
+/// A parsed casino tip edge: which shape, who is favored, and by how much.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedTipEdge {
+    pub kind: &'static str,
+    pub favored: String,
+    pub opponent: Option<String>,
+    pub edge_pct: i32,
+}
+
+static TIP_EDGE_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?is)\bIf\s+([A-Za-z']+)\s+and\s+([A-Za-z']+)\s+fight today\b.*?\bthat\s+([A-Za-z']+)\s+will have the upper hand\b.*?\(([+-]?\d+)%\)",
+    )
+    .expect("tip edge pattern is static")
+});
+
+static TIP_SOLO_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?is)\b([A-Za-z']+)\b.*?\(([+-]?\d+)%\)")
+        .expect("tip solo pattern is static")
+});
+
+/// Strip chat markup (`<i>…</i>`, `<indent=20>`) to a fixpoint so tag
+/// residue can't glue itself to a fighter name.
+fn strip_tip_tags(body: &str) -> String {
+    static TAG_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"<[^>]*>").expect("tag pattern is static"));
+    let mut out = body.to_string();
+    loop {
+        let next = TAG_RE.replace_all(&out, "").into_owned();
+        if next == out {
+            return out;
+        }
+        out = next;
+    }
+}
+
+/// Parse a casino tip body into fighter+edge records. Edge shape first
+/// (`If A and B fight today … that C will have the upper hand. (+N%)`),
+/// then solo (`NAME … (±N%)`) — mirroring the monitor's `_parse_hot_tip_key`
+/// ordering. An edge-shaped body that doesn't fully parse (`upper hand`
+/// present, regex missed) returns `None` rather than misfiring as solo.
+/// Unknown fighter names return `None` rather than misattributing.
+pub fn parse_tip_edge(body: &str) -> Option<ParsedTipEdge> {
+    let text = strip_tip_tags(body);
+    if let Some(caps) = TIP_EDGE_RE.captures(&text) {
+        let a = canonical_tip_fighter(caps.get(1)?.as_str())?;
+        let b = canonical_tip_fighter(caps.get(2)?.as_str())?;
+        let winner = canonical_tip_fighter(caps.get(3)?.as_str())?;
+        if winner != a && winner != b {
+            return None;
+        }
+        let loser = if winner == a { b } else { a };
+        if loser == winner {
+            return None;
+        }
+        let edge_pct: i32 = caps.get(4)?.as_str().parse().ok()?;
+        return Some(ParsedTipEdge {
+            kind: "edge",
+            favored: winner.to_string(),
+            opponent: Some(loser.to_string()),
+            edge_pct,
+        });
+    }
+    if text.to_lowercase().contains("upper hand") {
+        return None;
+    }
+    let caps = TIP_SOLO_RE.captures(&text)?;
+    let favored = canonical_tip_fighter(caps.get(1)?.as_str())?;
+    let edge_pct: i32 = caps.get(2)?.as_str().parse().ok()?;
+    Some(ParsedTipEdge {
+        kind: "solo",
+        favored: favored.to_string(),
+        opponent: None,
+        edge_pct,
+    })
 }
 
 /// Eastern-midnight UTC range for the current Eastern day (precedent:
@@ -150,10 +257,16 @@ fn eastern_today_range() -> Result<(String, String), String> {
         .query_map(
             rusqlite::params![character_name, server_name, start_s, end_s],
             |row| {
+                let body: String = row.get(2)?;
+                let edge = parse_tip_edge(&body);
                 Ok(ArenaTip {
                     received_at: row.get(0)?,
                     tipster: row.get(1)?,
-                    body: row.get(2)?,
+                    body,
+                    edge_kind: edge.as_ref().map(|e| e.kind.to_string()),
+                    favored: edge.as_ref().map(|e| e.favored.clone()),
+                    opponent: edge.as_ref().and_then(|e| e.opponent.clone()),
+                    edge_pct: edge.as_ref().map(|e| e.edge_pct),
                 })
             },
         )
@@ -694,6 +807,90 @@ mod tests {
         assert!(tipsters.contains(&"Eveline Rastin"));
         assert!(tipsters.contains(&"Mandibles"));
         assert!(!tipsters.contains(&"Grasuul"));
+    }
+
+    #[test]
+    fn tip_edge_parses_edge_shape() {
+        // Verbatim body from test_data/vip_json/chat-entityreport.log.
+        let edge = parse_tip_edge(
+            "Here's a hot tip:\n\n<i>If Ushug and Leo fight today, I'm pretty sure that Ushug will have the upper hand. (+10%)</i>",
+        )
+        .expect("live exemplar must parse");
+        assert_eq!(edge.kind, "edge");
+        assert_eq!(edge.favored, "Ushug");
+        assert_eq!(edge.opponent.as_deref(), Some("Leo"));
+        assert_eq!(edge.edge_pct, 10);
+    }
+
+    #[test]
+    fn tip_edge_winner_may_be_second_named() {
+        let edge = parse_tip_edge(
+            "If Dura and Corrrak fight today, that Corrrak will have the upper hand. (+10%)",
+        )
+        .expect("edge must parse");
+        assert_eq!(edge.favored, "Corrrak");
+        assert_eq!(edge.opponent.as_deref(), Some("Dura"));
+    }
+
+    #[test]
+    fn tip_edge_shaped_but_unparsed_never_solo_misfires() {
+        // "upper hand" present but no full matchup: None, not a solo tip.
+        assert_eq!(
+            parse_tip_edge("Ushug will have the upper hand today, trust me!"),
+            None
+        );
+        assert_eq!(parse_tip_edge("No numbers here, just vibes."), None);
+        assert_eq!(
+            parse_tip_edge("If Zog and Blarg fight today, Zog wins. (+10%)"),
+            None,
+            "unknown fighters must not misattribute"
+        );
+    }
+
+    #[test]
+    fn tip_edge_parses_solo_shapes_signed() {
+        let plus = parse_tip_edge("Gloz was training. She's feeling great! (+5%)")
+            .expect("solo plus must parse");
+        assert_eq!(plus.kind, "solo");
+        assert_eq!(plus.favored, "Gloz");
+        assert_eq!(plus.opponent, None);
+        assert_eq!(plus.edge_pct, 5);
+        // The widget's client parse only covers (+N%); the backend covers (-N%) too.
+        let minus = parse_tip_edge("Leo is in terrible form today. (-5%)")
+            .expect("solo minus must parse");
+        assert_eq!(minus.favored, "Leo");
+        assert_eq!(minus.edge_pct, -5);
+    }
+
+    #[test]
+    fn tip_edge_canonicalizes_aliases_to_dashboard_names() {
+        // Monitor aliases (Otiz, Viz) resolve to the dashboard vocabulary
+        // (SEED_ROSTER: Otis, Vizlark).
+        let edge = parse_tip_edge("If Otiz and Viz fight today, that Viz will have the upper hand. (+10%)")
+            .expect("aliased edge must parse");
+        assert_eq!(edge.favored, "Vizlark");
+        assert_eq!(edge.opponent.as_deref(), Some("Otis"));
+    }
+
+    #[test]
+    fn today_tips_carry_parsed_edge_fields() {
+        let conn = setup();
+        setup_messages(&conn);
+        conn.execute(
+            "INSERT INTO player_messages
+                (character_name, server_name, timestamp, message_type, direction, other_player, body) VALUES
+                ('Aka', 'Dreva', datetime('now'), 'entity_report', 'in', 'Eveline Rastin', ?1)",
+            rusqlite::params![
+                "If Ushug and Leo fight today, I'm pretty sure that Ushug will have the upper hand. (+10%)"
+            ],
+        )
+        .unwrap();
+        let tips = get_today_tips(&conn, "Aka", "Dreva").unwrap();
+        assert_eq!(tips.len(), 1);
+        assert_eq!(tips[0].edge_kind.as_deref(), Some("edge"));
+        assert_eq!(tips[0].favored.as_deref(), Some("Ushug"));
+        assert_eq!(tips[0].opponent.as_deref(), Some("Leo"));
+        assert_eq!(tips[0].edge_pct, Some(10));
     }
 
     #[test]

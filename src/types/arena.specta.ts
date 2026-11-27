@@ -57,11 +57,23 @@ export type ArenaStats = {
  *  One arena tip for the current day, via the chat `EntityReport` twin
  *  (observed tipster: Eveline Rastin). Tips land in `player_messages`
  *  (message_type `entity_report`); the widget shows only today's.
+ *  Additive parsed edge (`edge_kind`/`favored`/`opponent`/`edge_pct`):
+ *  `None` when the body doesn't parse — the widget falls back to its
+ *  client-side parse, so an unrecognized tip is never hidden. Existing
+ *  shape untouched otherwise.
  */
 export type ArenaTip = {
 	received_at: string,
 	tipster: string,
 	body: string,
+	/**  `"edge"` (matchup) or `"solo"` (single fighter), if parsed. */
+	edge_kind: string | null,
+	/**  Canonical fighter the edge favors, if parsed. */
+	favored: string | null,
+	/**  The other fighter (edge tips only), if parsed. */
+	opponent: string | null,
+	/**  Signed edge percent, if parsed. */
+	edge_pct: number | null,
 };
 
 /**
