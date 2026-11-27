@@ -160,6 +160,7 @@ consumer: timeboxed views ("councils in window W", handoff #401).
 | books history | Book-diff view requested | Read-time `raw_json` diff, no table |
 | teleportation history | Bind-change audit requested + bind-change events | Bind-move log |
 | moon history | Game decouples phase from the real moon (not observed; likely never) | Override-event log, not nightly snapshots |
+| **council_events ledger** | **TRIGGERED 2026-11-27: council wealth history view** | Schema + writer above, then wealth view on timeboxed machinery |
 
 ## Non-goals
 
