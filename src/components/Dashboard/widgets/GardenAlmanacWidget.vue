@@ -8,6 +8,13 @@
     </div>
 
     <template v-else>
+      <!-- Case C book-stale banner: rows exist but no live current event and
+           no future upcoming remain. The single guidance surface — both
+           per-section re-read lines below stay suppressed while this shows. -->
+      <div v-if="isBookStale" class="text-xs text-text-secondary italic rounded bg-surface-elevated px-2 py-1.5 border border-accent-gold/30">
+        Almanac data is out of date — re-read the book in game.
+      </div>
+
       <!-- Live seasons: stale-current rows (ended, never re-read) are filtered
            out of the current display above — the empty state names the re-read. -->
       <template v-if="currentEvents.length > 0">
@@ -31,7 +38,7 @@
           </div>
         </div>
       </template>
-      <div v-else class="text-xs text-text-dim italic">
+      <div v-else-if="!isBookStale" class="text-xs text-text-dim italic">
         Yesterday's bonus expired — re-read the Gardening Almanac in-game to capture the current season.
       </div>
 
@@ -47,6 +54,12 @@
           </div>
           <span v-if="entry.startsIn" class="text-xs font-mono text-text-dim whitespace-nowrap shrink-0">
             {{ formatRemaining(entry.startsIn) }}
+          </span>
+          <!-- Overdue upcoming (startsIn == 0 with an event_start): per-row note
+               instead of a frozen zero countdown. Suppressed under the Case C
+               banner so the book nags exactly once. -->
+          <span v-else-if="entry.event_start != null && !isBookStale" class="text-xs italic text-text-dim whitespace-nowrap shrink-0">
+            Should have started — re-read the book to confirm.
           </span>
         </div>
       </div>
@@ -114,6 +127,23 @@ const upcomingEvents = computed<EntryWithTiming[]>(() =>
         : undefined
       return { ...e, startsIn }
     })
+)
+
+// Stale-book signal: rows exist but nothing live remains — no live current
+// event (currentEvents already keeps only event_end == null || remaining > 0)
+// and no future upcoming (startsIn == null is dateless, not overdue).
+// Case C shows the one shared banner while this holds; per-section and
+// per-row re-read lines stay suppressed. Per-widget (not shared): three
+// lines over widget-local computeds — a helper would thread the same
+// inputs through and save nothing.
+const hasLiveCurrent = computed(() => currentEvents.value.length > 0)
+
+const hasFutureUpcoming = computed(() =>
+  upcomingEvents.value.some(e => e.startsIn == null || e.startsIn > 0),
+)
+
+const isBookStale = computed(
+  () => entries.value.length > 0 && !hasLiveCurrent.value && !hasFutureUpcoming.value,
 )
 
 function formatRemaining(seconds: number): string {
