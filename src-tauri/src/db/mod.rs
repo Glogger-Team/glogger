@@ -35,6 +35,7 @@ pub mod stall_tracker_commands;
 pub mod hoplology_commands;
 #[allow(dead_code)]
 pub mod survey_commands;
+pub mod timeboxed_commands;
 pub mod timer_commands;
 pub mod unknown_source_commands;
 pub mod word_of_power_catalog;

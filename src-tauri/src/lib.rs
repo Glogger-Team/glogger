@@ -222,6 +222,7 @@ use db::player_commands::{
 };
 use db::survey_commands::get_all_survey_types;
 use db::resuscitate_commands::get_character_resuscitations;
+use db::timeboxed_commands::{get_timeboxed_kills, get_timeboxed_loot, get_timeboxed_xp};
 use db::timer_commands::{delete_user_timer, get_user_timers, save_user_timer};
 use debug_capture::replay_capture_file;
 use external_fetch::{fetch_github_releases, fetch_pg_news};
@@ -944,6 +945,10 @@ pub fn run() {
             get_farming_sessions,
             update_farming_session,
             delete_farming_session,
+            // Time-boxed analytics (read-only range aggregates)
+            get_timeboxed_kills,
+            get_timeboxed_loot,
+            get_timeboxed_xp,
             // Kill tracking / drop-rate database
             get_boss_kill_times,
             get_enemy_kill_stats,
