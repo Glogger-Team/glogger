@@ -8,24 +8,31 @@
     </div>
 
     <template v-else>
-      <!-- Current event -->
-      <div v-for="entry in currentEvents" :key="'c-' + entry.crop_name + entry.zone_name"
-        class="rounded bg-surface-elevated px-2 py-1.5 border border-accent-gold/30">
-        <div class="flex items-center gap-1 text-xs text-accent-gold font-semibold mb-1">
-          <span>Active Bonus</span>
+      <!-- Live seasons: stale-current rows (ended, never re-read) are filtered
+           out of the current display above — the empty state names the re-read. -->
+      <template v-if="currentEvents.length > 0">
+        <!-- Current event -->
+        <div v-for="entry in currentEvents" :key="'c-' + entry.crop_name + entry.zone_name"
+          class="rounded bg-surface-elevated px-2 py-1.5 border border-accent-gold/30">
+          <div class="flex items-center gap-1 text-xs text-accent-gold font-semibold mb-1">
+            <span>Active Bonus</span>
+          </div>
+          <div class="flex items-center gap-1 flex-wrap">
+            <ItemInline :reference="entry.crop_name" />
+            <span class="text-text-muted">in</span>
+            <AreaInline :reference="entry.zone_name" />
+          </div>
+          <div class="text-xs text-text-muted mt-0.5">
+            Extra yield at harvest
+          </div>
+          <div v-if="entry.remaining" class="text-xs font-mono mt-0.5"
+            :class="entry.remaining <= 3600 ? 'text-red-400' : 'text-text-secondary'">
+            {{ formatRemaining(entry.remaining) }} remaining
+          </div>
         </div>
-        <div class="flex items-center gap-1 flex-wrap">
-          <ItemInline :reference="entry.crop_name" />
-          <span class="text-text-muted">in</span>
-          <AreaInline :reference="entry.zone_name" />
-        </div>
-        <div class="text-xs text-text-muted mt-0.5">
-          Extra yield at harvest
-        </div>
-        <div v-if="entry.remaining" class="text-xs font-mono mt-0.5"
-          :class="entry.remaining <= 3600 ? 'text-red-400' : 'text-text-secondary'">
-          {{ formatRemaining(entry.remaining) }} remaining
-        </div>
+      </template>
+      <div v-else class="text-xs text-text-dim italic">
+        Yesterday's bonus expired — re-read the Gardening Almanac in-game to capture the current season.
       </div>
 
       <!-- Upcoming events -->
@@ -46,7 +53,7 @@
 
       <!-- Capture time -->
       <div class="text-[10px] text-text-dim mt-1">
-        Last updated: {{ formatCapturedAt(entries[0]?.captured_at) }}
+        Book last read: {{ formatCapturedAt(entries[0]?.captured_at) }}
       </div>
     </template>
   </div>
@@ -91,6 +98,10 @@ const currentEvents = computed<EntryWithTiming[]>(() =>
         : undefined
       return { ...e, remaining }
     })
+    // Stale-current rows (ended, never re-read) leave the current display:
+    // the backend already sorts them after live rows, and the empty state
+    // below names the re-read. `event_end == null` never expires.
+    .filter(e => e.event_end == null || (e.remaining ?? 0) > 0)
 )
 
 const upcomingEvents = computed<EntryWithTiming[]>(() =>

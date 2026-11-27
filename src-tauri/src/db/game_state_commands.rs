@@ -1473,6 +1473,12 @@ pub struct HarvestAlmanacEntry {
 
 /// The day's harvesting foci as of the last time this character read the
 /// Emotion-Harvesting Almanac in Statehelm.
+///
+/// Effective-current ordering: a stored-current row whose absolute
+/// `event_end` passed sorts after live rows (a stale focus never re-read
+/// must not headline "Today's Focus" — the widget filters those and the
+/// empty state names the re-read). `event_end IS NULL` never expires.
+/// Snapshot rows are never deleted here (history + reconcile need them).
 #[tauri::command]
 pub fn get_harvest_almanac(
     db: State<'_, DbPool>,
@@ -1480,26 +1486,42 @@ pub fn get_harvest_almanac(
     server_name: String,
 ) -> Result<Vec<HarvestAlmanacEntry>, String> {
     let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    get_harvest_almanac_for(&conn, &character_name, &server_name, &now)
+}
+
+/// Split out from the command so tests can pin the effective-current
+/// ordering with frozen timestamps (same `&impl DbRead` convention as the
+/// other read helpers here).
+pub fn get_harvest_almanac_for(
+    conn: &impl DbRead,
+    character_name: &str,
+    server_name: &str,
+    now: &str,
+) -> Result<Vec<HarvestAlmanacEntry>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT monster_name, description, event_start, event_end, is_current, captured_at
              FROM harvest_almanac
              WHERE character_name = ?1 AND server_name = ?2
-             ORDER BY is_current DESC, event_start ASC",
+             ORDER BY (is_current AND (event_end IS NULL OR event_end >= ?3)) DESC, event_start ASC",
         )
         .map_err(|e| format!("Query error: {e}"))?;
 
     let rows = stmt
-        .query_map(rusqlite::params![character_name, server_name], |row| {
-            Ok(HarvestAlmanacEntry {
-                monster_name: row.get(0)?,
-                description: row.get(1)?,
-                event_start: row.get(2)?,
-                event_end: row.get(3)?,
-                is_current: row.get::<_, i32>(4)? != 0,
-                captured_at: row.get(5)?,
-            })
-        })
+        .query_map(
+            rusqlite::params![character_name, server_name, now],
+            |row| {
+                Ok(HarvestAlmanacEntry {
+                    monster_name: row.get(0)?,
+                    description: row.get(1)?,
+                    event_start: row.get(2)?,
+                    event_end: row.get(3)?,
+                    is_current: row.get::<_, i32>(4)? != 0,
+                    captured_at: row.get(5)?,
+                })
+            },
+        )
         .map_err(|e| format!("Query error: {e}"))?;
 
     rows.collect::<Result<Vec<_>, _>>()
@@ -1963,6 +1985,14 @@ pub struct GardenAlmanacEntry {
     pub captured_at: String,
 }
 
+/// The season bonuses as of the last time this character read the Gardening
+/// Almanac in game.
+///
+/// Effective-current ordering: a stored-current row whose absolute
+/// `event_end` passed sorts after live rows (a stale season never re-read
+/// must not headline the current display — the widget filters those and the
+/// empty state names the re-read). `event_end IS NULL` never expires.
+/// Snapshot rows are never deleted here (history + reconcile need them).
 #[tauri::command]
 pub fn get_garden_almanac(
     db: State<'_, DbPool>,
@@ -1970,26 +2000,42 @@ pub fn get_garden_almanac(
     server_name: String,
 ) -> Result<Vec<GardenAlmanacEntry>, String> {
     let conn = db.get().map_err(|e| format!("Database error: {e}"))?;
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    get_garden_almanac_for(&conn, &character_name, &server_name, &now)
+}
+
+/// Split out from the command so tests can pin the effective-current
+/// ordering with frozen timestamps (same `&impl DbRead` convention as the
+/// other read helpers here).
+pub fn get_garden_almanac_for(
+    conn: &impl DbRead,
+    character_name: &str,
+    server_name: &str,
+    now: &str,
+) -> Result<Vec<GardenAlmanacEntry>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT crop_name, zone_name, event_start, event_end, is_current, captured_at
              FROM garden_almanac
              WHERE character_name = ?1 AND server_name = ?2
-             ORDER BY is_current DESC, event_start ASC",
+             ORDER BY (is_current AND (event_end IS NULL OR event_end >= ?3)) DESC, event_start ASC",
         )
         .map_err(|e| format!("Query error: {e}"))?;
 
     let rows = stmt
-        .query_map(rusqlite::params![character_name, server_name], |row| {
-            Ok(GardenAlmanacEntry {
-                crop_name: row.get(0)?,
-                zone_name: row.get(1)?,
-                event_start: row.get(2)?,
-                event_end: row.get(3)?,
-                is_current: row.get::<_, i32>(4)? != 0,
-                captured_at: row.get(5)?,
-            })
-        })
+        .query_map(
+            rusqlite::params![character_name, server_name, now],
+            |row| {
+                Ok(GardenAlmanacEntry {
+                    crop_name: row.get(0)?,
+                    zone_name: row.get(1)?,
+                    event_start: row.get(2)?,
+                    event_end: row.get(3)?,
+                    is_current: row.get::<_, i32>(4)? != 0,
+                    captured_at: row.get(5)?,
+                })
+            },
+        )
         .map_err(|e| format!("Query error: {e}"))?;
 
     rows.collect::<Result<Vec<_>, _>>()
@@ -3493,6 +3539,65 @@ mod tests {
         let n = import_garden_almanac(&conn, "T", "Dreva", body, "2026-11-17 16:47:31")
             .unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn harvest_almanac_reader_orders_live_rows_first() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO harvest_almanac
+                 (character_name, server_name, monster_name, event_start, event_end, is_current, captured_at)
+             VALUES
+                 ('T','Dreva','Ghouls',NULL,'2026-11-24 22:59:37',1,'2026-11-24 21:17:37'),
+                 ('T','Dreva','Wolves',NULL,NULL,1,'2026-11-24 21:17:37'),
+                 ('T','Dreva','Corporeal Non-Skeleton Undead','2026-11-24 22:59:37',NULL,0,'2026-11-24 21:17:37'),
+                 ('Alt','Dreva','Ghouls',NULL,'2026-11-24 22:59:37',1,'2026-11-24 21:17:37');",
+        )
+        .unwrap();
+        // Frozen now: Ghouls' end (11-24) passed, so the stored-current row
+        // is stale — Wolves (NULL end, never expires) headlines instead.
+        let rows = get_harvest_almanac_for(&conn, "T", "Dreva", "2026-11-25 00:00:00").unwrap();
+        assert_eq!(rows.len(), 3, "other characters never leak in");
+        assert_eq!(rows[0].monster_name, "Wolves");
+        assert!(rows[0].is_current);
+        // Stored semantics preserved: the stale row still reports is_current
+        // (the widget filters it via the countdown, not the flag).
+        let ghoul_pos = rows.iter().position(|r| r.monster_name == "Ghouls").unwrap();
+        assert!(rows[ghoul_pos].is_current);
+        assert!(ghoul_pos > 0, "stale-current must not sort as current");
+        // Upcoming rows with passed starts are NOT promoted without a
+        // re-read — still present, still not current.
+        let undead = rows
+            .iter()
+            .find(|r| r.monster_name == "Corporeal Non-Skeleton Undead")
+            .unwrap();
+        assert!(!undead.is_current);
+    }
+
+    #[test]
+    fn garden_almanac_reader_orders_live_rows_first() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO garden_almanac
+                 (character_name, server_name, crop_name, zone_name, event_start, event_end, is_current, captured_at)
+             VALUES
+                 ('T','Dreva','Pumpkin','Serbule',NULL,'2026-11-17 22:59:31',1,'2026-11-17 16:47:31'),
+                 ('T','Dreva','Barley','Gazluk',NULL,NULL,1,'2026-11-17 16:47:31'),
+                 ('T','Dreva','Carrot','Elkshire','2026-11-17 22:59:31',NULL,0,'2026-11-17 16:47:31'),
+                 ('Alt','Dreva','Pumpkin','Serbule',NULL,'2026-11-17 22:59:31',1,'2026-11-17 16:47:31');",
+        )
+        .unwrap();
+        // Frozen now: Pumpkin's end (11-17) passed — Barley (NULL end, never
+        // expires) headlines, the stale row drops out of the lead.
+        let rows = get_garden_almanac_for(&conn, "T", "Dreva", "2026-11-18 00:00:00").unwrap();
+        assert_eq!(rows.len(), 3, "other characters never leak in");
+        assert_eq!(rows[0].crop_name, "Barley");
+        assert!(rows[0].is_current);
+        let pumpkin_pos = rows.iter().position(|r| r.crop_name == "Pumpkin").unwrap();
+        assert!(rows[pumpkin_pos].is_current, "stored flag preserved; the widget filters by countdown");
+        assert!(pumpkin_pos > 0, "stale-current must not sort as current");
+        let carrot = rows.iter().find(|r| r.crop_name == "Carrot").unwrap();
+        assert!(!carrot.is_current, "upcoming never promotes without a re-read");
     }
 }
 
