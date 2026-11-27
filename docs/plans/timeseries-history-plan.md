@@ -2,8 +2,9 @@
 
 Plan-only slice (2026-11-27): no migration, no tables, no writers ship here.
 Supersedes the code slice on the same branch (reverted before drafting).
-Covers TODO #7's game_state_* history gap (the `postv1` 7-set, user-confirmed
-2026-11-27) and the councils per-event ledger (TODO #347, timeboxed handoff
+Covers TODO #7's game_state_* history gap (the `postv1` 8-set: the 7
+user-confirmed 2026-11-27 plus `game_state_moon`, added on review) and the
+councils per-event ledger (TODO #347, timeboxed handoff
 `#401`). B review audits this doc.
 
 ## The time-question test
@@ -25,7 +26,7 @@ v96 per-occurrence identity), `favor_events` (v91 + v97 `COALESCE` key),
 children (`character_currencies`, `character_recipe_completions`, ...),
 `combat_wisdom_earns` (v51), `player_messages`, milking/pooping logs.
 
-## 1. Per-domain disposition (the 7 post-v1 tables)
+## 1. Per-domain disposition (the 8 post-v1 tables)
 
 | Domain | Live writer | Time-question: would anyone read the past? | Disposition |
 |---|---|---|---|
@@ -36,9 +37,10 @@ children (`character_currencies`, `character_recipe_completions`, ...),
 | `game_state_strings` | None (write-dead since v33; seed-only) | Generic KV cache by design; a key with time semantics gets its own table | Point-in-time. No table |
 | `game_state_books` | `books_watcher.rs` + chat dispatch + coordinator (replace on re-read, `captured_at` = newest) | "What changed since last export" is answered by diffing stored `raw_json` at read time; Books/ files on disk are the archive | Point-in-time latest content. No table |
 | `game_state_teleportation` | `ingest_teleportation_binds` + mushroom-circle command (`game_state_commands.rs`) | Bind moves are rare player actions; no bind-change events are parsed today | Point-in-time. No table |
+| `game_state_moon` | None (write-dead since v33, world singleton like `weather`; seed/list-only) | Phase is a deterministic function of date — any past phase is computable, never stored; the row exists to render tonight without recomputing | Point-in-time. No table |
 
-None of the 7 gets a history table. Three (`guild`, `directed_goals`,
-`strings`) are write-dead since v33 — zero live writers, zero live readers
+None of the 8 gets a history table. Four (`guild`, `directed_goals`,
+`strings`, `moon`) are write-dead since v33 — zero live writers, zero live readers
 (only the v33 CREATE, the lifecycle lists, and test seeds reference them).
 That is a wire-or-drop observation for a future slice, not history scope:
 either a producer arrives (guild/quest systems) or they follow the
@@ -64,6 +66,9 @@ the state so the next slice does not re-audit it.
 - `teleportation`: a bind-change audit ("when did my binds move") is
   requested. Requires bind-change events (book re-reads only replace; they do
   not timestamp moves).
+- `moon`: effectively never — phase is computed from the date, not observed.
+  Trigger only if the game ever decouples phase from the real moon (event-driven
+  overrides), in which case ledger the override events, not nightly snapshots.
 
 ## 2. Councils ledger design
 
@@ -154,7 +159,7 @@ consumer: timeboxed views ("councils in window W", handoff #401).
 | strings history | Never (per-key tables instead) | Per-key table for the key with time semantics |
 | books history | Book-diff view requested | Read-time `raw_json` diff, no table |
 | teleportation history | Bind-change audit requested + bind-change events | Bind-move log |
-| **council_events ledger** | **TRIGGERED 2026-11-27: council wealth history view** | Schema + writer above, then wealth view on timeboxed machinery |
+| moon history | Game decouples phase from the real moon (not observed; likely never) | Override-event log, not nightly snapshots |
 
 ## Non-goals
 
