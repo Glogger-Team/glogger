@@ -102,6 +102,9 @@
 
       <!-- By Gift: one row per gift, listing the NPCs that want it -->
       <div v-if="searchedStatuses.length > 0 && activeTab === 'gift'" class="flex flex-col gap-2">
+        <p v-if="!plannerLoaded" class="text-xs text-text-dim">
+          Run “Find vault gifts” in the Gift Planner to sort by vault stock.
+        </p>
         <EmptyState
           v-if="giftGroups.length === 0"
           primary="No gift preferences found."
@@ -118,6 +121,7 @@
             </span>
             <span class="text-sm font-medium text-text-primary truncate">{{ g.label }}</span>
             <span class="text-xs text-text-dim shrink-0">({{ g.entries.length }} NPC{{ g.entries.length === 1 ? '' : 's' }})</span>
+            <span v-if="plannerLoaded" class="text-xs text-accent-gold shrink-0">×{{ giftStockCounts.get(g.key) ?? 0 }} in vaults</span>
           </div>
           <div class="flex flex-wrap gap-1">
             <button
@@ -448,6 +452,8 @@ interface GiftWantEntry {
   npcName: string
   remaining: number
   desire: string
+  prefName: string | null
+  prefKeywords: string[]
 }
 interface GiftGroup {
   key: string
@@ -456,8 +462,59 @@ interface GiftGroup {
   entries: GiftWantEntry[]
 }
 
+// Desire rank mirroring the backend matcher (`desire_rank` in
+// `src-tauri/src/cdn_commands.rs`): Love outranks Like, anything else is
+// unmatchable and never reaches the frontend groups.
+function giftDesireRank(desire: string): number {
+  const d = desire.toLowerCase()
+  if (d === 'love') return 1
+  if (d === 'like') return 0
+  return -1
+}
+
+// Vault stock per gift-group key, routed from the planner matcher output
+// (`planner.matches`, the `plan_statehelm_gifts` rows) — there is no second
+// matcher. A "name" row lands on the group whose preference name equals the
+// item name (the backend's `npc_favor_by_item_name` key); a "keyword:K" row
+// lands on the group of that NPC's winning preference containing K (highest
+// desire rank, then pref — the backend's `best` dedup order). The count is
+// the sum of attributed row stacks, exactly what the planner tables show
+// per row — a stack wanted by two NPCs counts toward both groups, same as
+// the planner's per-row display. Empty until the planner runs (see
+// `plannerLoaded`): unknown groups keep alphabetical position.
+const giftStockCounts = computed<Map<string, number>>(() => {
+  const out = new Map<string, number>()
+  if (!plannerLoaded.value) return out
+  for (const m of planner.matches.value) {
+    const status = searchedStatuses.value.find(s => s.npc.key === m.npc_key)
+    if (!status) continue
+    let groupKey: string | null = null
+    if (m.match_type === 'name') {
+      groupKey = m.item_name.toLowerCase()
+    } else if (m.match_type.startsWith('keyword:')) {
+      const kw = m.match_type.slice('keyword:'.length)
+      let best: { key: string; rank: number; pref: number } | null = null
+      for (const p of status.npc.preferences ?? []) {
+        if (giftDesireRank(p.desire) < 0) continue
+        if (!p.keywords.includes(kw) && !p.keywords.some(k => k.toLowerCase() === kw.toLowerCase())) continue
+        const key = (p.name ?? p.keywords.join(', ')).toLowerCase()
+        const rank = giftDesireRank(p.desire)
+        if (!best || rank > best.rank || (rank === best.rank && p.pref > best.pref)) {
+          best = { key, rank, pref: p.pref }
+        }
+      }
+      groupKey = best?.key ?? null
+    }
+    if (!groupKey) continue
+    out.set(groupKey, (out.get(groupKey) ?? 0) + Math.max(0, m.stack_size))
+  }
+  return out
+})
+
 // One group per distinct gift label across the searched statuses; the group's
-// want is Love if any wanting NPC loves it. Sorted Love-first, then A–Z.
+// want is Love if any wanting NPC loves it. Sorted Love-first, then by vault
+// stock descending once the planner has run (zero-count groups sink to the
+// bottom of their tier but stay listed); alphabetical otherwise.
 const giftGroups = computed<GiftGroup[]>(() => {
   const byKey = new Map<string, GiftGroup>()
   for (const status of searchedStatuses.value) {
@@ -483,13 +540,20 @@ const giftGroups = computed<GiftGroup[]>(() => {
         npcName: status.npc.name,
         remaining,
         desire: pref.desire,
+        prefName: pref.name ?? null,
+        prefKeywords: [...pref.keywords],
       })
     }
   }
   const groups = [...byKey.values()]
   for (const g of groups) g.entries.sort((a, b) => a.npcName.localeCompare(b.npcName))
+  const stocked = plannerLoaded.value
   groups.sort((a, b) => {
     if (a.want !== b.want) return a.want === 'Love' ? -1 : 1
+    if (stocked) {
+      const diff = (giftStockCounts.value.get(b.key) ?? 0) - (giftStockCounts.value.get(a.key) ?? 0)
+      if (diff !== 0) return diff
+    }
     return a.label.localeCompare(b.label)
   })
   // Narrow groups to the search: keep a group when the gift label matches or
@@ -515,7 +579,13 @@ interface ShoppingRow {
   qty: number
 }
 const shoppingRows = computed<ShoppingRow[]>(() =>
-  giftGroups.value
+  [...giftGroups.value]
+    // Shopping List keeps the historical order (Love-first, then A–Z) even
+    // once the By Gift tab re-sorts by vault stock.
+    .sort((a, b) => {
+      if (a.want !== b.want) return a.want === 'Love' ? -1 : 1
+      return a.label.localeCompare(b.label)
+    })
     .map((g) => {
       const actionable = g.entries.filter(e => e.remaining > 0)
       return {
