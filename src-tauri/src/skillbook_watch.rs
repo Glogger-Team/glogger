@@ -147,7 +147,7 @@ pub fn apply_dismissals(books: Vec<SkillbookInfo>, dismissed_names: &[String]) -
 /// Build one auto watch rule per book: `ContainsItemLink` on the exact book
 /// name (chat item links render as `[Item: <name>]`), toast + highlight, no
 /// sound. Books already covered by `existing_names` (lowercased condition
-/// values of current auto rules) are skipped so regeneration never duplicates.
+/// values of current manual rules) are skipped so regeneration never duplicates.
 pub fn build_auto_skillbook_rules(
     books: &[SkillbookInfo],
     existing_names: &[String],
@@ -222,13 +222,17 @@ pub fn auto_hit_book_name(rule_name: &str) -> Option<&str> {
 /// every message and would double-fire with any session twin.)
 pub fn manual_covers_book(manual_rules: &[WatchRule], book: &str) -> bool {
     let needle = book.to_lowercase();
-    manual_rules.iter().flat_map(|r| &r.conditions).any(|c| match c {
-        WatchCondition::ContainsItemLink(value) | WatchCondition::ContainsText(value) => {
-            let v = value.to_lowercase();
-            v.contains(&needle) || needle.contains(&v)
-        }
-        WatchCondition::FromSender(_) => false,
-    })
+    manual_rules
+        .iter()
+        .filter(|r| r.enabled)
+        .flat_map(|r| &r.conditions)
+        .any(|c| match c {
+            WatchCondition::ContainsItemLink(value) | WatchCondition::ContainsText(value) => {
+                let v = value.to_lowercase();
+                v.contains(&needle) || needle.contains(&v)
+            }
+            WatchCondition::FromSender(_) => false,
+        })
 }
 
 #[tauri::command]
@@ -552,5 +556,24 @@ mod tests {
         assert!(manual_covers_book(std::slice::from_ref(&text_rule), "Sword Basics"));
         assert!(!manual_covers_book(std::slice::from_ref(&sender_rule), "Sword Basics"));
         assert!(!manual_covers_book(&[item_rule, text_rule, sender_rule], "Unarmed Basics"));
+    }
+
+    #[test]
+    fn disabled_manual_rule_does_not_cover_book() {
+        let mk = |enabled: bool| WatchRule {
+            id: 9,
+            name: "Manual".to_string(),
+            enabled,
+            channels: None,
+            match_mode: ConditionMatch::Any,
+            conditions: vec![WatchCondition::ContainsItemLink("Sword Basics".to_string())],
+            notify: WatchNotifyConfig { sound: false, toast: true, highlight: true },
+            source: None,
+        };
+        // Enabled manual twin suppresses the auto rule (no double-fire).
+        assert!(manual_covers_book(&[mk(true)], "Sword Basics"));
+        // Disabled manual rule fires nothing (evaluate_rules skips it), so it
+        // must not suppress the auto twin either — else the book goes silent.
+        assert!(!manual_covers_book(&[mk(false)], "Sword Basics"));
     }
 }

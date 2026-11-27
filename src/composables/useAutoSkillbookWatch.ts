@@ -119,8 +119,9 @@ export function useAutoSkillbookWatch() {
       loadKnownAbilities(),
       loadOwnedNames(),
     ]);
-    // Dedupe against ALL persisted (manual) rules: same book never double-fires.
-    const existingNames = s.watchRules.flatMap((r) => r.conditions.map((c) => c.value));
+    // Dedupe against ENABLED persisted (manual) rules: same book never double-fires.
+    // Disabled rules fire nothing, so they must not suppress the auto twin either.
+    const existingNames = s.watchRules.filter((r) => r.enabled).flatMap((r) => r.conditions.map((c) => c.value));
     return invoke<WatchRule[]>("suggest_auto_skillbook_rules", {
       skills,
       blockedSkills: s.autoSkillbookBlockedSkills,
