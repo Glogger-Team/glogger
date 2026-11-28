@@ -1094,7 +1094,8 @@ mod tests {
     // ── Work order stop construction ──────────────────────────────────────
     //
     // Fixture quests mirror real CDN shapes (`docs/CDN-full-examples/quests.json`:
-    // quest_50301 Carpentry/Fitz, quest_50054 gathering/Sheyna). NPC rows carry
+    // quest_50301 Carpentry/Fitz, quest_50054 gathering/Sheyna, quest_50020
+    // gathering/mistletoe). NPC rows carry
     // the real CDN areas; Ogamboe is deliberately absent from the NPC map to
     // pin the static nine-board fallback.
     fn fixture_game_data() -> GameData {
@@ -1181,6 +1182,20 @@ mod tests {
             "Unknown_ManticoreTailTips".to_string(),
             "quest_wo_sheyna".to_string(),
         );
+        data.quests.insert(
+            "quest_wo_mistletoe".to_string(),
+            crate::game_data::QuestInfo {
+                internal_name: "Unknown_EnchantedMistletoe".to_string(),
+                raw: serde_json::json!({
+                    "Name": "Enchanted Mistletoe",
+                    "WorkOrderSkill": "Unknown",
+                    "Objectives": [
+                        {"Type": "Collect", "ItemName": "EnchantedMistletoe", "Number": 10, "Description": "Obtain Enchanted Mistletoe"},
+                        {"Type": "Scripted", "Number": 1, "Description": "Deliver to Fitz the Boatman"}
+                    ],
+                }),
+            },
+        );
         data.items.insert(
             9001,
             crate::game_data::ItemInfo {
@@ -1210,6 +1225,37 @@ mod tests {
         );
         data.item_internal_name_index
             .insert("TestStool".to_string(), 9001);
+        data.items.insert(
+            9002,
+            crate::game_data::ItemInfo {
+                id: 9002,
+                name: "Enchanted Mistletoe".to_string(),
+                description: None,
+                icon_id: None,
+                value: None,
+                max_stack_size: None,
+                keywords: Vec::new(),
+                effect_descs: Vec::new(),
+                internal_name: Some("EnchantedMistletoe".to_string()),
+                food_desc: None,
+                equip_slot: None,
+                num_uses: None,
+                skill_reqs: None,
+                behaviors: None,
+                bestow_recipes: None,
+                bestow_ability: None,
+                bestow_quest: None,
+                bestow_title: None,
+                craft_points: None,
+                crafting_target_level: None,
+                tsys_profile: None,
+                raw_json: serde_json::json!({}),
+            },
+        );
+        data.item_internal_name_index
+            .insert("EnchantedMistletoe".to_string(), 9002);
+        // No `recipes_producing_item` entry for 9002: nothing crafts
+        // Enchanted Mistletoe (zero hits in docs/CDN-full-examples/recipes.json).
         data.recipes.insert(
             7001,
             crate::game_data::RecipeInfo {
@@ -1272,7 +1318,9 @@ mod tests {
         assert_eq!(stops[1].zone, "AreaSerbule");
         assert_eq!(stops[1].purpose, StopPurpose::TurnIn);
         assert_eq!(stops[2].zone, "AreaRahu");
-        assert_eq!(stops[2].purpose, StopPurpose::Craft);
+        // ManticoreTailTip has no producing recipe (real CDN item, zero recipe
+        // hits) — a gather stop, not craft.
+        assert_eq!(stops[2].purpose, StopPurpose::Gather);
         assert_eq!(stops[3].zone, "AreaRahu");
         assert_eq!(stops[3].purpose, StopPurpose::TurnIn);
         // Display name (not the internal name) + skill land in the details.
@@ -1294,7 +1342,8 @@ mod tests {
         let stops = build_work_order_stops(&data, &[wo_item("quest_wo_ogamboe", 5)]).unwrap();
         assert_eq!(stops.len(), 2);
         assert_eq!(stops[0].zone, "AreaFaeRealm1");
-        assert_eq!(stops[0].purpose, StopPurpose::Craft);
+        // FaeCloth has no producing recipe — a gather stop, not craft.
+        assert_eq!(stops[0].purpose, StopPurpose::Gather);
         assert_eq!(stops[1].zone, "AreaFaeRealm1");
         assert_eq!(stops[1].purpose, StopPurpose::TurnIn);
         assert!(stops[1].details.contains("Ogamboe"));
@@ -1357,8 +1406,10 @@ mod tests {
         let data = fixture_game_data();
         let stops = build_work_order_stops(&data, &[wo_item("quest_wo_fitz", 10)]).unwrap();
         assert!(stops[0].details.contains("[needs tanning rack]"));
-        // Gathering order with no resolvable producing recipe: no hint, still plans.
+        // Gathering order with no resolvable producing recipe: Gather purpose,
+        // no station hint, still plans.
         let stops = build_work_order_stops(&data, &[wo_item("quest_wo_sheyna", 10)]).unwrap();
+        assert_eq!(stops[0].purpose, StopPurpose::Gather);
         assert!(!stops[0].details.contains("[needs"));
     }
 
@@ -1380,10 +1431,67 @@ mod tests {
                 &RouteAction::Travel,
                 &RouteAction::Travel,
                 &RouteAction::Travel,
-                &RouteAction::Craft,
+                &RouteAction::Gather,
                 &RouteAction::TurnIn
             ]
         );
+    }
+
+    #[test]
+    fn test_wo_gather_stop_for_unproduced_item() {
+        // Live bug: Enchanted Mistletoe is a gatherable (no producing recipe in
+        // docs/CDN-full-examples/recipes.json) but planned a Craft stop.
+        let data = fixture_game_data();
+        let stops = build_work_order_stops(&data, &[wo_item("quest_wo_mistletoe", 10)]).unwrap();
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[0].zone, "AreaSerbule");
+        assert_eq!(stops[0].purpose, StopPurpose::Gather);
+        assert_eq!(stops[1].purpose, StopPurpose::TurnIn);
+        assert!(stops.iter().all(|s| s.purpose != StopPurpose::Craft));
+        assert_eq!(
+            stops[0].details,
+            "Gather 10x Enchanted Mistletoe (total) (Unknown) for 'Enchanted Mistletoe'"
+        );
+    }
+
+    #[test]
+    fn test_wo_unknown_item_still_plans_gather() {
+        // Unknown item (no item row, so no producers): still plans Gather +
+        // TurnIn with the internal name as label — never silently drops.
+        let mut data = fixture_game_data();
+        data.quests.insert(
+            "quest_wo_unknown_item".to_string(),
+            crate::game_data::QuestInfo {
+                internal_name: "Unknown_NoSuchItem".to_string(),
+                raw: serde_json::json!({
+                    "Name": "No Such Item",
+                    "WorkOrderSkill": "Unknown",
+                    "Objectives": [
+                        {"Type": "Collect", "ItemName": "NoSuchItem", "Number": 7},
+                        {"Type": "Scripted", "Number": 1, "Description": "Deliver to Fitz the Boatman"}
+                    ],
+                }),
+            },
+        );
+        let stops = build_work_order_stops(&data, &[wo_item("quest_wo_unknown_item", 7)]).unwrap();
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[0].purpose, StopPurpose::Gather);
+        assert_eq!(stops[1].purpose, StopPurpose::TurnIn);
+        assert!(stops[0].details.contains("7x NoSuchItem (total)"));
+    }
+
+    #[test]
+    fn test_gather_orders_before_turn_in_within_zone() {
+        let g = make_graph();
+        // Input order is TurnIn-first; the solver still emits Gather first.
+        let stops = vec![
+            stop("AreaSerbule", StopPurpose::TurnIn, "Turn in order"),
+            stop("AreaSerbule", StopPurpose::Gather, "Gather mistletoe"),
+        ];
+        let route = plan_route(&g, "AreaSerbule", &stops, &TravelConfig::default()).unwrap();
+        assert_eq!(route.steps.len(), 2);
+        assert_eq!(route.steps[0].action, RouteAction::Gather);
+        assert_eq!(route.steps[1].action, RouteAction::TurnIn);
     }
 
     #[test]
