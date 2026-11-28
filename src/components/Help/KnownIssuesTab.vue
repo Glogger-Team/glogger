@@ -112,7 +112,7 @@ const knownIssues: KnownIssue[] = [
     severity: "bug",
     title: "Farming sessions frozen (10/21 client)",
     description:
-      "Loot drops, extracts, item deltas, vendor gold, favor, skill XP, and log backfill were read from Player.log lines the current game client no longer writes, so no new farming data accumulates. Kills, deaths, XP, and Combat Wisdom still flow from Chat.log into the Combat view. Farming → Session History, Database, and Sources remain as historic readers.",
+      "Loot drops, extracts, item deltas, vendor gold, favor, skill XP, and log backfill were read from Player.log lines the current game client no longer writes, so no new farming data accumulates. Kills, deaths, XP, and Combat Wisdom still flow from Chat.log into the Combat view. Farming → Time-boxed and Database remain as historic readers.",
   },
   {
     id: "milking-dark",

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Frozen since the 10/21 game client: the client stopped writing the verbose `LocalPlayer:` Player.log lines, so loot drops, extracts, item deltas, vendor gold, favor, skill XP, and log backfill accrue no new data. The Farming tab is now a historic-only reader (Session History, Database). New kills, deaths, XP, and Combat Wisdom from Chat.log live in the Combat view.
+Frozen since the 10/21 game client: the client stopped writing the verbose `LocalPlayer:` Player.log lines, so loot drops, extracts, item deltas, vendor gold, favor, skill XP, and log backfill accrue no new data. The Farming tab is now a historic-only reader (Time-boxed, Database). New kills, deaths, XP, and Combat Wisdom from Chat.log live in the Combat view.
 
 ## Architecture
 
@@ -17,8 +17,8 @@ Frozen since the 10/21 game client: the client stopped writing the verbose `Loca
 
 - `src/types/farming.ts` — live DB-read types only (`EnemyKillStats`, drop-rate search/result rows, `ExtractDetail`, `HistoricalFarmingSession`); the frozen live-session aliases are deleted
 - `src/stores/farmingStore.ts` — empty shell (HMR registration only); loot readers invoke `get_enemy_kill_stats` directly
-- `src/components/Economics/EconomicsFarmingView.vue` — 2-tab shell (Session History / Database)
-- `src/components/Farming/HistoricalTab.vue` — past sessions from DB
+- `src/components/Economics/EconomicsFarmingView.vue` — 2-tab shell (Time-boxed / Database)
+- `src/components/Farming/HistoricalTab.vue` — past sessions from DB (unmounted from the Farming view; kept on disk pending a deletion decision)
 - `src/components/Farming/DatabaseTab.vue` — historic + imported drop-rate database (export/import, no scan)
 - Kill-only ledger: `sweep_unlinked_gains` (`db/unknown_source_commands.rs`) purges gains with no source of any kind after 24h (startup + every scan/tail dispatch). The unattributed-gains tab and its command are deleted.
 - `src/components/Farming/ItemDropBreakdownTable.vue`, `EnemyDropTable.vue`, `ExtractDetailTable.vue` — table variants reading backend commands directly
@@ -70,7 +70,7 @@ New rows stopped with the 10/21 client (verbose `LocalPlayer:` lines gone). Chat
 
 ### Active Session (removed — Combat view covers live kills/XP)
 
-Historic sessions stay readable under Farming → Session History. Live combat (kills, deaths, XP, Combat Wisdom, event log, rates, Reset) lives in the Combat view.
+The Session History tab was removed (Time-boxed is the default view). Live combat (kills, deaths, XP, Combat Wisdom, event log, rates, Reset) lives in the Combat view.
 
 ### Session Lifecycle (no longer runs)
 
@@ -82,7 +82,7 @@ Historic sessions stay readable under Farming → Session History. Live combat (
 6. User clicked **End Session** — summary saved to SQLite
 7. Session appears in **History** tab with expandable detail view
 
-The Active Session tab, its store arms, and the live-session components are deleted; the readers (History/Database) remain.
+The Active Session tab, its store arms, and the live-session components are deleted; the Database reader remains. The sessions browser (`HistoricalTab.vue`) is unmounted from the Farming view but kept on disk.
 
 ### Historical Sessions
 

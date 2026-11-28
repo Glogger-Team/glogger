@@ -16,6 +16,12 @@
           <span class="shrink-0" :class="prefixClass(toast.type)">{{ prefix(toast.type) }}</span>
           <span class="flex-1 text-text-primary">{{ toast.message }}</span>
           <button
+            v-if="toast.action"
+            class="shrink-0 text-xs font-medium text-accent-blue hover:text-text-primary cursor-pointer bg-transparent border-none underline underline-offset-2"
+            @click="goToAction(toast)">
+            {{ toast.action.label }}
+          </button>
+          <button
             class="shrink-0 text-text-muted hover:text-text-primary cursor-pointer bg-transparent border-none text-xs"
             @click="store.dismiss(toast.id)">
             ✕
@@ -29,8 +35,16 @@
 <script setup lang="ts">
 import { onBeforeUnmount } from "vue";
 import { useToastStore, type ToastType, type Toast } from "../../stores/toastStore";
+import { useViewNavigation } from "../../composables/useViewNavigation";
 
 const store = useToastStore();
+const { navigateToView } = useViewNavigation();
+
+function goToAction(toast: Toast) {
+  if (!toast.action) return;
+  store.dismiss(toast.id);
+  navigateToView({ view: toast.action.view, subTab: toast.action.subTab });
+}
 
 const timers = new Map<number, ReturnType<typeof setTimeout>>();
 
