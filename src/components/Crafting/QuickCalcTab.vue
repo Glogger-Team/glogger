@@ -187,9 +187,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { useGameDataStore } from "../../stores/gameDataStore";
 import { useCraftingStore } from "../../stores/craftingStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import type { RecipeInfo } from "../../types/gameData/recipes";
 import type { ResolvedRecipe, MaterialNeed } from "../../types/crafting";
 import EmptyState from "../Shared/EmptyState.vue";
@@ -199,9 +200,9 @@ import PickupList from "./PickupList.vue";
 import ShoppingList from "./ShoppingList.vue";
 import LiveCraftingPanel from "./LiveCraftingPanel.vue";
 import { currencyLabel } from "../../utils/recipeCurrency";
-
 const gameData = useGameDataStore();
 const craftingStore = useCraftingStore();
+const settingsStore = useSettingsStore();
 
 const searchQuery = ref("");
 const searchResults = ref<RecipeInfo[]>([]);
@@ -286,16 +287,44 @@ async function resolve() {
   }
 }
 
+// Character switch: availability is resolved per character+server, so drop
+// the old character's needs synchronously and release the spinner — a stale
+// in-flight check's finally-guard correctly refuses to clear it under the
+// new identity, so the watcher owns the reset and the stale guard stays a
+// no-op. No auto re-run: re-check is one click under the current identity.
+watch(
+  () => [settingsStore.settings.activeCharacterName, settingsStore.settings.activeServerName],
+  () => {
+    materialNeeds.value = [];
+    checkingAvailability.value = false;
+  },
+);
+
 async function checkAvailability() {
   if (!resolved.value) return;
+  const characterName = settingsStore.settings.activeCharacterName;
+  const serverName = settingsStore.settings.activeServerName;
   checkingAvailability.value = true;
   try {
     const flat = craftingStore.flattenIngredients(resolved.value.ingredients);
-    materialNeeds.value = await craftingStore.checkMaterialAvailability(flat);
+    const needs = await craftingStore.checkMaterialAvailability(flat);
+    // Rapid character switch: drop the stale needs instead of flashing
+    // another character's stock numbers into this view.
+    if (
+      settingsStore.settings.activeCharacterName !== characterName ||
+      settingsStore.settings.activeServerName !== serverName
+    )
+      return;
+    materialNeeds.value = needs;
   } catch (e) {
     console.error("[crafting] Availability check failed:", e);
   } finally {
-    checkingAvailability.value = false;
+    // A stale check must not clear the spinner owned by the newer check.
+    if (
+      settingsStore.settings.activeCharacterName === characterName &&
+      settingsStore.settings.activeServerName === serverName
+    )
+      checkingAvailability.value = false;
   }
 }
 

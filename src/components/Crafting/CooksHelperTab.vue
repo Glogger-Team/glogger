@@ -201,6 +201,10 @@ watch(
   () => [settingsStore.settings.activeCharacterName, settingsStore.settings.activeServerName],
   () => {
     store.materialNeedsMap = new Map()
+    // Release the spinner synchronously: a stale in-flight check's
+    // finally-guard correctly refuses to clear it under the new identity,
+    // so the watcher owns the reset and the stale guard stays a no-op.
+    store.checkingMaterials = false
     const gen = ++cooksReloadGen
     const characterName = settingsStore.settings.activeCharacterName
     const serverName = settingsStore.settings.activeServerName

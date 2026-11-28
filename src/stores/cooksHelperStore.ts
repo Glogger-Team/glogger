@@ -207,6 +207,9 @@ export const useCooksHelperStore = defineStore('cooksHelper', () => {
   }
 
   async function checkAllMaterials() {
+    const settingsStore = useSettingsStore()
+    const characterName = settingsStore.settings.activeCharacterName
+    const serverName = settingsStore.settings.activeServerName
     checkingMaterials.value = true
     error.value = null
 
@@ -220,11 +223,26 @@ export const useCooksHelperStore = defineStore('cooksHelper', () => {
         newMap.set(recipe.id, needs)
       }
 
+      // Rapid character switch: the per-recipe awaits above run long enough
+      // for the identity to change mid-check, mixing stock numbers from two
+      // characters into one map. Drop the whole map instead of painting it.
+      if (
+        settingsStore.settings.activeCharacterName !== characterName ||
+        settingsStore.settings.activeServerName !== serverName
+      )
+        return
+
       materialNeedsMap.value = newMap
     } catch (e) {
       error.value = `Material check failed: ${e}`
     } finally {
-      checkingMaterials.value = false
+      // A stale check must not clear the spinner owned by the newer check
+      // started for the current identity.
+      if (
+        settingsStore.settings.activeCharacterName === characterName &&
+        settingsStore.settings.activeServerName === serverName
+      )
+        checkingMaterials.value = false
     }
   }
 
