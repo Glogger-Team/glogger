@@ -2,7 +2,7 @@
 
 ## Overview
 
-Frozen since the 10/21 game client: the client stopped writing the verbose `LocalPlayer:` Player.log lines, so loot drops, extracts, item deltas, vendor gold, favor, skill XP, and log backfill accrue no new data. The Farming tab is now a historic-only reader (Time-boxed, Database). New kills, deaths, XP, and Combat Wisdom from Chat.log live in the Combat view.
+Frozen since the 10/21 game client: the client stopped writing the verbose `LocalPlayer:` Player.log lines, so loot drops, extracts, item deltas, vendor gold, favor, skill XP, and log backfill accrue no new data. The Farming tab is now a historic-only reader (Activity, Database, Wealth). New kills, deaths, XP, and Combat Wisdom from Chat.log live in the Combat view.
 
 ## Architecture
 
@@ -17,7 +17,7 @@ Frozen since the 10/21 game client: the client stopped writing the verbose `Loca
 
 - `src/types/farming.ts` — live DB-read types only (`EnemyKillStats`, drop-rate search/result rows, `ExtractDetail`, `HistoricalFarmingSession`); the frozen live-session aliases are deleted
 - `src/stores/farmingStore.ts` — empty shell (HMR registration only); loot readers invoke `get_enemy_kill_stats` directly
-- `src/components/Economics/EconomicsFarmingView.vue` — 2-tab shell (Time-boxed / Database)
+- `src/components/Economics/EconomicsFarmingView.vue` — 3-tab shell (Activity / Database / Wealth; Wealth embeds `CouncilWealthView` as-is, no compact prop — its chrome reads fine as a tab)
 - `src/components/Farming/HistoricalTab.vue` — past sessions from DB (unmounted from the Farming view; kept on disk pending a deletion decision)
 - `src/components/Farming/DatabaseTab.vue` — historic + imported drop-rate database (export/import, no scan)
 - Kill-only ledger: `sweep_unlinked_gains` (`db/unknown_source_commands.rs`) purges gains with no source of any kind after 24h (startup + every scan/tail dispatch). The unattributed-gains tab and its command are deleted.
@@ -70,7 +70,7 @@ New rows stopped with the 10/21 client (verbose `LocalPlayer:` lines gone). Chat
 
 ### Active Session (removed — Combat view covers live kills/XP)
 
-The Session History tab was removed (Time-boxed is the default view). Live combat (kills, deaths, XP, Combat Wisdom, event log, rates, Reset) lives in the Combat view.
+The Session History tab was removed (Activity is the default view). Live combat (kills, deaths, XP, Combat Wisdom, event log, rates, Reset) lives in the Combat view.
 
 ### Session Lifecycle (no longer runs)
 
