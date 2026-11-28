@@ -1,6 +1,6 @@
 <template>
   <div class="flex flex-col gap-4 h-full min-h-0 overflow-y-auto">
-    <div class="text-[11px] text-text-dim italic">Council balance over time — your last export anchors the level, per-event chat deltas draw the line. Same windows as Time-boxed.</div>
+    <div class="text-[11px] text-text-dim italic">Council balance over time — your last export anchors the level, per-event chat deltas draw the line. Same windows as Activity.</div>
     <TimeRangeSelector @change="onRangeChange" />
 
     <div v-if="loading" class="text-xs text-text-dim italic">Reading the window…</div>

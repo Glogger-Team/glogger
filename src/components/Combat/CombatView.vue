@@ -152,9 +152,9 @@
         </div>
       </div>
     </template>
-    <!-- Time-boxed analytics over recorded rows (kills, loot, XP) -->
+    <!-- Activity analytics over recorded rows (kills, loot, XP) -->
     <div class="flex flex-col gap-1 border-t border-border-default pt-3">
-      <h3 class="section-heading">Time-boxed</h3>
+      <h3 class="section-heading">Activity</h3>
       <TimeboxedPanel />
     </div>
   </div>

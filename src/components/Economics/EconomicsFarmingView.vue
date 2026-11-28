@@ -16,7 +16,7 @@ import DatabaseTab from '../Farming/DatabaseTab.vue'
 import { useViewPrefs } from '../../composables/useViewPrefs'
 
 const tabs = [
-  { id: 'timeboxed', label: 'Time-boxed' },
+  { id: 'timeboxed', label: 'Activity' },
   { id: 'database', label: 'Database' },
 ]
 
