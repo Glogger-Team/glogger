@@ -1226,9 +1226,9 @@ mod tests {
         data.item_internal_name_index
             .insert("TestStool".to_string(), 9001);
         data.items.insert(
-            9002,
+            9112,
             crate::game_data::ItemInfo {
-                id: 9002,
+                id: 9112,
                 name: "Enchanted Mistletoe".to_string(),
                 description: None,
                 icon_id: None,
@@ -1253,8 +1253,8 @@ mod tests {
             },
         );
         data.item_internal_name_index
-            .insert("EnchantedMistletoe".to_string(), 9002);
-        // No `recipes_producing_item` entry for 9002: nothing crafts
+            .insert("EnchantedMistletoe".to_string(), 9112);
+        // No `recipes_producing_item` entry for 9112: nothing crafts
         // Enchanted Mistletoe (zero hits in docs/CDN-full-examples/recipes.json).
         data.recipes.insert(
             7001,
