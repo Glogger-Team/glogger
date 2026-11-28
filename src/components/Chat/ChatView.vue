@@ -3,23 +3,29 @@
     <div class="flex flex-col h-full bg-surface-base rounded-lg overflow-hidden">
       <!-- Tab Content -->
       <div class="flex-1 overflow-hidden flex flex-col">
-        <ChatSearchView v-if="activeTab === 'search'" />
-        <ChannelView v-else-if="activeTab === 'channels'" />
-        <TellsView v-else-if="activeTab === 'tells'" />
-        <PartyView v-else-if="activeTab === 'party'" />
-        <NearbyView v-else-if="activeTab === 'nearby'" />
-        <GuildView v-else-if="activeTab === 'guild'" />
-        <SystemView v-else-if="activeTab === 'system'" />
-        <AllMessagesView v-else-if="activeTab === 'all'" />
-        <JsonView v-else-if="activeTab === 'json'" />
-        <WatchwordsView v-else-if="activeTab === 'watchwords'" />
-        <PoemsView v-else-if="activeTab === 'poems'" />
+        <!-- visited+v-show keep-alive (EconomicsView precedent): sub-tabs stay mounted so
+             switching back shows cached content instead of remounting (onMounted reload) with a flash.
+             Message tabs (channels/tells/party/nearby/guild/system/all/json) stay live via
+             useChatLiveRefresh; search keeps its typed query; poems listen for game-state-updated;
+             watchwords bind the settings store. -->
+        <ChatSearchView v-if="visited.has('search')" v-show="activeTab === 'search'" />
+        <ChannelView v-if="visited.has('channels')" v-show="activeTab === 'channels'" />
+        <TellsView v-if="visited.has('tells')" v-show="activeTab === 'tells'" />
+        <PartyView v-if="visited.has('party')" v-show="activeTab === 'party'" />
+        <NearbyView v-if="visited.has('nearby')" v-show="activeTab === 'nearby'" />
+        <GuildView v-if="visited.has('guild')" v-show="activeTab === 'guild'" />
+        <SystemView v-if="visited.has('system')" v-show="activeTab === 'system'" />
+        <AllMessagesView v-if="visited.has('all')" v-show="activeTab === 'all'" />
+        <JsonView v-if="visited.has('json')" v-show="activeTab === 'json'" />
+        <WatchwordsView v-if="visited.has('watchwords')" v-show="activeTab === 'watchwords'" />
+        <PoemsView v-if="visited.has('poems')" v-show="activeTab === 'poems'" />
       </div>
     </div>
   </PaneLayout>
 </template>
 
 <script setup lang="ts">
+import { reactive, watch } from 'vue'
 import PaneLayout from '../Shared/PaneLayout.vue'
 import ChatSearchView from './ChatSearchView.vue'
 import ChannelView from './ChannelView.vue'
@@ -33,7 +39,11 @@ import JsonView from './JsonView.vue'
 import WatchwordsView from './WatchwordsView.vue'
 import PoemsView from './PoemsView.vue'
 
-defineProps<{
+const props = defineProps<{
   activeTab: string;
 }>();
+
+// Keep-alive set (EconomicsView precedent): first visit mounts, later visits reuse.
+const visited = reactive(new Set<string>([props.activeTab]))
+watch(() => props.activeTab, (tab) => { visited.add(tab) })
 </script>

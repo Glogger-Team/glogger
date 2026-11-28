@@ -73,10 +73,13 @@
         primary="No active character"
         secondary="Set an active character in Settings to view Stall Tracker data." />
       <template v-else>
-        <StallSalesTab v-if="activeTab === 'sales'" />
-        <StallRevenueTab v-else-if="activeTab === 'revenue'" />
-        <StallInventoryTab v-else-if="activeTab === 'inventory'" />
-        <StallTrendsTab v-else-if="activeTab === 'trends'" />
+        <!-- visited+v-show keep-alive (EconomicsView precedent): sub-tabs stay mounted so
+             switching back shows cached rows instead of remounting (onMounted reload) with a flash.
+             Identity refresh is safe: every tab watches store.currentOwner + store.dataVersion. -->
+        <StallSalesTab v-if="visited.has('sales')" v-show="activeTab === 'sales'" />
+        <StallRevenueTab v-if="visited.has('revenue')" v-show="activeTab === 'revenue'" />
+        <StallInventoryTab v-if="visited.has('inventory')" v-show="activeTab === 'inventory'" />
+        <StallTrendsTab v-if="visited.has('trends')" v-show="activeTab === 'trends'" />
       </template>
     </div>
 
@@ -118,7 +121,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, reactive, watch, onMounted, onBeforeUnmount } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { open as openDialog, confirm } from '@tauri-apps/plugin-dialog'
 import TabBar, { type Tab } from '../Shared/TabBar.vue'
@@ -346,6 +349,10 @@ const activeTab = computed({
   get: () => stallPrefs.value.activeTab,
   set: (val: string) => updateStallPrefs({ activeTab: val }),
 })
+
+// Keep-alive set (EconomicsView precedent): first visit mounts, later visits reuse.
+const visited = reactive(new Set<string>([activeTab.value]))
+watch(activeTab, (tab) => { visited.add(tab) })
 
 // Shop Log modal state — `shopLogMounted` is one-way: once true, never reset
 // within a session. `shopLogOpen` is the visibility toggle that the v-show
