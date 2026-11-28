@@ -91,17 +91,31 @@ function easternDayStartUtc(now: Date): Date {
   return new Date(wallMidnight - offsetMidnight * 60000)
 }
 
-type PresetId = 'tonight' | 'h1' | 'h3' | 'h6' | 'h12' | 'h24' | 'custom' | 'saved'
-const presetOptions: Array<{ id: PresetId; label: string; hours?: number }> = [
-  { id: 'tonight', label: 'Tonight' },
-  { id: 'h1', label: '1h', hours: 1 },
-  { id: 'h3', label: '3h', hours: 3 },
-  { id: 'h6', label: '6h', hours: 6 },
-  { id: 'h12', label: '12h', hours: 12 },
-  { id: 'h24', label: '24h', hours: 24 },
+type PresetId = 'today' | 'd1' | 'd7' | 'm1' | 'm3' | 'm6' | 'y1' | 'custom' | 'saved'
+const presetOptions: Array<{ id: PresetId; label: string; hours?: number; months?: number; range?: string }> = [
+  { id: 'today', label: 'Today', range: 'since Eastern midnight (game day)' },
+  { id: 'd1', label: '1D', hours: 24, range: 'last 24h' },
+  { id: 'd7', label: '7D', hours: 24 * 7, range: 'last 7 days' },
+  { id: 'm1', label: '1M', months: 1, range: 'last 1 calendar month' },
+  { id: 'm3', label: '3M', months: 3, range: 'last 3 calendar months' },
+  { id: 'm6', label: '6M', months: 6, range: 'last 6 calendar months' },
+  { id: 'y1', label: '1Y', months: 12, range: 'last 12 calendar months' },
 ]
 
-const activePreset = ref<PresetId>('tonight')
+/** Calendar-aware month subtraction in UTC: Mar 31 minus 1 month lands on
+ *  Feb 28/29, not Mar 3 (which naive Date.UTC month underflow would give).
+ *  Day clamps to the target month's length; wall-clock time is preserved. */
+function subtractMonthsUtc(now: Date, months: number): Date {
+  const target = now.getUTCMonth() - months
+  const year = now.getUTCFullYear() + Math.floor(target / 12)
+  const month = ((target % 12) + 12) % 12
+  const dim = new Date(Date.UTC(year, month + 1, 0)).getUTCDate()
+  const day = Math.min(now.getUTCDate(), dim)
+  return new Date(Date.UTC(year, month, day,
+    now.getUTCHours(), now.getUTCMinutes(), now.getUTCSeconds()))
+}
+
+const activePreset = ref<PresetId>('today')
 const showCustom = ref(false)
 const customStart = ref('')
 const customEnd = ref('')
@@ -112,9 +126,9 @@ const { prefs, update } = useViewPrefs('timeboxed', { savedWindows: [] as SavedW
 const savedWindows = computed(() => (prefs.value.savedWindows ?? []) as SavedWindow[])
 
 const rangeLabel = computed(() => {
-  if (activePreset.value === 'tonight') return 'since Eastern midnight (game day)'
+  if (activePreset.value === 'today') return 'since Eastern midnight (game day)'
   const opt = presetOptions.find((o) => o.id === activePreset.value)
-  if (opt?.hours) return `last ${opt.hours}h`
+  if (opt?.range) return opt.range
   const saved = savedWindows.value.find((w) => w.start_ts === range.value.start && w.end_ts === range.value.end)
   if (saved) return saved.label
   return 'custom'
@@ -128,12 +142,14 @@ function setRange(start: string, end: string) {
 function applyPreset(id: PresetId) {
   activePreset.value = id
   const now = new Date()
-  if (id === 'tonight') {
+  if (id === 'today') {
     setRange(toSpaceUTC(easternDayStartUtc(now)), toSpaceUTC(now))
     return
   }
   const opt = presetOptions.find((o) => o.id === id)
-  if (opt?.hours) {
+  if (opt?.months) {
+    setRange(toSpaceUTC(subtractMonthsUtc(now, opt.months)), toSpaceUTC(now))
+  } else if (opt?.hours) {
     setRange(toSpaceUTC(new Date(now.getTime() - opt.hours * 3600_000)), toSpaceUTC(now))
   }
 }
@@ -161,6 +177,6 @@ function applySaved(w: SavedWindow) {
 }
 
 onMounted(() => {
-  applyPreset('tonight')
+  applyPreset('today')
 })
 </script>
