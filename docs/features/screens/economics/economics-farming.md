@@ -82,7 +82,7 @@ The Session History tab was removed (Time-boxed is the default view). Live comba
 6. User clicked **End Session** — summary saved to SQLite
 7. Session appears in **History** tab with expandable detail view
 
-The Active Session tab, its store arms, and the live-session components are deleted; the readers (History/Database) remain.
+The Active Session tab, its store arms, and the live-session components are deleted; the Database reader remains. The sessions browser (`HistoricalTab.vue`) is unmounted from the Farming view but kept on disk.
 
 ### Historical Sessions
 
