@@ -91,9 +91,14 @@ function easternDayStartUtc(now: Date): Date {
   return new Date(wallMidnight - offsetMidnight * 60000)
 }
 
-type PresetId = 'today' | 'd1' | 'd7' | 'm1' | 'm3' | 'm6' | 'y1' | 'custom' | 'saved'
+type PresetId = 'today' | 'all' | 'd1' | 'd7' | 'm1' | 'm3' | 'm6' | 'y1' | 'custom' | 'saved'
 const presetOptions: Array<{ id: PresetId; label: string; hours?: number; months?: number; range?: string }> = [
   { id: 'today', label: 'Today', range: 'since Eastern midnight (game day)' },
+  // Unbounded start: the epoch floor sorts before every contract stamp
+  // ("YYYY-MM-DD HH:MM:SS" compares lexicographically), so the window covers
+  // the entire database. The backend requires non-empty bounds, hence a floor
+  // constant instead of an empty start.
+  { id: 'all', label: 'All time', range: 'everything recorded' },
   { id: 'd1', label: '1D', hours: 24, range: 'last 24h' },
   { id: 'd7', label: '7D', hours: 24 * 7, range: 'last 7 days' },
   { id: 'm1', label: '1M', months: 1, range: 'last 1 calendar month' },
@@ -115,7 +120,7 @@ function subtractMonthsUtc(now: Date, months: number): Date {
     now.getUTCHours(), now.getUTCMinutes(), now.getUTCSeconds()))
 }
 
-const activePreset = ref<PresetId>('today')
+const activePreset = ref<PresetId>('all')
 const showCustom = ref(false)
 const customStart = ref('')
 const customEnd = ref('')
@@ -144,6 +149,10 @@ function applyPreset(id: PresetId) {
   const now = new Date()
   if (id === 'today') {
     setRange(toSpaceUTC(easternDayStartUtc(now)), toSpaceUTC(now))
+    return
+  }
+  if (id === 'all') {
+    setRange('1970-01-01 00:00:00', toSpaceUTC(now))
     return
   }
   const opt = presetOptions.find((o) => o.id === id)
@@ -177,6 +186,6 @@ function applySaved(w: SavedWindow) {
 }
 
 onMounted(() => {
-  applyPreset('today')
+  applyPreset('all')
 })
 </script>
