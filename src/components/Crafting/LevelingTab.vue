@@ -366,6 +366,7 @@ import { storeToRefs } from "pinia";
 import { invoke } from "@tauri-apps/api/core";
 import { useGameDataStore } from "../../stores/gameDataStore";
 import { useCraftingStore } from "../../stores/craftingStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { useGameStateStore } from "../../stores/gameStateStore";
 import type { RecipeInfo } from "../../types/gameData/recipes";
 import type { FlattenedMaterial } from "../../types/crafting";
@@ -378,6 +379,7 @@ import RecipeInline from "../Shared/Recipe/RecipeInline.vue";
 
 const gameData = useGameDataStore();
 const craftingStore = useCraftingStore();
+const settingsStore = useSettingsStore();
 const gameStateStore = useGameStateStore();
 
 // ── Persistent state (lives in the store) ─────────────────────────────────
@@ -547,6 +549,85 @@ onMounted(async () => {
   }
 });
 
+// Character switch: skill level, plan anchoring, and recipe enrichment are all
+// per-character (levels and completions come from the new identity's game
+// state, which the picker reloads AFTER the settings flip — a same-tick
+// reload would read the old character's rows). Clear synchronously under the
+// new identity so the old character's level/plan never renders, then reload
+// once the new game state lands (skills array replacement). An in-flight
+// reload for a superseded identity drops its result via the post-await checks.
+let pendingIdentityReload = false;
+watch(
+  () => [settingsStore.settings.activeCharacterName, settingsStore.settings.activeServerName],
+  () => {
+    state.value.planLevels = [];
+    state.value.currentLevel = 0;
+    state.value.bonusLevels = 0;
+    state.value.snapshotLevel = null;
+    state.value.startingXp = 0;
+    state.value.xpTable = [];
+    allRecipes.value = [];
+    aggregatedMaterials.value = [];
+    gameStateXp.value = null;
+    pendingIdentityReload = state.value.selectedSkill !== "";
+  },
+);
+
+watch(
+  () => gameStateStore.skills,
+  () => {
+    if (!pendingIdentityReload) return;
+    pendingIdentityReload = false;
+    void reloadLevelForIdentity();
+  },
+);
+
+async function reloadLevelForIdentity() {
+  const characterName = settingsStore.settings.activeCharacterName;
+  const serverName = settingsStore.settings.activeServerName;
+  const skill = state.value.selectedSkill;
+  if (!skill) return;
+  loading.value = true;
+  try {
+    const skillData = await craftingStore.getSkillLevel(skill);
+    const table = await invoke<number[]>("get_xp_table_for_skill", { skillName: skill });
+    // A newer switch (or a skill change, which runs its own full load) owns
+    // the view now — drop this result instead of writing stale rows.
+    if (
+      settingsStore.settings.activeCharacterName !== characterName ||
+      settingsStore.settings.activeServerName !== serverName ||
+      state.value.selectedSkill !== skill
+    )
+      return;
+    if (skillData) {
+      state.value.snapshotLevel = skillData.totalLevel;
+      state.value.currentLevel = skillData.totalLevel;
+      state.value.bonusLevels = skillData.bonusLevels;
+      state.value.startingXp = skillData.xpTowardNext;
+      gameStateXp.value = skillData.xpTowardNext;
+    }
+    state.value.xpTable = table;
+    await loadRecipes({ characterName, serverName, skill });
+    if (
+      settingsStore.settings.activeCharacterName !== characterName ||
+      settingsStore.settings.activeServerName !== serverName ||
+      state.value.selectedSkill !== skill
+    )
+      return;
+  } catch (e) {
+    console.error("[crafting] Failed to reload leveling state:", e);
+  } finally {
+    // A stale load must not clear the spinner owned by the newer load
+    // started for the current identity.
+    if (
+      settingsStore.settings.activeCharacterName === characterName &&
+      settingsStore.settings.activeServerName === serverName &&
+      state.value.selectedSkill === skill
+    )
+      loading.value = false;
+  }
+}
+
 // ── Skill change ─────────────────────────────────────────────────────────────
 
 async function onSkillChange() {
@@ -586,7 +667,7 @@ async function onSkillChange() {
   loading.value = false;
 }
 
-async function loadRecipes() {
+async function loadRecipes(expected?: { characterName: string | null; serverName: string | null; skill: string }) {
   const skillInfo = await gameData.resolveSkill(state.value.selectedSkill);
   const skillInternalName = skillInfo?.internal_name ?? state.value.selectedSkill;
 
@@ -612,6 +693,17 @@ async function loadRecipes() {
   // The over-level drop-off is computed from the BASE skill level only — synergy/bonus
   // levels do NOT count toward it. It applies to repeat crafts, never the first craft.
   const pBaseLevel = planningBaseLevel.value;
+
+  // A newer switch (or a skill change, which runs its own full load) owns
+  // the view now — drop the stale enrichment instead of flashing another
+  // identity's recipes here.
+  if (
+    expected &&
+    (settingsStore.settings.activeCharacterName !== expected.characterName ||
+      settingsStore.settings.activeServerName !== expected.serverName ||
+      state.value.selectedSkill !== expected.skill)
+  )
+    return;
 
   allRecipes.value = relevant
     .map((recipe) => {

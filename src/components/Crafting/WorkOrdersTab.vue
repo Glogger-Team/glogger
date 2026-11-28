@@ -166,6 +166,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from "vue";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { useCraftingStore } from "../../stores/craftingStore";
 import type { EnrichedWorkOrder } from "../../types/crafting";
 import EmptyState from "../Shared/EmptyState.vue";
@@ -173,6 +174,7 @@ import SkeletonLoader from "../Shared/SkeletonLoader.vue";
 import ItemInline from "../Shared/Item/ItemInline.vue";
 import SkillInline from "../Shared/Skill/SkillInline.vue";
 
+const settingsStore = useSettingsStore();
 const craftingStore = useCraftingStore();
 
 const workOrders = ref<EnrichedWorkOrder[]>([]);
@@ -224,18 +226,34 @@ function toggleSelectAll() {
 }
 
 async function loadWorkOrders() {
+  const characterName = settingsStore.settings.activeCharacterName;
+  const serverName = settingsStore.settings.activeServerName;
   loading.value = true;
   error.value = "";
 
   try {
-    workOrders.value = await craftingStore.getWorkOrders(includeInventoryScrolls.value);
+    const rows = await craftingStore.getWorkOrders(includeInventoryScrolls.value);
+    // Rapid character switch: a newer load is in flight (or done). Drop the
+    // stale rows instead of flashing another character's work orders here.
+    if (
+      settingsStore.settings.activeCharacterName !== characterName ||
+      settingsStore.settings.activeServerName !== serverName
+    )
+      return;
+    workOrders.value = rows;
     selectedKeys.value = [];
     selectedSkill.value = null;
   } catch (e) {
     error.value = String(e);
     console.error("[crafting] Failed to load work orders:", e);
   } finally {
-    loading.value = false;
+    // A stale load must not clear the spinner owned by the newer load
+    // started for the current identity.
+    if (
+      settingsStore.settings.activeCharacterName === characterName &&
+      settingsStore.settings.activeServerName === serverName
+    )
+      loading.value = false;
   }
 }
 
@@ -275,6 +293,19 @@ async function createProjectFromSelected() {
 watch(includeInventoryScrolls, () => {
   loadWorkOrders();
 });
+
+// Character switch: clear synchronously under the new identity so the previous
+// character's rows never render, then reload. An in-flight load for the old
+// identity drops its result via the post-await check inside loadWorkOrders().
+watch(
+  () => [settingsStore.settings.activeCharacterName, settingsStore.settings.activeServerName],
+  () => {
+    workOrders.value = [];
+    selectedKeys.value = [];
+    selectedSkill.value = null;
+    void loadWorkOrders();
+  },
+);
 
 onMounted(() => {
   loadWorkOrders();
