@@ -187,7 +187,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { useGameDataStore } from "../../stores/gameDataStore";
 import { useCraftingStore } from "../../stores/craftingStore";
 import { useSettingsStore } from "../../stores/settingsStore";
@@ -286,6 +286,19 @@ async function resolve() {
     resolving.value = false;
   }
 }
+
+// Character switch: availability is resolved per character+server, so drop
+// the old character's needs synchronously and release the spinner — a stale
+// in-flight check's finally-guard correctly refuses to clear it under the
+// new identity, so the watcher owns the reset and the stale guard stays a
+// no-op. No auto re-run: re-check is one click under the current identity.
+watch(
+  () => [settingsStore.settings.activeCharacterName, settingsStore.settings.activeServerName],
+  () => {
+    materialNeeds.value = [];
+    checkingAvailability.value = false;
+  },
+);
 
 async function checkAvailability() {
   if (!resolved.value) return;
