@@ -27,8 +27,8 @@ pub struct RouteStop {
     pub details: String,
 }
 
-/// The type of action at a stop, used for within-zone ordering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, specta::Type)]
+/// The type of action at a stop, used for within-zone ordering (see `rank`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum StopPurpose {
     /// Pick up items from storage vault — do first.
@@ -41,6 +41,29 @@ pub enum StopPurpose {
     TurnIn = 3,
     /// Deposit items into storage vault — do last.
     Deposit = 4,
+    /// Gather items from the world (forage, harvest) — like Craft, before TurnIn.
+    ///
+    /// Appended after Deposit (not sorted between Craft and TurnIn) so adding
+    /// it renumbers nothing: execution order comes from `rank`, never from
+    /// declaration or discriminant order.
+    Gather = 5,
+}
+
+impl StopPurpose {
+    /// Within-zone execution order: pickup → vendor → craft → gather →
+    /// turn-in → deposit. Separate from the discriminant order so a new
+    /// variant never renumbers (and thereby never fake-removes) an existing
+    /// one in doc-orphan scans.
+    fn rank(self) -> u8 {
+        match self {
+            StopPurpose::Pickup => 0,
+            StopPurpose::VendorBuy => 1,
+            StopPurpose::Craft => 2,
+            StopPurpose::Gather => 3,
+            StopPurpose::TurnIn => 4,
+            StopPurpose::Deposit => 5,
+        }
+    }
 }
 
 /// Configuration for available travel methods.
@@ -95,6 +118,8 @@ pub enum RouteAction {
     VendorBuy,
     /// Craft items.
     Craft,
+    /// Gather items from the world.
+    Gather,
     /// Turn in items.
     TurnIn,
     /// Deposit items.
@@ -199,7 +224,7 @@ fn best_travel_method(
 /// 2. Group stops by resolved zone.
 /// 3. Greedy nearest-neighbor ordering using effective distance (considers recalls/TP).
 ///    Unreachable groups fail the plan with an error (never silently dropped).
-/// 4. Within each zone, order stops by purpose (pickup → vendor → craft → turn-in → deposit).
+/// 4. Within a zone, order stops by purpose (pickup → vendor → craft → gather → turn-in → deposit).
 /// 5. Insert travel steps between zone transitions, picking the best method.
 ///    Unreachable legs fail the plan before any hop is counted.
 pub fn plan_route(
@@ -377,7 +402,9 @@ pub fn plan_route(
         }
 
         // Sort stops within zone by purpose.
-        zone_stops.sort_by_key(|s| s.purpose);
+        // Within-zone execution order comes from StopPurpose::rank, not from
+        // declaration order (Gather is appended after Deposit).
+        zone_stops.sort_by_key(|s| s.purpose.rank());
 
         // Add action steps.
         for stop in zone_stops {
@@ -397,6 +424,7 @@ fn purpose_to_action(purpose: StopPurpose) -> RouteAction {
         StopPurpose::Pickup => RouteAction::Pickup,
         StopPurpose::VendorBuy => RouteAction::VendorBuy,
         StopPurpose::Craft => RouteAction::Craft,
+        StopPurpose::Gather => RouteAction::Gather,
         StopPurpose::TurnIn => RouteAction::TurnIn,
         StopPurpose::Deposit => RouteAction::Deposit,
     }
@@ -598,6 +626,17 @@ fn collect_objective(raw: &serde_json::Value) -> (Option<String>, u32) {
     (None, 0)
 }
 
+/// Whether any known recipe produces the named item: the same
+/// `recipes_producing_item` index `station_for_item` reads (no second index).
+/// `false` covers unknown items too (no row, no producers) — the order still
+/// plans a gather stop instead of dropping.
+fn has_producing_recipe(game_data: &GameData, item_internal_name: &str) -> bool {
+    game_data
+        .item_by_internal_name(item_internal_name)
+        .and_then(|item| game_data.recipes_producing_item.get(&item.id))
+        .is_some_and(|ids| !ids.is_empty())
+}
+
 /// Station hint for the crafted item: the lowest-id recipe producing it that
 /// states a station requirement (lowest id keeps the pick deterministic —
 /// the producing index is built from hash iteration order). `None` means no
@@ -648,14 +687,16 @@ fn turn_in_zone(game_data: &GameData, npc_name: &str) -> Option<String> {
         .map(|(_, zone)| zone.to_string())
 }
 
-/// Build `RouteStop`s for work orders: one `Craft` stop at the turn-in board
-/// town plus one `TurnIn` stop per order. Boards sit in towns with stations,
-/// so crafting rides along in the turn-in zone; the station the recipe needs,
-/// when the CDN states one, is named in the Craft details. (Zone→station
-/// curation is `docs/features/trip-routing.md` future work — this stays
-/// honest by naming the station instead of placing it.) The solver groups
-/// same-zone stops and orders Craft before TurnIn within a zone.
-///
+/// Build `RouteStop`s for work orders: one production stop at the turn-in board
+/// town plus one `TurnIn` stop per order. The production stop is `Craft` when a
+/// known recipe produces the item, `Gather` when it does not (same
+/// `recipes_producing_item` index `station_for_item` reads — no second index).
+/// Boards sit in towns with stations, so crafting rides along in the turn-in
+/// zone; the station the recipe needs, when the CDN states one, is named in
+/// the Craft details. (Zone→station curation is `docs/features/trip-routing.md`
+/// future work — this stays honest by naming the station instead of placing
+/// it.) The solver groups same-zone stops and orders Craft/Gather before
+/// TurnIn within a zone.
 /// Failures name the quest: unknown quest key, missing Deliver-to objective,
 /// or unresolvable turn-in zone all error — a work order never silently
 /// drops off the trip.
@@ -701,19 +742,30 @@ pub fn build_work_order_stops(
                 order.quest_key, npc
             )
         })?;
-        let station = item_internal
+        let has_producers = item_internal
             .as_deref()
-            .and_then(|internal| station_for_item(game_data, internal));
-        let mut craft_details =
-            format!("Craft {qty}x {item_label} (total) ({skill}) for '{quest_name}'");
-        if let Some(station) = station {
-            craft_details.push_str(&format!(" [needs {station}]"));
+            .is_some_and(|internal| has_producing_recipe(game_data, internal));
+        if has_producers {
+            let station = item_internal
+                .as_deref()
+                .and_then(|internal| station_for_item(game_data, internal));
+            let mut craft_details =
+                format!("Craft {qty}x {item_label} (total) ({skill}) for '{quest_name}'");
+            if let Some(station) = station {
+                craft_details.push_str(&format!(" [needs {station}]"));
+            }
+            stops.push(RouteStop {
+                zone: zone.clone(),
+                purpose: StopPurpose::Craft,
+                details: craft_details,
+            });
+        } else {
+            stops.push(RouteStop {
+                zone: zone.clone(),
+                purpose: StopPurpose::Gather,
+                details: format!("Gather {qty}x {item_label} (total) ({skill}) for '{quest_name}'"),
+            });
         }
-        stops.push(RouteStop {
-            zone: zone.clone(),
-            purpose: StopPurpose::Craft,
-            details: craft_details,
-        });
         stops.push(RouteStop {
             zone,
             purpose: StopPurpose::TurnIn,
@@ -723,10 +775,9 @@ pub fn build_work_order_stops(
     Ok(stops)
 }
 
-/// Plan a multi-zone trip to craft and turn in work orders.
-///
+/// Plan a multi-zone trip to complete work orders (craft or gather, then turn in).
 /// Resolves each order's turn-in zone from CDN quest/NPC data (static
-/// nine-board fallback), emits Craft + TurnIn stops, and runs the existing
+/// nine-board fallback), emits production + TurnIn stops, and runs the existing
 /// `plan_route` solver unchanged. Graph construction mirrors `plan_trip`
 /// (duplicated intentionally — this slice leaves `plan_trip` untouched).
 #[tauri::command]
@@ -1043,7 +1094,8 @@ mod tests {
     // ── Work order stop construction ──────────────────────────────────────
     //
     // Fixture quests mirror real CDN shapes (`docs/CDN-full-examples/quests.json`:
-    // quest_50301 Carpentry/Fitz, quest_50054 gathering/Sheyna). NPC rows carry
+    // quest_50301 Carpentry/Fitz, quest_50054 gathering/Sheyna, quest_50020
+    // gathering/mistletoe). NPC rows carry
     // the real CDN areas; Ogamboe is deliberately absent from the NPC map to
     // pin the static nine-board fallback.
     fn fixture_game_data() -> GameData {
@@ -1130,6 +1182,20 @@ mod tests {
             "Unknown_ManticoreTailTips".to_string(),
             "quest_wo_sheyna".to_string(),
         );
+        data.quests.insert(
+            "quest_wo_mistletoe".to_string(),
+            crate::game_data::QuestInfo {
+                internal_name: "Unknown_EnchantedMistletoe".to_string(),
+                raw: serde_json::json!({
+                    "Name": "Enchanted Mistletoe",
+                    "WorkOrderSkill": "Unknown",
+                    "Objectives": [
+                        {"Type": "Collect", "ItemName": "EnchantedMistletoe", "Number": 10, "Description": "Obtain Enchanted Mistletoe"},
+                        {"Type": "Scripted", "Number": 1, "Description": "Deliver to Fitz the Boatman"}
+                    ],
+                }),
+            },
+        );
         data.items.insert(
             9001,
             crate::game_data::ItemInfo {
@@ -1159,6 +1225,37 @@ mod tests {
         );
         data.item_internal_name_index
             .insert("TestStool".to_string(), 9001);
+        data.items.insert(
+            9112,
+            crate::game_data::ItemInfo {
+                id: 9112,
+                name: "Enchanted Mistletoe".to_string(),
+                description: None,
+                icon_id: None,
+                value: None,
+                max_stack_size: None,
+                keywords: Vec::new(),
+                effect_descs: Vec::new(),
+                internal_name: Some("EnchantedMistletoe".to_string()),
+                food_desc: None,
+                equip_slot: None,
+                num_uses: None,
+                skill_reqs: None,
+                behaviors: None,
+                bestow_recipes: None,
+                bestow_ability: None,
+                bestow_quest: None,
+                bestow_title: None,
+                craft_points: None,
+                crafting_target_level: None,
+                tsys_profile: None,
+                raw_json: serde_json::json!({}),
+            },
+        );
+        data.item_internal_name_index
+            .insert("EnchantedMistletoe".to_string(), 9112);
+        // No `recipes_producing_item` entry for 9112: nothing crafts
+        // Enchanted Mistletoe (zero hits in docs/CDN-full-examples/recipes.json).
         data.recipes.insert(
             7001,
             crate::game_data::RecipeInfo {
@@ -1191,6 +1288,81 @@ mod tests {
             },
         );
         data.recipes_producing_item.insert(9001, vec![7001]);
+        data.quests.insert(
+            "quest_wo_plain".to_string(),
+            crate::game_data::QuestInfo {
+                internal_name: "Carpentry_PlainWidgets".to_string(),
+                raw: serde_json::json!({
+                    "Name": "Plain Widgets",
+                    "WorkOrderSkill": "Carpentry",
+                    "Objectives": [
+                        {"Type": "Collect", "ItemName": "PlainWidget", "Number": 4, "Description": "Obtain Plain Widgets"},
+                        {"Type": "Scripted", "Number": 1, "Description": "Deliver to Fitz the Boatman"}
+                    ],
+                }),
+            },
+        );
+        data.items.insert(
+            9003,
+            crate::game_data::ItemInfo {
+                id: 9003,
+                name: "Plain Widget".to_string(),
+                description: None,
+                icon_id: None,
+                value: None,
+                max_stack_size: None,
+                keywords: Vec::new(),
+                effect_descs: Vec::new(),
+                internal_name: Some("PlainWidget".to_string()),
+                food_desc: None,
+                equip_slot: None,
+                num_uses: None,
+                skill_reqs: None,
+                behaviors: None,
+                bestow_recipes: None,
+                bestow_ability: None,
+                bestow_quest: None,
+                bestow_title: None,
+                craft_points: None,
+                crafting_target_level: None,
+                tsys_profile: None,
+                raw_json: serde_json::json!({}),
+            },
+        );
+        data.item_internal_name_index
+            .insert("PlainWidget".to_string(), 9003);
+        data.recipes.insert(
+            7002,
+            crate::game_data::RecipeInfo {
+                id: 7002,
+                name: "Plain Widget Recipe".to_string(),
+                description: None,
+                internal_name: None,
+                icon_id: None,
+                skill: Some("Carpentry".to_string()),
+                skill_level_req: None,
+                ingredients: Vec::new(),
+                costs: Vec::new(),
+                result_items: Vec::new(),
+                reward_skill: None,
+                reward_skill_xp: None,
+                reward_skill_xp_first_time: None,
+                prereq_recipe: None,
+                keywords: Vec::new(),
+                ingredient_item_ids: Vec::new(),
+                result_item_ids: vec![9003],
+                result_effects: Vec::new(),
+                usage_delay: None,
+                reward_skill_xp_drop_off_level: None,
+                sort_skill: None,
+                action_label: None,
+                shares_name_with_item_id: None,
+                raw_json: serde_json::json!({
+                    "Description": "A simple widget anyone can assemble anywhere."
+                }),
+            },
+        );
+        data.recipes_producing_item.insert(9003, vec![7002]);
         data
     }
 
@@ -1221,7 +1393,9 @@ mod tests {
         assert_eq!(stops[1].zone, "AreaSerbule");
         assert_eq!(stops[1].purpose, StopPurpose::TurnIn);
         assert_eq!(stops[2].zone, "AreaRahu");
-        assert_eq!(stops[2].purpose, StopPurpose::Craft);
+        // ManticoreTailTip has no producing recipe (real CDN item, zero recipe
+        // hits) — a gather stop, not craft.
+        assert_eq!(stops[2].purpose, StopPurpose::Gather);
         assert_eq!(stops[3].zone, "AreaRahu");
         assert_eq!(stops[3].purpose, StopPurpose::TurnIn);
         // Display name (not the internal name) + skill land in the details.
@@ -1243,7 +1417,8 @@ mod tests {
         let stops = build_work_order_stops(&data, &[wo_item("quest_wo_ogamboe", 5)]).unwrap();
         assert_eq!(stops.len(), 2);
         assert_eq!(stops[0].zone, "AreaFaeRealm1");
-        assert_eq!(stops[0].purpose, StopPurpose::Craft);
+        // FaeCloth has no producing recipe — a gather stop, not craft.
+        assert_eq!(stops[0].purpose, StopPurpose::Gather);
         assert_eq!(stops[1].zone, "AreaFaeRealm1");
         assert_eq!(stops[1].purpose, StopPurpose::TurnIn);
         assert!(stops[1].details.contains("Ogamboe"));
@@ -1306,9 +1481,26 @@ mod tests {
         let data = fixture_game_data();
         let stops = build_work_order_stops(&data, &[wo_item("quest_wo_fitz", 10)]).unwrap();
         assert!(stops[0].details.contains("[needs tanning rack]"));
-        // Gathering order with no resolvable producing recipe: no hint, still plans.
+        // Gathering order with no resolvable producing recipe: Gather purpose,
+        // no station hint, still plans.
         let stops = build_work_order_stops(&data, &[wo_item("quest_wo_sheyna", 10)]).unwrap();
+        assert_eq!(stops[0].purpose, StopPurpose::Gather);
         assert!(!stops[0].details.contains("[needs"));
+    }
+
+    #[test]
+    fn test_wo_craft_without_station_hint_for_produced_item() {
+        // Producers-gate vs station-gate discrimination: PlainWidget HAS a
+        // producing recipe whose Description states no station, so the stop is
+        // still Craft (a station.is_some() gate would misplan it as Gather).
+        let data = fixture_game_data();
+        let stops = build_work_order_stops(&data, &[wo_item("quest_wo_plain", 4)]).unwrap();
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[0].zone, "AreaSerbule");
+        assert_eq!(stops[0].purpose, StopPurpose::Craft);
+        assert!(stops[0].details.contains("Craft 4x Plain Widget (total)"));
+        assert!(!stops[0].details.contains("[needs"));
+        assert_eq!(stops[1].purpose, StopPurpose::TurnIn);
     }
 
     #[test]
@@ -1329,10 +1521,67 @@ mod tests {
                 &RouteAction::Travel,
                 &RouteAction::Travel,
                 &RouteAction::Travel,
-                &RouteAction::Craft,
+                &RouteAction::Gather,
                 &RouteAction::TurnIn
             ]
         );
+    }
+
+    #[test]
+    fn test_wo_gather_stop_for_unproduced_item() {
+        // Live bug: Enchanted Mistletoe is a gatherable (no producing recipe in
+        // docs/CDN-full-examples/recipes.json) but planned a Craft stop.
+        let data = fixture_game_data();
+        let stops = build_work_order_stops(&data, &[wo_item("quest_wo_mistletoe", 10)]).unwrap();
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[0].zone, "AreaSerbule");
+        assert_eq!(stops[0].purpose, StopPurpose::Gather);
+        assert_eq!(stops[1].purpose, StopPurpose::TurnIn);
+        assert!(stops.iter().all(|s| s.purpose != StopPurpose::Craft));
+        assert_eq!(
+            stops[0].details,
+            "Gather 10x Enchanted Mistletoe (total) (Unknown) for 'Enchanted Mistletoe'"
+        );
+    }
+
+    #[test]
+    fn test_wo_unknown_item_still_plans_gather() {
+        // Unknown item (no item row, so no producers): still plans Gather +
+        // TurnIn with the internal name as label — never silently drops.
+        let mut data = fixture_game_data();
+        data.quests.insert(
+            "quest_wo_unknown_item".to_string(),
+            crate::game_data::QuestInfo {
+                internal_name: "Unknown_NoSuchItem".to_string(),
+                raw: serde_json::json!({
+                    "Name": "No Such Item",
+                    "WorkOrderSkill": "Unknown",
+                    "Objectives": [
+                        {"Type": "Collect", "ItemName": "NoSuchItem", "Number": 7},
+                        {"Type": "Scripted", "Number": 1, "Description": "Deliver to Fitz the Boatman"}
+                    ],
+                }),
+            },
+        );
+        let stops = build_work_order_stops(&data, &[wo_item("quest_wo_unknown_item", 7)]).unwrap();
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[0].purpose, StopPurpose::Gather);
+        assert_eq!(stops[1].purpose, StopPurpose::TurnIn);
+        assert!(stops[0].details.contains("7x NoSuchItem (total)"));
+    }
+
+    #[test]
+    fn test_gather_orders_before_turn_in_within_zone() {
+        let g = make_graph();
+        // Input order is TurnIn-first; the solver still emits Gather first.
+        let stops = vec![
+            stop("AreaSerbule", StopPurpose::TurnIn, "Turn in order"),
+            stop("AreaSerbule", StopPurpose::Gather, "Gather mistletoe"),
+        ];
+        let route = plan_route(&g, "AreaSerbule", &stops, &TravelConfig::default()).unwrap();
+        assert_eq!(route.steps.len(), 2);
+        assert_eq!(route.steps[0].action, RouteAction::Gather);
+        assert_eq!(route.steps[1].action, RouteAction::TurnIn);
     }
 
     #[test]

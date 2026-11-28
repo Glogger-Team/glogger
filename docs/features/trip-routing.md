@@ -150,7 +150,7 @@ The coordinator extracts "Primary Bind Location" and "Secondary Bind Location" o
 1. **Resolve zones** — all stop zones and the start zone are resolved to overworld parents via `resolve_overworld()`.
 2. **Group stops by zone** — stops in the same overworld zone are bucketed together.
 3. **Greedy nearest-neighbor** — from the current zone, pick the unvisited zone group with the lowest effective travel cost (considering teleports). Repeat until all groups are ordered.
-4. **Within-zone ordering** — stops in the same zone are sorted by purpose priority: Pickup (0) → VendorBuy (1) → Craft (2) → TurnIn (3) → Deposit (4).
+4. **Within-zone ordering** — stops in the same zone are sorted by execution rank: Pickup → VendorBuy → Craft → Gather → TurnIn → Deposit (from StopPurpose::rank; discriminants stay stable with Gather = 5 appended).
 5. **Travel step insertion** — between zone transitions, insert the appropriate travel step(s) based on the selected method (one step for walk/recall, two steps for TP machine).
 
 The greedy algorithm is not globally optimal (it doesn't look ahead), but for 3-8 stops across a 15-node graph it produces good-enough results.
@@ -197,7 +197,7 @@ invoke('plan_trip', {
 
 ### `plan_work_order_trip`
 
-Plan a work-order craft/turn-in route from CDN quest data (one `Craft` + one `TurnIn` stop per order through the `plan_route` solver).
+Plan a work-order production/turn-in route from CDN quest data (one production stop — `Craft` when a recipe produces the item, `Gather` when it does not — + one `TurnIn` stop per order through the `plan_route` solver).
 
 ### `get_teleportation_binds`
 
