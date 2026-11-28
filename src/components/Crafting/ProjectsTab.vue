@@ -221,6 +221,7 @@ watch(
     materialNeeds.value = [];
     intermediateStockMap.value = new Map();
     stockTargets.value = new Map();
+    checkingAvailability.value = false;
     onResolve();
   },
 )
