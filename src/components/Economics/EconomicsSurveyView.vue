@@ -2,7 +2,7 @@
   <div class="flex flex-col gap-3 h-full">
     <TabBar v-model="activeTab" :tabs="tabs" />
     <div class="flex-1 min-h-0">
-      <SurveyTrackerView v-if="visited.has('session')" v-show="activeTab === 'session'" :active="activeTab === 'session'" />
+      <SurveyTrackerView v-if="visited.has('session')" v-show="activeTab === 'session'" :active="isActive && activeTab === 'session'" />
       <AnalyticsTab v-if="visited.has('analytics')" v-show="activeTab === 'analytics'" />
     </div>
   </div>
@@ -30,6 +30,11 @@ const activeTab = computed({
   get: () => prefs.value.activeTab,
   set: (val: string) => update({ activeTab: val }),
 })
+
+// Outer (top-level Economics visibility) ANDed with the local sub-tab at the
+// call site.
+const props = withDefaults(defineProps<{ active?: boolean }>(), { active: true });
+const isActive = computed(() => props.active !== false)
 
 // Keep-alive set (App.vue precedent): first visit mounts, later visits reuse.
 const visited = reactive(new Set<string>([activeTab.value]))

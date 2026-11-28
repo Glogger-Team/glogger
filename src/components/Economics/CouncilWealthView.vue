@@ -1,7 +1,7 @@
 <template>
   <div class="flex flex-col gap-4 h-full min-h-0 overflow-y-auto">
     <div class="text-[11px] text-text-dim italic">Council balance over time — your last export anchors the level, per-event chat deltas draw the line. Same windows as Activity.</div>
-    <TimeRangeSelector @change="onRangeChange" />
+    <TimeRangeSelector ref="selectorRef" @change="onRangeChange" />
 
     <div v-if="loading" class="text-xs text-text-dim italic">Reading the window…</div>
     <div v-else-if="error" class="text-[#c87e7e] text-sm">{{ error }}</div>
@@ -284,12 +284,17 @@ function onRangeChange(range: TimeRange) {
   void reload()
 }
 
+const selectorRef = ref<InstanceType<typeof TimeRangeSelector> | null>(null)
+
 function requestReload() {
   if (!isActive.value) {
     inactiveDirty = true
     return
   }
-  void reload()
+  // Preset-aware: re-apply the active preset with a fresh `now` so the window
+  // end extends past mount time; bare reload() would re-query the stale
+  // stored range and miss post-mount events.
+  selectorRef.value?.refresh()
 }
 
 let unlisten: UnlistenFn | null = null
@@ -311,7 +316,7 @@ watch(
 watch(isActive, (active) => {
   if (active && inactiveDirty) {
     inactiveDirty = false
-    void reload()
+    selectorRef.value?.refresh()
   }
 })
 

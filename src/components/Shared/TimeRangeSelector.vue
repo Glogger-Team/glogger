@@ -185,6 +185,21 @@ function applySaved(w: SavedWindow) {
   setRange(w.start_ts, w.end_ts)
 }
 
+/** Re-apply the current preset with a fresh `now` (extends All-time/Today
+ *  ends, slides relative windows) or re-emit the stored custom/saved window.
+ *  Panels call this on live/dirty triggers instead of re-querying the
+ *  mount-time range, whose stale end would exclude post-mount events (the
+ *  backend filters inclusively, so the stored range is exactly what's stale). */
+function refresh() {
+  if (activePreset.value === 'custom' || activePreset.value === 'saved') {
+    if (range.value.start && range.value.end) setRange(range.value.start, range.value.end)
+    return
+  }
+  applyPreset(activePreset.value)
+}
+
+defineExpose({ refresh })
+
 onMounted(() => {
   applyPreset('all')
 })

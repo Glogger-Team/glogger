@@ -2,9 +2,9 @@
   <div class="flex flex-col gap-4 h-full">
     <TabBar v-model="activeTab" :tabs="tabs" />
     <div class="flex-1 min-h-0">
-    <TimeboxedTab v-if="visited.has('timeboxed')" v-show="activeTab === 'timeboxed'" :active="activeTab === 'timeboxed'" />
+    <TimeboxedTab v-if="visited.has('timeboxed')" v-show="activeTab === 'timeboxed'" :active="isActive && activeTab === 'timeboxed'" />
     <DatabaseTab v-if="visited.has('database')" v-show="activeTab === 'database'" />
-    <CouncilWealthView v-if="visited.has('wealth')" v-show="activeTab === 'wealth'" :active="activeTab === 'wealth'" />
+    <CouncilWealthView v-if="visited.has('wealth')" v-show="activeTab === 'wealth'" :active="isActive && activeTab === 'wealth'" />
     </div>
   </div>
 </template>
@@ -30,6 +30,11 @@ const activeTab = computed({
   get: () => (prefs.value.activeTab === 'timeboxed' || prefs.value.activeTab === 'database' || prefs.value.activeTab === 'wealth' ? prefs.value.activeTab : 'timeboxed'),
   set: (val: string) => update({ activeTab: val }),
 })
+
+// Outer (top-level Economics visibility) ANDed with the local sub-tab at the
+// call sites: a hidden Economics tab leaves every pane inactive.
+const props = withDefaults(defineProps<{ active?: boolean }>(), { active: true });
+const isActive = computed(() => props.active !== false)
 
 // Keep-alive set (App.vue precedent): first visit mounts, later visits reuse.
 const visited = reactive(new Set<string>([activeTab.value]))
