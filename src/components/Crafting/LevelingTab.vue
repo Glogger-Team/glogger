@@ -607,7 +607,7 @@ async function reloadLevelForIdentity() {
       gameStateXp.value = skillData.xpTowardNext;
     }
     state.value.xpTable = table;
-    await loadRecipes();
+    await loadRecipes({ characterName, serverName, skill });
     if (
       settingsStore.settings.activeCharacterName !== characterName ||
       settingsStore.settings.activeServerName !== serverName ||
@@ -667,7 +667,7 @@ async function onSkillChange() {
   loading.value = false;
 }
 
-async function loadRecipes() {
+async function loadRecipes(expected?: { characterName: string | null; serverName: string | null; skill: string }) {
   const skillInfo = await gameData.resolveSkill(state.value.selectedSkill);
   const skillInternalName = skillInfo?.internal_name ?? state.value.selectedSkill;
 
@@ -693,6 +693,17 @@ async function loadRecipes() {
   // The over-level drop-off is computed from the BASE skill level only — synergy/bonus
   // levels do NOT count toward it. It applies to repeat crafts, never the first craft.
   const pBaseLevel = planningBaseLevel.value;
+
+  // A newer switch (or a skill change, which runs its own full load) owns
+  // the view now — drop the stale enrichment instead of flashing another
+  // identity's recipes here.
+  if (
+    expected &&
+    (settingsStore.settings.activeCharacterName !== expected.characterName ||
+      settingsStore.settings.activeServerName !== expected.serverName ||
+      state.value.selectedSkill !== expected.skill)
+  )
+    return;
 
   allRecipes.value = relevant
     .map((recipe) => {
