@@ -1288,6 +1288,81 @@ mod tests {
             },
         );
         data.recipes_producing_item.insert(9001, vec![7001]);
+        data.quests.insert(
+            "quest_wo_plain".to_string(),
+            crate::game_data::QuestInfo {
+                internal_name: "Carpentry_PlainWidgets".to_string(),
+                raw: serde_json::json!({
+                    "Name": "Plain Widgets",
+                    "WorkOrderSkill": "Carpentry",
+                    "Objectives": [
+                        {"Type": "Collect", "ItemName": "PlainWidget", "Number": 4, "Description": "Obtain Plain Widgets"},
+                        {"Type": "Scripted", "Number": 1, "Description": "Deliver to Fitz the Boatman"}
+                    ],
+                }),
+            },
+        );
+        data.items.insert(
+            9003,
+            crate::game_data::ItemInfo {
+                id: 9003,
+                name: "Plain Widget".to_string(),
+                description: None,
+                icon_id: None,
+                value: None,
+                max_stack_size: None,
+                keywords: Vec::new(),
+                effect_descs: Vec::new(),
+                internal_name: Some("PlainWidget".to_string()),
+                food_desc: None,
+                equip_slot: None,
+                num_uses: None,
+                skill_reqs: None,
+                behaviors: None,
+                bestow_recipes: None,
+                bestow_ability: None,
+                bestow_quest: None,
+                bestow_title: None,
+                craft_points: None,
+                crafting_target_level: None,
+                tsys_profile: None,
+                raw_json: serde_json::json!({}),
+            },
+        );
+        data.item_internal_name_index
+            .insert("PlainWidget".to_string(), 9003);
+        data.recipes.insert(
+            7002,
+            crate::game_data::RecipeInfo {
+                id: 7002,
+                name: "Plain Widget Recipe".to_string(),
+                description: None,
+                internal_name: None,
+                icon_id: None,
+                skill: Some("Carpentry".to_string()),
+                skill_level_req: None,
+                ingredients: Vec::new(),
+                costs: Vec::new(),
+                result_items: Vec::new(),
+                reward_skill: None,
+                reward_skill_xp: None,
+                reward_skill_xp_first_time: None,
+                prereq_recipe: None,
+                keywords: Vec::new(),
+                ingredient_item_ids: Vec::new(),
+                result_item_ids: vec![9003],
+                result_effects: Vec::new(),
+                usage_delay: None,
+                reward_skill_xp_drop_off_level: None,
+                sort_skill: None,
+                action_label: None,
+                shares_name_with_item_id: None,
+                raw_json: serde_json::json!({
+                    "Description": "A simple widget anyone can assemble anywhere."
+                }),
+            },
+        );
+        data.recipes_producing_item.insert(9003, vec![7002]);
         data
     }
 
@@ -1411,6 +1486,21 @@ mod tests {
         let stops = build_work_order_stops(&data, &[wo_item("quest_wo_sheyna", 10)]).unwrap();
         assert_eq!(stops[0].purpose, StopPurpose::Gather);
         assert!(!stops[0].details.contains("[needs"));
+    }
+
+    #[test]
+    fn test_wo_craft_without_station_hint_for_produced_item() {
+        // Producers-gate vs station-gate discrimination: PlainWidget HAS a
+        // producing recipe whose Description states no station, so the stop is
+        // still Craft (a station.is_some() gate would misplan it as Gather).
+        let data = fixture_game_data();
+        let stops = build_work_order_stops(&data, &[wo_item("quest_wo_plain", 4)]).unwrap();
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[0].zone, "AreaSerbule");
+        assert_eq!(stops[0].purpose, StopPurpose::Craft);
+        assert!(stops[0].details.contains("Craft 4x Plain Widget (total)"));
+        assert!(!stops[0].details.contains("[needs"));
+        assert_eq!(stops[1].purpose, StopPurpose::TurnIn);
     }
 
     #[test]
