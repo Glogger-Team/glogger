@@ -197,7 +197,7 @@ invoke('plan_trip', {
 
 ### `plan_work_order_trip`
 
-Plan a work-order craft/turn-in route from CDN quest data (one `Craft` + one `TurnIn` stop per order through the `plan_route` solver).
+Plan a work-order production/turn-in route from CDN quest data (one production stop — `Craft` when a recipe produces the item, `Gather` when it does not — + one `TurnIn` stop per order through the `plan_route` solver).
 
 ### `get_teleportation_binds`
 

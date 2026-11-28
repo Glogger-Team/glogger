@@ -15,6 +15,8 @@ export type RouteAction =
 "vendor_buy" | 
 /**  Craft items. */
 "craft" | 
+/**  Gather items from the world. */
+"gather" | 
 /**  Turn in items. */
 "turn_in" | 
 /**  Deposit items. */
@@ -40,7 +42,7 @@ export type RouteStop = {
 	details: string,
 };
 
-/**  The type of action at a stop, used for within-zone ordering. */
+/**  The type of action at a stop, used for within-zone ordering (see `rank`). */
 export type StopPurpose = 
 /**  Pick up items from storage vault — do first. */
 "pickup" | 
@@ -51,7 +53,15 @@ export type StopPurpose =
 /**  Turn in items to an NPC (work order, quest). */
 "turn_in" | 
 /**  Deposit items into storage vault — do last. */
-"deposit";
+"deposit" | 
+/**
+ *  Gather items from the world (forage, harvest) — like Craft, before TurnIn.
+ * 
+ *  Appended after Deposit (not sorted between Craft and TurnIn) so adding
+ *  it renumbers nothing: execution order comes from `rank`, never from
+ *  declaration or discriminant order.
+ */
+"gather";
 
 /**  Configuration for available travel methods. */
 export type TravelConfig = {
