@@ -41,11 +41,14 @@
 
             <div class="flex-1 min-w-0 overflow-y-auto p-6 bg-surface-base/30">
               <div class="max-w-2xl">
-                <AboutTab v-if="activeTab === 'about'" />
-                <HelpSetupTab v-else-if="activeTab === 'help'" @navigate="$emit('navigate', $event)" />
-                <ChangelogTab v-else-if="activeTab === 'changelog'" />
-                <KnownIssuesTab v-else-if="activeTab === 'known-issues'" />
-                <PgNewsTab v-else-if="activeTab === 'pg-news'" />
+                <!-- visited+v-show keep-alive (EconomicsView precedent): help tabs are static or
+                     global one-time loads, so kept-alive tabs never go stale; switching back
+                     preserves scroll position instead of remounting. -->
+                <AboutTab v-if="visited.has('about')" v-show="activeTab === 'about'" />
+                <HelpSetupTab v-if="visited.has('help')" v-show="activeTab === 'help'" @navigate="$emit('navigate', $event)" />
+                <ChangelogTab v-if="visited.has('changelog')" v-show="activeTab === 'changelog'" />
+                <KnownIssuesTab v-if="visited.has('known-issues')" v-show="activeTab === 'known-issues'" />
+                <PgNewsTab v-if="visited.has('pg-news')" v-show="activeTab === 'pg-news'" />
               </div>
             </div>
           </div>
@@ -56,7 +59,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, reactive, watch } from 'vue'
 import { useOverlayEscape } from '../../composables/useOverlayEscape'
 import { useUpdateStore } from '../../stores/updateStore'
 import AboutTab from './AboutTab.vue'
@@ -87,6 +90,12 @@ const tabs: { id: TabId; label: string; icon: string }[] = [
 ]
 
 const activeTab = ref<TabId>('about')
+
+// Keep-alive set (EconomicsView precedent): first visit mounts, later visits reuse.
+// Help tabs are static content or global one-time loads (character-independent),
+// so a kept-alive tab cannot go stale.
+const visited = reactive(new Set<TabId>([activeTab.value]))
+watch(activeTab, (tab) => { visited.add(tab) })
 
 function close() {
   emit('update:show', false)
