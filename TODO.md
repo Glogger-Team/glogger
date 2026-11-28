@@ -454,15 +454,21 @@ WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history.
   - **Effort: Small | Impact: Low-Medium (stale rows on character switch)**
   - **Suspects:** `src/components/Crafting/SkillsTab.vue:515`, `src/components/Crafting/BreweryTab.vue` (brewing/discoveries load)
 
-- [ ] WorkOrdersTab mount-only staleness (same class as SkillsTab/BreweryTab #425 — reported, not fixed): sole watch is `includeInventoryScrolls`; `loadWorkOrders` reads active character+server at call time with no stale guard.
+- [x] WorkOrdersTab mount-only staleness (same class as SkillsTab/BreweryTab #425 — reported, not fixed): sole watch is `includeInventoryScrolls`; `loadWorkOrders` reads active character+server at call time with no stale guard. — FIXED #427 (identity watch + clear-then-reload + stale-drop guards, verified MERGED 2026-11-27).
   - **Effort: Small | Impact: Low-Medium (stale rows on character switch)**
   - **Suspects:** `src/components/Crafting/WorkOrdersTab.vue:275-277` (sole watch), `src/stores/craftingStore.ts:1481+` (`loadWorkOrders`)
-- [ ] LevelingTab mount-only staleness (same class as SkillsTab/BreweryTab #425 — reported, not fixed): watches are plan/multiplier/costs only, no character watch; skill level fetched only in `onSkillChange`; `levelingState` persists across identities.
+- [x] LevelingTab mount-only staleness (same class as SkillsTab/BreweryTab #425 — reported, not fixed): watches are plan/multiplier/costs only, no character watch; skill level fetched only in `onSkillChange`; `levelingState` persists across identities. — FIXED #427 (identity watch + clear-then-reload + stale-drop guards, verified MERGED 2026-11-27).
   - **Effort: Small | Impact: Low-Medium (stale rows on character switch)**
   - **Suspects:** `src/components/Crafting/LevelingTab.vue:663-676,801` (watches without identity)
-- [ ] CooksHelperTab mount-only staleness (same class as SkillsTab/BreweryTab #425 — reported, not fixed): no `watch` import at all; `onMounted` only (`tryAutoImport` + `loadProjects`).
+- [x] CooksHelperTab mount-only staleness (same class as SkillsTab/BreweryTab #425 — reported, not fixed): no `watch` import at all; `onMounted` only (`tryAutoImport` + `loadProjects`). — FIXED #427 (identity watch + clear-then-reload + stale-drop guards, verified MERGED 2026-11-27).
   - **Effort: Small | Impact: Low (stale rows on character switch)**
   - **Suspects:** `src/components/Crafting/CooksHelperTab.vue:185-188`
-- [ ] ProjectsTab mount-only staleness (same class as SkillsTab/BreweryTab #425 — reported, not fixed; lower urgency, projects are user-created not per-character rows): watches `activeProject`/`activeGroupName`/selection prefs only; mount restores prefs; no identity watch.
+- [x] ProjectsTab mount-only staleness (same class as SkillsTab/BreweryTab #425 — reported, not fixed; lower urgency, projects are user-created not per-character rows): watches `activeProject`/`activeGroupName`/selection prefs only; mount restores prefs; no identity watch. — FIXED #427 (identity watch + clear-then-reload + stale-drop guards, verified MERGED 2026-11-27).
   - **Effort: Small | Impact: Low (stale view on character switch)**
   - **Suspects:** `src/components/Crafting/ProjectsTab.vue:167-215` (pref-only watches)
+- [ ] cooksHelperStore.checkAllMaterials mixes identities on mid-check switch (Closeout observation #427, fix-eventually P2): the per-recipe loop (`cooksHelperStore.ts:209-229`) captures identity per-recipe with no guard, so a mid-check character switch writes a mixed-identity availability map. Fix: capture identity once at check start, drop the whole map on mismatch before assigning.
+  - **Effort: Small | Impact: Low-Medium (mixed-character availability map on unlucky timing)**
+  - **Suspects:** `src/stores/cooksHelperStore.ts:209-229`
+- [ ] QuickCalcTab checkAvailability single-shot unguarded (Closeout observation #427, P3): `QuickCalcTab.vue:291-301` fires one availability check with no stale guard — a switch mid-check could paint another character's result. Rare trigger, no spinner to stick.
+  - **Effort: Trivial-Small | Impact: Low (transient wrong result in a calculator)**
+  - **Suspects:** `src/components/Crafting/QuickCalcTab.vue:291-301`
