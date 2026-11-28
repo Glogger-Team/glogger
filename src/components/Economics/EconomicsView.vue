@@ -22,6 +22,7 @@
 import { computed, reactive, watch } from 'vue'
 import PaneLayout from '../Shared/PaneLayout.vue'
 import MarketView from '../Market/MarketView.vue'
+import FarmingView from './EconomicsFarmingView.vue'
 import SurveyView from './EconomicsSurveyView.vue'
 import StallTrackerView from '../StallTracker/StallTrackerView.vue'
 
