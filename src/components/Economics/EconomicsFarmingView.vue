@@ -2,9 +2,9 @@
   <div class="flex flex-col gap-4 h-full">
     <TabBar v-model="activeTab" :tabs="tabs" />
     <div class="flex-1 min-h-0">
-    <TimeboxedTab v-if="visited.has('timeboxed')" v-show="activeTab === 'timeboxed'" />
+    <TimeboxedTab v-if="visited.has('timeboxed')" v-show="activeTab === 'timeboxed'" :active="activeTab === 'timeboxed'" />
     <DatabaseTab v-if="visited.has('database')" v-show="activeTab === 'database'" />
-    <CouncilWealthView v-if="visited.has('wealth')" v-show="activeTab === 'wealth'" />
+    <CouncilWealthView v-if="visited.has('wealth')" v-show="activeTab === 'wealth'" :active="activeTab === 'wealth'" />
     </div>
   </div>
 </template>

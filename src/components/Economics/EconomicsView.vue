@@ -16,7 +16,7 @@
       <StallTrackerView v-if="visited.has('stall-tracker')" v-show="activeTab === 'stall-tracker'" />
 
       <!-- Council Wealth -->
-      <CouncilWealthView v-if="visited.has('wealth')" v-show="activeTab === 'wealth'" />
+      <CouncilWealthView v-if="visited.has('wealth')" v-show="activeTab === 'wealth'" :active="activeTab === 'wealth'" />
     </div>
   </PaneLayout>
 </template>
