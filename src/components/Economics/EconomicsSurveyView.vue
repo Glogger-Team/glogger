@@ -2,8 +2,8 @@
   <div class="flex flex-col gap-3 h-full">
     <TabBar v-model="activeTab" :tabs="tabs" />
     <div class="flex-1 min-h-0">
-      <SurveyTrackerView v-if="activeTab === 'session'" />
-      <AnalyticsTab v-else-if="activeTab === 'analytics'" />
+      <SurveyTrackerView v-if="visited.has('session')" v-show="activeTab === 'session'" :active="isActive && activeTab === 'session'" />
+      <AnalyticsTab v-if="visited.has('analytics')" v-show="activeTab === 'analytics'" />
     </div>
   </div>
 </template>
@@ -14,7 +14,7 @@
 // "Session History" tabs into one PaneLayout view — the left panel
 // lists all sessions (active pinned at top), the center shows detail
 // for the selected session, and the right shows economics/notes.
-import { computed } from 'vue'
+import { computed, reactive, watch } from 'vue'
 import TabBar from '../Shared/TabBar.vue'
 import SurveyTrackerView from '../Surveying/SurveyTrackerView.vue'
 import AnalyticsTab from '../Surveying/AnalyticsTab.vue'
@@ -30,4 +30,13 @@ const activeTab = computed({
   get: () => prefs.value.activeTab,
   set: (val: string) => update({ activeTab: val }),
 })
+
+// Outer (top-level Economics visibility) ANDed with the local sub-tab at the
+// call site.
+const props = withDefaults(defineProps<{ active?: boolean }>(), { active: true });
+const isActive = computed(() => props.active !== false)
+
+// Keep-alive set (App.vue precedent): first visit mounts, later visits reuse.
+const visited = reactive(new Set<string>([activeTab.value]))
+watch(activeTab, (tab) => { visited.add(tab) })
 </script>

@@ -34,7 +34,7 @@
               <CharacterView :active-tab="activeSubTab" />
             </div>
             <div v-if="visited.has('combat')" v-show="currentView === 'combat'" class="h-full">
-              <CombatView />
+              <CombatView :active="currentView === 'combat'" />
             </div>
             <div v-if="visited.has('inventory')" v-show="currentView === 'inventory'" class="h-full">
               <InventoryWrapper :active-tab="activeSubTab" />
@@ -43,7 +43,7 @@
               <CraftingView :active-tab="activeSubTab" />
             </div>
             <div v-if="visited.has('economics')" v-show="currentView === 'economics'" class="h-full">
-              <EconomicsView :active-tab="activeSubTab" />
+              <EconomicsView :active-tab="activeSubTab" :active="currentView === 'economics'" />
             </div>
             <div v-if="visited.has('chat')" v-show="currentView === 'chat'" class="h-full">
               <ChatView :active-tab="activeSubTab" />

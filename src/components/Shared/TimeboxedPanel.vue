@@ -1,6 +1,6 @@
 <template>
   <div class="flex flex-col gap-4">
-    <TimeRangeSelector @change="onRangeChange" />
+    <TimeRangeSelector ref="selectorRef" @change="onRangeChange" />
 
     <div v-if="loading" class="text-xs text-text-dim italic">Reading the window…</div>
     <div v-else-if="error" class="text-[#c87e7e] text-sm">{{ error }}</div>
@@ -62,8 +62,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import TimeRangeSelector, { type TimeRange } from './TimeRangeSelector.vue'
 import DataTable, { type ColumnDef } from './DataTable.vue'
 import EmptyState from './EmptyState.vue'
@@ -71,7 +72,13 @@ import EnemyInline from './Enemy/EnemyInline.vue'
 import SkillInline from './Skill/SkillInline.vue'
 import ItemInline from './Item/ItemInline.vue'
 import { useSettingsStore } from '../../stores/settingsStore'
+import { isReplayChatStatusEvent, type ChatStatusEvent, type ReplayChatStatusEnvelope } from '../../stores/gameStateStore'
 import type { FarmingItemRecord, FarmingKillRecord, FarmingSkillRecord } from '../../types/farming.specta'
+
+// Inactive (v-show-hidden) instances skip listener-triggered reloads and
+// reload once on flip back to active — same pattern as CouncilWealthView.
+const props = defineProps<{ active?: boolean }>()
+const isActive = computed(() => props.active !== false)
 
 const killColumns: ColumnDef[] = [
   { key: 'enemy_name', label: 'Enemy' },
@@ -97,33 +104,118 @@ const totalKills = computed(() => kills.value.reduce((s, k) => s + k.kill_count,
 const totalLoot = computed(() => loot.value.reduce((s, l) => s + l.net_quantity, 0))
 const totalXp = computed(() => xp.value.reduce((s, x) => s + x.xp_gained, 0))
 
-async function onRangeChange(range: TimeRange) {
-  loadedRange.value = range
-  if (!range.start || !range.end) return
+function identityOf() {
+  const settings = useSettingsStore()
+  const character = settings.settings.activeCharacterName
+  const server = settings.settings.activeServerName
+  if (!character || !server) return null
+  return { character, server }
+}
+
+// Monotonic reload sequence (CouncilWealthView precedent): a range/identity
+// switch mid-fetch must not let the older response plant or clear `loading`
+// while the newer fetch is still in flight.
+let reloadSeq = 0
+let inactiveDirty = false
+
+async function reload() {
+  const range = loadedRange.value
+  const seq = ++reloadSeq
+  if (!range || !range.start || !range.end) return
+  const id = identityOf()
   loading.value = true
   error.value = null
   try {
-    const settings = useSettingsStore()
     const args = {
       startTs: range.start,
       endTs: range.end,
-      characterName: settings.settings.activeCharacterName ?? null,
-      serverName: settings.settings.activeServerName ?? null,
+      characterName: id?.character ?? null,
+      serverName: id?.server ?? null,
     }
     const [k, l, x] = await Promise.all([
       invoke<FarmingKillRecord[]>('get_timeboxed_kills', args),
       invoke<FarmingItemRecord[]>('get_timeboxed_loot', args),
       invoke<FarmingSkillRecord[]>('get_timeboxed_xp', args),
     ])
-    // Rapid preset switches: drop a stale response that no longer matches.
+    if (seq !== reloadSeq) return
+    // Rapid preset/character switches: drop a stale response that no longer
+    // matches (same guard shape as the arena tips fetch).
     if (loadedRange.value !== range) return
+    const now = identityOf()
+    if ((now?.character ?? null) !== (id?.character ?? null) || (now?.server ?? null) !== (id?.server ?? null)) return
     kills.value = k
     loot.value = l
     xp.value = x
   } catch (e: any) {
+    if (seq !== reloadSeq) return
     error.value = String(e)
   } finally {
-    if (loadedRange.value === range) loading.value = false
+    if (seq === reloadSeq) loading.value = false
   }
 }
+
+const selectorRef = ref<InstanceType<typeof TimeRangeSelector> | null>(null)
+
+function requestReload() {
+  if (!isActive.value) {
+    inactiveDirty = true
+    return
+  }
+  // Preset-aware: re-apply the active preset with a fresh `now` so the window
+  // end extends past mount time; bare reload() would re-query the stale
+  // stored range and miss post-mount events.
+  selectorRef.value?.refresh()
+}
+
+function onRangeChange(range: TimeRange) {
+  loadedRange.value = range
+  if (!range.start || !range.end) return
+  void reload()
+}
+
+watch(
+  () => {
+    const id = identityOf()
+    return id ? `${id.character}@${id.server}` : ''
+  },
+  () => {
+    // Clear synchronously: the previous identity's rows must not render
+    // under the new identity while the fresh fetch is in flight.
+    kills.value = []
+    loot.value = []
+    xp.value = []
+    requestReload()
+  },
+)
+
+watch(isActive, (active) => {
+  if (active && inactiveDirty) {
+    inactiveDirty = false
+    selectorRef.value?.refresh()
+  }
+})
+
+let unlistenKill: UnlistenFn | null = null
+let unlistenStatus: UnlistenFn | null = null
+
+onMounted(async () => {
+  // Live refresh: keep-alive removed the remount-refetch, so new kills, loot
+  // gains, and XP awards must trigger a reload explicitly. Replay preview
+  // re-emits on the live channel tagged `is_replay` — never reload from it.
+  unlistenKill = await listen('enemy-killed', () => {
+    requestReload()
+  })
+  unlistenStatus = await listen<ChatStatusEvent | ReplayChatStatusEnvelope>('chat-status-event', (e) => {
+    if (isReplayChatStatusEvent(e.payload)) return
+    const kind = (e.payload as { kind: string }).kind
+    if (kind === 'ItemGained' || kind === 'XpGained' || kind === 'ProdigyXpGained' || kind === 'LevelUp') {
+      requestReload()
+    }
+  })
+})
+
+onBeforeUnmount(() => {
+  unlistenKill?.()
+  unlistenStatus?.()
+})
 </script>

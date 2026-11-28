@@ -459,6 +459,7 @@ async function selectSession(id: number) {
 watch(
   () => store.status,
   () => {
+    if (!props.active) return
     if (isSelectedActive.value && selectedSessionId.value !== null) {
       void selectSession(selectedSessionId.value)
     }
@@ -466,17 +467,37 @@ watch(
   { deep: true },
 )
 
-// Safety-net poll for active session detail.
+// Safety-net poll for active session detail. Paused while the tab is hidden
+// (v-show keep-alive keeps the component mounted, so the interval must stop
+// explicitly) — same `:active` visibility signal as the wealth panels.
+const props = withDefaults(defineProps<{ active?: boolean }>(), { active: true })
 let pollId: number | null = null
-onMounted(() => {
+function stopPoll() {
+  if (pollId !== null) {
+    window.clearInterval(pollId)
+    pollId = null
+  }
+}
+function startPoll() {
+  stopPoll()
   pollId = window.setInterval(() => {
     if (isSelectedActive.value && selectedSessionId.value !== null) {
       void selectSession(selectedSessionId.value)
     }
   }, 5000)
+}
+watch(
+  () => props.active,
+  (active) => {
+    if (active) startPoll()
+    else stopPoll()
+  },
+)
+onMounted(() => {
+  if (props.active) startPoll()
 })
 onBeforeUnmount(() => {
-  if (pollId !== null) window.clearInterval(pollId)
+  stopPoll()
 })
 
 // Auto-select the active session on load if there is one.
