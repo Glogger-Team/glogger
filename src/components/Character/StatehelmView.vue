@@ -191,9 +191,11 @@
           Matches vault items against gift preferences (Love first, then Like) and assigns each
           stack to the highest-benefit NPC with weekly gifts remaining. Uncheck NPCs to exclude them.
         </p>
-        <!-- Planner-tab NPC filters: tier cutoff (affects the search keys),
-          has-gifts (display-only, needs matches), and the gear-quality floor
-          (disabled — the matcher output carries no rarity; see note below). -->
+        <!-- Planner-tab NPC filters: tier cutoff (affects the search keys) and
+          has-gifts (display-only, needs matches). The gear-quality floor select
+          was removed (TODO: "Gift-planner quality floor needs per-item rarity
+          in matcher output", gift-rank handoff #403, BLOCKED on backend shape)
+          — restore it here when matcher rows carry rarity. -->
         <div v-if="giftableStatuses.length > 0" class="flex items-center gap-4 flex-wrap text-xs">
           <label class="flex items-center gap-1.5 text-text-secondary">
             Hide at/above
@@ -211,16 +213,6 @@
             title="Hides NPCs with no matched vault gifts; applies once a search has run">
             <input type="checkbox" v-model="plannerHideZeroMatch" class="accent-accent-gold" />
             Only NPCs with vault matches
-          </label>
-          <label
-            class="flex items-center gap-1.5 text-text-secondary opacity-60"
-            title="Unavailable: matched gifts carry no per-item rarity">
-            Min gear quality
-            <select
-              disabled
-              class="bg-surface-elevated border border-border-default rounded px-1.5 py-0.5 text-xs text-text-primary cursor-not-allowed">
-              <option>Epic</option>
-            </select>
           </label>
         </div>
         <p v-if="giftableStatuses.length > 0" class="text-xs text-text-dim">
