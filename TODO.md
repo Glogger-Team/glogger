@@ -305,6 +305,7 @@ WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history.
 - [ ] Gorgonzola community API pulls (gorgonzola-monitor audit 2026-11-27 — read-only GETs, never post; separate integration decision, not log parsing): things no log can ever carry. (a) `/api/bets` fighter win/loss records → arena predictor fuel (local-only stats stay thin); (b) community drop tables (their mob-drop reports paused until new lines seen — revisit when resumed) → the only path to real denominators now our corpse path is dead; (c) cross-zone weather/garden/blood/warden per-server endpoints → travelers get nothing today (we only see the player's zone); (d) community barter layer (player-reported exchanges beyond CDN); (e) Qatik/moon computed locally instead (no API needed — Eastern-math precedent exists). Scope when scheduled: pull client + merge rules (community never overrides curated/local observed) + per-feature consumers; town-crier discipline (public world knowledge only, same as the monitor's model).
   - **Effort: Medium (client + per-feature wiring) | Impact: Medium-High (replaces the lost corpse path; enriches predictor)**
   - **Suspects:** new pull module (no precedent — zero hits for spellboundtavern/gorgonzola in tree), `arena_commands.rs` (predictor), `DatabaseTab.vue` (drop denominators), `docs/plans/` (new plan when scheduled)
+  - **Before implementing:** get explicit permission from the Gorgonzola maintainer (Spellbound Tavern) — their API is a community resource, not a public utility; confirm acceptable use/rate before writing the pull client.
   - **Status 2026-11-27 (todo-prune-3 re-validation):** "zero hits" premise narrowed — 5 comment-only hits now (`arena_commands.rs:110,292,311,408` doc comments referencing the gorgonzola monitor's parse patterns, mirrored once in generated `arena.specta.ts:84`; carried by #421) — still no pull client or network precedent; entry stays open.
 
 ---
@@ -449,6 +450,19 @@ WO-completion tooltips + dropped-field persistence (v74/v81) shipped in history.
 - [x] Boss kill timers are session-only (follow-up to #304) — FIXED #310 (2026-11-24): `get_boss_kill_times` reads per-boss timestamps from `enemy_kills` (coarse SQL pre-filter, FE `isBossLike` stays authority, OR-NULL identity scoping); `loadBossBaseline` re-seeds on widget mount + character reseed with stale-identity guard. Single-kill renders unchanged (null gap → 24h default). Heuristic still unvalidated against real logs. Original text: `bossKills` lives in `farmingStore` and resets on character switch/restart; surviving restarts needs a backend command reading per-boss last-kill/lockout from `enemy_kills` (not in scope for #304). Heuristic also unvalidated against real logs (prefix + 8000-damage threshold); observed-gap lockout needs >= 2 kills per boss.
   - **Suspects:** `src/stores/farmingStore.ts` (`bossKills`), `src-tauri/src/db/kill_tracking_commands.rs`.
 
-- [ ] Crafting SkillsTab + BreweryTab mount-only staleness (CloseHist handoff #400, same class as the fixed HistoryTab): `SkillsTab.vue:515` loads once on mount with no identity watch (per-character skill stats + levels go stale on switch); `BreweryTab` loads brewing data + discoveries once (same). Fix = mirror the HistoryTab watch pattern (clear-then-reload on identity). Deferrable, pre-existing, out of #400 scope.
+- [x] Crafting SkillsTab + BreweryTab mount-only staleness (CloseHist handoff #400, same class as the fixed HistoryTab): `SkillsTab.vue:515` loads once on mount with no identity watch (per-character skill stats + levels go stale on switch); `BreweryTab` loads brewing data + discoveries once (same). Fix = mirror the HistoryTab watch pattern (clear-then-reload on identity). Deferrable, pre-existing, out of #400 scope. — FIXED #425 (SkillsTab watch + BreweryTab watch + store guard, verified MERGED 2026-11-27).
   - **Effort: Small | Impact: Low-Medium (stale rows on character switch)**
   - **Suspects:** `src/components/Crafting/SkillsTab.vue:515`, `src/components/Crafting/BreweryTab.vue` (brewing/discoveries load)
+
+- [ ] WorkOrdersTab mount-only staleness (same class as SkillsTab/BreweryTab #425 — reported, not fixed): sole watch is `includeInventoryScrolls`; `loadWorkOrders` reads active character+server at call time with no stale guard.
+  - **Effort: Small | Impact: Low-Medium (stale rows on character switch)**
+  - **Suspects:** `src/components/Crafting/WorkOrdersTab.vue:275-277` (sole watch), `src/stores/craftingStore.ts:1481+` (`loadWorkOrders`)
+- [ ] LevelingTab mount-only staleness (same class as SkillsTab/BreweryTab #425 — reported, not fixed): watches are plan/multiplier/costs only, no character watch; skill level fetched only in `onSkillChange`; `levelingState` persists across identities.
+  - **Effort: Small | Impact: Low-Medium (stale rows on character switch)**
+  - **Suspects:** `src/components/Crafting/LevelingTab.vue:663-676,801` (watches without identity)
+- [ ] CooksHelperTab mount-only staleness (same class as SkillsTab/BreweryTab #425 — reported, not fixed): no `watch` import at all; `onMounted` only (`tryAutoImport` + `loadProjects`).
+  - **Effort: Small | Impact: Low (stale rows on character switch)**
+  - **Suspects:** `src/components/Crafting/CooksHelperTab.vue:185-188`
+- [ ] ProjectsTab mount-only staleness (same class as SkillsTab/BreweryTab #425 — reported, not fixed; lower urgency, projects are user-created not per-character rows): watches `activeProject`/`activeGroupName`/selection prefs only; mount restores prefs; no identity watch.
+  - **Effort: Small | Impact: Low (stale view on character switch)**
+  - **Suspects:** `src/components/Crafting/ProjectsTab.vue:167-215` (pref-only watches)
