@@ -59,6 +59,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { useGameDataStore } from "../../stores/gameDataStore";
 import { useCraftingStore } from "../../stores/craftingStore";
+import { useSettingsStore } from "../../stores/settingsStore";
 import { useMarketStore } from "../../stores/marketStore";
 import { useViewPrefs } from "../../composables/useViewPrefs";
 import { usePriceCalculator } from "../../composables/usePriceCalculator";
@@ -69,6 +70,7 @@ import ProjectRecipePanel from "./ProjectRecipePanel.vue";
 import ProjectMaterialsPanel from "./ProjectMaterialsPanel.vue";
 
 const gameData = useGameDataStore();
+const settingsStore = useSettingsStore();
 const store = useCraftingStore();
 const marketStore = useMarketStore();
 
@@ -205,6 +207,23 @@ watch(() => store.activeGroupName, async (groupName) => {
   pricingMode.value = false;
   await resolveGroup(groupName);
 }, { immediate: false });
+
+// Character switch: project rows are global, but every resolved number —
+// materials, needs, intermediate stock, stock targets — is read for the
+// active character+server. Clear synchronously under the new identity so the
+// old character's availability never renders, then re-resolve; the
+// resolveGeneration guard drops any in-flight resolve for the old identity.
+watch(
+  () => [settingsStore.settings.activeCharacterName, settingsStore.settings.activeServerName],
+  () => {
+    projectMaterials.value = new Map();
+    projectIntermediates.value = [];
+    materialNeeds.value = [];
+    intermediateStockMap.value = new Map();
+    stockTargets.value = new Map();
+    onResolve();
+  },
+)
 
 // Persist selection so it survives navigation
 watch(() => store.activeProject, (project) => {
