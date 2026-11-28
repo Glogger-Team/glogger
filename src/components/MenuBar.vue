@@ -168,7 +168,6 @@ const viewTabs: Partial<Record<AppView, SubTab[]>> = {
     { id: "farming", label: "Farming" },
     { id: "surveying", label: "Surveying" },
     { id: "stall-tracker", label: "Stall Tracker" },
-    { id: "wealth", label: "Council Wealth" },
   ],
   chat: [
     { id: "all", label: "All Messages" },

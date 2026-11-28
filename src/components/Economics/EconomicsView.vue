@@ -14,9 +14,6 @@
 
       <!-- Stall Tracker -->
       <StallTrackerView v-if="visited.has('stall-tracker')" v-show="activeTab === 'stall-tracker'" />
-
-      <!-- Council Wealth -->
-      <CouncilWealthView v-if="visited.has('wealth')" v-show="activeTab === 'wealth'" :active="isActive && activeTab === 'wealth'" />
     </div>
   </PaneLayout>
 </template>
@@ -25,10 +22,8 @@
 import { computed, reactive, watch } from 'vue'
 import PaneLayout from '../Shared/PaneLayout.vue'
 import MarketView from '../Market/MarketView.vue'
-import FarmingView from './EconomicsFarmingView.vue'
 import SurveyView from './EconomicsSurveyView.vue'
 import StallTrackerView from '../StallTracker/StallTrackerView.vue'
-import CouncilWealthView from './CouncilWealthView.vue'
 
 const props = withDefaults(defineProps<{
   activeTab: string;
