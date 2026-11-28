@@ -27,8 +27,8 @@ pub struct RouteStop {
     pub details: String,
 }
 
-/// The type of action at a stop, used for within-zone ordering.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize, specta::Type)]
+/// The type of action at a stop, used for within-zone ordering (see `rank`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum StopPurpose {
     /// Pick up items from storage vault — do first.
@@ -41,6 +41,29 @@ pub enum StopPurpose {
     TurnIn = 3,
     /// Deposit items into storage vault — do last.
     Deposit = 4,
+    /// Gather items from the world (forage, harvest) — like Craft, before TurnIn.
+    ///
+    /// Appended after Deposit (not sorted between Craft and TurnIn) so adding
+    /// it renumbers nothing: execution order comes from `rank`, never from
+    /// declaration or discriminant order.
+    Gather = 5,
+}
+
+impl StopPurpose {
+    /// Within-zone execution order: pickup → vendor → craft → gather →
+    /// turn-in → deposit. Separate from the discriminant order so a new
+    /// variant never renumbers (and thereby never fake-removes) an existing
+    /// one in doc-orphan scans.
+    fn rank(self) -> u8 {
+        match self {
+            StopPurpose::Pickup => 0,
+            StopPurpose::VendorBuy => 1,
+            StopPurpose::Craft => 2,
+            StopPurpose::Gather => 3,
+            StopPurpose::TurnIn => 4,
+            StopPurpose::Deposit => 5,
+        }
+    }
 }
 
 /// Configuration for available travel methods.
@@ -95,6 +118,8 @@ pub enum RouteAction {
     VendorBuy,
     /// Craft items.
     Craft,
+    /// Gather items from the world.
+    Gather,
     /// Turn in items.
     TurnIn,
     /// Deposit items.
@@ -199,7 +224,7 @@ fn best_travel_method(
 /// 2. Group stops by resolved zone.
 /// 3. Greedy nearest-neighbor ordering using effective distance (considers recalls/TP).
 ///    Unreachable groups fail the plan with an error (never silently dropped).
-/// 4. Within each zone, order stops by purpose (pickup → vendor → craft → turn-in → deposit).
+/// 4. Within a zone, order stops by purpose (pickup → vendor → craft → gather → turn-in → deposit).
 /// 5. Insert travel steps between zone transitions, picking the best method.
 ///    Unreachable legs fail the plan before any hop is counted.
 pub fn plan_route(
@@ -377,7 +402,9 @@ pub fn plan_route(
         }
 
         // Sort stops within zone by purpose.
-        zone_stops.sort_by_key(|s| s.purpose);
+        // Within-zone execution order comes from StopPurpose::rank, not from
+        // declaration order (Gather is appended after Deposit).
+        zone_stops.sort_by_key(|s| s.purpose.rank());
 
         // Add action steps.
         for stop in zone_stops {
@@ -397,6 +424,7 @@ fn purpose_to_action(purpose: StopPurpose) -> RouteAction {
         StopPurpose::Pickup => RouteAction::Pickup,
         StopPurpose::VendorBuy => RouteAction::VendorBuy,
         StopPurpose::Craft => RouteAction::Craft,
+        StopPurpose::Gather => RouteAction::Gather,
         StopPurpose::TurnIn => RouteAction::TurnIn,
         StopPurpose::Deposit => RouteAction::Deposit,
     }
@@ -598,6 +626,17 @@ fn collect_objective(raw: &serde_json::Value) -> (Option<String>, u32) {
     (None, 0)
 }
 
+/// Whether any known recipe produces the named item: the same
+/// `recipes_producing_item` index `station_for_item` reads (no second index).
+/// `false` covers unknown items too (no row, no producers) — the order still
+/// plans a gather stop instead of dropping.
+fn has_producing_recipe(game_data: &GameData, item_internal_name: &str) -> bool {
+    game_data
+        .item_by_internal_name(item_internal_name)
+        .and_then(|item| game_data.recipes_producing_item.get(&item.id))
+        .is_some_and(|ids| !ids.is_empty())
+}
+
 /// Station hint for the crafted item: the lowest-id recipe producing it that
 /// states a station requirement (lowest id keeps the pick deterministic —
 /// the producing index is built from hash iteration order). `None` means no
@@ -648,14 +687,16 @@ fn turn_in_zone(game_data: &GameData, npc_name: &str) -> Option<String> {
         .map(|(_, zone)| zone.to_string())
 }
 
-/// Build `RouteStop`s for work orders: one `Craft` stop at the turn-in board
-/// town plus one `TurnIn` stop per order. Boards sit in towns with stations,
-/// so crafting rides along in the turn-in zone; the station the recipe needs,
-/// when the CDN states one, is named in the Craft details. (Zone→station
-/// curation is `docs/features/trip-routing.md` future work — this stays
-/// honest by naming the station instead of placing it.) The solver groups
-/// same-zone stops and orders Craft before TurnIn within a zone.
-///
+/// Build `RouteStop`s for work orders: one production stop at the turn-in board
+/// town plus one `TurnIn` stop per order. The production stop is `Craft` when a
+/// known recipe produces the item, `Gather` when it does not (same
+/// `recipes_producing_item` index `station_for_item` reads — no second index).
+/// Boards sit in towns with stations, so crafting rides along in the turn-in
+/// zone; the station the recipe needs, when the CDN states one, is named in
+/// the Craft details. (Zone→station curation is `docs/features/trip-routing.md`
+/// future work — this stays honest by naming the station instead of placing
+/// it.) The solver groups same-zone stops and orders Craft/Gather before
+/// TurnIn within a zone.
 /// Failures name the quest: unknown quest key, missing Deliver-to objective,
 /// or unresolvable turn-in zone all error — a work order never silently
 /// drops off the trip.
@@ -701,19 +742,30 @@ pub fn build_work_order_stops(
                 order.quest_key, npc
             )
         })?;
-        let station = item_internal
+        let has_producers = item_internal
             .as_deref()
-            .and_then(|internal| station_for_item(game_data, internal));
-        let mut craft_details =
-            format!("Craft {qty}x {item_label} (total) ({skill}) for '{quest_name}'");
-        if let Some(station) = station {
-            craft_details.push_str(&format!(" [needs {station}]"));
+            .is_some_and(|internal| has_producing_recipe(game_data, internal));
+        if has_producers {
+            let station = item_internal
+                .as_deref()
+                .and_then(|internal| station_for_item(game_data, internal));
+            let mut craft_details =
+                format!("Craft {qty}x {item_label} (total) ({skill}) for '{quest_name}'");
+            if let Some(station) = station {
+                craft_details.push_str(&format!(" [needs {station}]"));
+            }
+            stops.push(RouteStop {
+                zone: zone.clone(),
+                purpose: StopPurpose::Craft,
+                details: craft_details,
+            });
+        } else {
+            stops.push(RouteStop {
+                zone: zone.clone(),
+                purpose: StopPurpose::Gather,
+                details: format!("Gather {qty}x {item_label} (total) ({skill}) for '{quest_name}'"),
+            });
         }
-        stops.push(RouteStop {
-            zone: zone.clone(),
-            purpose: StopPurpose::Craft,
-            details: craft_details,
-        });
         stops.push(RouteStop {
             zone,
             purpose: StopPurpose::TurnIn,
@@ -723,10 +775,9 @@ pub fn build_work_order_stops(
     Ok(stops)
 }
 
-/// Plan a multi-zone trip to craft and turn in work orders.
-///
+/// Plan a multi-zone trip to complete work orders (craft or gather, then turn in).
 /// Resolves each order's turn-in zone from CDN quest/NPC data (static
-/// nine-board fallback), emits Craft + TurnIn stops, and runs the existing
+/// nine-board fallback), emits production + TurnIn stops, and runs the existing
 /// `plan_route` solver unchanged. Graph construction mirrors `plan_trip`
 /// (duplicated intentionally — this slice leaves `plan_trip` untouched).
 #[tauri::command]
