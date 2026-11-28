@@ -1,4 +1,4 @@
-import { defineStore } from "pinia";
+import { defineStore, acceptHMRUpdate } from "pinia";
 import { useToastStore } from "./toastStore";
 import type { WatchRuleTriggered } from "../types/database";
 
@@ -79,7 +79,8 @@ export const useWatchwordAlertStore = defineStore("watchwordAlert", () => {
         message.length > 80 ? message.substring(0, 77) + "..." : message;
       toastStore.add(
         "info",
-        `Watchword "${rule_name}" ${senderLabel}: ${truncated}`
+        `Watchword "${rule_name}" ${senderLabel}: ${truncated}`,
+        { action: { label: "Configure", view: "chat", subTab: "watchwords" } }
       );
     }
   }
@@ -88,3 +89,7 @@ export const useWatchwordAlertStore = defineStore("watchwordAlert", () => {
     handleWatchRuleTriggered,
   };
 });
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useWatchwordAlertStore, import.meta.hot));
+}

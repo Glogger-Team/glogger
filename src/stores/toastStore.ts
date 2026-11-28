@@ -1,7 +1,13 @@
-import { defineStore } from "pinia";
+import { defineStore, acceptHMRUpdate } from "pinia";
 import { ref, computed } from "vue";
 
 export type ToastType = "success" | "info" | "warning" | "error";
+
+export interface ToastAction {
+  label: string;
+  view: string;
+  subTab?: string;
+}
 
 export interface Toast {
   id: number;
@@ -9,6 +15,7 @@ export interface Toast {
   message: string;
   createdAt: number;
   autoDismiss: boolean;
+  action?: ToastAction;
 }
 
 const MAX_VISIBLE = 3;
@@ -21,7 +28,7 @@ export const useToastStore = defineStore("toast", () => {
 
   const visibleToasts = computed(() => toasts.value.slice(0, MAX_VISIBLE));
 
-  function add(type: ToastType, message: string): number {
+  function add(type: ToastType, message: string, opts?: { action?: ToastAction }): number {
     const id = nextId++;
     const toast: Toast = {
       id,
@@ -29,8 +36,8 @@ export const useToastStore = defineStore("toast", () => {
       message,
       createdAt: Date.now(),
       autoDismiss: type !== "error",
+      ...(opts?.action ? { action: opts.action } : {}),
     };
-
     // Prepend newest on top
     toasts.value = [toast, ...toasts.value];
 
@@ -64,3 +71,7 @@ export const useToastStore = defineStore("toast", () => {
     AUTO_DISMISS_MS,
   };
 });
+
+if (import.meta.hot) {
+  import.meta.hot.accept(acceptHMRUpdate(useToastStore, import.meta.hot));
+}
