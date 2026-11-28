@@ -169,13 +169,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
+import { useSettingsStore } from '../../stores/settingsStore'
 import { useCooksHelperStore } from '../../stores/cooksHelperStore'
 import { useCraftingStore } from '../../stores/craftingStore'
 import EmptyState from '../Shared/EmptyState.vue'
 import DataTableSkeleton from '../Shared/DataTableSkeleton.vue'
 import CooksHelperRecipeRow from './CooksHelperRecipeRow.vue'
 
+const settingsStore = useSettingsStore()
 const store = useCooksHelperStore()
 const craftingStore = useCraftingStore()
 
@@ -186,6 +188,35 @@ onMounted(() => {
   void store.tryAutoImport()
   craftingStore.loadProjects()
 })
+
+// Character switch: material-availability results are resolved per
+// character+server, so clear them synchronously under the new identity — the
+// old character's stock numbers must never render. Then re-run the mount
+// loads (tryAutoImport short-circuits when the latest report is already
+// imported; the project list is global). Selection and filters are user prefs,
+// not character data, and are left alone; availability re-checks on demand via
+// checkAllMaterials under the current identity.
+let cooksReloadGen = 0
+watch(
+  () => [settingsStore.settings.activeCharacterName, settingsStore.settings.activeServerName],
+  () => {
+    store.materialNeedsMap = new Map()
+    const gen = ++cooksReloadGen
+    const characterName = settingsStore.settings.activeCharacterName
+    const serverName = settingsStore.settings.activeServerName
+    void (async () => {
+      await store.tryAutoImport()
+      // A newer switch started its own reload — drop this one.
+      if (
+        gen !== cooksReloadGen ||
+        settingsStore.settings.activeCharacterName !== characterName ||
+        settingsStore.settings.activeServerName !== serverName
+      )
+        return
+      await craftingStore.loadProjects()
+    })()
+  },
+)
 
 // Skill filter options with counts — derived dynamically from loaded recipes
 const skillOptions = computed(() => {
