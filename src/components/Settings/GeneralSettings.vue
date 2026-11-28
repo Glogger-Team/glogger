@@ -234,8 +234,12 @@
       </div>
     </div>
     <div class="settings-section">
-      <h3 class="panel-label">Characters</h3>
-
+      <div class="flex items-center gap-2">
+        <h3 class="panel-label">Characters</h3>
+        <button @click="loadCharacters" class="btn btn-secondary text-xs px-2 py-1 ml-auto" :disabled="loadingCharacters">
+          {{ loadingCharacters ? 'Loading...' : 'Refresh' }}
+        </button>
+      </div>
       <div v-if="characters.length === 0" class="text-sm text-text-muted">
         No characters yet — add one from the character picker in the header.
       </div>
@@ -324,6 +328,7 @@ const archiveMaxMb = ref(settingsStore.settings.playerLogArchiveMaxMb);
 const gameStateStore = useGameStateStore();
 const characterStore = useCharacterStore();
 const characters = ref<UserCharacter[]>([]);
+const loadingCharacters = ref(false);
 const serverList = ref<string[]>([]);
 const renameTarget = ref<UserCharacter | null>(null);
 const renameName = ref("");
@@ -548,11 +553,14 @@ const isUnchangedRename = computed(() => {
 });
 
 async function loadCharacters() {
+  loadingCharacters.value = true;
   try {
     characters.value = await invoke<UserCharacter[]>("get_user_characters");
     serverList.value = await invoke<string[]>("get_server_list");
   } catch (e) {
     console.error("Failed to load user characters:", e);
+  } finally {
+    loadingCharacters.value = false;
   }
 }
 

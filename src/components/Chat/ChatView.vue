@@ -4,8 +4,10 @@
       <!-- Tab Content -->
       <div class="flex-1 overflow-hidden flex flex-col">
         <!-- visited+v-show keep-alive (EconomicsView precedent): sub-tabs stay mounted so
-             switching back shows cached messages instead of remounting (onMounted reload) with a flash.
-             Live updates keep flowing via each tab's useChatLiveRefresh while mounted. -->
+             switching back shows cached content instead of remounting (onMounted reload) with a flash.
+             Message tabs (channels/tells/party/nearby/guild/system/all/json) stay live via
+             useChatLiveRefresh; search keeps its typed query; poems listen for game-state-updated;
+             watchwords bind the settings store. -->
         <ChatSearchView v-if="visited.has('search')" v-show="activeTab === 'search'" />
         <ChannelView v-if="visited.has('channels')" v-show="activeTab === 'channels'" />
         <TellsView v-if="visited.has('tells')" v-show="activeTab === 'tells'" />
